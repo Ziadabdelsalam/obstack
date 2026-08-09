@@ -3,8 +3,41 @@
 import { layerColor } from "@/lib/layers";
 import { fmtMs } from "@/lib/format";
 import { LayerChip } from "@/components/ui/LayerChip";
-import type { Span, Trace } from "@/mock/types";
+import type { K8sEvent, Span, Trace } from "@/mock/types";
 import { AlertCircle } from "lucide-react";
+
+const eventColor: Record<K8sEvent["severity"], string> = {
+  info: "var(--color-mid)",
+  warn: "var(--color-warn)",
+  fatal: "var(--color-err)",
+};
+
+interface PodTrack {
+  pod: string;
+  node?: string;
+  /** activity window from this pod's spans, if any */
+  window?: { start: number; end: number };
+  events: K8sEvent[];
+}
+
+function buildPodTracks(trace: Trace): PodTrack[] {
+  const tracks = new Map<string, PodTrack>();
+  for (const s of trace.spans) {
+    if (!s.pod) continue;
+    const t = tracks.get(s.pod) ?? { pod: s.pod, node: s.node, events: [] };
+    const end = s.startMs + s.durationMs;
+    t.window = t.window
+      ? { start: Math.min(t.window.start, s.startMs), end: Math.max(t.window.end, end) }
+      : { start: s.startMs, end };
+    tracks.set(s.pod, t);
+  }
+  for (const e of trace.k8sEvents ?? []) {
+    const t = tracks.get(e.pod) ?? { pod: e.pod, events: [] };
+    t.events.push(e);
+    tracks.set(e.pod, t);
+  }
+  return [...tracks.values()];
+}
 
 interface Row {
   span: Span;
@@ -42,6 +75,7 @@ export function Waterfall({
   animate?: boolean;
 }) {
   const rows = buildRows(trace);
+  const podTracks = buildPodTracks(trace);
   const total = trace.durationMs;
   const ticks = [0, 0.25, 0.5, 0.75, 1];
 
@@ -134,6 +168,75 @@ export function Waterfall({
               </button>
             );
           })}
+
+          {/* infra track — pods & kubernetes events on the same timeline */}
+          {podTracks.length > 0 && (
+            <>
+              <div className="mt-1 flex items-center border-t border-line pt-1.5 pb-0.5">
+                <span
+                  className="pl-2 font-mono text-[9.5px] uppercase tracking-widest"
+                  style={{ color: "var(--color-infra)" }}
+                >
+                  infra · pods & k8s events
+                </span>
+              </div>
+              {podTracks.map((t) => (
+                <div key={t.pod} className="relative flex w-full items-center py-[3px]">
+                  <div className="flex w-[252px] shrink-0 items-center gap-1.5 overflow-hidden pr-2 pl-2">
+                    <span
+                      className="h-1.5 w-1.5 shrink-0 rounded-full"
+                      style={{ background: "var(--color-infra)" }}
+                    />
+                    <span className="min-w-0">
+                      <span className="block truncate font-mono text-[10.5px] text-mid">
+                        {t.pod}
+                      </span>
+                      {t.node && (
+                        <span className="block truncate font-mono text-[9px] text-faint">
+                          {t.node}
+                        </span>
+                      )}
+                    </span>
+                  </div>
+                  <div className="relative h-[22px] flex-1">
+                    {t.window && (
+                      <span
+                        className="absolute top-1/2 h-[5px] -translate-y-1/2 rounded-[2px]"
+                        style={{
+                          left: `${Math.max((t.window.start / total) * 100, 0)}%`,
+                          width: `${Math.max(((t.window.end - t.window.start) / total) * 100, 0.6)}%`,
+                          background: "color-mix(in srgb, var(--color-infra) 35%, transparent)",
+                          boxShadow: "inset 0 0 0 1px color-mix(in srgb, var(--color-infra) 55%, transparent)",
+                        }}
+                      />
+                    )}
+                    {t.events.map((e) => {
+                      const clamped = Math.min(Math.max(e.atMs, 0), total);
+                      const before = e.atMs < 0;
+                      return (
+                        <span
+                          key={e.id}
+                          title={`${before ? `${(e.atMs / 1000).toFixed(1)}s before trace · ` : ""}${e.label}`}
+                          className="absolute top-1/2 z-10 h-[9px] w-[9px] -translate-x-1/2 -translate-y-1/2 rotate-45 cursor-help"
+                          style={{
+                            left: `${(clamped / total) * 100}%`,
+                            background: eventColor[e.severity],
+                            boxShadow: "0 0 0 2px var(--color-surface)",
+                            opacity: before ? 0.75 : 1,
+                          }}
+                        />
+                      );
+                    })}
+                  </div>
+                  <div className="w-[72px] shrink-0 pr-2 text-right font-mono text-[9.5px] text-faint">
+                    {t.events.length > 0
+                      ? t.events.map((e) => e.kind.replace("_", " ")).join(" · ")
+                      : ""}
+                  </div>
+                </div>
+              ))}
+            </>
+          )}
         </div>
       </div>
     </div>

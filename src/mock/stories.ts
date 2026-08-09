@@ -7,11 +7,19 @@ import type { Explanation, LogRecord, Span, Trace } from "./types";
 
 const NS = "loopwork-prod";
 
+/** default pod/node attribution per service (overridable per span) */
+const POD_BY_SERVICE: Record<string, { pod: string; node: string }> = {
+  gateway: { pod: "gateway-84c5f-jw6th", node: "gke-prod-pool1-a3f2" },
+  "agent-worker": { pod: "agent-worker-7d9fb-kx2rq", node: "gke-prod-pool2-b7c9" },
+  tools: { pod: "tools-6b6f4-w9qp2", node: "gke-prod-pool1-a3f2" },
+};
+
 function span(
   traceId: string,
   s: Omit<Span, "traceId" | "attrs"> & { attrs?: Span["attrs"] },
 ): Span {
-  return { attrs: {}, ...s, traceId };
+  const res = POD_BY_SERVICE[s.service];
+  return { attrs: {}, pod: res?.pod, node: res?.node, ...s, traceId };
 }
 
 function log(
@@ -76,6 +84,17 @@ const oomSpans: Span[] = [
       "user.plan": "scale",
       "ticket.id": "TK-58213",
     },
+  }),
+  span(OOM_ID, {
+    id: "s-oom-auth",
+    parentId: "s-oom-root",
+    name: "auth.verify + pg.query tickets",
+    layer: "tool",
+    service: "gateway",
+    startMs: 4,
+    durationMs: 26,
+    status: "ok",
+    attrs: { "db.system": "postgresql", "db.rows": 1, "auth.method": "api_key" },
   }),
   span(OOM_ID, {
     id: "s-oom-agent",
@@ -233,6 +252,24 @@ export const oomTrace: Trace = {
   models: ["claude-haiku-4-5", "claude-sonnet-5"],
   spans: oomSpans,
   logs: oomLogs,
+  k8sEvents: [
+    {
+      id: "e-oom-1",
+      atMs: 4210,
+      pod: OOM_POD,
+      kind: "oom_kill",
+      severity: "fatal",
+      label: "OOMKilled — memory limit 512Mi exceeded",
+    },
+    {
+      id: "e-oom-2",
+      atMs: 5600,
+      pod: OOM_POD,
+      kind: "restart",
+      severity: "warn",
+      label: "Back-off restart #3 in 1h",
+    },
+  ],
   explanation: oomExplanation,
 };
 
@@ -309,6 +346,7 @@ const slowSpans: Span[] = [
     name: "support-agent.run",
     layer: "agent",
     service: "agent-worker",
+    pod: SLOW_POD,
     startMs: 31,
     durationMs: 16350,
     status: "ok",
@@ -321,6 +359,7 @@ const slowSpans: Span[] = [
     name: "classify_intent",
     layer: "llm",
     service: "agent-worker",
+    pod: SLOW_POD,
     startMs: 52,
     durationMs: 380,
     status: "ok",
@@ -345,6 +384,7 @@ const slowSpans: Span[] = [
     name: "draft_reply (fallback: no KB context)",
     layer: "llm",
     service: "agent-worker",
+    pod: SLOW_POD,
     startMs: 15510,
     durationMs: 640,
     status: "ok",
@@ -367,6 +407,7 @@ const slowSpans: Span[] = [
     name: "review_reply",
     layer: "llm",
     service: "agent-worker",
+    pod: SLOW_POD,
     startMs: 16160,
     durationMs: 210,
     status: "ok",
@@ -449,6 +490,16 @@ export const slowTrace: Trace = {
   models: ["claude-haiku-4-5", "claude-sonnet-5"],
   spans: slowSpans,
   logs: slowLogs,
+  k8sEvents: [
+    {
+      id: "e-slow-1",
+      atMs: -2200,
+      pod: "kb-service-5c66d-qp4wn",
+      kind: "reindex",
+      severity: "warn",
+      label: "Reindex started — 48,211 documents, queries queued",
+    },
+  ],
   explanation: slowExplanation,
 };
 
@@ -612,6 +663,24 @@ export const rateTrace: Trace = {
   models: ["claude-haiku-4-5"],
   spans: rateSpans,
   logs: rateLogs,
+  k8sEvents: [
+    {
+      id: "e-rate-1",
+      atMs: -8000,
+      pod: "batch-import-6f8d2-tt5vk",
+      kind: "scale",
+      severity: "info",
+      label: "Job started: zendesk-migration (1,800 tickets)",
+    },
+    {
+      id: "e-rate-2",
+      atMs: -1200,
+      pod: RATE_POD,
+      kind: "throttle",
+      severity: "warn",
+      label: "Worker saturated — queue depth 214 (normal <10)",
+    },
+  ],
   explanation: rateExplanation,
 };
 

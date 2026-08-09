@@ -19,6 +19,10 @@ export interface Span {
   name: string;
   layer: Layer;
   service: string;
+  /** k8s pod that executed this span (resource attribution) */
+  pod?: string;
+  /** k8s node the pod was scheduled on */
+  node?: string;
   /** offset from trace start */
   startMs: number;
   durationMs: number;
@@ -26,6 +30,16 @@ export interface Span {
   statusMessage?: string;
   attrs: Record<string, string | number>;
   llm?: LlmDetail;
+}
+
+/** A Kubernetes-level event rendered on the trace's infra track. */
+export interface K8sEvent {
+  id: string;
+  atMs: number;
+  pod: string;
+  kind: "oom_kill" | "restart" | "scale" | "reindex" | "throttle";
+  severity: "info" | "warn" | "fatal";
+  label: string;
 }
 
 export type Severity = "debug" | "info" | "warn" | "error" | "fatal";
@@ -66,6 +80,7 @@ export interface Trace {
   models: string[];
   spans: Span[];
   logs: LogRecord[];
+  k8sEvents?: K8sEvent[];
   explanation?: Explanation;
 }
 

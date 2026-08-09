@@ -91,6 +91,10 @@ export function TraceExplorer({ trace }: { trace: Trace }) {
         <Stat label="tokens" value={fmtTokens(trace.totalTokens)} />
         <Stat label="llm cost" value={fmtCost(trace.costUsd)} />
         <Stat label="services" value={trace.services.join(" · ")} />
+        <Stat
+          label="pods"
+          value={String(new Set(trace.spans.map((s) => s.pod).filter(Boolean)).size)}
+        />
         <Stat label="started" value={timeAgo(trace.startedAt)} />
       </div>
 

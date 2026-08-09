@@ -50,6 +50,13 @@ export function SpanDetail({ span }: { span: Span }) {
         <span className="font-mono text-[11px] text-faint">{span.service}</span>
         <span className="font-mono text-[11px] text-mid">{fmtMs(span.durationMs)}</span>
       </div>
+      {span.pod && (
+        <p className="mt-1.5 flex items-center gap-1.5 font-mono text-[10.5px] text-faint">
+          <span className="h-1.5 w-1.5 rounded-full" style={{ background: "var(--color-infra)" }} />
+          {span.pod}
+          {span.node && <span className="text-faint/70">· {span.node}</span>}
+        </p>
+      )}
       {span.statusMessage && (
         <p
           className="mt-2 rounded-md border px-2.5 py-1.5 font-mono text-[11px] leading-snug"

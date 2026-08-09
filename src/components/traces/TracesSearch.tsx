@@ -19,6 +19,7 @@ const serviceLayer: Record<string, Layer> = {
   gateway: "api",
   "agent-worker": "agent",
   tools: "tool",
+  "sync-worker": "infra",
 };
 
 function traceMatches(t: Trace, q: string): boolean {
