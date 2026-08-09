@@ -13,6 +13,7 @@ import {
   Siren,
   Target,
   Plug,
+  Bot,
   MessagesSquare,
   FlaskConical,
   Rocket,
@@ -21,7 +22,6 @@ import {
   Command,
 } from "lucide-react";
 import { Wordmark } from "./Wordmark";
-import { NotificationsBell } from "./NotificationsPanel";
 
 const sections: {
   label: string | null;
@@ -40,6 +40,7 @@ const sections: {
       { href: "/app/incidents", label: "Incidents", icon: Siren },
       { href: "/app/slos", label: "SLOs", icon: Target },
       { href: "/app/connections", label: "Connections", icon: Plug },
+      { href: "/app/mcp", label: "MCP server", icon: Bot },
     ],
   },
   {
@@ -57,7 +58,6 @@ const sections: {
     ],
   },
 ];
-const NOTIFICATIONS_AFTER_SECTION = 2;
 
 export function SideNav() {
   const pathname = usePathname();
@@ -107,7 +107,6 @@ export function SideNav() {
               </Link>
             );
           })}
-          {si === NOTIFICATIONS_AFTER_SECTION && <NotificationsBell />}
         </nav>
       ))}
 
@@ -115,19 +114,13 @@ export function SideNav() {
         <p className="mb-3 flex items-center gap-1.5 font-mono text-[10px] text-faint">
           <Command className="h-3 w-3" />K to jump anywhere
         </p>
-        <div className="mb-3 rounded-md border border-line bg-raised px-3 py-2.5">
+        <div className="rounded-md border border-line bg-raised px-3 py-2.5">
           <p className="font-mono text-[10px] uppercase tracking-widest text-faint">
             demo workspace
           </p>
           <p className="mt-1 text-[12px] leading-snug text-mid">
             Sample data from a fictional AI support-agent company.
           </p>
-        </div>
-        <div className="flex items-center gap-2.5">
-          <span className="flex h-6 w-6 items-center justify-center rounded-full bg-overlay font-mono text-[10px] text-mid">
-            ZA
-          </span>
-          <span className="text-[12px] text-mid">ziad@loopwork.ai</span>
         </div>
       </div>
     </aside>

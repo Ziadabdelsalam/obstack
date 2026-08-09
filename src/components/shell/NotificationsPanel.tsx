@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import Link from "next/link";
-import { Bell, BellRing, Workflow, Users, Info, X } from "lucide-react";
+import { Bell, BellRing, Workflow, Users, Info } from "lucide-react";
 import { notifications } from "@/mock/inbox";
 
 const kindIcon = { alert: BellRing, pipeline: Workflow, team: Users, system: Info } as const;
@@ -13,27 +13,25 @@ const kindColor = {
   system: "var(--color-mid)",
 } as const;
 
+/** Bell with unread badge + right-anchored dropdown, for the top bar. */
 export function NotificationsBell() {
   const [open, setOpen] = useState(false);
   const [items, setItems] = useState(notifications);
   const unread = items.filter((n) => n.unread).length;
 
   return (
-    <>
+    <div className="relative">
       <button
         type="button"
-        onClick={() => setOpen(true)}
-        className="flex w-full items-center gap-2.5 rounded-md px-2.5 py-[6px] text-[13px] text-mid transition-colors hover:bg-raised hover:text-ink"
+        onClick={() => setOpen((o) => !o)}
+        aria-label={`Notifications${unread ? ` (${unread} unread)` : ""}`}
+        className="relative rounded-md p-1.5 text-mid transition-colors hover:bg-raised hover:text-ink"
       >
         <Bell className="h-4 w-4" />
-        Notifications
         {unread > 0 && (
           <span
-            className="ml-auto rounded-full px-1.5 font-mono text-[10px] leading-4"
-            style={{
-              color: "var(--color-warn)",
-              background: "color-mix(in srgb, var(--color-warn) 14%, transparent)",
-            }}
+            className="absolute top-0.5 right-0.5 flex h-3.5 min-w-3.5 items-center justify-center rounded-full px-0.5 font-mono text-[8.5px] leading-none font-semibold text-bg"
+            style={{ background: "var(--color-warn)" }}
           >
             {unread}
           </span>
@@ -41,27 +39,20 @@ export function NotificationsBell() {
       </button>
 
       {open && (
-        <div className="fixed inset-0 z-50 bg-black/40" onClick={() => setOpen(false)} role="dialog" aria-modal="true" aria-label="Notifications">
-          <div
-            className="absolute top-0 left-[216px] flex h-full w-[360px] flex-col border-r border-line-strong bg-surface shadow-2xl"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="flex items-center justify-between border-b border-line px-4 py-3">
-              <h2 className="text-[14px] font-medium text-ink">Notifications</h2>
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => setItems((xs) => xs.map((x) => ({ ...x, unread: false })))}
-                  className="font-mono text-[10.5px] text-faint hover:text-ink"
-                >
-                  mark all read
-                </button>
-                <button type="button" onClick={() => setOpen(false)} aria-label="Close" className="rounded p-1 text-faint hover:bg-overlay hover:text-ink">
-                  <X className="h-4 w-4" />
-                </button>
-              </div>
+        <>
+          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
+          <div className="absolute top-full right-0 z-50 mt-1.5 w-[380px] overflow-hidden rounded-xl border border-line-strong bg-surface shadow-2xl">
+            <div className="flex items-center justify-between border-b border-line px-3.5 py-2.5">
+              <h2 className="text-[13px] font-medium text-ink">Notifications</h2>
+              <button
+                type="button"
+                onClick={() => setItems((xs) => xs.map((x) => ({ ...x, unread: false })))}
+                className="font-mono text-[10.5px] text-faint hover:text-ink"
+              >
+                mark all read
+              </button>
             </div>
-            <div className="flex-1 overflow-y-auto">
+            <div className="max-h-[420px] overflow-y-auto">
               {items.map((n) => {
                 const Icon = kindIcon[n.kind];
                 return (
@@ -69,7 +60,7 @@ export function NotificationsBell() {
                     key={n.id}
                     href={n.href}
                     onClick={() => setOpen(false)}
-                    className="flex items-start gap-3 border-b border-line/50 px-4 py-3 hover:bg-raised"
+                    className="flex items-start gap-3 border-b border-line/50 px-3.5 py-2.5 last:border-0 hover:bg-raised"
                   >
                     <span
                       className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-md"
@@ -91,8 +82,8 @@ export function NotificationsBell() {
               })}
             </div>
           </div>
-        </div>
+        </>
       )}
-    </>
+    </div>
   );
 }

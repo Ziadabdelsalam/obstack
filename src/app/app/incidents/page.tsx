@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { ArrowUpRight, Bot, Boxes, BellRing, ListTree, Activity, Wrench, CheckCircle2, Workflow } from "lucide-react";
 import { incidents, type TimelineKind } from "@/mock/incident";
+import { IncidentRca } from "@/components/incidents/IncidentRca";
 
 const kindStyle: Record<TimelineKind, { icon: typeof Bot; color: string; label: string }> = {
   pipeline: { icon: Workflow, color: "var(--color-api)", label: "pipeline" },
@@ -51,6 +52,7 @@ export default function IncidentsPage() {
           >
             impact · {inc.impact}
           </p>
+          <IncidentRca incident={inc} />
         </div>
 
         {/* timeline */}

@@ -44,7 +44,7 @@ export default function Landing() {
     <div className="min-h-screen bg-bg">
       {/* nav */}
       <header className="sticky top-0 z-40 border-b border-line bg-bg/85 backdrop-blur">
-        <div className="mx-auto flex max-w-6xl items-center justify-between px-5 py-3.5">
+        <div className="mx-auto flex w-full max-w-[1400px] items-center justify-between px-5 py-3.5">
           <Wordmark />
           <nav className="hidden items-center gap-6 text-[13px] text-mid sm:flex">
             <a href="#product" className="hover:text-ink">Product</a>
@@ -62,8 +62,8 @@ export default function Landing() {
         </div>
       </header>
 
-      {/* hero */}
-      <section className="mx-auto max-w-6xl px-5 pt-16 pb-20 sm:pt-24">
+      {/* hero — fills the first viewport */}
+      <section className="mx-auto flex min-h-[calc(100svh-57px)] w-full max-w-[1400px] flex-col justify-center px-5 pt-12 pb-16 sm:pt-14">
         <div className="max-w-3xl">
           <h1 className="font-display text-[clamp(2.2rem,6vw,3.6rem)] leading-[1.05] font-bold tracking-tight text-ink">
             Every layer.
@@ -106,7 +106,7 @@ export default function Landing() {
 
       {/* problem */}
       <section className="border-y border-line bg-surface">
-        <div className="mx-auto max-w-6xl px-5 py-16">
+        <div className="mx-auto w-full max-w-[1400px] px-5 py-16">
           <SectionLabel>the problem</SectionLabel>
           <h2 className="max-w-2xl font-display text-[26px] leading-tight font-semibold text-ink">
             Debugging an AI product today means six tabs and a guess.
@@ -143,7 +143,7 @@ export default function Landing() {
       </section>
 
       {/* product features */}
-      <section id="product" className="mx-auto max-w-6xl px-5 py-16">
+      <section id="product" className="mx-auto w-full max-w-[1400px] px-5 py-16">
         <SectionLabel>the product</SectionLabel>
         <div className="grid gap-10 md:grid-cols-3">
           {[
@@ -174,7 +174,7 @@ export default function Landing() {
 
       {/* connections wall */}
       <section id="connections" className="border-y border-line bg-surface">
-        <div className="mx-auto max-w-6xl px-5 py-16">
+        <div className="mx-auto w-full max-w-[1400px] px-5 py-16">
           <SectionLabel>connections</SectionLabel>
           <h2 className="max-w-2xl font-display text-[26px] leading-tight font-semibold text-ink">
             If it writes a log, it plugs in.
@@ -202,7 +202,7 @@ export default function Landing() {
       </section>
 
       {/* screens showcase */}
-      <section className="mx-auto max-w-6xl px-5 py-16">
+      <section className="mx-auto w-full max-w-[1400px] px-5 py-16">
         <SectionLabel>see it</SectionLabel>
         <h2 className="mb-8 max-w-2xl font-display text-[26px] leading-tight font-semibold text-ink">
           A full observability platform — not just a trace viewer.
@@ -212,7 +212,7 @@ export default function Landing() {
 
       {/* comparison */}
       <section className="border-y border-line bg-surface">
-        <div className="mx-auto max-w-6xl px-5 py-16">
+        <div className="mx-auto w-full max-w-[1400px] px-5 py-16">
           <SectionLabel>why not just stitch tools together?</SectionLabel>
           <h2 className="max-w-2xl font-display text-[26px] leading-tight font-semibold text-ink">
             The join is the product. You can&apos;t bolt it on.
@@ -257,7 +257,7 @@ export default function Landing() {
       </section>
 
       {/* how it works */}
-      <section className="mx-auto max-w-6xl px-5 py-16">
+      <section className="mx-auto w-full max-w-[1400px] px-5 py-16">
         <SectionLabel>how it works</SectionLabel>
         <div className="grid gap-6 md:grid-cols-3">
           {[
@@ -288,7 +288,7 @@ export default function Landing() {
 
       {/* pricing */}
       <section id="pricing" className="border-t border-line bg-surface">
-        <div className="mx-auto max-w-6xl px-5 py-16">
+        <div className="mx-auto w-full max-w-[1400px] px-5 py-16">
           <SectionLabel>pricing</SectionLabel>
           <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
             {[
@@ -348,7 +348,7 @@ export default function Landing() {
 
       {/* CTA + footer */}
       <footer className="border-t border-line">
-        <div className="mx-auto max-w-6xl px-5 py-14">
+        <div className="mx-auto w-full max-w-[1400px] px-5 py-14">
           <div className="flex flex-col items-start justify-between gap-6 sm:flex-row sm:items-center">
             <div>
               <h2 className="font-display text-[22px] font-semibold text-ink">
