@@ -17,7 +17,7 @@ export function FloatingAsk() {
         <div className="fixed right-4 bottom-20 z-50 flex h-[520px] max-h-[calc(100vh-7rem)] w-[390px] max-w-[calc(100vw-2rem)] flex-col overflow-hidden rounded-xl border border-line-strong bg-bg shadow-2xl fade-up">
           <div className="flex items-center justify-between border-b border-line bg-surface px-3.5 py-2.5">
             <span className="flex items-center gap-2.5">
-              <ObstackGlyph size={14} />
+              <ObstackGlyph size={14} animated />
               <span className="text-[13px] font-medium text-ink">ask obstack</span>
               <span
                 className="rounded-[3px] px-1.5 py-px font-mono text-[9px] tracking-wide"

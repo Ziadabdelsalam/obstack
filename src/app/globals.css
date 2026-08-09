@@ -114,8 +114,25 @@ body {
   animation: eq-bounce 1.15s ease-in-out infinite;
   transform-origin: center;
 }
+
+/* gentler version for the wordmark — alive, not busy */
+@keyframes eq-soft {
+  0%,
+  100% {
+    transform: scaleY(0.62);
+  }
+  50% {
+    transform: scaleY(1);
+  }
+}
+.eq-bar-soft {
+  animation: eq-soft 2.2s ease-in-out infinite;
+  transform-origin: center;
+}
+
 @media (prefers-reduced-motion: reduce) {
-  .eq-bar {
+  .eq-bar,
+  .eq-bar-soft {
     animation: none;
   }
 }

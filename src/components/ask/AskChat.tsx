@@ -88,7 +88,7 @@ export function AskChat({ compact = false }: { compact?: boolean }) {
           <div className={compact ? "" : "rounded-lg border border-line bg-surface p-4"} data-tour="ask">
             <div className="mb-3 flex items-start gap-2.5">
               <span className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-line bg-raised">
-                <ObstackGlyph size={13} />
+                <ObstackGlyph size={13} animated />
               </span>
               <p className={`${textSize} leading-relaxed text-mid`}>
                 Hi — I answer questions from your traces, logs and metrics, with evidence linked.
@@ -137,7 +137,7 @@ export function AskChat({ compact = false }: { compact?: boolean }) {
           ) : (
             <div key={i} className="flex items-start gap-2.5">
               <span className="mt-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-line bg-raised">
-                <ObstackGlyph size={13} animated={m.streaming} />
+                <ObstackGlyph size={13} animated />
               </span>
               <div className={`min-w-0 ${compact ? "max-w-[92%]" : "max-w-[820px]"} rounded-2xl rounded-tl-md border border-line bg-surface`}>
                 <div className="px-3.5 py-2.5">
