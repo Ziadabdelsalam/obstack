@@ -29,7 +29,7 @@ A modern AI product is a stack of layers that don't speak to each other: an API 
 
 ## 4. Product vision (phased)
 
-**Phase 1 — See (v1, execution PRD).** The unified trace view: OTel-native ingestion of LLM calls, agent traces, Docker/K8s logs, and API spans; correlation by trace context; search; cost/latency/error dashboard; one AI feature — "Explain this trace," a root-cause summary built from the correlated data. Cloud SaaS for small teams; identical self-hosted bundle for larger and privacy-sensitive ones.
+**Phase 1 — See (v1, execution PRD).** The unified trace view: OTel-native ingestion of LLM calls, agent traces, Docker/K8s logs, and API spans; correlation by trace context; search; cost/latency/error dashboard; one AI feature — "Explain this trace," a root-cause summary built from the correlated data. A **Connections hub** makes every log source a user runs — cloud providers, PaaS, containers, databases, LLM gateways, CI — a one-click (or one-config) connection into the platform, with the broad catalog visible from day one and connectors lighting up tier by tier. Cloud SaaS for small teams; identical self-hosted bundle for larger and privacy-sensitive ones.
 
 **Phase 2 — Watch.** Alerting and anomaly detection tuned to AI workloads: error-rate and latency alerts, but also token-spend spikes, cost-per-feature drift, agent-loop detection, tool-failure clustering.
 

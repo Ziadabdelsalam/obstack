@@ -49,6 +49,12 @@ Teams shipping LLM/agent products debug across three or more disconnected tools:
 - **Overview dashboard**: requests & error rate, p50/p95 latency, token spend & LLM cost over time, top failing routes/agents.
 - **"Explain this trace"** — the single v1 AI feature (see §8).
 
+**Connections hub**
+- A first-class **Connections** area: a catalog of every log/telemetry source a user might run, each opening a guided connect flow. Users wire their sources to obstack here — this replaces a docs-only integration story.
+- **v1-functional connectors:** Generic OTLP (any OTel SDK/collector), Docker (obstack-collector container), Kubernetes (obstack-collector DaemonSet), Vercel (log drains), AWS CloudWatch Logs (subscription → forwarder).
+- **Catalog-visible, roadmap-gated** (shown with "Request access"/"Coming soon" and a vote/request button — doubles as demand signal): GCP Cloud Logging, Azure Monitor, Railway, Fly.io, Render, Supabase, Postgres, MongoDB, Kafka, Redis, GitHub Actions, LLM gateways (OpenRouter, Vercel AI Gateway), Cloudflare Workers.
+- Each connection shows live status once connected: last event received, event rate, error count.
+
 **Product shell**
 - Auth, orgs/workspaces, team invites, API keys.
 - Usage metering; free tier + usage-based billing via Stripe.
@@ -112,6 +118,10 @@ Filter bar over `trace_summaries`: service, status, duration, model, cost range,
 
 Requests & error rate, p50/p95 latency, token spend and LLM cost over time, top failing routes/agents. Every chart click lands in filtered search → trace view.
 
+### Connections hub
+
+Catalog grid of all sources (searchable, grouped: Cloud, PaaS, Containers & K8s, Databases, LLM & AI, Queues & Events, CI/CD). Each card → guided connect flow (keys/config/one-liner install) for v1-functional connectors, or "Coming soon + request" for roadmap ones. Connected sources list shows live health: last event, rate, errors. The onboarding quickstart (§ Onboarding) is a curated slice of this hub.
+
 ### Explain this trace
 
 Button on any failed trace. Streams a structured summary: **what failed → where in the stack → likely root cause → evidence** (linked spans/log lines). Rate-limited per pricing tier.
@@ -154,9 +164,10 @@ Billing unit: an **event** = one span or one log record.
 
 | Phase | Deliverable | Exit criterion |
 |---|---|---|
-| 1. Core pipeline | `ingest` + ClickHouse schema + minimal trace view | An OTLP-instrumented demo app's trace renders end-to-end (internal demo quality) |
+| 0. Frontend prototype | Landing page + full app UI with realistic mock data (trace view, search, dashboard, Connections hub, onboarding) — dark, dense dev-tool aesthetic | The whole product is walkable end-to-end in a browser; used to refine the design and as the visual for fundraising/design-partner conversations |
+| 1. Core pipeline | `ingest` + ClickHouse schema + trace view wired to real data | An OTLP-instrumented demo app's trace renders end-to-end (internal demo quality) |
 | 2. Correlation complete | Collector distro, log joins, SDK auto-instrumentation, search | Demo app on K8s shows API→agent→LLM spans with correlated pod logs in one view |
-| 3. Product shell | Auth/workspaces/keys, onboarding flow, dashboard, Explain, Stripe billing | A stranger can sign up and reach a correlated trace unassisted |
+| 3. Product shell | Auth/workspaces/keys, onboarding flow, dashboard, Connections hub (functional connectors), Explain, Stripe billing | A stranger can sign up, connect a source, and reach a correlated trace unassisted |
 | 4. Launch hardening | Self-hosted bundle, docs site, public demo environment, design-partner onboarding | First 5 design partners activated; public launch |
 
 Each phase gets its own implementation plan (via writing-plans) before build.
