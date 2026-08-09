@@ -81,7 +81,9 @@ export function AskChat({ compact = false }: { compact?: boolean }) {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div ref={scrollRef} className={`flex-1 space-y-3 overflow-y-auto ${compact ? "p-3" : "py-4 pr-1"}`}>
+      {/* bottom-anchored thread: newest message sits at the bottom, grows upward */}
+      <div ref={scrollRef} className="flex flex-1 flex-col overflow-y-auto">
+        <div className={`mt-auto space-y-3 ${compact ? "p-3" : "px-6 py-5"}`}>
         {messages.length === 0 && (
           <div className={compact ? "" : "rounded-lg border border-line bg-surface p-4"} data-tour="ask">
             <div className="mb-3 flex items-start gap-2.5">
@@ -112,7 +114,7 @@ export function AskChat({ compact = false }: { compact?: boolean }) {
           m.role === "user" ? (
             <div key={i} className="flex justify-end">
               <p
-                className={`max-w-[85%] rounded-2xl rounded-br-md border px-3.5 py-2 ${textSize} text-ink`}
+                className={`${compact ? "max-w-[85%]" : "max-w-[60%]"} rounded-2xl rounded-br-md border px-3.5 py-2 ${textSize} text-ink`}
                 style={{
                   borderColor: "color-mix(in srgb, var(--color-api) 35%, var(--color-line))",
                   background: "color-mix(in srgb, var(--color-api) 10%, var(--color-overlay))",
@@ -126,7 +128,7 @@ export function AskChat({ compact = false }: { compact?: boolean }) {
               <span className="mt-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-line bg-raised">
                 <ObstackGlyph size={13} animated={m.streaming} />
               </span>
-              <div className="min-w-0 max-w-[92%] rounded-2xl rounded-tl-md border border-line bg-surface">
+              <div className={`min-w-0 ${compact ? "max-w-[92%]" : "max-w-[820px]"} rounded-2xl rounded-tl-md border border-line bg-surface`}>
                 <div className="px-3.5 py-2.5">
                   {m.text.length === 0 && m.streaming && (
                     <p className={`${textSize} pulse-dot text-faint`}>reading traces & logs…</p>
@@ -160,6 +162,7 @@ export function AskChat({ compact = false }: { compact?: boolean }) {
             </div>
           ),
         )}
+        </div>
       </div>
 
       <form
@@ -167,7 +170,7 @@ export function AskChat({ compact = false }: { compact?: boolean }) {
           e.preventDefault();
           ask(input);
         }}
-        className={`flex items-center gap-2 border-t border-line bg-surface px-3 py-2.5 ${compact ? "" : "rounded-b-lg"}`}
+        className={`flex items-center gap-2 border-t border-line bg-surface ${compact ? "px-3 py-2.5" : "px-6 py-3"}`}
       >
         <input
           value={input}
