@@ -23,7 +23,7 @@ export default function UsersPage() {
         language.
       </p>
 
-      <div className="space-y-2">
+      <div className="space-y-2" data-tour="users">
         {impactedUsers.map((u) => {
           const r = riskStyle[u.risk];
           return (

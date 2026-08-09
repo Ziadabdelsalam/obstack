@@ -47,7 +47,7 @@ export function McpPage() {
       </p>
 
       {/* endpoint */}
-      <section className="mt-5 rounded-lg border border-line bg-surface">
+      <section className="mt-5 rounded-lg border border-line bg-surface" data-tour="mcp">
         <div className="border-b border-line px-4 py-2.5">
           <h2 className="font-mono text-[11px] uppercase tracking-widest text-faint">endpoint</h2>
         </div>

@@ -3,6 +3,7 @@ import { TopBar } from "@/components/shell/TopBar";
 import { CommandPalette } from "@/components/shell/CommandPalette";
 import { UsageBanner } from "@/components/shell/UsageBanner";
 import { TourGuide } from "@/components/shell/TourGuide";
+import { FloatingAsk } from "@/components/ask/FloatingAsk";
 
 export default function AppLayout({ children }: { children: React.ReactNode }) {
   return (
@@ -15,6 +16,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
       </div>
       <CommandPalette />
       <TourGuide />
+      <FloatingAsk />
     </div>
   );
 }

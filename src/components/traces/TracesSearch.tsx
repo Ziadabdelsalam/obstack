@@ -79,7 +79,7 @@ export function TracesSearch() {
       </div>
 
       {/* filter bar */}
-      <div className="mb-3 flex flex-wrap items-center gap-2">
+      <div className="mb-3 flex flex-wrap items-center gap-2" data-tour="traces">
         <div className="relative min-w-[260px] flex-1">
           <Search className="absolute top-1/2 left-2.5 h-3.5 w-3.5 -translate-y-1/2 text-faint" />
           <input

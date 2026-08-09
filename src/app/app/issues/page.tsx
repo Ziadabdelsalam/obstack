@@ -40,7 +40,7 @@ export default function IssuesPage() {
         </span>
       </div>
 
-      <div className="space-y-2">
+      <div className="space-y-2" data-tour="issues">
         {[...open, ...resolved].map((issue) => {
           const st = statusStyle[issue.status];
           const href = issue.exampleTraceId ? `/app/traces/${issue.exampleTraceId}` : issue.exampleLink!;

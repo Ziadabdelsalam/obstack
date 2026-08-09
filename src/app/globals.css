@@ -100,6 +100,26 @@ body {
   }
 }
 
+/* equalizer bars — the obstack glyph "thinking/alive" animation */
+@keyframes eq-bounce {
+  0%,
+  100% {
+    transform: scaleY(0.45);
+  }
+  50% {
+    transform: scaleY(1);
+  }
+}
+.eq-bar {
+  animation: eq-bounce 1.15s ease-in-out infinite;
+  transform-origin: center;
+}
+@media (prefers-reduced-motion: reduce) {
+  .eq-bar {
+    animation: none;
+  }
+}
+
 /* service-map edge flow animation */
 @keyframes dash-flow {
   to {

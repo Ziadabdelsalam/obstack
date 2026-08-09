@@ -261,7 +261,7 @@ export function WatchWidgets() {
   if (!widgets) return null;
 
   return (
-    <>
+    <div data-tour="watches">
       <div className="mt-4 mb-2 flex items-center justify-between">
         <h2 className="font-mono text-[11px] uppercase tracking-widest text-faint">
           your watches · {widgets.length}
@@ -303,6 +303,6 @@ export function WatchWidgets() {
           onClose={() => setAdding(false)}
         />
       )}
-    </>
+    </div>
   );
 }

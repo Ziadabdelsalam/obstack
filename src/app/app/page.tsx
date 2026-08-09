@@ -68,7 +68,7 @@ export default function OverviewPage() {
         ))}
       </div>
 
-      <div className="grid gap-3 lg:grid-cols-2">
+      <div className="grid gap-3 lg:grid-cols-2" data-tour="overview-charts">
         <Card title="requests & errors" href="/app/traces?status=error" hrefLabel="view errors">
           <RequestsChart data={data} />
         </Card>

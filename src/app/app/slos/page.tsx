@@ -21,7 +21,7 @@ export default function SlosPage() {
         </button>
       </div>
 
-      <div className="grid gap-3 lg:grid-cols-2">
+      <div className="grid gap-3 lg:grid-cols-2" data-tour="slos">
         {slos.map((s) => {
           const st = statusStyle[s.status];
           return (

@@ -24,7 +24,7 @@ export default function IncidentsPage() {
 
       <section className="rounded-lg border border-line bg-surface">
         {/* header */}
-        <div className="border-b border-line px-4 py-3.5">
+        <div className="border-b border-line px-4 py-3.5" data-tour="incident">
           <div className="flex flex-wrap items-center gap-2.5">
             <span className="font-mono text-[12px] text-faint">{inc.id}</span>
             <span

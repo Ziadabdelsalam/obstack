@@ -44,7 +44,7 @@ export default function CostsPage() {
 
       <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_380px]">
         {/* cost per customer */}
-        <section className="min-w-0 rounded-lg border border-line bg-surface">
+        <section className="min-w-0 rounded-lg border border-line bg-surface" data-tour="costs">
           <div className="border-b border-line px-3.5 py-2.5">
             <h2 className="font-mono text-[11px] uppercase tracking-widest text-faint">
               cost per customer · 30d

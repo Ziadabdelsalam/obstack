@@ -91,7 +91,7 @@ export function ServiceMap() {
         </div>
       </div>
 
-      <div className="overflow-x-auto rounded-lg border border-line bg-surface">
+      <div className="overflow-x-auto rounded-lg border border-line bg-surface" data-tour="map">
         <svg viewBox="0 0 1000 545" className="min-w-[820px]" role="img" aria-label="Service topology map">
           {/* edges */}
           {edges.map((e) => {

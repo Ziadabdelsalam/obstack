@@ -185,7 +185,7 @@ export function TraceExplorer({ trace }: { trace: Trace }) {
       ) : (
       <div className="mt-4 grid gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
         <div className="min-w-0 space-y-4">
-          <section className="rounded-lg border border-line bg-surface p-3">
+          <section className="rounded-lg border border-line bg-surface p-3" data-tour="trace-waterfall">
             <Waterfall trace={trace} selectedId={selectedId} onSelect={setSelectedId} />
           </section>
 

@@ -53,7 +53,7 @@ export function ConnectionsHub() {
       </div>
 
       {/* connected sources */}
-      <section className="mb-6 rounded-lg border border-line bg-surface">
+      <section className="mb-6 rounded-lg border border-line bg-surface" data-tour="connections">
         <div className="border-b border-line px-3.5 py-2">
           <h2 className="font-mono text-[11px] uppercase tracking-widest text-faint">
             connected · {connectedSources.length}

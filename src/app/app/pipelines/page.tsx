@@ -38,6 +38,7 @@ export default function PipelinesPage() {
             key={p.slug}
             className="mb-5 rounded-lg border bg-surface p-4"
             style={{ borderColor: "color-mix(in srgb, var(--color-api) 40%, var(--color-line))" }}
+            data-tour="pipelines"
           >
             <div className="flex flex-wrap items-center gap-2.5">
               <span className="pulse-dot h-2 w-2 rounded-full" style={{ background: "var(--color-api)" }} />

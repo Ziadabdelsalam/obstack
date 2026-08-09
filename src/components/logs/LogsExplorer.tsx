@@ -113,7 +113,7 @@ export function LogsExplorer() {
         </button>
       </div>
 
-      <div className="overflow-x-auto rounded-lg border border-line bg-surface">
+      <div className="overflow-x-auto rounded-lg border border-line bg-surface" data-tour="logs">
         <table className="w-full min-w-[860px] border-collapse">
           <tbody>
             {results.length === 0 && (
