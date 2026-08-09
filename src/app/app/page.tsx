@@ -2,6 +2,7 @@ import Link from "next/link";
 import { ArrowUpRight } from "lucide-react";
 import { statCards, timeseries, topFailing } from "@/mock/metrics";
 import { LatencyChart, RequestsChart, TokensChart } from "@/components/dash/Charts";
+import { WatchWidgets } from "@/components/dash/WatchWidgets";
 import { LayerChip } from "@/components/ui/LayerChip";
 import type { Layer } from "@/mock/types";
 
@@ -113,6 +114,8 @@ export default function OverviewPage() {
           </table>
         </Card>
       </div>
+
+      <WatchWidgets />
     </div>
   );
 }
