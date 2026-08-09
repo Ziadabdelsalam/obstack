@@ -112,7 +112,7 @@ export function AskChat({ compact = false }: { compact?: boolean }) {
 
         {messages.map((m, i) =>
           m.role === "user" ? (
-            <div key={i} className="flex justify-end">
+            <div key={i} className="flex items-start justify-end gap-2.5">
               <p
                 className={`${compact ? "max-w-[85%]" : "max-w-[60%]"} rounded-2xl rounded-br-md border px-3.5 py-2 ${textSize} text-ink`}
                 style={{
@@ -122,6 +122,17 @@ export function AskChat({ compact = false }: { compact?: boolean }) {
               >
                 {m.text}
               </p>
+              <span
+                className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full border font-mono text-[11px] font-semibold"
+                aria-label="You"
+                style={{
+                  color: "var(--color-api)",
+                  borderColor: "color-mix(in srgb, var(--color-api) 40%, var(--color-line))",
+                  background: "color-mix(in srgb, var(--color-api) 12%, var(--color-raised))",
+                }}
+              >
+                Z
+              </span>
             </div>
           ) : (
             <div key={i} className="flex items-start gap-2.5">
