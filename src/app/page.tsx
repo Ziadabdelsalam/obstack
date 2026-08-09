@@ -253,6 +253,61 @@ export default function Landing() {
             <Minus className="mr-1 inline h-3 w-3" style={{ color: "var(--color-warn)" }} />
             partial = possible with significant setup, or without cross-layer correlation
           </p>
+
+          {/* assembled vs joined */}
+          <div className="mt-12">
+            <h3 className="font-display text-[20px] font-semibold text-ink">
+              &ldquo;Can&apos;t I do this with Grafana?&rdquo; — assembled vs. joined.
+            </h3>
+            <div className="mt-6 grid gap-4 md:grid-cols-2">
+              <div className="rounded-lg border border-line bg-raised p-5">
+                <p className="font-mono text-[11px] uppercase tracking-widest text-faint">
+                  the assembled stack
+                </p>
+                <div className="mt-4 flex flex-wrap items-center gap-2">
+                  {["Loki (logs)", "Tempo (traces)", "Mimir (metrics)", "Grafana (glue)"].map((b) => (
+                    <span key={b} className="rounded-md border border-line bg-surface px-2.5 py-1.5 font-mono text-[11px] text-mid">
+                      {b}
+                    </span>
+                  ))}
+                </div>
+                <ul className="mt-4 space-y-1.5 font-mono text-[11px] leading-relaxed text-faint">
+                  <li>· four backends to deploy, scale and upgrade</li>
+                  <li>· correlation is configuration: derived fields, label matching, exemplars</li>
+                  <li>· joins break silently when labels drift</li>
+                  <li>· prompts, agents and tokens: not a concept</li>
+                </ul>
+              </div>
+              <div
+                className="rounded-lg border p-5"
+                style={{
+                  borderColor: "color-mix(in srgb, var(--color-api) 45%, var(--color-line))",
+                  background: "color-mix(in srgb, var(--color-api) 4%, var(--color-raised))",
+                }}
+              >
+                <p className="font-mono text-[11px] uppercase tracking-widest" style={{ color: "var(--color-api)" }}>
+                  the joined store
+                </p>
+                <div className="mt-4">
+                  <span className="rounded-md border border-line bg-surface px-2.5 py-1.5 font-mono text-[11px] text-ink">
+                    obstack — one store, one data model
+                  </span>
+                </div>
+                <ul className="mt-4 space-y-1.5 font-mono text-[11px] leading-relaxed text-mid">
+                  <li>· traces, logs, k8s events and cost share one trace_id by construction</li>
+                  <li>· correlation is the default, not a config file</li>
+                  <li>· prompts, agent steps, tokens and cost are first-class columns</li>
+                  <li>· one env var to try · one container to self-host</li>
+                </ul>
+              </div>
+            </div>
+            <p className="mt-5 max-w-3xl text-[13.5px] leading-relaxed text-mid">
+              A platform team can wire Grafana into something close — for the infra half. The AI
+              half (agent runs, prompts, cost per customer, quality regressions) has no home in the
+              LGTM data model, and the join between the halves is exactly what breaks. obstack is
+              for teams who want the joined view without building it.
+            </p>
+          </div>
         </div>
       </section>
 

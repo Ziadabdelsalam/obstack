@@ -12,6 +12,7 @@ import { Waterfall } from "./Waterfall";
 import { SpanDetail } from "./SpanDetail";
 import { LogsRail } from "./LogsRail";
 import { ExplainPanel } from "./ExplainPanel";
+import { AgentReplay } from "./AgentReplay";
 
 function Stat({ label, value }: { label: string; value: string }) {
   return (
@@ -35,6 +36,8 @@ export function TraceExplorer({ trace }: { trace: Trace }) {
   const [shareOpen, setShareOpen] = useState(false);
   const [shareEnabled, setShareEnabled] = useState(false);
   const [shareCopied, setShareCopied] = useState(false);
+  const [view, setView] = useState<"waterfall" | "replay">("waterfall");
+  const hasAgent = trace.spans.some((s) => s.layer === "agent");
 
   const compareWith = useMemo(
     () =>
@@ -88,6 +91,22 @@ export function TraceExplorer({ trace }: { trace: Trace }) {
           <StatusPill status={trace.status} />
         </div>
         <div className="flex items-center gap-2">
+          {hasAgent && (
+            <div className="flex rounded-md border border-line bg-raised p-0.5">
+              {(["waterfall", "replay"] as const).map((v) => (
+                <button
+                  key={v}
+                  type="button"
+                  onClick={() => setView(v)}
+                  className={`rounded-[5px] px-2.5 py-1 font-mono text-[11px] transition-colors ${
+                    view === v ? "bg-overlay text-ink" : "text-faint hover:text-mid"
+                  }`}
+                >
+                  {v}
+                </button>
+              ))}
+            </div>
+          )}
           <button
             type="button"
             onClick={copyLink}
@@ -159,6 +178,11 @@ export function TraceExplorer({ trace }: { trace: Trace }) {
       )}
 
       {/* body */}
+      {view === "replay" ? (
+        <div className="mx-auto mt-4 max-w-2xl">
+          <AgentReplay trace={trace} />
+        </div>
+      ) : (
       <div className="mt-4 grid gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
         <div className="min-w-0 space-y-4">
           <section className="rounded-lg border border-line bg-surface p-3">
@@ -197,6 +221,7 @@ export function TraceExplorer({ trace }: { trace: Trace }) {
           </section>
         </div>
       </div>
+      )}
 
       {/* share modal */}
       {shareOpen && (

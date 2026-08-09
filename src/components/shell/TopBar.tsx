@@ -12,6 +12,7 @@ import {
   LogOut,
 } from "lucide-react";
 import { NotificationsBell } from "./NotificationsPanel";
+import { StartTourButton } from "./TourGuide";
 
 function AccountMenu() {
   const [open, setOpen] = useState(false);
@@ -102,6 +103,7 @@ export function TopBar() {
           <span className="hidden sm:inline">Jump to…</span>
           <kbd className="rounded border border-line bg-surface px-1 font-mono text-[9.5px]">⌘K</kbd>
         </button>
+        <StartTourButton />
         <NotificationsBell />
         <span className="mx-1 h-4 w-px bg-line" />
         <AccountMenu />

@@ -6,6 +6,7 @@ import { ArrowRight, Check, Copy } from "lucide-react";
 import { allTraces } from "@/mock/traces";
 import { fmtMs, fmtTokens } from "@/lib/format";
 import { StatusPill } from "@/components/ui/StatusPill";
+import { StartTourButton } from "@/components/shell/TourGuide";
 
 const tabs = [
   {
@@ -76,6 +77,12 @@ export function Quickstart() {
         Median time from here to a correlated trace: under 15 minutes. Your API key is
         already in the snippets.
       </p>
+      <div className="mt-4">
+        <StartTourButton variant="big" />
+        <p className="mt-1.5 font-mono text-[10.5px] text-faint">
+          new here? the tour walks every screen with the demo incident as the thread — ~3 minutes
+        </p>
+      </div>
 
       {/* tabs */}
       <div className="mt-5 flex gap-1 border-b border-line">

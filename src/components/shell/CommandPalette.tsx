@@ -22,6 +22,8 @@ const pages: Item[] = [
   { label: "Alerts", hint: "page", href: "/app/alerts" },
   { label: "Incidents", hint: "page", href: "/app/incidents" },
   { label: "SLOs", hint: "page", href: "/app/slos" },
+  { label: "Costs", hint: "page", href: "/app/costs" },
+  { label: "Users", hint: "page", href: "/app/users" },
   { label: "Connections", hint: "page", href: "/app/connections" },
   { label: "MCP server", hint: "page", href: "/app/mcp" },
   { label: "Ask", hint: "ai assist", href: "/app/ask" },
