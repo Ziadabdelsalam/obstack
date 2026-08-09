@@ -4,10 +4,14 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
   LayoutDashboard,
+  Share2,
   ListTree,
   ScrollText,
   Workflow,
+  Bug,
   BellRing,
+  Siren,
+  Target,
   Plug,
   MessagesSquare,
   FlaskConical,
@@ -17,6 +21,7 @@ import {
   Command,
 } from "lucide-react";
 import { Wordmark } from "./Wordmark";
+import { NotificationsBell } from "./NotificationsPanel";
 
 const sections: {
   label: string | null;
@@ -26,10 +31,14 @@ const sections: {
     label: null,
     items: [
       { href: "/app", label: "Overview", icon: LayoutDashboard, exact: true },
+      { href: "/app/map", label: "Map", icon: Share2 },
       { href: "/app/traces", label: "Traces", icon: ListTree },
       { href: "/app/logs", label: "Logs", icon: ScrollText },
+      { href: "/app/issues", label: "Issues", icon: Bug },
       { href: "/app/pipelines", label: "Pipelines", icon: Workflow },
       { href: "/app/alerts", label: "Alerts", icon: BellRing },
+      { href: "/app/incidents", label: "Incidents", icon: Siren },
+      { href: "/app/slos", label: "SLOs", icon: Target },
       { href: "/app/connections", label: "Connections", icon: Plug },
     ],
   },
@@ -48,6 +57,7 @@ const sections: {
     ],
   },
 ];
+const NOTIFICATIONS_AFTER_SECTION = 2;
 
 export function SideNav() {
   const pathname = usePathname();
@@ -71,9 +81,9 @@ export function SideNav() {
       </button>
 
       {sections.map((sec, si) => (
-        <nav key={si} className="flex flex-col gap-px px-2 pb-2">
+        <nav key={si} className="flex flex-col gap-px px-2 pb-1.5">
           {sec.label && (
-            <p className="px-2.5 pt-2 pb-1 font-mono text-[9.5px] uppercase tracking-widest text-faint">
+            <p className="px-2.5 pt-1.5 pb-1 font-mono text-[9.5px] uppercase tracking-widest text-faint">
               {sec.label}
             </p>
           )}
@@ -83,7 +93,7 @@ export function SideNav() {
               <Link
                 key={href}
                 href={href}
-                className={`flex items-center gap-2.5 rounded-md px-2.5 py-[6px] text-[13px] transition-colors ${
+                className={`flex items-center gap-2.5 rounded-md px-2.5 py-[5px] text-[13px] transition-colors ${
                   active
                     ? "bg-overlay text-ink"
                     : "text-mid hover:bg-raised hover:text-ink"
@@ -97,6 +107,7 @@ export function SideNav() {
               </Link>
             );
           })}
+          {si === NOTIFICATIONS_AFTER_SECTION && <NotificationsBell />}
         </nav>
       ))}
 

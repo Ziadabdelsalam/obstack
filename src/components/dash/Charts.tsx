@@ -8,12 +8,35 @@ import {
   CartesianGrid,
   Line,
   LineChart,
+  ReferenceLine,
   ResponsiveContainer,
   Tooltip,
   XAxis,
   YAxis,
 } from "recharts";
 import type { MetricPoint } from "@/mock/metrics";
+
+/** deploys inside the 6h window, marked on time charts */
+const DEPLOY_MARKS = [{ t: "11:40", sha: "f4a2c91" }];
+
+function deployLines() {
+  return DEPLOY_MARKS.map((d) => (
+    <ReferenceLine
+      key={d.sha}
+      x={d.t}
+      stroke="var(--color-agent)"
+      strokeDasharray="3 4"
+      strokeOpacity={0.7}
+      label={{
+        value: `deploy ${d.sha}`,
+        position: "insideTopRight",
+        fill: "var(--color-agent)",
+        fontSize: 9,
+        fontFamily: "var(--font-jetbrains)",
+      }}
+    />
+  ));
+}
 
 /* chart series colors — validated against #12151a (dataviz six checks) */
 const C = {
@@ -87,6 +110,7 @@ export function RequestsChart({ data }: { data: MetricPoint[] }) {
           <XAxis dataKey="t" tick={tickStyle} tickLine={false} axisLine={false} interval={5} />
           <YAxis tick={tickStyle} tickLine={false} axisLine={false} width={54} />
           <Tooltip content={<DarkTooltip />} cursor={{ stroke: C.grid }} />
+          {deployLines()}
           <Area
             type="monotone"
             dataKey="requests"
@@ -137,6 +161,7 @@ export function LatencyChart({ data }: { data: MetricPoint[] }) {
             content={<DarkTooltip fmt={(v) => `${(v / 1000).toFixed(2)}s`} />}
             cursor={{ stroke: C.grid }}
           />
+          {deployLines()}
           <Line type="monotone" dataKey="p50" stroke={C.blue} strokeWidth={2} dot={false} />
           <Line type="monotone" dataKey="p95" stroke={C.amber} strokeWidth={2} dot={false} />
         </LineChart>

@@ -4,8 +4,9 @@ import { useState } from "react";
 import { Check, Copy, Plus, X } from "lucide-react";
 import { apiKeys, ingest, members, modelPrices, usage } from "@/mock/workspace";
 import type { Member } from "@/mock/workspace";
+import { auditLog } from "@/mock/inbox";
 
-const tabs = ["General", "Members", "API keys", "Billing & usage", "Data & ingest"] as const;
+const tabs = ["General", "Members", "API keys", "Billing & usage", "Data & ingest", "Audit log"] as const;
 type Tab = (typeof tabs)[number];
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
@@ -435,6 +436,26 @@ function IngestTab() {
   );
 }
 
+/* ---------------- Audit log ---------------- */
+
+function AuditTab() {
+  return (
+    <Section title={`audit log · last ${auditLog.length} events`}>
+      {auditLog.map((e, i) => (
+        <div key={i} className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5 border-b border-line/60 py-2.5 last:border-0">
+          <span className="w-[150px] shrink-0 truncate font-mono text-[11px] text-mid">{e.who}</span>
+          <span className="min-w-0 flex-1 text-[12.5px] text-ink">{e.action}</span>
+          <span className="font-mono text-[10.5px] text-faint">{e.when}</span>
+          <span className="w-[100px] text-right font-mono text-[10px] text-faint">{e.ip}</span>
+        </div>
+      ))}
+      <p className="mt-3 font-mono text-[10.5px] text-faint">
+        90-day audit retention · exportable as JSON on Enterprise
+      </p>
+    </Section>
+  );
+}
+
 /* ---------------- Suite ---------------- */
 
 export function SettingsSuite() {
@@ -462,6 +483,7 @@ export function SettingsSuite() {
       {tab === "API keys" && <KeysTab />}
       {tab === "Billing & usage" && <BillingTab />}
       {tab === "Data & ingest" && <IngestTab />}
+      {tab === "Audit log" && <AuditTab />}
     </div>
   );
 }

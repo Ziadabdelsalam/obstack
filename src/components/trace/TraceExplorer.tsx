@@ -2,10 +2,11 @@
 
 import { useMemo, useState } from "react";
 import Link from "next/link";
-import { ArrowLeft, ArrowRight, Link2, Sparkles, Check } from "lucide-react";
+import { ArrowLeft, ArrowRight, Link2, Sparkles, Check, GitCompareArrows, Share2, X, Copy } from "lucide-react";
 import { fmtCost, fmtMs, fmtTokens, timeAgo } from "@/lib/format";
 import { layerColor } from "@/lib/layers";
 import { StatusPill } from "@/components/ui/StatusPill";
+import { allTraces } from "@/mock/traces";
 import type { Trace } from "@/mock/types";
 import { Waterfall } from "./Waterfall";
 import { SpanDetail } from "./SpanDetail";
@@ -31,6 +32,18 @@ export function TraceExplorer({ trace }: { trace: Trace }) {
   );
   const [explainOpen, setExplainOpen] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [shareOpen, setShareOpen] = useState(false);
+  const [shareEnabled, setShareEnabled] = useState(false);
+  const [shareCopied, setShareCopied] = useState(false);
+
+  const compareWith = useMemo(
+    () =>
+      allTraces.find(
+        (t) => t.rootName === trace.rootName && t.status === "ok" && t.id !== trace.id,
+      ),
+    [trace],
+  );
+  const shareUrl = `https://obstack.dev/share/tr_${trace.id.slice(0, 10)}`;
 
   const selected = trace.spans.find((s) => s.id === selectedId) ?? trace.spans[0];
   const hasFailure = trace.status === "error" || trace.spans.some((s) => s.status === "error");
@@ -83,6 +96,23 @@ export function TraceExplorer({ trace }: { trace: Trace }) {
             {copied ? <Check className="h-3.5 w-3.5" style={{ color: "var(--color-ok)" }} /> : <Link2 className="h-3.5 w-3.5" />}
             {copied ? "copied" : "copy link"}
           </button>
+          <button
+            type="button"
+            onClick={() => setShareOpen(true)}
+            className="flex items-center gap-1.5 rounded-md border border-line bg-raised px-2.5 py-1.5 text-[12px] text-mid hover:border-line-strong hover:text-ink"
+          >
+            <Share2 className="h-3.5 w-3.5" />
+            share
+          </button>
+          {compareWith && (
+            <Link
+              href={`/app/traces/diff?a=${trace.id}&b=${compareWith.id}`}
+              className="flex items-center gap-1.5 rounded-md border border-line bg-raised px-2.5 py-1.5 text-[12px] text-mid hover:border-line-strong hover:text-ink"
+            >
+              <GitCompareArrows className="h-3.5 w-3.5" />
+              diff vs healthy run
+            </Link>
+          )}
           {hasFailure && trace.explanation && (
             <button
               type="button"
@@ -167,6 +197,70 @@ export function TraceExplorer({ trace }: { trace: Trace }) {
           </section>
         </div>
       </div>
+
+      {/* share modal */}
+      {shareOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+          onClick={() => setShareOpen(false)}
+          role="dialog"
+          aria-modal="true"
+          aria-label="Share trace"
+        >
+          <div
+            className="w-full max-w-md rounded-xl border border-line-strong bg-surface p-5 shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between">
+              <h3 className="text-[15px] font-semibold text-ink">Share this trace</h3>
+              <button type="button" onClick={() => setShareOpen(false)} aria-label="Close" className="rounded p-1 text-faint hover:bg-overlay hover:text-ink">
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <div className="mt-4 flex items-center justify-between rounded-md border border-line bg-raised px-3 py-2.5">
+              <span className="text-[13px] text-mid">Public link</span>
+              <button
+                type="button"
+                onClick={() => setShareEnabled((v) => !v)}
+                aria-pressed={shareEnabled}
+                className="h-4 w-7 rounded-full p-px transition-colors"
+                style={{ background: shareEnabled ? "color-mix(in srgb, var(--color-ok) 50%, var(--color-line))" : "var(--color-line)" }}
+              >
+                <span className="block h-3.5 w-3.5 rounded-full bg-ink transition-transform" style={{ transform: shareEnabled ? "translateX(12px)" : "none" }} />
+              </button>
+            </div>
+            {shareEnabled ? (
+              <>
+                <div className="mt-3 flex items-center gap-2">
+                  <code className="flex-1 overflow-x-auto rounded-md border border-line bg-bg px-2.5 py-2 font-mono text-[11.5px] text-ink">
+                    {shareUrl}
+                  </code>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      navigator.clipboard.writeText(shareUrl).catch(() => {});
+                      setShareCopied(true);
+                      setTimeout(() => setShareCopied(false), 1500);
+                    }}
+                    aria-label="Copy share link"
+                    className="rounded-md border border-line bg-raised p-2 text-mid hover:text-ink"
+                  >
+                    {shareCopied ? <Check className="h-3.5 w-3.5" style={{ color: "var(--color-ok)" }} /> : <Copy className="h-3.5 w-3.5" />}
+                  </button>
+                </div>
+                <p className="mt-2 font-mono text-[10.5px] leading-relaxed text-faint">
+                  read-only · prompts and completions redacted by default · expires in 7 days
+                </p>
+              </>
+            ) : (
+              <p className="mt-3 text-[12.5px] leading-relaxed text-mid">
+                Anyone with the link can view this trace read-only — no workspace access, prompts
+                redacted unless you opt in.
+              </p>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

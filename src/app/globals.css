@@ -100,6 +100,22 @@ body {
   }
 }
 
+/* service-map edge flow animation */
+@keyframes dash-flow {
+  to {
+    stroke-dashoffset: -20;
+  }
+}
+.edge-flow {
+  stroke-dasharray: 4 7;
+  animation: dash-flow 1.1s linear infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .edge-flow {
+    animation: none;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .span-in,
   .fade-up,

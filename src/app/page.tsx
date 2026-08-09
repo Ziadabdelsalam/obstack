@@ -1,9 +1,28 @@
 import Link from "next/link";
-import { ArrowRight, Check } from "lucide-react";
+import { ArrowRight, Check, Minus, X } from "lucide-react";
 import { Wordmark } from "@/components/shell/Wordmark";
 import { HeroTrace } from "@/components/marketing/HeroTrace";
+import { ScreensShowcase } from "@/components/marketing/ScreensShowcase";
 import { layerColor } from "@/lib/layers";
 import { connectors } from "@/mock/connectors";
+
+const comparisonRows: { capability: string; obstack: "yes" | "partial" | "no"; apm: "yes" | "partial" | "no"; llm: "yes" | "partial" | "no" }[] = [
+  { capability: "One trace across API, agents, LLM calls and pods", obstack: "yes", apm: "no", llm: "no" },
+  { capability: "Prompts & completions inline in the trace", obstack: "yes", apm: "no", llm: "yes" },
+  { capability: "Container logs joined to the exact request", obstack: "yes", apm: "partial", llm: "no" },
+  { capability: "Agent steps, tool calls & retries as first-class spans", obstack: "yes", apm: "no", llm: "partial" },
+  { capability: "Async queue hops inside the same trace", obstack: "yes", apm: "partial", llm: "no" },
+  { capability: "Token cost attribution per request & feature", obstack: "yes", apm: "no", llm: "yes" },
+  { capability: "K8s events on the trace timeline", obstack: "yes", apm: "partial", llm: "no" },
+  { capability: "Root-cause explanation from correlated evidence", obstack: "yes", apm: "no", llm: "no" },
+  { capability: "One env var to try with existing OTel", obstack: "yes", apm: "partial", llm: "partial" },
+];
+
+function Mark({ v }: { v: "yes" | "partial" | "no" }) {
+  if (v === "yes") return <Check className="mx-auto h-4 w-4" style={{ color: "var(--color-ok)" }} aria-label="yes" />;
+  if (v === "partial") return <Minus className="mx-auto h-4 w-4" style={{ color: "var(--color-warn)" }} aria-label="partial" />;
+  return <X className="mx-auto h-4 w-4 text-faint" aria-label="no" />;
+}
 
 const layers = [
   { key: "api", label: "API" },
@@ -31,6 +50,7 @@ export default function Landing() {
             <a href="#product" className="hover:text-ink">Product</a>
             <a href="#connections" className="hover:text-ink">Connections</a>
             <a href="#pricing" className="hover:text-ink">Pricing</a>
+            <Link href="/changelog" className="hover:text-ink">Changelog</Link>
           </nav>
           <Link
             href="/app"
@@ -181,6 +201,61 @@ export default function Landing() {
         </div>
       </section>
 
+      {/* screens showcase */}
+      <section className="mx-auto max-w-6xl px-5 py-16">
+        <SectionLabel>see it</SectionLabel>
+        <h2 className="mb-8 max-w-2xl font-display text-[26px] leading-tight font-semibold text-ink">
+          A full observability platform — not just a trace viewer.
+        </h2>
+        <ScreensShowcase />
+      </section>
+
+      {/* comparison */}
+      <section className="border-y border-line bg-surface">
+        <div className="mx-auto max-w-6xl px-5 py-16">
+          <SectionLabel>why not just stitch tools together?</SectionLabel>
+          <h2 className="max-w-2xl font-display text-[26px] leading-tight font-semibold text-ink">
+            The join is the product. You can&apos;t bolt it on.
+          </h2>
+          <div className="mt-8 overflow-x-auto rounded-lg border border-line">
+            <table className="w-full min-w-[640px] border-collapse bg-raised">
+              <thead>
+                <tr className="border-b border-line text-left">
+                  <th className="px-4 py-3 text-[12px] font-medium text-faint">Capability</th>
+                  <th className="w-[120px] px-2 py-3 text-center">
+                    <span className="font-mono text-[12px] font-semibold text-ink">obstack</span>
+                  </th>
+                  <th className="w-[140px] px-2 py-3 text-center text-[11px] font-medium text-faint">
+                    Infra APM
+                    <span className="block font-mono text-[9px]">Datadog · Grafana</span>
+                  </th>
+                  <th className="w-[140px] px-2 py-3 text-center text-[11px] font-medium text-faint">
+                    LLM obs tool
+                    <span className="block font-mono text-[9px]">Langfuse · Helicone</span>
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {comparisonRows.map((r) => (
+                  <tr key={r.capability} className="border-b border-line/60 last:border-0">
+                    <td className="px-4 py-2.5 text-[13px] text-mid">{r.capability}</td>
+                    <td className="px-2 py-2.5" style={{ background: "color-mix(in srgb, var(--color-api) 4%, transparent)" }}>
+                      <Mark v={r.obstack} />
+                    </td>
+                    <td className="px-2 py-2.5"><Mark v={r.apm} /></td>
+                    <td className="px-2 py-2.5"><Mark v={r.llm} /></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <p className="mt-3 font-mono text-[10.5px] text-faint">
+            <Minus className="mr-1 inline h-3 w-3" style={{ color: "var(--color-warn)" }} />
+            partial = possible with significant setup, or without cross-layer correlation
+          </p>
+        </div>
+      </section>
+
       {/* how it works */}
       <section className="mx-auto max-w-6xl px-5 py-16">
         <SectionLabel>how it works</SectionLabel>
@@ -293,9 +368,14 @@ export default function Landing() {
           </div>
           <div className="mt-12 flex flex-wrap items-center justify-between gap-4 border-t border-line pt-6">
             <Wordmark />
-            <p className="font-mono text-[11px] text-faint">
-              © 2026 obstack · prototype — all data on this site is fictional
-            </p>
+            <div className="flex items-center gap-5">
+              <Link href="/changelog" className="text-[12px] text-mid hover:text-ink">
+                Changelog
+              </Link>
+              <p className="font-mono text-[11px] text-faint">
+                © 2026 obstack · prototype — all data on this site is fictional
+              </p>
+            </div>
           </div>
         </div>
       </footer>

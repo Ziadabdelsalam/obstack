@@ -3,6 +3,7 @@ import { ArrowUpRight } from "lucide-react";
 import { statCards, timeseries, topFailing } from "@/mock/metrics";
 import { LatencyChart, RequestsChart, TokensChart } from "@/components/dash/Charts";
 import { WatchWidgets } from "@/components/dash/WatchWidgets";
+import { OnboardingChecklist } from "@/components/dash/OnboardingChecklist";
 import { LayerChip } from "@/components/ui/LayerChip";
 import type { Layer } from "@/mock/types";
 
@@ -46,6 +47,8 @@ export default function OverviewPage() {
           ingesting · loopwork-prod · last 6h
         </span>
       </div>
+
+      <OnboardingChecklist />
 
       {/* stat row */}
       <div className="mb-4 grid grid-cols-2 gap-3 lg:grid-cols-4">
