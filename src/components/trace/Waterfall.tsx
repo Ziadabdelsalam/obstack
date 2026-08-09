@@ -76,6 +76,7 @@ export function Waterfall({
 }) {
   const rows = buildRows(trace);
   const podTracks = buildPodTracks(trace);
+  const byId = new Map(trace.spans.map((s) => [s.id, s]));
   const total = trace.durationMs;
   const ticks = [0, 0.25, 0.5, 0.75, 1];
 
@@ -120,6 +121,8 @@ export function Waterfall({
             const err = span.status === "error";
             const left = (span.startMs / total) * 100;
             const width = Math.max((span.durationMs / total) * 100, 0.6);
+            const parent = span.parentId ? byId.get(span.parentId) : undefined;
+            const crossesService = parent !== undefined && parent.service !== span.service;
             return (
               <button
                 key={span.id}
@@ -144,6 +147,15 @@ export function Waterfall({
                     {span.name}
                   </span>
                   <LayerChip layer={span.layer} />
+                  {crossesService && (
+                    <span
+                      className="shrink-0 truncate font-mono text-[9px] tracking-wide"
+                      style={{ color: layerColor[span.layer] }}
+                      title={`service boundary: ${parent.service} → ${span.service}`}
+                    >
+                      → {span.service}
+                    </span>
+                  )}
                 </div>
                 <div className="relative h-[18px] flex-1">
                   <span

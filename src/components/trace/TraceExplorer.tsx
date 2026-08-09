@@ -2,8 +2,9 @@
 
 import { useMemo, useState } from "react";
 import Link from "next/link";
-import { ArrowLeft, Link2, Sparkles, Check } from "lucide-react";
+import { ArrowLeft, ArrowRight, Link2, Sparkles, Check } from "lucide-react";
 import { fmtCost, fmtMs, fmtTokens, timeAgo } from "@/lib/format";
+import { layerColor } from "@/lib/layers";
 import { StatusPill } from "@/components/ui/StatusPill";
 import type { Trace } from "@/mock/types";
 import { Waterfall } from "./Waterfall";
@@ -34,6 +35,17 @@ export function TraceExplorer({ trace }: { trace: Trace }) {
   const selected = trace.spans.find((s) => s.id === selectedId) ?? trace.spans[0];
   const hasFailure = trace.status === "error" || trace.spans.some((s) => s.status === "error");
   const solidCount = trace.logs.filter((l) => l.traceId).length;
+
+  // service journey, in order of first activity — the pipeline this trace crossed
+  const journey = useMemo(() => {
+    const seen = new Map<string, { service: string; color: string }>();
+    for (const s of [...trace.spans].sort((a, b) => a.startMs - b.startMs)) {
+      if (!seen.has(s.service)) {
+        seen.set(s.service, { service: s.service, color: layerColor[s.layer] });
+      }
+    }
+    return [...seen.values()];
+  }, [trace]);
 
   const copyLink = () => {
     navigator.clipboard.writeText(window.location.href).catch(() => {});
@@ -97,6 +109,24 @@ export function TraceExplorer({ trace }: { trace: Trace }) {
         />
         <Stat label="started" value={timeAgo(trace.startedAt)} />
       </div>
+
+      {/* the pipeline this trace traveled, trigger to finish */}
+      {journey.length > 1 && (
+        <div className="mt-2.5 flex flex-wrap items-center gap-y-1">
+          <span className="mr-3 font-mono text-[10px] uppercase tracking-wider text-faint">
+            pipeline
+          </span>
+          {journey.map((j, i) => (
+            <span key={j.service} className="flex items-center">
+              {i > 0 && <ArrowRight className="mx-1.5 h-3 w-3 text-faint" />}
+              <span className="flex items-center gap-1.5 rounded-[4px] border border-line bg-surface px-1.5 py-0.5">
+                <span className="h-1.5 w-1.5 rounded-full" style={{ background: j.color }} />
+                <span className="font-mono text-[11px] text-mid">{j.service}</span>
+              </span>
+            </span>
+          ))}
+        </div>
+      )}
 
       {/* body */}
       <div className="mt-4 grid gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
