@@ -26,6 +26,7 @@ const lineColorByType: Record<WidgetType, string> = {
   model: C.pink,
   tool: C.red,
   queue: C.blue,
+  pipeline: C.blue,
 };
 
 const STORAGE_KEY = "obstack-watch-widgets";

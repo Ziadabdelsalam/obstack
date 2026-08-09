@@ -9,7 +9,8 @@ export type WidgetType =
   | "pod"
   | "model"
   | "tool"
-  | "queue";
+  | "queue"
+  | "pipeline";
 
 export interface WidgetConfig {
   id: string;
@@ -70,6 +71,17 @@ export const widgetMeta: Record<
     label: "Queue lag",
     description: "Consumer lag and throughput for one topic",
     options: ["ticket-events", "email-outbox", "audit-log"],
+  },
+  pipeline: {
+    label: "Pipeline health",
+    description: "Run status, duration trend and next run for one flow",
+    options: [
+      "sync-tickets",
+      "kb-reindex",
+      "ticket-digest",
+      "nightly-evals",
+      "zendesk-migration backfill",
+    ],
   },
 };
 
@@ -164,6 +176,18 @@ export function statsFor(c: WidgetConfig): WidgetStat[] {
         { label: "in", value: `${Math.round(between(rng, 40, 400))}/min` },
         { label: "out", value: `${Math.round(between(rng, 40, 400))}/min` },
       ];
+    case "pipeline": {
+      const running = c.a === "zendesk-migration backfill";
+      return [
+        {
+          label: "last run",
+          value: running ? "running · 62%" : rng() > 0.85 ? "degraded" : "success",
+          tone: running ? "ok" : rng() > 0.85 ? "warn" : "ok",
+        },
+        { label: "duration", value: running ? "36m+" : `${Math.round(between(rng, 8, 1300))}s` },
+        { label: "next", value: running ? "—" : rng() > 0.5 ? `in ${Math.round(between(rng, 1, 6))}h` : "continuous" },
+      ];
+    }
   }
 }
 

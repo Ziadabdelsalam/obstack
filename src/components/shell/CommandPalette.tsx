@@ -15,6 +15,7 @@ const pages: Item[] = [
   { label: "Overview", hint: "page", href: "/app" },
   { label: "Traces", hint: "page", href: "/app/traces" },
   { label: "Logs", hint: "page", href: "/app/logs" },
+  { label: "Pipelines", hint: "page", href: "/app/pipelines" },
   { label: "Alerts", hint: "page", href: "/app/alerts" },
   { label: "Connections", hint: "page", href: "/app/connections" },
   { label: "Ask", hint: "ai assist", href: "/app/ask" },
