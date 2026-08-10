@@ -6,6 +6,9 @@ export interface AlertRule {
   channel: string;
   enabled: boolean;
   lastTriggered: string;
+  runbook?: string;
+  /** one-click remediations, audit-logged when executed */
+  actions?: string[];
 }
 
 export const alertRules: AlertRule[] = [
@@ -15,6 +18,8 @@ export const alertRules: AlertRule[] = [
     channel: "#incidents (Slack)",
     enabled: true,
     lastTriggered: "34m ago",
+    runbook: "runbooks/error-rate.md",
+    actions: ["throttle batch importer", "shed load at queue"],
   },
   {
     name: "p95 latency",
@@ -22,6 +27,8 @@ export const alertRules: AlertRule[] = [
     channel: "#incidents (Slack)",
     enabled: true,
     lastTriggered: "36m ago",
+    runbook: "runbooks/latency.md",
+    actions: ["scale agent-worker +1"],
   },
   {
     name: "Pod crash loop",
@@ -29,6 +36,8 @@ export const alertRules: AlertRule[] = [
     channel: "#incidents (Slack)",
     enabled: true,
     lastTriggered: "17m ago",
+    runbook: "runbooks/crashloop.md",
+    actions: ["restart pod", "raise memory limit (PR)"],
   },
   {
     name: "Consumer lag",
@@ -36,6 +45,8 @@ export const alertRules: AlertRule[] = [
     channel: "#incidents (Slack)",
     enabled: true,
     lastTriggered: "never",
+    runbook: "runbooks/kafka-lag.md",
+    actions: ["scale consumers +1"],
   },
   {
     name: "Token spend spike",
@@ -43,6 +54,8 @@ export const alertRules: AlertRule[] = [
     channel: "#llm-costs (Slack)",
     enabled: true,
     lastTriggered: "35m ago",
+    runbook: "runbooks/token-spend.md",
+    actions: ["pause batch pipelines"],
   },
   {
     name: "Agent loop detection",

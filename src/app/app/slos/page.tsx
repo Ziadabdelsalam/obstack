@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { ArrowUpRight, Plus } from "lucide-react";
 import { slos } from "@/mock/slos";
+import { TerraformExport } from "@/components/iac/TerraformExport";
 
 const statusStyle = {
   healthy: { color: "var(--color-ok)", label: "HEALTHY" },
@@ -13,12 +14,21 @@ export default function SlosPage() {
     <div className="px-5 py-4">
       <div className="mb-4 flex items-center justify-between">
         <h1 className="font-display text-[19px] font-semibold text-ink">SLOs</h1>
-        <button
-          type="button"
-          className="flex items-center gap-1.5 rounded-md border border-line bg-surface px-2.5 py-1.5 text-[12.5px] text-mid hover:border-line-strong hover:text-ink"
-        >
-          <Plus className="h-3.5 w-3.5" /> New SLO
-        </button>
+        <div className="flex items-center gap-2">
+          <Link
+            href="/status"
+            className="flex items-center gap-1.5 rounded-md border border-line bg-surface px-2.5 py-1.5 font-mono text-[11px] text-mid hover:border-line-strong hover:text-ink"
+          >
+            public status page <ArrowUpRight className="h-3 w-3" />
+          </Link>
+          <TerraformExport kind="slos" />
+          <button
+            type="button"
+            className="flex items-center gap-1.5 rounded-md border border-line bg-surface px-2.5 py-1.5 text-[12.5px] text-mid hover:border-line-strong hover:text-ink"
+          >
+            <Plus className="h-3.5 w-3.5" /> New SLO
+          </button>
+        </div>
       </div>
 
       <div className="grid gap-3 lg:grid-cols-2" data-tour="slos">

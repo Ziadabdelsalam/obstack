@@ -1,6 +1,7 @@
 import Link from "next/link";
-import { ArrowUpRight, Plus } from "lucide-react";
+import { ArrowUpRight, BookOpen, Plus, Zap } from "lucide-react";
 import { alertEvents, alertRules } from "@/mock/intelligence";
+import { TerraformExport } from "@/components/iac/TerraformExport";
 
 const sevStyle = {
   critical: { color: "var(--color-err)", label: "CRITICAL" },
@@ -13,12 +14,15 @@ export default function AlertsPage() {
     <div className="px-5 py-4">
       <div className="mb-4 flex items-center justify-between">
         <h1 className="font-display text-[19px] font-semibold text-ink">Alerts</h1>
-        <button
-          type="button"
-          className="flex items-center gap-1.5 rounded-md border border-line bg-surface px-2.5 py-1.5 text-[12.5px] text-mid hover:border-line-strong hover:text-ink"
-        >
-          <Plus className="h-3.5 w-3.5" /> New rule
-        </button>
+        <div className="flex items-center gap-2">
+          <TerraformExport kind="alerts" />
+          <button
+            type="button"
+            className="flex items-center gap-1.5 rounded-md border border-line bg-surface px-2.5 py-1.5 text-[12.5px] text-mid hover:border-line-strong hover:text-ink"
+          >
+            <Plus className="h-3.5 w-3.5" /> New rule
+          </button>
+        </div>
       </div>
 
       <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_420px]">
@@ -84,6 +88,32 @@ export default function AlertsPage() {
                 <p className="mt-0.5 font-mono text-[10px] text-faint">
                   → {r.channel} · last triggered {r.lastTriggered}
                 </p>
+                {(r.runbook || r.actions) && (
+                  <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+                    {r.runbook && (
+                      <span className="flex items-center gap-1 rounded-[4px] border border-line bg-raised px-1.5 py-0.5 font-mono text-[9.5px] text-mid">
+                        <BookOpen className="h-2.5 w-2.5 text-faint" />
+                        {r.runbook}
+                      </span>
+                    )}
+                    {r.actions?.map((a) => (
+                      <button
+                        key={a}
+                        type="button"
+                        title="One-click remediation — audit-logged (demo)"
+                        className="flex items-center gap-1 rounded-[4px] border px-1.5 py-0.5 font-mono text-[9.5px] transition-colors hover:brightness-125"
+                        style={{
+                          color: "var(--color-tool)",
+                          borderColor: "color-mix(in srgb, var(--color-tool) 35%, var(--color-line))",
+                          background: "color-mix(in srgb, var(--color-tool) 8%, transparent)",
+                        }}
+                      >
+                        <Zap className="h-2.5 w-2.5" />
+                        {a}
+                      </button>
+                    ))}
+                  </div>
+                )}
               </div>
             ))}
           </div>

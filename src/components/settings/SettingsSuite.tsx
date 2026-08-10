@@ -5,8 +5,9 @@ import { Check, Copy, Plus, X } from "lucide-react";
 import { apiKeys, ingest, members, modelPrices, usage } from "@/mock/workspace";
 import type { Member } from "@/mock/workspace";
 import { auditLog } from "@/mock/inbox";
+import { complianceItems } from "@/mock/security";
 
-const tabs = ["General", "Members", "API keys", "Billing & usage", "Data & ingest", "Audit log"] as const;
+const tabs = ["General", "Members", "API keys", "Billing & usage", "Data & ingest", "Audit log", "Compliance"] as const;
 type Tab = (typeof tabs)[number];
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
@@ -456,6 +457,69 @@ function AuditTab() {
   );
 }
 
+/* ---------------- Compliance ---------------- */
+
+function ComplianceTab() {
+  const [dsrEmail, setDsrEmail] = useState("");
+  const [dsrQueued, setDsrQueued] = useState<string | null>(null);
+  return (
+    <>
+      <Section title="posture">
+        {complianceItems.map((c) => (
+          <div key={c.control} className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5 border-b border-line/60 py-2.5 last:border-0">
+            <span
+              className="w-14 shrink-0 rounded-[3px] px-1.5 py-px text-center font-mono text-[9px] tracking-wide"
+              style={
+                c.status === "ok"
+                  ? { color: "var(--color-ok)", background: "color-mix(in srgb, var(--color-ok) 12%, transparent)" }
+                  : { color: "var(--color-warn)", background: "color-mix(in srgb, var(--color-warn) 12%, transparent)" }
+              }
+            >
+              {c.status === "ok" ? "OK" : "PENDING"}
+            </span>
+            <span className="w-[160px] shrink-0 text-[13px] font-medium text-ink">{c.control}</span>
+            <span className="min-w-0 flex-1 text-[12px] leading-relaxed text-mid">{c.detail}</span>
+          </div>
+        ))}
+      </Section>
+
+      <Section title="data subject request (gdpr)">
+        <p className="text-[12.5px] leading-relaxed text-mid">
+          Purge every trace, log line and derived record attributed to an end user — completes
+          within 72h, verified and audit-logged.
+        </p>
+        <div className="mt-3 flex flex-wrap gap-2">
+          <input
+            value={dsrEmail}
+            onChange={(e) => setDsrEmail(e.target.value)}
+            placeholder="end-user id or email, e.g. ops@meridianlabs.io"
+            className="min-w-[240px] flex-1 rounded-md border border-line bg-raised px-3 py-1.5 font-mono text-[12px] text-ink placeholder:text-faint focus:border-line-strong focus:outline-none"
+          />
+          <button
+            type="button"
+            onClick={() => {
+              if (dsrEmail.trim()) {
+                setDsrQueued(dsrEmail.trim());
+                setDsrEmail("");
+              }
+            }}
+            className="rounded-md px-3.5 py-1.5 text-[12.5px] font-medium text-bg"
+            style={{ background: "var(--color-ink)" }}
+          >
+            Queue deletion
+          </button>
+        </div>
+        {dsrQueued && (
+          <p className="mt-2 flex items-center gap-1.5 font-mono text-[11px]" style={{ color: "var(--color-ok)" }}>
+            <Check className="h-3.5 w-3.5" /> deletion queued for {dsrQueued} — completion by{" "}
+            {"Aug 13"} · tracked in audit log
+          </p>
+        )}
+      </Section>
+    </>
+  );
+}
+
 /* ---------------- Suite ---------------- */
 
 export function SettingsSuite() {
@@ -484,6 +548,7 @@ export function SettingsSuite() {
       {tab === "Billing & usage" && <BillingTab />}
       {tab === "Data & ingest" && <IngestTab />}
       {tab === "Audit log" && <AuditTab />}
+      {tab === "Compliance" && <ComplianceTab />}
     </div>
   );
 }
