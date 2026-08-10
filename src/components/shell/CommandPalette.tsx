@@ -13,13 +13,17 @@ interface Item {
 
 const pages: Item[] = [
   { label: "Overview", hint: "page", href: "/app" },
+  { label: "Dashboards", hint: "page", href: "/app/dashboards" },
   { label: "Service map", hint: "page", href: "/app/map" },
+  { label: "Service catalog", hint: "page", href: "/app/services" },
   { label: "Traces", hint: "page", href: "/app/traces" },
+  { label: "Explore metrics", hint: "page", href: "/app/explore" },
   { label: "Trace diff", hint: "page", href: "/app/traces/diff" },
   { label: "Logs", hint: "page", href: "/app/logs" },
   { label: "Issues", hint: "page", href: "/app/issues" },
   { label: "Pipelines", hint: "page", href: "/app/pipelines" },
   { label: "Alerts", hint: "page", href: "/app/alerts" },
+  { label: "On-call", hint: "page", href: "/app/oncall" },
   { label: "Incidents", hint: "page", href: "/app/incidents" },
   { label: "Changes", hint: "page", href: "/app/changes" },
   { label: "Infrastructure", hint: "page", href: "/app/infra" },
