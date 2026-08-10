@@ -166,7 +166,9 @@ function StatBody({ series, unit }: { series: ExploreSeries[]; unit: string }) {
   const deltaPct = first === 0 ? (last === 0 ? 0 : 100) : ((last - first) / first) * 100;
   const isBadUnit = BAD_UNITS.has(unit);
   const up = deltaPct >= 0;
-  const deltaColor = up === isBadUnit ? "var(--color-err)" : "var(--color-ok)";
+  // Literal brief rule: err only when the metric went up AND the unit is latency/error/cost-ish;
+  // every other case (including a decreasing "good" metric) reads as ok.
+  const deltaColor = up && isBadUnit ? "var(--color-err)" : "var(--color-ok)";
 
   return (
     <div>
