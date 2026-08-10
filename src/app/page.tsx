@@ -97,11 +97,23 @@ export default function Landing() {
         </div>
 
         <div className="mt-12">
-          <HeroTrace />
-          <p className="mt-3 text-center font-mono text-[11px] text-faint">
-            a real failure, joined: pod OOM-kill → truncated completion → failed agent step → 502
-          </p>
+          <video
+            src="/hero-sting.mp4"
+            autoPlay
+            muted
+            loop
+            playsInline
+            className="mx-auto w-full max-w-[960px] rounded-xl border border-line"
+          />
         </div>
+      </section>
+
+      {/* the joined trace */}
+      <section className="mx-auto w-full max-w-[1400px] px-5 pb-16">
+        <HeroTrace />
+        <p className="mt-3 text-center font-mono text-[11px] text-faint">
+          a real failure, joined: pod OOM-kill → truncated completion → failed agent step → 502
+        </p>
       </section>
 
       {/* problem */}

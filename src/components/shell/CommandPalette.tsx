@@ -23,6 +23,7 @@ const pages: Item[] = [
   { label: "Incidents", hint: "page", href: "/app/incidents" },
   { label: "Changes", hint: "page", href: "/app/changes" },
   { label: "Infrastructure", hint: "page", href: "/app/infra" },
+  { label: "Docs", hint: "page", href: "/app/docs" },
   { label: "Security", hint: "page", href: "/app/security" },
   { label: "Status page", hint: "public", href: "/status" },
   { label: "SLOs", hint: "page", href: "/app/slos" },

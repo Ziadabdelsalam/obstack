@@ -42,3 +42,7 @@ next-env.d.ts
 
 # playwright artifacts
 .playwright-mcp/
+
+# pitch deck material (not app code)
+pitchdeck-assets/
+.DS_Store
