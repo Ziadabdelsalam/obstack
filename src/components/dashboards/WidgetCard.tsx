@@ -15,7 +15,7 @@ const BAD_UNITS = new Set(["%", "ms", "$/hr", "/hr"]);
 
 function fmtVal(v: number): string {
   if (!Number.isFinite(v)) return "—";
-  return v.toLocaleString(undefined, { maximumFractionDigits: Math.abs(v) >= 1000 ? 0 : 2 });
+  return v.toLocaleString("en-US", { maximumFractionDigits: Math.abs(v) >= 1000 ? 0 : 2 });
 }
 
 function MiniTooltip({

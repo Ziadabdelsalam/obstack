@@ -22,7 +22,7 @@ const GRID_COLOR = "rgba(48,56,69,0.5)";
 
 function fmtVal(v: number): string {
   if (!Number.isFinite(v)) return "—";
-  return v.toLocaleString(undefined, { maximumFractionDigits: Math.abs(v) >= 1000 ? 0 : 2 });
+  return v.toLocaleString("en-US", { maximumFractionDigits: Math.abs(v) >= 1000 ? 0 : 2 });
 }
 
 function MiniTooltip({

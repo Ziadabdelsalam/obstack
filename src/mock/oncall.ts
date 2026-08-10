@@ -15,7 +15,7 @@ export const rotations: Rotation[] = [
     week: [
       { day: "Mon", primary: "Nour" }, { day: "Tue", primary: "Nour" }, { day: "Wed", primary: "Ziad" },
       { day: "Thu", primary: "Ziad" }, { day: "Fri", primary: "Nour" }, { day: "Sat", primary: "Omar" },
-      { day: "Sun", primary: "Omar" },
+      { day: "Sun", primary: "Nour" },
     ],
   },
   {
@@ -26,7 +26,7 @@ export const rotations: Rotation[] = [
     week: [
       { day: "Mon", primary: "Omar" }, { day: "Tue", primary: "Omar" }, { day: "Wed", primary: "Omar" },
       { day: "Thu", primary: "Nour" }, { day: "Fri", primary: "Nour" }, { day: "Sat", primary: "Ziad" },
-      { day: "Sun", primary: "Ziad" },
+      { day: "Sun", primary: "Omar" },
     ],
   },
   {
@@ -37,7 +37,7 @@ export const rotations: Rotation[] = [
     week: [
       { day: "Mon", primary: "Ziad" }, { day: "Tue", primary: "Ziad" }, { day: "Wed", primary: "Ziad" },
       { day: "Thu", primary: "Omar" }, { day: "Fri", primary: "Omar" }, { day: "Sat", primary: "Nour" },
-      { day: "Sun", primary: "Nour" },
+      { day: "Sun", primary: "Ziad" },
     ],
   },
 ];
