@@ -1,27 +1,71 @@
 import Link from "next/link";
+import { connection } from "next/server";
 import { ArrowUpRight } from "lucide-react";
-import { statCards, timeseries, topFailing } from "@/mock/metrics";
+import { topFailing } from "@/mock/metrics";
+import { dataMode, getOverview, workspaceId } from "@/server/data";
 import { LatencyChart, RequestsChart, TokensChart } from "@/components/dash/Charts";
 import { WatchWidgets } from "@/components/dash/WatchWidgets";
 import { OnboardingChecklist } from "@/components/dash/OnboardingChecklist";
 import { LayerChip } from "@/components/ui/LayerChip";
-import type { Layer } from "@/mock/types";
+import { SampleMark } from "@/components/ui/SampleMark";
+import type { Layer } from "@/lib/types";
+
+/**
+ * Per-widget honesty marker (D21 extended by F6): in live mode this page mixes
+ * facade-backed charts with widgets that still render mock content, so each
+ * unwired widget says so. Delete the marker at the call site as M2/M3 wires
+ * that widget to real data.
+ */
+const SAMPLE_TITLE = "this widget still renders sample content — not from your ingested telemetry";
+
+/**
+ * Marks a widget that renders nothing until it has hydrated (and can vanish
+ * again when dismissed). The marker carries no `<div>` of its own and every
+ * such widget's root is one, so the wrapper hides itself whenever the widget is
+ * absent — a lone SAMPLE chip with no widget under it would be its own lie.
+ */
+function SampleWidget({
+  className = "",
+  children,
+}: {
+  className?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className={`[&:not(:has(div))]:hidden ${className}`}>
+      <p className="mb-1">
+        <SampleMark title={SAMPLE_TITLE} />
+      </p>
+      {children}
+    </div>
+  );
+}
 
 function Card({
   title,
   href,
   hrefLabel,
+  sample,
   children,
 }: {
   title: string;
   href?: string;
   hrefLabel?: string;
+  sample?: boolean;
   children: React.ReactNode;
 }) {
   return (
     <section className="rounded-lg border border-line bg-surface p-3.5">
       <div className="mb-2.5 flex items-center justify-between">
-        <h2 className="font-mono text-[11px] uppercase tracking-widest text-faint">{title}</h2>
+        <h2 className="font-mono text-[11px] uppercase tracking-widest text-faint">
+          {title}
+          {sample && (
+            <>
+              {" "}
+              <SampleMark title={SAMPLE_TITLE} />
+            </>
+          )}
+        </h2>
         {href && (
           <Link
             href={href}
@@ -36,23 +80,48 @@ function Card({
   );
 }
 
-export default function OverviewPage() {
-  const data = timeseries();
+/** Live mode with nothing ingested yet: a real zero state, never mock points (D13). */
+function NoData() {
+  return (
+    <div className="flex h-[170px] items-center justify-center font-mono text-[11px] text-faint">
+      no traces in this window
+    </div>
+  );
+}
+
+export default async function OverviewPage() {
+  const live = dataMode === "live";
+  // Live numbers must not be baked into a static prerender (D27a) — connection()
+  // holds rendering until a real request. Mock mode stays static as before.
+  if (live) await connection();
+  const { points, stats } = await getOverview();
   return (
     <div className="px-5 py-4">
       <div className="mb-4 flex items-center justify-between">
         <h1 className="font-display text-[19px] font-semibold text-ink">Overview</h1>
         <span className="flex items-center gap-2 font-mono text-[11px] text-faint">
           <span className="pulse-dot inline-block h-1.5 w-1.5 rounded-full" style={{ background: "var(--color-ok)" }} />
-          ingesting · loopwork-prod · last 6h
+          {live ? (
+            <>
+              ingesting <SampleMark title={SAMPLE_TITLE} /> · {workspaceId} · last 6h
+            </>
+          ) : (
+            <>ingesting · loopwork-prod · last 6h</>
+          )}
         </span>
       </div>
 
-      <OnboardingChecklist />
+      {live ? (
+        <SampleWidget>
+          <OnboardingChecklist />
+        </SampleWidget>
+      ) : (
+        <OnboardingChecklist />
+      )}
 
       {/* stat row */}
       <div className="mb-4 grid grid-cols-2 gap-3 lg:grid-cols-4">
-        {statCards.map((s) => (
+        {stats.map((s) => (
           <div key={s.label} className="rounded-lg border border-line bg-surface px-3.5 py-3">
             <p className="font-mono text-[10px] uppercase tracking-widest text-faint">{s.label}</p>
             <p className="mt-1 flex items-baseline gap-2">
@@ -70,15 +139,20 @@ export default function OverviewPage() {
 
       <div className="grid gap-3 lg:grid-cols-2" data-tour="overview-charts">
         <Card title="requests & errors" href="/app/traces?status=error" hrefLabel="view errors">
-          <RequestsChart data={data} />
+          {points.length ? <RequestsChart data={points} deployMarks={!live} /> : <NoData />}
         </Card>
         <Card title="latency" href="/app/traces?minMs=5000" hrefLabel="view slow traces">
-          <LatencyChart data={data} />
+          {points.length ? <LatencyChart data={points} deployMarks={!live} /> : <NoData />}
         </Card>
         <Card title="token spend" href="/app/traces">
-          <TokensChart data={data} />
+          {points.length ? <TokensChart data={points} /> : <NoData />}
         </Card>
-        <Card title="top failing operations" href="/app/traces?status=error" hrefLabel="view errors">
+        <Card
+          title="top failing operations"
+          href="/app/traces?status=error"
+          hrefLabel="view errors"
+          sample={live}
+        >
           <table className="w-full border-collapse">
             <thead>
               <tr className="border-b border-line text-left font-mono text-[10px] uppercase tracking-widest text-faint">
@@ -118,7 +192,13 @@ export default function OverviewPage() {
         </Card>
       </div>
 
-      <WatchWidgets />
+      {live ? (
+        <SampleWidget className="mt-4">
+          <WatchWidgets />
+        </SampleWidget>
+      ) : (
+        <WatchWidgets />
+      )}
     </div>
   );
 }

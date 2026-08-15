@@ -7,7 +7,7 @@ import { fmtCost, fmtMs, fmtTokens, timeAgo } from "@/lib/format";
 import { layerColor } from "@/lib/layers";
 import { StatusPill } from "@/components/ui/StatusPill";
 import { allTraces } from "@/mock/traces";
-import type { Trace } from "@/mock/types";
+import type { Trace } from "@/lib/types";
 import { Waterfall } from "./Waterfall";
 import { SpanDetail } from "./SpanDetail";
 import { LogsRail } from "./LogsRail";
@@ -23,7 +23,19 @@ function Stat({ label, value }: { label: string; value: string }) {
   );
 }
 
-export function TraceExplorer({ trace }: { trace: Trace }) {
+/**
+ * `compareEnabled` is false in live mode (F8): the healthy-run comparison picks
+ * its counterpart out of the mock corpus, so on an ingested trace it would offer
+ * a diff against a run that never happened. Defaults to true — mock mode and the
+ * diff surface are unchanged.
+ */
+export function TraceExplorer({
+  trace,
+  compareEnabled = true,
+}: {
+  trace: Trace;
+  compareEnabled?: boolean;
+}) {
   const firstError = useMemo(
     () => trace.spans.find((s) => s.status === "error"),
     [trace],
@@ -41,10 +53,12 @@ export function TraceExplorer({ trace }: { trace: Trace }) {
 
   const compareWith = useMemo(
     () =>
-      allTraces.find(
-        (t) => t.rootName === trace.rootName && t.status === "ok" && t.id !== trace.id,
-      ),
-    [trace],
+      compareEnabled
+        ? allTraces.find(
+            (t) => t.rootName === trace.rootName && t.status === "ok" && t.id !== trace.id,
+          )
+        : undefined,
+    [trace, compareEnabled],
   );
   const shareUrl = `https://obstack.dev/share/tr_${trace.id.slice(0, 10)}`;
 

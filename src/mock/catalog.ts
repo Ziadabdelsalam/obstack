@@ -1,4 +1,4 @@
-import type { Layer } from "./types";
+import type { Layer } from "@/lib/types";
 
 export interface ServiceEntry {
   id: string;

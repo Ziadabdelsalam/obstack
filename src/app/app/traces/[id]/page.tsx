@@ -1,5 +1,6 @@
 import { notFound } from "next/navigation";
-import { getTrace } from "@/mock/traces";
+import { connection } from "next/server";
+import { dataMode, getTrace } from "@/server/data";
 import { TraceExplorer } from "@/components/trace/TraceExplorer";
 
 export default async function TracePage({
@@ -8,7 +9,15 @@ export default async function TracePage({
   params: Promise<{ id: string }>;
 }) {
   const { id } = await params;
-  const trace = getTrace(id);
+  // Nothing here is a request-time API, so without this the route could be
+  // prerendered and serve a stale trace as if it were live (D27a). `connection()`
+  // is the Next 16 mechanism for exactly that case — see the `connection` API
+  // reference: "only necessary when dynamic rendering is required and common
+  // Request-time APIs are not used". Mock mode stays static-as-today.
+  if (dataMode === "live") await connection();
+  const trace = await getTrace(id);
   if (!trace) notFound();
-  return <TraceExplorer trace={trace} />;
+  // the healthy-run comparison is a mock-corpus lookup, so live traces get no
+  // compare link — a diff against a run that never happened (F8)
+  return <TraceExplorer trace={trace} compareEnabled={dataMode !== "live"} />;
 }

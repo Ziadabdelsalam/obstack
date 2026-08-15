@@ -1,6 +1,6 @@
 /** Grouped recurring errors (fingerprinted), Sentry-style. */
 
-import type { Layer } from "./types";
+import type { Layer } from "@/lib/types";
 
 export interface Issue {
   fingerprint: string;

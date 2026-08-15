@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { Sparkles, X } from "lucide-react";
-import type { Explanation } from "@/mock/types";
+import type { Explanation } from "@/lib/types";
 
 /**
  * Scripted "Explain this trace" — streams the prepared explanation with a

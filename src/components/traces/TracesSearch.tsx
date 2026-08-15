@@ -1,13 +1,12 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { useSearchParams } from "next/navigation";
+import { useRouter } from "next/navigation";
 import { Search, Bookmark, ChevronDown } from "lucide-react";
-import { allTraces } from "@/mock/traces";
 import { fmtCost, fmtMs, fmtTokens, timeAgo } from "@/lib/format";
 import { LayerDot } from "@/components/ui/LayerChip";
-import type { Layer, Trace } from "@/mock/types";
+import type { Layer, Trace } from "@/lib/types";
 
 const savedViews = [
   { name: "Errors only", q: "", status: "error", minMs: 0 },
@@ -22,44 +21,67 @@ const serviceLayer: Record<string, Layer> = {
   "sync-worker": "infra",
 };
 
-function traceMatches(t: Trace, q: string): boolean {
-  if (!q) return true;
-  const hay = [
-    t.rootName,
-    t.id,
-    ...t.models,
-    ...t.services,
-    ...t.spans.map((s) => s.name),
-    ...t.spans.map((s) => s.llm?.prompt ?? ""),
-    ...t.logs.map((l) => l.body),
-  ]
-    .join(" ")
-    .toLowerCase();
-  return q
-    .toLowerCase()
-    .split(/\s+/)
-    .every((term) => hay.includes(term));
+interface Filters {
+  q: string;
+  status: string;
+  minMs: number;
+  minCost: number;
 }
 
-export function TracesSearch() {
-  const params = useSearchParams();
-  const [q, setQ] = useState(params.get("q") ?? "");
-  const [status, setStatus] = useState<string>(params.get("status") ?? "all");
-  const [minMs, setMinMs] = useState<number>(Number(params.get("minMs") ?? 0));
-  const [minCost, setMinCost] = useState<number>(0);
+function toSearch({ q, status, minMs, minCost }: Filters): string {
+  const p = new URLSearchParams();
+  if (q) p.set("q", q);
+  if (status !== "all") p.set("status", status);
+  if (minMs > 0) p.set("minMs", String(minMs));
+  if (minCost > 0) p.set("minCost", String(minCost));
+  return p.toString();
+}
+
+/**
+ * The filter bar owns its inputs, but matching happens server-side through the
+ * facade: every change lands in the URL and the page re-reads the list. Nothing
+ * here filters `traces` — that would fork the matching rules per mode.
+ */
+export function TracesSearch({
+  traces,
+  total,
+  q: initialQ,
+  status: initialStatus,
+  minMs: initialMinMs,
+  minCost: initialMinCost,
+}: {
+  traces: Trace[];
+  total: number;
+} & Filters) {
+  const router = useRouter();
+  const [q, setQ] = useState(initialQ);
+  const [status, setStatus] = useState<string>(initialStatus);
+  const [minMs, setMinMs] = useState<number>(initialMinMs);
+  const [minCost, setMinCost] = useState<number>(initialMinCost);
   const [viewsOpen, setViewsOpen] = useState(false);
 
-  const results = useMemo(
-    () =>
-      allTraces.filter(
-        (t) =>
-          (status === "all" || t.status === status) &&
-          t.durationMs >= minMs &&
-          t.costUsd >= minCost &&
-          traceMatches(t, q),
-      ),
-    [q, status, minMs, minCost],
+  // What the server already rendered; the sync below is a no-op until it moves.
+  const pushed = useRef(
+    toSearch({
+      q: initialQ,
+      status: initialStatus,
+      minMs: initialMinMs,
+      minCost: initialMinCost,
+    }),
   );
+
+  useEffect(() => {
+    const search = toSearch({ q, status, minMs, minCost });
+    if (search === pushed.current) return;
+    // Debounced so a typed word is one list query, not one per keystroke.
+    const timer = setTimeout(() => {
+      pushed.current = search;
+      router.replace(search ? `/app/traces?${search}` : "/app/traces", {
+        scroll: false,
+      });
+    }, 250);
+    return () => clearTimeout(timer);
+  }, [q, status, minMs, minCost, router]);
 
   const applyView = (v: (typeof savedViews)[number]) => {
     setQ(v.q);
@@ -74,7 +96,7 @@ export function TracesSearch() {
       <div className="mb-4 flex items-center justify-between">
         <h1 className="font-display text-[19px] font-semibold text-ink">Traces</h1>
         <span className="font-mono text-[11px] text-faint">
-          last 6h · {results.length} of {allTraces.length} traces
+          last 6h · {traces.length} of {total} traces
         </span>
       </div>
 
@@ -152,14 +174,14 @@ export function TracesSearch() {
             </tr>
           </thead>
           <tbody>
-            {results.length === 0 && (
+            {traces.length === 0 && (
               <tr>
                 <td colSpan={7} className="px-3 py-10 text-center text-[13px] text-faint">
                   No traces match these filters. Clear a filter or widen the time range.
                 </td>
               </tr>
             )}
-            {results.map((t) => (
+            {traces.map((t) => (
               <tr key={t.id} className="group border-b border-line/50 last:border-0 hover:bg-raised">
                 <td className="py-0 pl-3">
                   <Link href={`/app/traces/${t.id}`} className="flex items-center gap-2.5 py-2">

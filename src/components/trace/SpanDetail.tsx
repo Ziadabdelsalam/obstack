@@ -3,7 +3,7 @@
 import { fmtCost, fmtMs, fmtTokens } from "@/lib/format";
 import { LayerChip } from "@/components/ui/LayerChip";
 import { StatusPill } from "@/components/ui/StatusPill";
-import type { Span } from "@/mock/types";
+import type { Span } from "@/lib/types";
 
 function KV({ k, v }: { k: string; v: string | number }) {
   return (

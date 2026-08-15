@@ -1,0 +1,202 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import {
+  toLogRecord,
+  toSpan,
+  toTrace,
+  toTraceSummary,
+  type LogRow,
+  type SpanRow,
+  type TraceSummaryRow,
+} from "./adapters";
+
+// run with: node --conditions=react-server --test src/server/adapters.test.ts
+
+const summaryRow: TraceSummaryRow = {
+  trace_id: "3a55f0efeeb800e757fd61001b7cff2e",
+  min_start_ns: "1786760035674781468",
+  started_ms: "1786760035674",
+  duration_ns: "44352000",
+  span_count: "5",
+  error_count: "0",
+  input_tokens: "76",
+  output_tokens: "33",
+  cost_usd: 0.00003615,
+  // alphabetically ahead of the root's service, so the list-view assertions
+  // below fail if `service` ever falls back to `services[0]` again
+  services: ["a-vector-db", "demo-agent"],
+  models: ["gpt-4o-mini"],
+  root_name: "POST /chat",
+  root_method: "POST",
+  root_service: "demo-agent",
+};
+
+const spanRow: SpanRow = {
+  span_id: "b1",
+  parent_span_id: "",
+  name: "POST /chat",
+  layer: "api",
+  service: "demo-agent",
+  start_offset_ns: "0",
+  duration_ns: "44352000",
+  status_code: "unset",
+  status_message: "",
+  k8s_pod: "",
+  k8s_node: "",
+  gen_ai_request_model: "",
+  gen_ai_response_model: "",
+  input_tokens: 0,
+  output_tokens: 0,
+  cost_usd: 0,
+  finish_reason: "",
+  prompt: "",
+  completion: "",
+  attributes: { "http.route": "/chat" },
+};
+
+const llmRow: SpanRow = {
+  ...spanRow,
+  span_id: "b4",
+  parent_span_id: "b2",
+  name: "chat gpt-4o-mini",
+  layer: "llm",
+  start_offset_ns: "12500000",
+  duration_ns: "8000000",
+  gen_ai_request_model: "gpt-4o-mini",
+  gen_ai_response_model: "gpt-4o-mini-2024-07-18",
+  input_tokens: 76,
+  output_tokens: 33,
+  cost_usd: 0.00003615,
+  finish_reason: "stop",
+  prompt: "user: hello",
+  completion: "hi there",
+  attributes: { "gen_ai.system": "openai" },
+};
+
+const logRow: LogRow = {
+  at_offset_ns: "-2000000",
+  trace_id: "3a55f0efeeb800e757fd61001b7cff2e",
+  severity_number: 9,
+  severity_text: "INFO",
+  body: "chat turn started",
+  k8s_namespace: "",
+  k8s_pod: "",
+  k8s_container: "",
+};
+
+test("span row maps offsets, durations and identity", () => {
+  const span = toSpan(spanRow, summaryRow.trace_id);
+  assert.equal(span.id, "b1");
+  assert.equal(span.traceId, summaryRow.trace_id);
+  assert.equal(span.parentId, null);
+  assert.equal(span.startMs, 0);
+  assert.equal(span.durationMs, 44.352);
+  assert.equal(span.status, "ok");
+  assert.equal(span.statusMessage, undefined);
+  assert.equal(span.pod, undefined);
+  assert.equal(span.node, undefined);
+  assert.equal(span.llm, undefined);
+  assert.deepEqual(span.attrs, { "http.route": "/chat" });
+});
+
+test("child span keeps its parent and error status", () => {
+  const span = toSpan(
+    { ...spanRow, parent_span_id: "b1", status_code: "error", status_message: "boom" },
+    summaryRow.trace_id,
+  );
+  assert.equal(span.parentId, "b1");
+  assert.equal(span.status, "error");
+  assert.equal(span.statusMessage, "boom");
+});
+
+test("llm span carries the GenAI columns, response model wins", () => {
+  const span = toSpan(llmRow, summaryRow.trace_id);
+  assert.equal(span.startMs, 12.5);
+  assert.deepEqual(span.llm, {
+    model: "gpt-4o-mini-2024-07-18",
+    inputTokens: 76,
+    outputTokens: 33,
+    costUsd: 0.00003615,
+    prompt: "user: hello",
+    completion: "hi there",
+    finishReason: "stop",
+  });
+});
+
+test("finish reason folds onto the UI union", () => {
+  const reason = (finish_reason: string, status_code = "unset") =>
+    toSpan({ ...llmRow, finish_reason, status_code }, "t")!.llm!.finishReason;
+  assert.equal(reason("max_tokens"), "length");
+  assert.equal(reason("content_filter"), "truncated");
+  assert.equal(reason("end_turn"), "stop");
+  assert.equal(reason("something_new"), "stop");
+  assert.equal(reason("stop", "error"), "error");
+});
+
+test("unclassified layer falls back to other", () => {
+  assert.equal(toSpan({ ...spanRow, layer: "other" }, "t").layer, "other");
+  assert.equal(toSpan({ ...spanRow, layer: "wat" }, "t").layer, "other");
+});
+
+test("log row maps a negative offset and severity", () => {
+  const log = toLogRecord(logRow, 2);
+  assert.equal(log.id, `${summaryRow.trace_id}-2`);
+  assert.equal(log.traceId, summaryRow.trace_id);
+  assert.equal(log.atMs, -2);
+  assert.equal(log.severity, "info");
+  assert.equal(log.container, "app");
+  assert.equal(log.pod, "");
+});
+
+test("severity numbers map onto the UI union", () => {
+  const sev = (severity_number: number) => toLogRecord({ ...logRow, severity_number }, 0).severity;
+  assert.equal(sev(1), "debug");
+  assert.equal(sev(5), "debug");
+  assert.equal(sev(13), "warn");
+  assert.equal(sev(17), "error");
+  assert.equal(sev(21), "fatal");
+  assert.equal(toLogRecord({ ...logRow, severity_number: 0, severity_text: "WARNING" }, 0).severity, "warn");
+});
+
+test("log with no span context is a nearby log", () => {
+  assert.equal(toLogRecord({ ...logRow, trace_id: "" }, 0).traceId, undefined);
+});
+
+test("summary row maps a list-view trace with no spans or logs", () => {
+  const trace = toTraceSummary(summaryRow);
+  assert.equal(trace.id, summaryRow.trace_id);
+  assert.equal(trace.rootName, "POST /chat");
+  assert.equal(trace.method, "POST");
+  assert.equal(trace.startedAt, new Date(1786760035674).toISOString());
+  assert.equal(trace.durationMs, 44.352);
+  assert.equal(trace.status, "ok");
+  assert.equal(trace.spanCount, 5);
+  assert.equal(trace.totalTokens, 109);
+  assert.equal(trace.costUsd, 0.00003615);
+  assert.equal(trace.service, "demo-agent");
+  assert.deepEqual(trace.spans, []);
+  assert.deepEqual(trace.logs, []);
+});
+
+test("error count promotes the trace to error, empty root falls back", () => {
+  const trace = toTraceSummary({ ...summaryRow, error_count: "2", root_name: "", root_method: "" });
+  assert.equal(trace.status, "error");
+  assert.equal(trace.rootName, "(unnamed root)");
+  assert.equal(trace.method, "—");
+});
+
+test("trace detail stitches spans and logs, leaving explanation and k8sEvents undefined", () => {
+  const trace = toTrace(summaryRow, [spanRow, llmRow], [logRow]);
+  assert.equal(trace.spans.length, 2);
+  assert.equal(trace.logs.length, 1);
+  assert.equal(trace.service, "demo-agent");
+  assert.ok(trace.spans.every((s) => s.traceId === summaryRow.trace_id));
+  assert.equal(trace.explanation, undefined);
+  assert.equal(trace.k8sEvents, undefined);
+});
+
+test("root span name and service backfill a summary whose root has not merged yet", () => {
+  const trace = toTrace({ ...summaryRow, root_name: "", root_service: "" }, [spanRow, llmRow], []);
+  assert.equal(trace.rootName, "POST /chat");
+  assert.equal(trace.service, "demo-agent");
+});

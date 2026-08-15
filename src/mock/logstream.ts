@@ -1,7 +1,7 @@
 import { NOW } from "./generate";
 import { between, mulberry32, pick } from "./rand";
 import { allTraces } from "./traces";
-import type { Severity } from "./types";
+import type { Severity } from "@/lib/types";
 
 /** A flattened, absolute-time log entry for the Logs explorer. */
 export interface StreamLog {

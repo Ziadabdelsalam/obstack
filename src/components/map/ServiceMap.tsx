@@ -2,7 +2,7 @@
 
 import { useRouter } from "next/navigation";
 import { layerColor } from "@/lib/layers";
-import type { Layer } from "@/mock/types";
+import type { Layer } from "@/lib/types";
 
 interface Node {
   id: string;

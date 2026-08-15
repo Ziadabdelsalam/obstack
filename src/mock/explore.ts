@@ -1,6 +1,6 @@
 import { NOW } from "./generate";
 import { between, mulberry32 } from "./rand";
-import type { Layer } from "./types";
+import type { Layer } from "@/lib/types";
 
 export interface MetricDef {
   id: string;

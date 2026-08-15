@@ -5,7 +5,7 @@ import Link from "next/link";
 import { Search, ArrowUpRight } from "lucide-react";
 import { podOptions, streamLogs } from "@/mock/logstream";
 import { NOW } from "@/mock/generate";
-import type { Severity } from "@/mock/types";
+import type { Severity } from "@/lib/types";
 
 const sevColor: Record<Severity, string> = {
   debug: "var(--color-faint)",
