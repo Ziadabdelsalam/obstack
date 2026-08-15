@@ -39,7 +39,9 @@ services:
         condition: service_healthy
     environment:
       # Ingest owns the obstack database and its DDL, applied at boot from the
-      # migrations embedded in the binary.
+      # migrations embedded in the binary. One container is one migration runner,
+      # which is the whole guarantee — do not scale this service. See the
+      # README's "Exactly one migration runner per upgrade".
       CLICKHOUSE_DSN: clickhouse://obstack_ingest:${OBSTACK_CLICKHOUSE_INGEST_PASSWORD:-obstack_ingest_dev}@clickhouse:9000/obstack
       # Phase-1 keys (D4): `key:workspace_id`, comma-separated. Clients send
       # `Authorization: Bearer <key>`.

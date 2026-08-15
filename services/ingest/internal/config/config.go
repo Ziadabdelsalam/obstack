@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -31,18 +32,32 @@ type Config struct {
 
 	// AdminAddr serves /healthz and /metrics.
 	AdminAddr string
+
+	// MigrateOnBoot decides whether this process applies the schema or only
+	// verifies it. True — the default — is compose and every single-node
+	// self-hoster, where the serving container is the only migration runner
+	// there is. Kubernetes sets it false on the Deployment and applies the
+	// schema from a pre-upgrade Job running `ingest migrate`, so N replicas
+	// never race on DDL. False is not "skip": the process still refuses to
+	// serve a schema that is behind its own migrations.
+	MigrateOnBoot bool
 }
 
 // Load reads and validates the environment. It fails rather than defaulting on
 // anything that would let the service boot into a useless state: a missing DSN
 // means no writes, and a missing key set means every request is a 401.
 func Load() (Config, error) {
-	dsn := os.Getenv("CLICKHOUSE_DSN")
-	if dsn == "" {
-		return Config{}, fmt.Errorf("CLICKHOUSE_DSN is required")
+	dsn, err := LoadDSN()
+	if err != nil {
+		return Config{}, err
 	}
 
 	keys, err := parseAPIKeys(os.Getenv("OBSTACK_API_KEYS"))
+	if err != nil {
+		return Config{}, err
+	}
+
+	migrateOnBoot, err := envBool("OBSTACK_MIGRATE_ON_BOOT", true)
 	if err != nil {
 		return Config{}, err
 	}
@@ -53,7 +68,21 @@ func Load() (Config, error) {
 		OTLPGRPCAddr:  envOr("OBSTACK_OTLP_GRPC_ADDR", ":4317"),
 		OTLPHTTPAddr:  envOr("OBSTACK_OTLP_HTTP_ADDR", ":4318"),
 		AdminAddr:     envOr("OBSTACK_ADMIN_ADDR", DefaultAdminAddr),
+		MigrateOnBoot: migrateOnBoot,
 	}, nil
+}
+
+// LoadDSN reads the one variable a migrations-only process needs. The `migrate`
+// subcommand goes through here rather than Load because Load demands
+// OBSTACK_API_KEYS, and a Job that only runs DDL has no business being handed
+// the ingest bearer keys — mounting a secret to satisfy a validator that a
+// one-shot never consults spreads it for nothing.
+func LoadDSN() (string, error) {
+	dsn := os.Getenv("CLICKHOUSE_DSN")
+	if dsn == "" {
+		return "", fmt.Errorf("CLICKHOUSE_DSN is required")
+	}
+	return dsn, nil
 }
 
 // WorkspaceIDs returns the distinct workspaces this process accepts data for,
@@ -96,4 +125,24 @@ func envOr(name, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// envBool returns an error where envOr silently falls back, because a boolean
+// that coerced `ture` to false would quietly change which process owns the
+// schema and the operator would learn about it from a broken query, not a log
+// line. Empty still means unset, as everywhere else here.
+func envBool(name string, fallback bool) (bool, error) {
+	// Trimmed before parsing, but no more forgiving than that: a YAML block
+	// scalar or a hand-edited .env trivially leaves a trailing space, and
+	// refusing to boot over one is a false positive. `ture` still fails — the
+	// strictness that matters is about intent, not formatting.
+	v := strings.TrimSpace(os.Getenv(name))
+	if v == "" {
+		return fallback, nil
+	}
+	b, err := strconv.ParseBool(v)
+	if err != nil {
+		return false, fmt.Errorf("%s must be true or false, got %q", name, v)
+	}
+	return b, nil
 }
