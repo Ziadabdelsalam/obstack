@@ -46,3 +46,4 @@ next-env.d.ts
 # pitch deck material (not app code)
 pitchdeck-assets/
 .DS_Store
+.ziarmy/

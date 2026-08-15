@@ -1,0 +1,9 @@
+# Direct dependencies only, pinned exactly. The 1.44.0 / 0.65b0 pair is one
+# OpenTelemetry Python release: the SDK and the instrumentation packages are
+# versioned separately but ship together.
+fastapi==0.141.1
+uvicorn==0.52.3
+httpx==0.28.1
+opentelemetry-sdk==1.44.0
+opentelemetry-exporter-otlp-proto-http==1.44.0
+opentelemetry-instrumentation-fastapi==0.65b0

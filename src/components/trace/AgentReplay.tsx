@@ -5,7 +5,7 @@ import { ChevronDown, ChevronLeft, ChevronRight, ChevronUp } from "lucide-react"
 import { fmtMs } from "@/lib/format";
 import { layerColor, layerLabel } from "@/lib/layers";
 import { StatusPill } from "@/components/ui/StatusPill";
-import type { Span, Trace } from "@/mock/types";
+import type { Span, Trace } from "@/lib/types";
 
 /**
  * Conversation-style step-through of an agent run — the trace as a readable

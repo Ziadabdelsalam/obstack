@@ -1,4 +1,4 @@
-import type { Explanation, LogRecord, Span, Trace } from "./types";
+import type { Explanation, LogRecord, Span, Trace } from "@/lib/types";
 
 /**
  * The three scripted failure stories. These are the demo's proof of the wedge:

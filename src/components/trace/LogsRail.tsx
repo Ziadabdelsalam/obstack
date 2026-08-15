@@ -1,6 +1,6 @@
 "use client";
 
-import type { LogRecord, Severity } from "@/mock/types";
+import type { LogRecord, Severity } from "@/lib/types";
 
 const sevColor: Record<Severity, string> = {
   debug: "var(--color-faint)",

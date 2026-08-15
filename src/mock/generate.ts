@@ -1,5 +1,5 @@
 import { between, hexId, mulberry32, pick } from "./rand";
-import type { K8sEvent, LogRecord, Span, Trace } from "./types";
+import type { K8sEvent, LogRecord, Span, Trace } from "@/lib/types";
 
 /** Fixed anchor so SSR and client render identically. */
 export const NOW = Date.parse("2026-08-09T13:40:00.000Z");

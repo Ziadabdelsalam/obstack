@@ -3,7 +3,7 @@
 import { layerColor } from "@/lib/layers";
 import { fmtMs } from "@/lib/format";
 import { LayerChip } from "@/components/ui/LayerChip";
-import type { K8sEvent, Span, Trace } from "@/mock/types";
+import type { K8sEvent, Span, Trace } from "@/lib/types";
 import { AlertCircle } from "lucide-react";
 
 const eventColor: Record<K8sEvent["severity"], string> = {

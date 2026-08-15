@@ -1,6 +1,6 @@
 import { generateTraces } from "./generate";
 import { storyTraces } from "./stories";
-import type { Trace } from "./types";
+import type { Trace } from "@/lib/types";
 
 const generated = generateTraces(60);
 

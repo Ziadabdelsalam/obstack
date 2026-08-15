@@ -12,8 +12,17 @@ export function fmtTokens(n: number): string {
 
 export function fmtCost(usd: number): string {
   if (usd === 0) return "—";
-  if (usd < 0.01) return `$${usd.toFixed(4)}`;
-  return `$${usd.toFixed(2)}`;
+  if (usd >= 0.01) return `$${usd.toFixed(2)}`;
+  if (usd >= 0.0001) return `$${usd.toFixed(4)}`;
+  // A real ingested trace can cost a few hundred-thousandths of a dollar, and
+  // four decimals would print that as $0.0000 — a charge shown as free. Below
+  // what 4dp can express, keep two significant digits instead of rounding a
+  // real cost away to nothing.
+  // capped at toFixed's own maximum, not at a display width — a cap of 10 would
+  // print anything under $0.0000000001 as "$0.", the very lie this branch exists
+  // to prevent.
+  const decimals = Math.min(100, 1 - Math.floor(Math.log10(usd)));
+  return `$${usd.toFixed(decimals).replace(/0+$/, "")}`;
 }
 
 export function timeAgo(iso: string): string {

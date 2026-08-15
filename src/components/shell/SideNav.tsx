@@ -32,6 +32,7 @@ import {
   Command,
 } from "lucide-react";
 import { Wordmark } from "./Wordmark";
+import { SampleMark } from "@/components/ui/SampleMark";
 
 const sections: {
   label: string | null;
@@ -79,7 +80,8 @@ const sections: {
   },
 ];
 
-export function SideNav() {
+/** `workspaceId` is the facade's live workspace, or null in mock mode where the whole org is demo content. */
+export function SideNav({ workspaceId }: { workspaceId: string | null }) {
   const pathname = usePathname();
   return (
     <aside className="flex h-screen w-[216px] shrink-0 flex-col overflow-y-auto border-r border-line bg-surface">
@@ -94,8 +96,17 @@ export function SideNav() {
         className="mx-3 mb-3 flex items-center justify-between rounded-md border border-line bg-raised px-2.5 py-1.5 text-left text-[12.5px] text-ink hover:border-line-strong"
       >
         <span className="flex flex-col leading-tight">
-          <span className="font-medium">Loopwork</span>
-          <span className="font-mono text-[10px] text-faint">loopwork-prod</span>
+          <span className="font-medium">
+            Loopwork
+            {workspaceId && (
+              <>
+                {" "}
+                {/* the org has no backing object until M3 auth lands */}
+                <SampleMark title="demo organisation — real organisations arrive with workspace auth" />
+              </>
+            )}
+          </span>
+          <span className="font-mono text-[10px] text-faint">{workspaceId ?? "loopwork-prod"}</span>
         </span>
         <ChevronsUpDown className="h-3.5 w-3.5 text-faint" />
       </button>
@@ -138,8 +149,11 @@ export function SideNav() {
           <p className="font-mono text-[10px] uppercase tracking-widest text-faint">
             demo workspace
           </p>
+          {/* in live mode the wired surfaces are real telemetry — only the rest is demo content */}
           <p className="mt-1 text-[12px] leading-snug text-mid">
-            Sample data from a fictional AI support-agent company.
+            {workspaceId
+              ? "Unwired surfaces show sample data."
+              : "Sample data from a fictional AI support-agent company."}
           </p>
         </div>
       </div>

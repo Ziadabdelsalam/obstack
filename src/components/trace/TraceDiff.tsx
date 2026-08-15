@@ -10,7 +10,7 @@ import { fmtMs } from "@/lib/format";
 import { layerColor } from "@/lib/layers";
 import { LayerChip } from "@/components/ui/LayerChip";
 import { StatusPill } from "@/components/ui/StatusPill";
-import type { Layer, Trace } from "@/mock/types";
+import type { Layer, Trace } from "@/lib/types";
 
 interface DiffRow {
   name: string;

@@ -16,7 +16,12 @@ import {
 } from "recharts";
 import type { MetricPoint } from "@/mock/metrics";
 
-/** deploys inside the 6h window, marked on time charts */
+/**
+ * Sample deploys inside the 6h window, marked on time charts. Mock-only: a
+ * ReferenceLine overlaid on real ingested data would be a fabricated event on
+ * top of true telemetry, so live mode renders no marks at all (D21/F6) — the
+ * caller passes `deployMarks` from the facade's data mode.
+ */
 const DEPLOY_MARKS = [{ t: "11:40", sha: "f4a2c91" }];
 
 function deployLines() {
@@ -93,7 +98,13 @@ function Legend({ items }: { items: { label: string; color: string }[] }) {
   );
 }
 
-export function RequestsChart({ data }: { data: MetricPoint[] }) {
+export function RequestsChart({
+  data,
+  deployMarks,
+}: {
+  data: MetricPoint[];
+  deployMarks: boolean;
+}) {
   return (
     <div>
       <div className="mb-2 flex items-center justify-between">
@@ -110,7 +121,7 @@ export function RequestsChart({ data }: { data: MetricPoint[] }) {
           <XAxis dataKey="t" tick={tickStyle} tickLine={false} axisLine={false} interval={5} />
           <YAxis tick={tickStyle} tickLine={false} axisLine={false} width={54} />
           <Tooltip content={<DarkTooltip />} cursor={{ stroke: C.grid }} />
-          {deployLines()}
+          {deployMarks ? deployLines() : null}
           <Area
             type="monotone"
             dataKey="requests"
@@ -135,7 +146,13 @@ export function RequestsChart({ data }: { data: MetricPoint[] }) {
   );
 }
 
-export function LatencyChart({ data }: { data: MetricPoint[] }) {
+export function LatencyChart({
+  data,
+  deployMarks,
+}: {
+  data: MetricPoint[];
+  deployMarks: boolean;
+}) {
   return (
     <div>
       <div className="mb-2 flex items-center justify-between">
@@ -161,7 +178,7 @@ export function LatencyChart({ data }: { data: MetricPoint[] }) {
             content={<DarkTooltip fmt={(v) => `${(v / 1000).toFixed(2)}s`} />}
             cursor={{ stroke: C.grid }}
           />
-          {deployLines()}
+          {deployMarks ? deployLines() : null}
           <Line type="monotone" dataKey="p50" stroke={C.blue} strokeWidth={2} dot={false} />
           <Line type="monotone" dataKey="p95" stroke={C.amber} strokeWidth={2} dot={false} />
         </LineChart>
