@@ -18,6 +18,9 @@ var ErrUnauthorized = errors.New("missing or unknown API key")
 
 const scheme = "bearer "
 
+
+
+
 // Authenticator maps bearer keys to workspace IDs. The zero value authorises
 // nothing.
 type Authenticator struct {
