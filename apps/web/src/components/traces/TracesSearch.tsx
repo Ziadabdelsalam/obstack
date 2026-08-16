@@ -56,11 +56,14 @@ const COST_STEPS = [0.01, 0.1, 1] as const;
 export function TracesSearch({
   traces,
   total,
+  nowMs,
   pageCount,
   filters,
 }: {
   traces: Trace[];
   total: number;
+  /** the request's reference clock, per mode (D50/D64) — never sampled here */
+  nowMs: number;
   pageCount: number;
   filters: TracesFilters;
 }) {
@@ -268,7 +271,7 @@ export function TracesSearch({
                   {t.models.length ? t.models[t.models.length - 1] : "—"}
                 </td>
                 <td className="py-2 pr-3 text-right font-mono text-[11px] text-faint">
-                  {timeAgo(t.startedAt)}
+                  {timeAgo(t.startedAt, nowMs)}
                 </td>
               </tr>
             ))}

@@ -1,4 +1,4 @@
-import { TRACE_PAGE_SIZE, searchTraces } from "@/server/data";
+import { TRACE_PAGE_SIZE, referenceNowMs, searchTraces } from "@/server/data";
 import { TracesSearch } from "@/components/traces/TracesSearch";
 import { parseTracesUrl, toTraceFilter } from "@/lib/traces-filter";
 
@@ -13,6 +13,9 @@ import { parseTracesUrl, toTraceFilter } from "@/lib/traces-filter";
  * exact filtered total, so the header's "N of M" is a property of the data. The
  * pre-D44 second, unfiltered, 200-capped read that used to supply M is gone —
  * it could only ever claim rows this page never rendered (D13/D21).
+ *
+ * The row ages come from one clock sampled here, per request (D50/D64) — the
+ * bar is a client component and has no mode to ask.
  */
 export default async function TracesPage({
   searchParams,
@@ -26,6 +29,7 @@ export default async function TracesPage({
     <TracesSearch
       traces={traces}
       total={total}
+      nowMs={referenceNowMs()}
       pageCount={Math.max(1, Math.ceil(total / TRACE_PAGE_SIZE))}
       filters={filters}
     />

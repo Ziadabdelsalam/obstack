@@ -69,6 +69,22 @@ function resolveMode(): DataMode {
  */
 export const dataMode: DataMode = resolveMode();
 
+/**
+ * The reference clock a rendered age is measured against (D50/D64): the
+ * request's server time in live mode, the mock clock in mock mode — the same
+ * per-mode rule the search entry points bind their time windows with, so a row
+ * can never read "3h ago" inside a window the header calls "last 1h".
+ *
+ * It lives here because this is the module that knows the mode, and because
+ * `NOW` must not leave the mock tree for a page or a component (D13/D64): the
+ * traces pages sample this ONCE per request and pass the number down as a
+ * prop. `searchLogs` needs no such call — its result already carries the clock
+ * its own query bound.
+ */
+export function referenceNowMs(): number {
+  return dataMode === "live" ? Date.now() : NOW;
+}
+
 // Which routes render live data is a presentation concern shared with client
 // components, so the D21 registry lives in `@/lib/live-routes`, not here.
 

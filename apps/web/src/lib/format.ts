@@ -1,5 +1,3 @@
-import { NOW } from "@/mock/generate";
-
 export function fmtMs(ms: number): string {
   if (ms < 1000) return `${Math.round(ms)}ms`;
   return `${(ms / 1000).toFixed(ms < 10_000 ? 2 : 1)}s`;
@@ -25,8 +23,20 @@ export function fmtCost(usd: number): string {
   return `$${usd.toFixed(decimals).replace(/0+$/, "")}`;
 }
 
-export function timeAgo(iso: string): string {
-  const diff = NOW - Date.parse(iso);
+/**
+ * An age against an explicit reference clock (D50/D64) — the request's server
+ * time in live mode, the mock clock in mock mode — sampled once per request by
+ * the page and threaded down, exactly as `/app/logs` ages its rows.
+ *
+ * `nowMs` is REQUIRED, and a default is what this signature exists to refuse:
+ * this file used to age every row against the mock clock, which sits in the
+ * past of any ingested row, so every live trace rendered "just now" (measured,
+ * D64). A `Date.now()` default would be the same lie inverted — every mock row
+ * aged against the wall clock. Neither clock is right for both modes, so the
+ * caller that knows the mode names it.
+ */
+export function timeAgo(iso: string, nowMs: number): string {
+  const diff = nowMs - Date.parse(iso);
   const m = Math.floor(diff / 60_000);
   if (m < 1) return "just now";
   if (m < 60) return `${m}m ago`;
