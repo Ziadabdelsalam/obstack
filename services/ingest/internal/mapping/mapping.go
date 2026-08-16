@@ -35,9 +35,14 @@
 //	gen_ai.input.messages  -> prompt
 //	gen_ai.output.messages -> completion
 //
-// The fill is the attribute's string form (pcommon's AsString: verbatim for a
-// plain string, JSON for anything structured) landed unchanged — no
-// re-encoding, no truncation. As above, both keys are excluded from the row's
+// The fill is pcommon's AsString, which is one of two cases depending on what
+// the producer sent: a plain string value is stored verbatim; a structured
+// value (semconv types the attribute `any`, and upstream's Events API sends
+// one) has no producer JSON bytes to preserve — a protobuf AnyValue, not text
+// — so AsString renders it through pcommon's canonical JSON serialization
+// (deterministic, alphabetically-sorted keys), test-pinned in the fixtures
+// below rather than merely described. Either way nothing is re-encoded or
+// truncated after that. As above, both keys are excluded from the row's
 // attributes Map regardless of whether either was present (D8 amendment
 // extended to logs): a reader takes prompt/completion from the dedicated
 // columns, never from attributes['gen_ai.input.messages'].
