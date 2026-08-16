@@ -11,10 +11,16 @@ import { createClient } from "@clickhouse/client";
 // kickoff Decisions 3-5). The WHERE clause NEARBY_LOGS_SQL builds — the pod/
 // namespace subquery, the window bound, the `trace_id = ''` restriction — is
 // real SQL that a pure adapter unit test (adapters.test.ts) cannot exercise;
-// only a real server can prove it. Follows the same skip-not-fail convention
-// as services/ingest's integration_test.go: no ClickHouse reachable reports
-// SKIP, not a broken `web` check, so a plain `npm test` (CI's `web` job does
-// not start ClickHouse) stays green.
+// only a real server can prove it.
+//
+// It skips when no ClickHouse answers, like services/ingest's
+// integration_test.go — but note that only half of that precedent exists here:
+// the `go` check starts the compose ClickHouse and then FAILS the job on any
+// "--- SKIP" line (.github/workflows/go.yml, "D36 skip trap"), so those tests
+// cannot go quietly green. `web` starts no ClickHouse and greps no output, so
+// today this file runs only where a human or the sprint's `stack` job supplies
+// one. Closing that (ClickHouse service + skip trap in web.yml) is a CI change
+// outside T3's ownership — escalated, not absorbed here.
 //
 // Env vars mirror deploy/compose/README.md's live-mode block exactly
 // (CLICKHOUSE_URL / CLICKHOUSE_USER / CLICKHOUSE_PASSWORD) so this reads
@@ -50,8 +56,16 @@ async function clickhouseReachable(): Promise<boolean> {
   }
 }
 
-/** `workspaceId` in `@/server/clickhouse.ts` defaults to this when unset — matches the compose dev default, so no env override is needed. */
-const WORKSPACE_ID = "ws_demo";
+/**
+ * A workspace of this run's own, not the compose dev default `ws_demo`: this
+ * file seeds rows it cannot delete (the ingest user has no mutation grant), and
+ * a synthetic trace injected into `ws_demo` would show up in the demo UI and in
+ * whatever the sprint's evidence runs count there. `@/server/clickhouse.ts`
+ * reads OBSTACK_WORKSPACE_ID at module load, so it is set before `./traces` is
+ * imported below.
+ */
+const WORKSPACE_ID = `ws_it_${randomBytes(4).toString("hex")}`;
+process.env.OBSTACK_WORKSPACE_ID = WORKSPACE_ID;
 
 // BigInt literal syntax (`123n`) needs an ES2020 target; tsconfig.json pins
 // ES2017, so every constant here goes through the `BigInt(...)` call form
@@ -134,6 +148,7 @@ test("nearby-logs join (D37.4) against a seeded ClickHouse", async (t) => {
   const suffix = randomBytes(6).toString("hex");
   const traceId = `it_nearby_${suffix}`;
   const foreignTraceId = `it_foreign_${suffix}`;
+  const noPodTraceId = `it_nopod_${suffix}`;
   const namespace = `it-ns-${suffix}`;
   const pod = `it-pod-${suffix}`;
   const otherPod = `it-otherpod-${suffix}`;
@@ -155,6 +170,18 @@ test("nearby-logs join (D37.4) against a seeded ClickHouse", async (t) => {
         k8s_namespace: namespace,
         k8s_pod: pod,
       }),
+      // A trace with NO pod metadata at all — the shape every non-k8s sender
+      // produces (the compose demo path today). Its nearby set must be empty:
+      // an empty pod is absence of a join key, not a key that matches every
+      // other pod-less log in the workspace.
+      spanRow({
+        trace_id: noPodTraceId,
+        span_id: "s1",
+        start_time: chTimestamp(t0),
+        duration_ns: durationNs.toString(),
+        k8s_namespace: "",
+        k8s_pod: "",
+      }),
     ],
   });
 
@@ -163,6 +190,7 @@ test("nearby-logs join (D37.4) against a seeded ClickHouse", async (t) => {
   const differentPodBody = "PROBE:different-pod";
   const outsideWindowBody = "PROBE:outside-window";
   const foreignTraceBody = "PROBE:foreign-trace-id";
+  const noPodBody = `PROBE:no-pod-metadata ${suffix}`;
 
   await seed.insert({
     table: "logs",
@@ -208,6 +236,16 @@ test("nearby-logs join (D37.4) against a seeded ClickHouse", async (t) => {
         k8s_namespace: namespace,
         k8s_pod: pod,
       }),
+      // probe 4: trace-less AND pod-less, inside the window — the shape most
+      // rows in a non-k8s deployment have. Must NOT appear for the pod-less
+      // trace (nor for any other), or `''` becomes a wildcard join key.
+      logRow({
+        trace_id: "",
+        timestamp: chTimestamp(t0 + NS_PER_SECOND),
+        body: noPodBody,
+        k8s_namespace: "",
+        k8s_pod: "",
+      }),
     ],
   });
 
@@ -246,6 +284,20 @@ test("nearby-logs join (D37.4) against a seeded ClickHouse", async (t) => {
     assert.ok(
       !bodies.includes(foreignTraceBody),
       "a log carrying another trace's trace_id leaked into this trace's nearby logs",
+    );
+  });
+
+  await t.test("falsification probe: a trace whose spans carry no pod joins nothing", async () => {
+    const noPodTrace = await queryTrace(noPodTraceId);
+    assert.ok(noPodTrace, "queryTrace found no row for the pod-less trace");
+    assert.deepEqual(
+      noPodTrace.logs.map((l) => l.body),
+      [],
+      "a trace with no pod metadata pulled in nearby logs — empty k8s_pod is matching as a join key",
+    );
+    assert.ok(
+      !bodies.includes(noPodBody),
+      "a pod-less log leaked into the pod-carrying trace's nearby logs",
     );
   });
 });

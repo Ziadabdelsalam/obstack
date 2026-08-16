@@ -123,7 +123,10 @@ ORDER BY timestamp`;
  * (kickoff Decision 4), `W` = `NEARBY_LOG_WINDOW_NS`, computed here rather than
  * in JS so the Int64 arithmetic never touches a JS number. Capped at
  * `NEARBY_LOG_CAP` (kickoff Decision 5) — the UI counter never claims more rows
- * than this query can return.
+ * than this query can return. The ORDER BY carries a tiebreak beyond
+ * `timestamp` (SPANS_SQL's `start_time, span_id` precedent): logs have no
+ * unique key, and with a LIMIT a bare timestamp sort would decide *which* rows
+ * survive the cap by physical read order.
  */
 const NEARBY_LOGS_SQL = `
 SELECT
@@ -147,7 +150,7 @@ WHERE workspace_id = {workspace_id:String}
   )
   AND timestamp >= fromUnixTimestamp64Nano({min_start_ns:Int64} - {window_ns:Int64})
   AND timestamp <= fromUnixTimestamp64Nano({min_start_ns:Int64} + {duration_ns:Int64} + {window_ns:Int64})
-ORDER BY timestamp
+ORDER BY timestamp, k8s_pod, k8s_container, body
 LIMIT {cap:UInt32}`;
 
 /**

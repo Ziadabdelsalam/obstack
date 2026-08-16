@@ -67,9 +67,10 @@ export function TraceExplorer({
   const hasFailure = trace.status === "error" || trace.spans.some((s) => s.status === "error");
   const solidCount = trace.logs.filter((l) => l.traceId).length;
   const nearbyCount = trace.logs.length - solidCount;
-  // The query caps nearby rows at NEARBY_LOG_CAP (D13/D21) — reaching the cap
-  // means more real rows may exist beyond what was rendered, so the counter
-  // says so rather than silently under-reporting.
+  // The query caps nearby rows at NEARBY_LOG_CAP (D13/D21). A full result set
+  // is indistinguishable from a truncated one — exactly NEARBY_LOG_CAP rows may
+  // be all there was — so the marker states the cap, which is always true here,
+  // rather than asserting a truncation it cannot know happened.
   const nearbyAtCap = nearbyCount === NEARBY_LOG_CAP;
 
   // service journey, in order of first activity — the pipeline this trace crossed
@@ -216,7 +217,7 @@ export function TraceExplorer({
               </h2>
               <span className="font-mono text-[10.5px] text-faint">
                 {solidCount} on trace · {nearbyCount} nearby (same pods, ±{NEARBY_LOG_WINDOW_S}s)
-                {nearbyAtCap ? ` · truncated at ${NEARBY_LOG_CAP}` : ""}
+                {nearbyAtCap ? ` · at the ${NEARBY_LOG_CAP} cap, more may exist` : ""}
               </span>
             </div>
             <div className="px-3 py-1">
