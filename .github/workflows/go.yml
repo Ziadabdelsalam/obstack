@@ -1,0 +1,113 @@
+name: go
+
+on:
+  pull_request:
+    branches: [master]
+
+concurrency:
+  group: go-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: services/ingest
+
+jobs:
+  go:
+    name: go
+    runs-on: ubuntu-latest
+    # Bounds a required check: without it a wedged step holds the PR for the
+    # 360-minute GitHub default. Green is ~50s.
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+
+      # K1: ClickHouse comes up via the same compose service local dev uses —
+      # one definition of the D11 users (deploy/compose/clickhouse/users.d),
+      # not a service container (those start before checkout and cannot mount
+      # users.d) and not a hand-rolled `docker run`. `--wait` uses the
+      # service's own healthcheck as the readiness gate.
+      - name: Start ClickHouse (deploy/compose)
+        working-directory: ${{ github.workspace }}
+        run: docker compose -f deploy/compose/docker-compose.yml up -d --wait --wait-timeout 120 clickhouse
+
+      - name: Set up Go
+        uses: actions/setup-go@v7.0.0
+        with:
+          go-version-file: services/ingest/go.mod
+          cache-dependency-path: services/ingest/go.sum
+
+      - name: gofmt
+        run: |
+          fmt_out="$(gofmt -l .)"
+          if [ -n "$fmt_out" ]; then
+            echo "gofmt found unformatted files:"
+            echo "$fmt_out"
+            exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      # D36 skip trap: DSNs for the two D11 users (obstack_ingest write,
+      # obstack_web readonly=2) point at the compose ClickHouse above, so the
+      # writer, migrate, and `ingest migrate` integration tests run instead of
+      # skipping. The credentials are the dev defaults already declared in
+      # deploy/compose/docker-compose.yml, reused here rather than copied into
+      # a second config artifact.
+      #
+      # K4: `go test -v` output is scanned for "--- SKIP"; any match fails the
+      # job even if the tests themselves passed. No allowlist entries today —
+      # a future legitimate skip is added here as a reviewed exception, not
+      # absorbed silently.
+      #
+      # `-count=1` is load-bearing, not a habit: actions/setup-go restores
+      # GOCACHE across runs, and Go replays a cached package result (including
+      # its "--- PASS" lines) whenever the test binary and the env vars the
+      # tests read are unchanged. A change to the compose ClickHouse or its
+      # users.d would leave both unchanged, so the integration tests would
+      # report PASS from cache without ever contacting the server — green
+      # while proving nothing, which is exactly what D36 forbids.
+      - name: go test
+        env:
+          OBSTACK_TEST_CLICKHOUSE_DSN: clickhouse://obstack_ingest:obstack_ingest_dev@127.0.0.1:9000/obstack
+          OBSTACK_TEST_CLICKHOUSE_READONLY_DSN: clickhouse://obstack_web:obstack_web_dev@127.0.0.1:9000/obstack
+        run: |
+          set +e
+          go test -v -count=1 ./... 2>&1 | tee test-output.log
+          status=${PIPESTATUS[0]}
+          set -e
+
+          # Skip allowlist (K4): empty today. Add "TestName" entries here,
+          # with a comment naming the reviewed reason, before adding a skip
+          # to any *_test.go file — an unlisted skip must fail this job.
+          allowed_skips=()
+
+          fail=0
+          while IFS= read -r line; do
+            [ -z "$line" ] && continue
+            name=$(printf '%s' "$line" | awk '{print $3}')
+            listed=0
+            for a in "${allowed_skips[@]:-}"; do
+              [ "$a" = "$name" ] && listed=1
+            done
+            if [ "$listed" -eq 0 ]; then
+              echo "::error::unexpected test skip, not on the allowlist: $line"
+              fail=1
+            fi
+          done < <(grep -- '--- SKIP' test-output.log || true)
+
+          if [ "$fail" -eq 1 ]; then
+            exit 1
+          fi
+
+          exit "$status"
+
+      - name: Stop ClickHouse (deploy/compose)
+        if: always()
+        working-directory: ${{ github.workspace }}
+        run: docker compose -f deploy/compose/docker-compose.yml down -v
