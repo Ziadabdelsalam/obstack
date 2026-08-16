@@ -7,3 +7,5 @@ This version has breaking changes — APIs, conventions, and file structure may 
 This block is written and re-added by `next dev` — verify at `node_modules/next/dist/server/lib/generate-agent-files.js`. Removing it from a diff only re-creates the uncommitted change; committing it with your work keeps the tree clean.
 
 <!-- END:nextjs-agent-rules -->
+
+Repo note (outside the managed block): the managed copy is `apps/web/AGENTS.md` — `next dev` runs from `apps/web` and rewrites that one. On a Next upgrade, refresh by running `next dev` in `apps/web`, then mirror the block here; until then this copy may lag.
