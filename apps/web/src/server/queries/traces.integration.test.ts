@@ -890,6 +890,14 @@ test("trace search (D44/D45) against a seeded ClickHouse", async (t) => {
     );
   });
 
+  // This absence claim holds BY CONSTRUCTION (D45's own wording): the logs leg
+  // returns trace ids and a trace-less row's '' can never match a summary row,
+  // so no single-clause removal turns it red — the SQL's `trace_id != ''` is
+  // the contract's explicit restriction plus scan narrowing, not the load-
+  // bearing exclusion. Its falsification partner (S2.0 L1) is the standing
+  // guard above: the SAME token placement on a trace-CARRYING row does resolve
+  // (tokBody), so this assertion is proven to observe the mechanism, not a
+  // dead leg.
   await t.test("trace-less log rows are unreachable from the traces list (contract: trace-carrying rows only)", async () => {
     const r = await queryTraceSearch({ q: tokTraceless });
     assert.equal(r.total, 0, "a trace-less log row surfaced a trace in the traces list");
