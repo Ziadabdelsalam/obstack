@@ -48,11 +48,8 @@ jobs:
           # kind-action's own chart-testing steps are unused here.
           install_only: "false"
 
-      # TEMPORARY (T3 red-run evidence, reverted before merge): the load step
-      # is deliberately dropped so imagePullPolicy: Never has nothing to run —
-      # this must turn the job red, not silently pull from a registry.
-      # - name: Load the just-built image into kind (no registry path exists)
-      #   run: kind load docker-image "$IMAGE_TAG" --name "$CLUSTER_NAME"
+      - name: Load the just-built image into kind (no registry path exists)
+        run: kind load docker-image "$IMAGE_TAG" --name "$CLUSTER_NAME"
 
       - name: Apply the proof workload
         run: sed "s#IMAGE_PLACEHOLDER#$IMAGE_TAG#" "$PROOF_MANIFEST" | kubectl apply -f -
