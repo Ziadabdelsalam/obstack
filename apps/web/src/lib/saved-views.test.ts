@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  PAGE_PARAM,
   SAVED_VIEWS_STORAGE_KEY,
   deleteView,
   readSavedViews,
@@ -121,6 +122,9 @@ test("saving an existing name replaces that view where it sits", () => {
 });
 
 test("a view keeps the whole filter set including the time range but never the page", () => {
+  // the name a paginating surface imports for its URL parameter (D53)
+  assert.equal(PAGE_PARAM, "page");
+
   const { store } = makeStorage();
   withLocalStorage({ value: store }, () => {
     const views = saveView("traces", "Costly", {

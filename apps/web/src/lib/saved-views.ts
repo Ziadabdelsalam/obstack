@@ -26,11 +26,13 @@ const ENVELOPE_VERSION = 1;
 
 /**
  * A view is a question, not a position in a result set — the page never
- * persists (D47(ii)). The strip is by LITERAL KEY: a surface that calls its
- * page parameter anything but `page` persists it into the view and reopens the
- * view on a stale page number. Both consumers name it `page` in the URL.
+ * persists (D47(ii)). The strip is by LITERAL KEY, so this module is the one
+ * definition of that name (D53): a surface that paginates imports `PAGE_PARAM`
+ * for its URL parameter instead of writing "page" again. Hand-rolling the
+ * literal and drifting from it persists the page into the view and reopens the
+ * view on a stale page number.
  */
-const PAGE_PARAM = "page";
+export const PAGE_PARAM = "page";
 
 /** The surfaces that keep views; each is a namespace inside the one envelope. */
 export type SavedViewSurface = "traces" | "logs";
