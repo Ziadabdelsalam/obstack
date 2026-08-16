@@ -1,0 +1,62 @@
+# S2.0 T3 — kind-cluster capability guard.
+#
+# Proves CI can create a kind cluster, load an image built *in this job* (no
+# registry involved), and get a workload to Ready on it — the capability
+# S2.2's Helm-based stack-on-kind is built on (D36: capability only, no stack
+# on kind here).
+#
+# Trigger policy (K5 decision RULE): measure the full job's wall-clock, then
+# pick a branch. ≤~6 min → every PR, joins the required-checks set (this is
+# that branch — see the sprint result line for the measured run this was
+# decided from). If a future change pushes the job past ~6 min, switch this
+# trigger block to `ci:kind` label + push-to-master + workflow_dispatch and
+# drop `kind` from required checks (K5) — do not leave it
+# required-but-conditional.
+on:
+  pull_request:
+    branches: [master]
+
+concurrency:
+  group: kind-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  kind:
+    name: kind
+    runs-on: ubuntu-latest
+    # One path anchor for the job (K3 ii): every step below reads these, none
+    # repeats a literal path.
+    env:
+      AGENT_APP_DIR: demo/agent-app
+      PROOF_MANIFEST: .github/ci/kind-proof-workload.yaml
+      CLUSTER_NAME: kind-proof
+      IMAGE_TAG: demo-agent:${{ github.sha }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+
+      - name: Build demo agent image (local only — no registry, no push)
+        run: docker build -t "$IMAGE_TAG" "$AGENT_APP_DIR"
+
+      - name: Create kind cluster
+        uses: helm/kind-action@v1.14.0
+        with:
+          cluster_name: ${{ env.CLUSTER_NAME }}
+          # Cluster only — the demo app is loaded and applied by hand below,
+          # kind-action's own chart-testing steps are unused here.
+          install_only: "false"
+
+      - name: Load the just-built image into kind (no registry path exists)
+        run: kind load docker-image "$IMAGE_TAG" --name "$CLUSTER_NAME"
+
+      - name: Apply the proof workload
+        run: sed "s#IMAGE_PLACEHOLDER#$IMAGE_TAG#" "$PROOF_MANIFEST" | kubectl apply -f -
+
+      - name: Wait for the proof workload to report Ready
+        run: kubectl wait --for=condition=Ready pod/kind-proof-workload --timeout=120s
+
+      - name: Diagnose on failure
+        if: failure()
+        run: |
+          kubectl describe pod/kind-proof-workload || true
+          kubectl logs pod/kind-proof-workload || true

@@ -1,0 +1,40 @@
+# T3 kind-capability proof workload — CI scaffolding only (D35: not a deployment
+# layout, does not live under deploy/, and is not the S2.2 Helm chart's stand-in).
+#
+# Runs the demo agent (demo/agent-app/Dockerfile) because it reaches Ready with
+# no external dependency: /healthz answers without ClickHouse, ingest, or a
+# working OTLP exporter (S2.0 plan, T3 constraint).
+#
+# IMAGE_PLACEHOLDER is substituted by the kind workflow with the commit-SHA tag
+# of the image it just built and loaded — this manifest never names a
+# registry-resolvable tag, and imagePullPolicy: Never makes it impossible for
+# the kubelet to fall back to one.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: kind-proof-workload
+  labels:
+    app: kind-proof-workload
+spec:
+  restartPolicy: Never
+  containers:
+    - name: demo-agent
+      image: IMAGE_PLACEHOLDER
+      imagePullPolicy: Never
+      ports:
+        - containerPort: 8000
+      env:
+        # Deliberately unroutable (RFC 5737 TEST-NET-3): proves the OTel SDK's
+        # fail-open property (PRD §9) — the workload must still reach Ready
+        # with no working exporter, not dodge the case by pointing at nothing.
+        - name: OTEL_EXPORTER_OTLP_ENDPOINT
+          value: "http://203.0.113.1:4318"
+        - name: OTEL_SERVICE_NAME
+          value: "kind-proof-workload"
+      readinessProbe:
+        httpGet:
+          path: /healthz
+          port: 8000
+        initialDelaySeconds: 1
+        periodSeconds: 2
+        failureThreshold: 5
