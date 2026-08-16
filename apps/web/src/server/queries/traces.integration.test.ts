@@ -693,10 +693,19 @@ test("trace search (D44/D45) against a seeded ClickHouse", async (t) => {
   // D56: the SAME word, case-differing on its non-ASCII letter. ASCII folding
   // (positionCaseInsensitive) folds c/a/f but not É→é, so only Unicode folding
   // (positionCaseInsensitiveUTF8) matches the pair; mock's toLowerCase always
-  // could — this is the probe that keeps the one-contract claim true beyond
-  // ASCII.
+  // could — these are the probes that keep the one-contract claim true beyond
+  // ASCII. One pair per LEG, because a single pair only ever pins the one
+  // predicate its token is seeded in: with the pair in a span prompt alone,
+  // reverting `root_name`, `body` or the `models` lambda to the ASCII function
+  // stays green (measured). These three cover the summary leg, the spans
+  // semi-join and the logs semi-join.
   const tokCafeSeeded = `CAFÉ-${suffix}`; // seeded in SPANLEG's span prompt
   const tokCafeQuery = `café-${suffix}`; // the query form
+  const tokAccentModelSeeded = `MODÈLE-${suffix}`; // summary leg: models array (no semi-join reads gen_ai_*)
+  const tokAccentModelQuery = `modèle-${suffix}`;
+  const tokAccentBodySeeded = `CAFÉ-BODY-${suffix}`; // logs leg: narrative body
+  const tokAccentBodyQuery = `café-body-${suffix}`;
+  const UNILEG = `it_srch_uni_${suffix}`; // carries the summary-leg and logs-leg pairs
   const SPANLEG = `it_srch_span_${suffix}`;
   const LOGLEG = `it_srch_log_${suffix}`;
   const srchStart = chTimestamp(BigInt(nowMs) * NS_PER_MS);
@@ -775,6 +784,21 @@ test("trace search (D44/D45) against a seeded ClickHouse", async (t) => {
         k8s_namespace: "",
         k8s_pod: "",
       }),
+      // UNILEG: carries the D56 Unicode case pairs for the two legs the
+      // span-prompt pair cannot reach — an accented MODEL (summary `models`
+      // only; no semi-join reads `gen_ai_*`) and, below, an accented log body.
+      // Its name and service are neutral so it satisfies no other probe here.
+      spanRow({
+        trace_id: UNILEG,
+        span_id: "s1",
+        name: "POST /unicode-legs",
+        layer: "llm",
+        gen_ai_request_model: tokAccentModelSeeded,
+        start_time: srchStart,
+        duration_ns: NS_PER_SECOND.toString(),
+        k8s_namespace: "",
+        k8s_pod: "",
+      }),
       // LOGLEG: an event-form-only trace — its LLM span's own columns are
       // empty; every token lives on LOG rows only (logs semi-join alone).
       spanRow({
@@ -830,6 +854,14 @@ test("trace search (D44/D45) against a seeded ClickHouse", async (t) => {
         trace_id: LOGLEG,
         timestamp: srchStart,
         body: `worker heartbeat ${tokBody}`,
+        k8s_namespace: "",
+        k8s_pod: "",
+      }),
+      // D56 logs-leg Unicode pair — the only place this token is seeded.
+      logRow({
+        trace_id: UNILEG,
+        timestamp: srchStart,
+        body: `order ${tokAccentBodySeeded} please`,
         k8s_namespace: "",
         k8s_pod: "",
       }),
@@ -959,17 +991,36 @@ test("trace search (D44/D45) against a seeded ClickHouse", async (t) => {
     );
   });
 
-  // D56 (S2.0 L1): shown RED under the pre-D56 ASCII function — with
-  // `positionCaseInsensitive` the É→é fold never happens and this returns
-  // nothing; only `positionCaseInsensitiveUTF8` in EVERY freeTextClauses
-  // predicate turns it green. Mock's toLowerCase side of the same pair is
-  // asserted in the parity table below and in data.test.ts.
-  await t.test("D56 Unicode case folding: a query case-differing on a non-ASCII letter still matches (café finds CAFÉ)", async () => {
-    const r = await queryTraceSearch({ q: tokCafeQuery });
+  // D56 (S2.0 L1): each assertion is RED under the pre-D56 ASCII function —
+  // with `positionCaseInsensitive` the É→é fold never happens and the query
+  // returns nothing. One assertion per LEG, and each pins the single predicate
+  // its token is seeded in: the model pair pins the `models` lambda (nothing
+  // else reads `gen_ai_*`), the prompt pair pins the spans semi-join, the body
+  // pair pins the logs semi-join. Reverting any ONE of those three to the ASCII
+  // function turns exactly one of them red. The remaining predicates
+  // (`trace_id`, `services`, span `name`/`completion`, log `prompt`/
+  // `completion`) are generated from this same clause body and are not
+  // separately pinned — that is what this comment claims and no more.
+  // Mock's toLowerCase side of the pair is asserted in the parity table below
+  // and in data.test.ts.
+  await t.test("D56 Unicode case folding: a query case-differing on a non-ASCII letter still matches, on every leg", async () => {
+    const bySummary = await queryTraceSearch({ q: tokAccentModelQuery });
     assert.deepEqual(
-      r.traces.map((tr) => tr.id),
+      bySummary.traces.map((tr) => tr.id),
+      [UNILEG],
+      "modèle did not find MODÈLE — the summary leg's models predicate is folding ASCII (positionCaseInsensitive) instead of Unicode (positionCaseInsensitiveUTF8)",
+    );
+    const bySpan = await queryTraceSearch({ q: tokCafeQuery });
+    assert.deepEqual(
+      bySpan.traces.map((tr) => tr.id),
       [SPANLEG],
       "café did not find CAFÉ — a live predicate is folding ASCII (positionCaseInsensitive) instead of Unicode (positionCaseInsensitiveUTF8)",
+    );
+    const byLog = await queryTraceSearch({ q: tokAccentBodyQuery });
+    assert.deepEqual(
+      byLog.traces.map((tr) => tr.id),
+      [UNILEG],
+      "café-body did not find CAFÉ-BODY — the logs semi-join's body predicate is folding ASCII instead of Unicode",
     );
   });
 
