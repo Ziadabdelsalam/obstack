@@ -78,6 +78,9 @@ func TestLayerClassification(t *testing.T) {
 	}
 }
 
+// Regression pin (D42): the span-attribute form is the obstack-SDK convention
+// and must keep working unchanged now that logs.go also extracts the
+// log-record form — the two wire forms are mapped by independent code paths.
 func TestGenAIExtractionAndCost(t *testing.T) {
 	td, span := newSpan(t)
 	attrs := span.Attributes()
@@ -324,6 +327,76 @@ func TestLogTimestampFallsBackToObserved(t *testing.T) {
 	}
 	if rows[0].TraceID != "" {
 		t.Errorf("trace_id = %q, want empty for a log with no span context", rows[0].TraceID)
+	}
+}
+
+// The message-array shape below is what upstream's Events API sends as the
+// gen_ai.input.messages / gen_ai.output.messages attribute value, per OTel
+// semantic conventions gen-ai-events, rev v1.37.0 (2025-09):
+// https://opentelemetry.io/docs/specs/semconv/gen-ai/gen-ai-events/. The fill
+// rule takes the attribute's string form verbatim, so the exact shape is not
+// load-bearing for this package — only that it round-trips unchanged.
+const (
+	inputMessagesFixture  = `[{"role":"user","parts":[{"type":"text","content":"summarise the incident"}]}]`
+	outputMessagesFixture = `[{"role":"assistant","parts":[{"type":"text","content":"the checkout service timed out"}]}]`
+)
+
+// D38 FINAL / D42: the log-record wire form. A log record carrying either
+// content attribute fills the row's prompt/completion unconditionally — logs
+// get no layer gate — and a record with no narrative text still lands with an
+// honest empty body rather than one borrowed from the content.
+func TestLogRecordFillsPromptCompletionFromMessages(t *testing.T) {
+	ld := plog.NewLogs()
+	rl := ld.ResourceLogs().AppendEmpty()
+	rl.Resource().Attributes().PutStr("service.name", "demo-agent")
+
+	record := rl.ScopeLogs().AppendEmpty().LogRecords().AppendEmpty()
+	record.SetTimestamp(pcommon.NewTimestampFromTime(start))
+	record.SetTraceID(traceID)
+	record.SetSpanID(spanID)
+	record.Attributes().PutStr("gen_ai.input.messages", inputMessagesFixture)
+	record.Attributes().PutStr("gen_ai.output.messages", outputMessagesFixture)
+
+	rows := mapping.LogRows(workspaceID, ld)
+	if len(rows) != 1 {
+		t.Fatalf("got %d rows, want 1", len(rows))
+	}
+	row := rows[0]
+
+	if row.Prompt != inputMessagesFixture {
+		t.Errorf("prompt = %q, want %q", row.Prompt, inputMessagesFixture)
+	}
+	if row.Completion != outputMessagesFixture {
+		t.Errorf("completion = %q, want %q", row.Completion, outputMessagesFixture)
+	}
+	if row.Body != "" {
+		t.Errorf("body = %q, want empty — this record carries structured content, not narrative text", row.Body)
+	}
+
+	// D8 amendment extended to logs: the source attributes are not duplicated
+	// into the uncompressed Map.
+	if _, ok := row.Attributes["gen_ai.input.messages"]; ok {
+		t.Error("gen_ai.input.messages is duplicated into the attributes map")
+	}
+	if _, ok := row.Attributes["gen_ai.output.messages"]; ok {
+		t.Error("gen_ai.output.messages is duplicated into the attributes map")
+	}
+}
+
+// A record carrying neither content attribute is the overwhelming majority
+// case (an ordinary log line) and must not gain phantom content.
+func TestLogRecordWithoutContentAttributesLeavesPromptCompletionEmpty(t *testing.T) {
+	ld := plog.NewLogs()
+	record := ld.ResourceLogs().AppendEmpty().ScopeLogs().AppendEmpty().LogRecords().AppendEmpty()
+	record.SetTimestamp(pcommon.NewTimestampFromTime(start))
+	record.Body().SetStr("tool call timed out")
+
+	rows := mapping.LogRows(workspaceID, ld)
+	if len(rows) != 1 {
+		t.Fatalf("got %d rows, want 1", len(rows))
+	}
+	if rows[0].Prompt != "" || rows[0].Completion != "" {
+		t.Errorf("prompt/completion = %q/%q, want both empty", rows[0].Prompt, rows[0].Completion)
 	}
 }
 

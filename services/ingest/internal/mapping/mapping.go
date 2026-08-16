@@ -23,6 +23,44 @@
 //
 // cost_usd is computed here, at ingest, from the embedded price list (D9).
 //
+// # GenAI log-record extraction (D38 FINAL / D42, carry-forward 3)
+//
+// A log record is the second, independent wire form GenAI content arrives in:
+// upstream's Events API, as opposed to the obstack-SDK's span-attribute form
+// above. Unlike spans, log records get no layer gate — any log record carrying
+// either attribute below is unpacked, unconditionally, into obstack.logs'
+// prompt/completion columns (span_id already identifies which span it belongs
+// to; that column has existed since M1):
+//
+//	gen_ai.input.messages  -> prompt
+//	gen_ai.output.messages -> completion
+//
+// The fill is the attribute's string form (pcommon's AsString: verbatim for a
+// plain string, JSON for anything structured) landed unchanged — no
+// re-encoding, no truncation. As above, both keys are excluded from the row's
+// attributes Map regardless of whether either was present (D8 amendment
+// extended to logs): a reader takes prompt/completion from the dedicated
+// columns, never from attributes['gen_ai.input.messages'].
+//
+// Span-EVENT extraction (gen_ai.* attributes on a span's own Events()) is NOT
+// implemented: no known producer emits that wire form, and D38 FINAL rules it
+// speculative until one does.
+//
+// # Precedence when both forms describe one span (D42(d); read-time, T6's to implement)
+//
+// Per field (prompt, completion) independently: a non-empty span column always
+// wins; only when it is empty does an event-derived (log-record) value fill it.
+// When more than one content-carrying log row matches a span_id, the earliest
+// timestamp among them wins — deterministic, because the read is already
+// timestamp-ordered. Content never enters cost or token computation, which
+// stays span-attribute-sourced (D9): no double-count by construction. T2 lands
+// the rows below; T6 implements the read that applies this precedence.
+//
+// Fixtures in mapping_test.go and write/integration_test.go encode the
+// gen_ai.input.messages / gen_ai.output.messages message-array shape from OTel
+// semantic conventions gen-ai-events, rev v1.37.0 (2025-09) —
+// https://opentelemetry.io/docs/specs/semconv/gen-ai/gen-ai-events/.
+//
 // # Layer classification (D8)
 //
 // Every row carries a layer, decided in this order — first match wins:
@@ -77,6 +115,13 @@ const (
 	attrToolName   = "obstack.tool.name"
 	attrHTTPMethod = "http.request.method"
 	attrHTTPRoute  = "http.route"
+)
+
+// The log-record GenAI content attributes (D38 FINAL / D42) — see the package
+// doc's "GenAI log-record extraction" section for the contract.
+const (
+	attrGenAIInputMessages  = "gen_ai.input.messages"
+	attrGenAIOutputMessages = "gen_ai.output.messages"
 )
 
 // Resource attributes promoted to their own columns (D7).
@@ -134,6 +179,13 @@ type LogRow struct {
 	SeverityText   string
 	Body           string
 	Service        string
+
+	// Prompt and Completion carry the log-record GenAI wire form (D38 FINAL /
+	// D42): empty unless the record carried gen_ai.input.messages /
+	// gen_ai.output.messages. Unlike SpanRow's Prompt/Completion, filling these
+	// is unconditional — logs get no layer gate.
+	Prompt     string
+	Completion string
 
 	K8sNamespace string
 	K8sPod       string

@@ -12,6 +12,14 @@ CREATE TABLE IF NOT EXISTS obstack.logs
     body                String CODEC(ZSTD(3)),
     service             LowCardinality(String),
 
+    -- GenAI content, log-record wire form (D38 FINAL / D42): a log record
+    -- carrying gen_ai.input.messages/gen_ai.output.messages fills these on its
+    -- own row (internal/mapping); span_id above is how a query joins it back to
+    -- the LLM span at read time. Codec parity with obstack.spans' prompt/
+    -- completion — same content, same compression story.
+    prompt              String CODEC(ZSTD(3)),
+    completion          String CODEC(ZSTD(3)),
+
     k8s_namespace       LowCardinality(String),
     k8s_pod             LowCardinality(String),
     k8s_container       LowCardinality(String),

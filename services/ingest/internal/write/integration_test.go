@@ -196,6 +196,93 @@ func logFixture(traceID pcommon.TraceID, at time.Time) plog.Logs {
 	return ld
 }
 
+// The message-array shape below is what upstream's Events API sends as the
+// gen_ai.input.messages / gen_ai.output.messages attribute value, per OTel
+// semantic conventions gen-ai-events, rev v1.37.0 (2025-09):
+// https://opentelemetry.io/docs/specs/semconv/gen-ai/gen-ai-events/.
+const (
+	inputMessagesFixture  = `[{"role":"user","parts":[{"type":"text","content":"summarise the incident"}]}]`
+	outputMessagesFixture = `[{"role":"assistant","parts":[{"type":"text","content":"the checkout service timed out"}]}]`
+)
+
+// contentLogFixture is the log-record wire form (D38 FINAL / D42): a record
+// carrying gen_ai.input.messages/gen_ai.output.messages rather than narrative
+// text, tied to an LLM span by trace_id/span_id.
+func contentLogFixture(traceID pcommon.TraceID, spanID pcommon.SpanID, at time.Time) plog.Logs {
+	ld := plog.NewLogs()
+	rl := ld.ResourceLogs().AppendEmpty()
+	rl.Resource().Attributes().PutStr("service.name", "demo-agent")
+	rl.Resource().Attributes().PutStr("k8s.pod.name", "demo-agent-7c9f")
+
+	record := rl.ScopeLogs().AppendEmpty().LogRecords().AppendEmpty()
+	record.SetTimestamp(pcommon.NewTimestampFromTime(at))
+	record.SetSeverityNumber(plog.SeverityNumberInfo)
+	record.SetTraceID(traceID)
+	record.SetSpanID(spanID)
+	record.Attributes().PutStr("gen_ai.input.messages", inputMessagesFixture)
+	record.Attributes().PutStr("gen_ai.output.messages", outputMessagesFixture)
+
+	return ld
+}
+
+// TestWriterLandsLogRecordGenAIContent is the D42(e) probes 1-2 test: it lands
+// a log-record-form content row through the real writer and reads it back
+// from ClickHouse, asserting both that the columns are filled and that the
+// source attributes never reach the Map.
+//
+// probe 1 (falsification, run manually and reverted — not a permanent
+// toggle): comment out the skip args on flattenAttributes in
+// internal/mapping/logs.go so gen_ai.input.messages/gen_ai.output.messages
+// land in the row's Map too, and the "duplicated" assertions below go red.
+//
+// probe 2 (falsification, same method): stop mapLogRecord from setting
+// Prompt/Completion in internal/mapping/logs.go, and the prompt/completion
+// assertions below go red — proving the fill is real, not a coincidence of
+// zero values.
+func TestWriterLandsLogRecordGenAIContent(t *testing.T) {
+	conn := connect(t)
+	workspaceID := newWorkspace(t, conn)
+	ctx := context.Background()
+
+	traceID := newTraceID(0x06)
+	spanID := newSpanID(0x04)
+	at := time.Now().UTC().Add(-time.Minute)
+
+	w := newWriter(t)
+	w.ConsumeLogs(ctx, workspaceID, contentLogFixture(traceID, spanID, at))
+	if err := w.Close(); err != nil {
+		t.Fatalf("close writer: %v", err)
+	}
+
+	var (
+		prompt, completion, body string
+		attributes               map[string]string
+	)
+	if err := conn.QueryRow(ctx, `
+		SELECT prompt, completion, body, attributes
+		FROM obstack.logs WHERE workspace_id = ? AND trace_id = ? AND span_id = ?`,
+		workspaceID, traceID.String(), spanID.String(),
+	).Scan(&prompt, &completion, &body, &attributes); err != nil {
+		t.Fatalf("read content log: %v", err)
+	}
+
+	if prompt != inputMessagesFixture {
+		t.Errorf("prompt = %q, want %q", prompt, inputMessagesFixture)
+	}
+	if completion != outputMessagesFixture {
+		t.Errorf("completion = %q, want %q", completion, outputMessagesFixture)
+	}
+	if body != "" {
+		t.Errorf("body = %q, want empty — an honest fill for a content-only record", body)
+	}
+	if _, ok := attributes["gen_ai.input.messages"]; ok {
+		t.Error("gen_ai.input.messages is duplicated into the landed attributes map")
+	}
+	if _, ok := attributes["gen_ai.output.messages"]; ok {
+		t.Error("gen_ai.output.messages is duplicated into the landed attributes map")
+	}
+}
+
 func TestWriterLandsMappedFixture(t *testing.T) {
 	conn := connect(t)
 	workspaceID := newWorkspace(t, conn)

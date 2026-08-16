@@ -54,6 +54,8 @@ func mapLogRecord(workspaceID string, res resource, record plog.LogRecord) (LogR
 		severity = 255
 	}
 
+	attrs := record.Attributes()
+
 	return LogRow{
 		WorkspaceID:    workspaceID,
 		Timestamp:      ts.AsTime(),
@@ -64,11 +66,22 @@ func mapLogRecord(workspaceID string, res resource, record plog.LogRecord) (LogR
 		Body:           record.Body().AsString(),
 		Service:        res.service,
 
+		// Log-record GenAI content (D38 FINAL / D42): attrStr returns "" when
+		// the attribute is absent, which is the honest fill for a log record
+		// that carries neither — this is not gated on any layer classification,
+		// unlike the span-attribute form.
+		Prompt:     attrStr(attrs, attrGenAIInputMessages),
+		Completion: attrStr(attrs, attrGenAIOutputMessages),
+
 		K8sNamespace: res.k8sNamespace,
 		K8sPod:       res.k8sPod,
 		K8sContainer: res.k8sContainer,
 
-		Attributes:         flattenAttributes(record.Attributes()),
+		// The two content keys are excluded here unconditionally, same as the
+		// span form (D8 amendment extended to logs): a second copy in the
+		// uncompressed Map would be pure waste whether or not this record
+		// actually carried them.
+		Attributes:         flattenAttributes(attrs, attrGenAIInputMessages, attrGenAIOutputMessages),
 		ResourceAttributes: res.attributes,
 	}, nil
 }
