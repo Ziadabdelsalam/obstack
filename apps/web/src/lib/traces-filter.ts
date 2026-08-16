@@ -95,6 +95,33 @@ function positive(value: UrlParam): number {
   return Number.isFinite(n) && n > 0 ? n : 0;
 }
 
+/**
+ * A duration bound in milliseconds. The guard is on the DERIVED value, not the
+ * typed one: the query multiplies this by a million and binds the result as
+ * `{min_ns:UInt64}`, so what has to be exact is `minMs * 1e6`.
+ *
+ * `?minMs=1e21` reached ClickHouse as the string "1e+27" and `/app/traces`
+ * answered 500 — the third time this one defect landed on these two surfaces,
+ * after `?range=toString` and `?page=1e21`, and the first one the D68 corpus
+ * caught rather than a user (D73).
+ *
+ * The guard is deliberately STRICTER than the crash boundary: between 2^53 and
+ * 1e21 nanoseconds ClickHouse still parses the string, but `Math.round` has
+ * already moved the bound to some nearby representable number, so the surface
+ * would filter by a duration nobody typed. An inexactly applied filter is a
+ * quiet lie even where it does not 500 (D13). Out-of-domain falls back to "no
+ * duration filter" rather than clamping — a clamped bound is also a filter the
+ * user did not type.
+ *
+ * D73's generalization, standing for every D65 contract module: any parsed
+ * value whose derived query-layer form binds an integer ClickHouse type has
+ * that DERIVED form asserted a safe integer at parse time.
+ */
+function durationMs(value: UrlParam): number {
+  const n = positive(value);
+  return Number.isSafeInteger(n * 1_000_000) ? n : 0;
+}
+
 /** A cost ceiling, or -1 for unbounded — `TraceFilter`'s own convention. */
 function ceiling(value: UrlParam): number {
   const raw = one(value);
@@ -116,7 +143,7 @@ export function parseTracesUrl(params: Record<string, UrlParam>): TracesFilters 
     status: TRACE_STATUSES.includes(status as Status) ? (status as Status) : "all",
     service: one(params.service),
     model: one(params.model),
-    minMs: positive(params.minMs),
+    minMs: durationMs(params.minMs),
     minCost: positive(params.minCost),
     maxCost: ceiling(params.maxCost),
     // `Object.hasOwn`, never `in`: `in` walks the prototype chain, so

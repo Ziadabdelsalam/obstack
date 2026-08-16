@@ -84,7 +84,8 @@ jobs:
 
           # Skip allowlist (K4): empty today. Add test names here, with a
           # comment naming the reviewed reason, before adding a skip to any
-          # *.test.ts file — an unlisted skip must fail this job.
+          # *.test.ts or *.test.tsx file (the runner's glob covers both since
+          # D54(i)) — an unlisted skip must fail this job.
           allowed_skips=()
 
           # The runner's own summary count ("# skipped N" under tap,
