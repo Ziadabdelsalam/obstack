@@ -108,6 +108,10 @@ GROUP BY workspace_id, trace_id`;
  * and the list renders a phantom trace with an empty id. The integration
  * suite's trace-less subtest seeds that summary and goes red on removal.
  *
+ * Every predicate folds case with `positionCaseInsensitiveUTF8` (D56):
+ * Unicode simple case folding, agreeing with the mock's `toLowerCase` — the
+ * contract doc records the shared İ limitation and the invalid-UTF-8 caveat.
+ *
  * Placeholder-count generation is D45-sanctioned: the skeleton grows one
  * `{qN:String}` placeholder set per term, but every VALUE stays a bound
  * parameter — splicing a value into the string would be interpolation (D11,
@@ -118,23 +122,23 @@ function freeTextClauses(termCount: number): string {
   for (let i = 0; i < termCount; i++) {
     const q = `{q${i}:String}`;
     sql += `
-   AND (positionCaseInsensitive(root_name, ${q}) > 0
-        OR positionCaseInsensitive(trace_id, ${q}) > 0
-        OR arrayExists(m -> positionCaseInsensitive(m, ${q}) > 0, models)
-        OR arrayExists(s -> positionCaseInsensitive(s, ${q}) > 0, services)
+   AND (positionCaseInsensitiveUTF8(root_name, ${q}) > 0
+        OR positionCaseInsensitiveUTF8(trace_id, ${q}) > 0
+        OR arrayExists(m -> positionCaseInsensitiveUTF8(m, ${q}) > 0, models)
+        OR arrayExists(s -> positionCaseInsensitiveUTF8(s, ${q}) > 0, services)
         OR trace_id IN (
             SELECT trace_id FROM obstack.spans
             WHERE workspace_id = {workspace_id:String}
-              AND (positionCaseInsensitive(name, ${q}) > 0
-                   OR positionCaseInsensitive(prompt, ${q}) > 0
-                   OR positionCaseInsensitive(completion, ${q}) > 0))
+              AND (positionCaseInsensitiveUTF8(name, ${q}) > 0
+                   OR positionCaseInsensitiveUTF8(prompt, ${q}) > 0
+                   OR positionCaseInsensitiveUTF8(completion, ${q}) > 0))
         OR trace_id IN (
             SELECT trace_id FROM obstack.logs
             WHERE workspace_id = {workspace_id:String}
               AND trace_id != ''
-              AND (positionCaseInsensitive(body, ${q}) > 0
-                   OR positionCaseInsensitive(prompt, ${q}) > 0
-                   OR positionCaseInsensitive(completion, ${q}) > 0)))`;
+              AND (positionCaseInsensitiveUTF8(body, ${q}) > 0
+                   OR positionCaseInsensitiveUTF8(prompt, ${q}) > 0
+                   OR positionCaseInsensitiveUTF8(completion, ${q}) > 0)))`;
   }
   return sql;
 }

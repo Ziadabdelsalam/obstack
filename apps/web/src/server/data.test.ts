@@ -106,6 +106,9 @@ test("free text reaches llm completion (D45: the mock matcher gains completion)"
 test("free text is case-insensitive in both directions", () => {
   assert.equal(mockMatches(reachTrace, "EMBEDDING"), true);
   assert.equal(mockMatches(makeTrace({ id: "t-upper", rootName: "POST /ADMIN" }), "admin"), true);
+  // D56: Unicode simple case folding, not just ASCII — the live twin is the
+  // café/CAFÉ integration probe (positionCaseInsensitiveUTF8).
+  assert.equal(mockMatches(makeTrace({ id: "t-cafe", rootName: "order CAFÉ latte" }), "café"), true);
 });
 
 test("nearby (traceId-less) log bodies are OUT of the traces-list reach (contract: trace-carrying rows only)", () => {

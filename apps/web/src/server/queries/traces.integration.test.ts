@@ -690,6 +690,13 @@ test("trace search (D44/D45) against a seeded ClickHouse", async (t) => {
   const tokCarrierC = `zqcarrierc${suffix}`; // logs leg: D42 carrier completion
   const tokTraceless = `zqtraceless${suffix}`; // trace-less row: reachable by NO traces-list query
   const tokAbsent = `zqabsent${suffix}`; // seeded nowhere
+  // D56: the SAME word, case-differing on its non-ASCII letter. ASCII folding
+  // (positionCaseInsensitive) folds c/a/f but not É→é, so only Unicode folding
+  // (positionCaseInsensitiveUTF8) matches the pair; mock's toLowerCase always
+  // could — this is the probe that keeps the one-contract claim true beyond
+  // ASCII.
+  const tokCafeSeeded = `CAFÉ-${suffix}`; // seeded in SPANLEG's span prompt
+  const tokCafeQuery = `café-${suffix}`; // the query form
   const SPANLEG = `it_srch_span_${suffix}`;
   const LOGLEG = `it_srch_log_${suffix}`;
   const srchStart = chTimestamp(BigInt(nowMs) * NS_PER_MS);
@@ -761,7 +768,7 @@ test("trace search (D44/D45) against a seeded ClickHouse", async (t) => {
         layer: "llm",
         gen_ai_request_model: "gpt-4o-mini",
         gen_ai_response_model: "gpt-4o-mini",
-        prompt: `user: hello ${tokPrompt}`,
+        prompt: `user: hello ${tokPrompt} order ${tokCafeSeeded} latte`,
         completion: `assistant: ${tokCompletion}`,
         start_time: srchStart,
         duration_ns: NS_PER_SECOND.toString(),
@@ -948,7 +955,21 @@ test("trace search (D44/D45) against a seeded ClickHouse", async (t) => {
     assert.deepEqual(
       byTraceId.traces.map((tr) => tr.id),
       [filtId("a")],
-      "pasting a trace id into the search box resolved nothing — `positionCaseInsensitive(trace_id, …)` is gone",
+      "pasting a trace id into the search box resolved nothing — `positionCaseInsensitiveUTF8(trace_id, …)` is gone",
+    );
+  });
+
+  // D56 (S2.0 L1): shown RED under the pre-D56 ASCII function — with
+  // `positionCaseInsensitive` the É→é fold never happens and this returns
+  // nothing; only `positionCaseInsensitiveUTF8` in EVERY freeTextClauses
+  // predicate turns it green. Mock's toLowerCase side of the same pair is
+  // asserted in the parity table below and in data.test.ts.
+  await t.test("D56 Unicode case folding: a query case-differing on a non-ASCII letter still matches (café finds CAFÉ)", async () => {
+    const r = await queryTraceSearch({ q: tokCafeQuery });
+    assert.deepEqual(
+      r.traces.map((tr) => tr.id),
+      [SPANLEG],
+      "café did not find CAFÉ — a live predicate is folding ASCII (positionCaseInsensitive) instead of Unicode (positionCaseInsensitiveUTF8)",
     );
   });
 
@@ -1039,7 +1060,7 @@ test("trace search (D44/D45) against a seeded ClickHouse", async (t) => {
           parentId: "root",
           name: `chat ${tokSpanName}`,
           layer: "llm" as const,
-          llm: llmDetail(`user: hello ${tokPrompt}`, `assistant: ${tokCompletion}`),
+          llm: llmDetail(`user: hello ${tokPrompt} order ${tokCafeSeeded} latte`, `assistant: ${tokCompletion}`),
         }),
       ],
       logs: [],
@@ -1085,6 +1106,7 @@ test("trace search (D44/D45) against a seeded ClickHouse", async (t) => {
       [tokTraceless, false, false], // trace-less rows out, both modes
       [tokAbsent, false, false],
       [tokSpanName.toUpperCase(), true, false], // case-insensitive
+      [tokCafeQuery, true, false], // D56: non-ASCII case pair — both modes fold Unicode
       [`${tokPrompt} ${tokCompletion}`, true, false], // AND across fields, one trace
       [`${tokBody} ${tokCarrierP}`, false, true], // AND across log rows, one trace
       [`${tokSpanName} ${tokBody}`, false, false], // AND never spans two traces

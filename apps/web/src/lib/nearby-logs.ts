@@ -17,9 +17,8 @@ export const NEARBY_LOG_WINDOW_S = 10;
 export const NEARBY_LOG_WINDOW_NS = NEARBY_LOG_WINDOW_S * 1_000_000_000;
 
 /**
- * Nearby rows are capped the same way the traces list is (`DEFAULT_TRACE_LIMIT`
- * in `server/queries/traces.ts`). At the cap the rail's counter carries an
- * explicit truncation marker — it must never claim a row it did not render
- * (D13/D21, kickoff Decision 5).
+ * Hard cap on nearby rows fetched for one trace (kickoff Decision 5). At the
+ * cap the rail's counter carries an explicit truncation marker — it must never
+ * claim a row it did not render (D13/D21).
  */
 export const NEARBY_LOG_CAP = 200;
