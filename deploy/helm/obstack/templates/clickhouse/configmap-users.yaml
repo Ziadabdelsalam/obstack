@@ -1,0 +1,22 @@
+# K1/D40: one definition of the D11 ClickHouse users. Helm's `.Files` cannot
+# reach outside this chart directory, so files/obstack-users.xml is a copy of
+# deploy/compose/clickhouse/users.d/obstack-users.xml, not a reference to
+# it — pinned byte-for-byte by the contract test in
+# services/ingest/internal/mapping/ rather than trusted to stay in sync.
+#
+# A pre-install hook, weighted before the migrate Job (-5 < 0): ClickHouse
+# itself is a hook too (see deployment.yaml for why), and this ConfigMap is
+# one of its volumes.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-clickhouse-users
+  labels:
+    {{- include "obstack.labels" . | nindent 4 }}
+    app.kubernetes.io/component: clickhouse
+  annotations:
+    "helm.sh/hook": pre-install
+    "helm.sh/hook-weight": "-5"
+data:
+  obstack-users.xml: |-
+{{ .Files.Get "files/obstack-users.xml" | indent 4 }}

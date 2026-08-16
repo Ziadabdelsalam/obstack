@@ -1,0 +1,108 @@
+# A normal chart resource — the DaemonSet form of T1's config
+# (deploy/collector/config.yaml), one collector per node. Everything below is
+# the contract deploy/collector/README.md's "What config.yaml assumes of its
+# DaemonSet" section states this deployment must provide.
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: {{ .Release.Name }}-collector
+  labels:
+    {{- include "obstack.labels" . | nindent 4 }}
+    app.kubernetes.io/component: collector
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: obstack
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: collector
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: obstack
+        app.kubernetes.io/instance: {{ .Release.Name }}
+        app.kubernetes.io/component: collector
+    spec:
+      serviceAccountName: {{ .Release.Name }}-collector
+      # Root, matching docker-compose.yml's own `user: "0:0"` on the same
+      # container: the node's /var/log/pods files (and the DirectoryOrCreate
+      # hostPath file_storage checkpoints into, freshly created by the
+      # kubelet as root:root) are no more readable/writable by the upstream
+      # image's default non-root user than the Docker log directory compose
+      # documents the identical requirement against.
+      securityContext:
+        runAsUser: 0
+        runAsGroup: 0
+      containers:
+        - name: collector
+          image: {{ .Values.collector.image }}
+          args: ["--config", "/etc/otelcol/config.yaml"]
+          env:
+            - name: OBSTACK_INGEST_ENDPOINT
+              value: http://{{ .Release.Name }}-ingest:4318
+            - name: OBSTACK_COLLECTOR_API_KEY
+              value: {{ .Values.collector.apiKey | quote }}
+            - name: OBSTACK_COLLECTOR_EXCLUDE_CONTAINER
+              value: {{ .Values.collector.excludeContainer | quote }}
+            - name: OBSTACK_COLLECTOR_STORAGE_DIR
+              value: {{ .Values.collector.storageDir | quote }}
+          ports:
+            # hostPort, not routed through a Service: templates/demo/pod.yaml
+            # reaches this node's own collector via the Downward API's
+            # status.hostIP, so k8s_attributes' `from: connection` pod
+            # association sees the sending pod's real, un-NATed source IP
+            # (D37.1) rather than a Service's.
+            - name: otlp-grpc
+              containerPort: 4317
+              hostPort: 4317
+            - name: otlp-http
+              containerPort: 4318
+              hostPort: 4318
+            - name: health
+              containerPort: 13133
+          volumeMounts:
+            - name: config
+              mountPath: /etc/otelcol
+              readOnly: true
+            - name: pod-logs
+              mountPath: /var/log/pods
+              readOnly: true
+            # Where /var/log/pods holds symlinks into this directory instead
+            # of real files (Docker-backed nodes) rather than plain files
+            # (kind's containerd nodes, this config's proven runtime), the
+            # tail resolves to nothing without it too. No `type:` check: on a
+            # containerd-only node this path need not exist at all.
+            - name: docker-containers
+              mountPath: /var/lib/docker/containers
+              readOnly: true
+            - name: storage
+              mountPath: {{ .Values.collector.storageDir }}
+          readinessProbe:
+            httpGet:
+              path: /
+              port: health
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /
+              port: health
+            initialDelaySeconds: 15
+            periodSeconds: 15
+      volumes:
+        - name: config
+          configMap:
+            name: {{ .Release.Name }}-collector
+        - name: pod-logs
+          hostPath:
+            path: /var/log/pods
+            type: Directory
+        - name: docker-containers
+          hostPath:
+            path: /var/lib/docker/containers
+        - name: storage
+          # Writable, per-node, and outlives the collector's own pod restarts
+          # (T1 review escalation) — an emptyDir does not survive a restart,
+          # which is exactly the gap file_storage checkpointing closes.
+          hostPath:
+            path: {{ .Values.collector.storageDir }}
+            type: DirectoryOrCreate

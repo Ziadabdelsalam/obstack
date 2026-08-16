@@ -1,0 +1,19 @@
+# So a caller (T5's stack-on-kind harness, or a human with kubectl
+# port-forward) has a stable name to POST /chat against instead of a bare
+# Pod's own IP.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-demo
+  labels:
+    {{- include "obstack.labels" . | nindent 4 }}
+    app.kubernetes.io/component: demo
+spec:
+  selector:
+    app.kubernetes.io/name: obstack
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: demo
+  ports:
+    - name: http
+      port: 8000
+      targetPort: http

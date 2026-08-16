@@ -1,0 +1,57 @@
+# A normal chart resource (no hook annotation), created only after every
+# pre-install hook — ClickHouse and the migrate Job among them — has already
+# finished. `OBSTACK_MIGRATE_ON_BOOT=false` means these pods only verify the
+# schema at boot (services/ingest/cmd/ingest/main.go's ensureSchema) and log
+# "schema verified" — the migrate Job is the sprint's one migration runner
+# (deploy/compose/README.md's "Exactly one migration runner per upgrade").
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-ingest
+  labels:
+    {{- include "obstack.labels" . | nindent 4 }}
+    app.kubernetes.io/component: ingest
+spec:
+  replicas: {{ .Values.ingest.replicaCount }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: obstack
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: ingest
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: obstack
+        app.kubernetes.io/instance: {{ .Release.Name }}
+        app.kubernetes.io/component: ingest
+    spec:
+      containers:
+        - name: ingest
+          image: {{ .Values.ingest.image }}
+          imagePullPolicy: {{ .Values.ingest.pullPolicy }}
+          env:
+            - name: CLICKHOUSE_DSN
+              value: clickhouse://obstack_ingest:{{ .Values.clickhouse.ingestPassword }}@{{ .Release.Name }}-clickhouse:9000/obstack
+            - name: OBSTACK_API_KEYS
+              value: {{ .Values.ingest.apiKeys | quote }}
+            - name: OBSTACK_MIGRATE_ON_BOOT
+              value: "false"
+          ports:
+            - name: otlp-grpc
+              containerPort: 4317
+            - name: otlp-http
+              containerPort: 4318
+            - name: admin
+              containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: admin
+            initialDelaySeconds: 3
+            periodSeconds: 3
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: admin
+            initialDelaySeconds: 10
+            periodSeconds: 10

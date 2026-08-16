@@ -1,0 +1,90 @@
+# CI-grade ClickHouse (D35) — one replica, emptyDir storage, no PVC. It is a
+# **pre-install hook**, not a normal chart resource, for one reason: Helm
+# creates every pre-install hook (in `helm.sh/hook-weight` order) and waits
+# for them to finish *before* it creates any of the chart's normal
+# resources — proven empirically (a plain, non-hook Deployment in the same
+# chart as a pre-install Job simply does not exist yet when that Job runs).
+# The migrate Job below (templates/ingest/migrate-job.yaml) is itself a
+# pre-install/pre-upgrade hook (deploy/compose/README.md's design of
+# record), so ClickHouse has to be a hook too, at an earlier weight, or the
+# very first `helm install` has no database for that Job to migrate.
+#
+# It is annotated `pre-install` only, never `pre-upgrade`: once created it is
+# never deleted or recreated by a later `helm upgrade` (Helm's default
+# hook-delete-policy, before-hook-creation, only fires the next time the SAME
+# hook event fires again), so its emptyDir survives every upgrade in a
+# release's lifetime — good enough for CI/kind, where the whole cluster is
+# thrown away between runs. See README.md's scope boundary for why M4, which
+# wants ClickHouse to survive a pod eviction too, should replace this with a
+# StatefulSet and a PVC instead of inheriting it silently, and for the
+# `helm uninstall` caveat hook resources carry.
+#
+# Helm does not wait for a hook Deployment's rollout to finish before moving
+# to the next hook weight (only Job completion blocks) — real readiness is
+# the migrate Job's own initContainer's job, the same role compose's
+# `depends_on: condition: service_healthy` plays for the ingest container.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-clickhouse
+  labels:
+    {{- include "obstack.labels" . | nindent 4 }}
+    app.kubernetes.io/component: clickhouse
+  annotations:
+    "helm.sh/hook": pre-install
+    "helm.sh/hook-weight": "-5"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: obstack
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: clickhouse
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: obstack
+        app.kubernetes.io/instance: {{ .Release.Name }}
+        app.kubernetes.io/component: clickhouse
+    spec:
+      containers:
+        - name: clickhouse
+          image: {{ .Values.clickhouse.image }}
+          env:
+            - name: OBSTACK_CLICKHOUSE_INGEST_PASSWORD
+              value: {{ .Values.clickhouse.ingestPassword | quote }}
+            - name: OBSTACK_CLICKHOUSE_WEB_PASSWORD
+              value: {{ .Values.clickhouse.webPassword | quote }}
+          ports:
+            - name: http
+              containerPort: 8123
+            - name: native
+              containerPort: 9000
+          volumeMounts:
+            # Mounted file-by-file, matching docker-compose.yml's own mount:
+            # the image's entrypoint writes its own default-user.xml into
+            # users.d, so the directory itself must stay writable.
+            - name: users-xml
+              mountPath: /etc/clickhouse-server/users.d/obstack-users.xml
+              subPath: obstack-users.xml
+              readOnly: true
+            - name: data
+              mountPath: /var/lib/clickhouse
+          readinessProbe:
+            httpGet:
+              path: /ping
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 3
+          livenessProbe:
+            httpGet:
+              path: /ping
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 10
+      volumes:
+        - name: users-xml
+          configMap:
+            name: {{ .Release.Name }}-clickhouse-users
+        - name: data
+          emptyDir: {}

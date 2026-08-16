@@ -1,0 +1,139 @@
+# obstack-collector — the Kubernetes / DaemonSet form.
+#
+# A CONFIGURATION over an unmodified upstream image (D14, PRD §5
+# "distribution, not fork"): the binary is upstream's, only the pipeline
+# below is obstack's. Image pin and the verification that it actually
+# contains `file_log` and `k8s_attributes` — the core
+# `otel/opentelemetry-collector` distro carries neither — are in README.md.
+#
+# T4 packages this file, byte-for-byte, as the DaemonSet's ConfigMap; it is
+# not re-derived there. It receives OTLP from instrumented apps, tails every
+# other container's stdout/stderr from the node's pod log directory, and
+# forwards both to ingest with the workspace's bearer key.
+#
+# The compose form (config.compose.yaml) is a second, separate file: outside
+# a cluster there is no Kubernetes API for k8sattributes to query and no
+# /var/log/pods convention for filelog to read, so that file does not carry
+# either — see its own header for what compose gets instead.
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+  # The kubelet's own convention: every container's stdout/stderr, one file
+  # per container, at /var/log/pods/<namespace>_<pod>_<uid>/<container>/*.log
+  # (T4's DaemonSet mounts that host path read-only). The `container`
+  # operator parses the line shape and — because the path already names the
+  # namespace, pod and container — fills
+  # k8s.namespace.name/k8s.pod.name/k8s.container.name on the resource
+  # before k8sattributes ever runs.
+  #
+  # `format` is deliberately left unset so the operator auto-detects it per
+  # file. Runtimes differ: Docker's json-file driver writes
+  # `{"log":...,"stream":...,"time":...}`, containerd and cri-o write CRI
+  # (`<ts> stdout F <line>`), and kind — the runtime this config is proven
+  # against — is containerd. Pinning `format: docker` makes every CRI line
+  # fail the operator ("expected { character for map value"): the body keeps
+  # its raw `<ts> stdout F ` prefix, the timestamp does not parse, and NO
+  # k8s.* attributes are derived at all, which silently empties the
+  # (namespace, pod) key the nearby-log join is built on.
+  file_log:
+    include:
+      - /var/log/pods/*/*/*.log
+    exclude:
+      # D37.3, the correctness mechanism, not a tuning knob: every container
+      # whose OTel SDK already exports logs via OTLP belongs here, so filelog
+      # never reads its file and nothing lands twice. The container name is
+      # the same one the pod log path uses — no lookup needed.
+      #
+      # Supplied by the deployment rather than edited into this file: T4's
+      # DaemonSet sets OBSTACK_COLLECTOR_EXCLUDE_CONTAINER to the demo pod's
+      # instrumented container name, so the chart's ConfigMap stays a
+      # byte-for-byte copy of this file instead of a second, drifting fork of
+      # it (K1/D40). Unset means the sentinel below, which matches no path.
+      # Customers with more than one instrumented container add literal globs
+      # to this list — `- /var/log/pods/*/<container-name>/*.log`.
+      - /var/log/pods/*/${env:OBSTACK_COLLECTOR_EXCLUDE_CONTAINER:-__none__}/*.log
+    include_file_path: true
+    start_at: beginning
+    # Checkpointed via file_storage below: without it every restart re-reads
+    # every file from `start_at: beginning` and re-ships every historical
+    # line — a second duplicate door D37.3's exclusion does not cover, since
+    # it excludes a whole container, not "lines already sent."
+    storage: file_storage
+    operators:
+      - type: container
+
+processors:
+  batch: {}
+
+  # Enriches every span and log resource with pod identity (D37.1) — for an
+  # OTLP-received span that is the only source of it, since no log path was
+  # parsed. `extract.metadata` is exactly the set ingest has columns for
+  # (`internal/mapping/mapping.go`: k8s.namespace.name, k8s.pod.name,
+  # k8s.container.name from the log path, k8s.node.name); labels and owner
+  # references are deliberately not extracted — they would land in the
+  # attributes Map and cost a wider RBAC (replicasets) for data nothing
+  # reads. Two association rules because OTLP-received and
+  # filelog-tailed records arrive at this processor differently — an app's
+  # OTLP connection carries its pod's source IP; a filelog-tailed record
+  # already carries k8s.pod.name/k8s.namespace.name from the container
+  # operator above.
+  k8s_attributes:
+    auth_type: serviceAccount
+    pod_association:
+      - sources:
+          - from: connection
+      - sources:
+          - from: resource_attribute
+            name: k8s.pod.name
+          - from: resource_attribute
+            name: k8s.namespace.name
+    extract:
+      metadata:
+        - k8s.pod.name
+        - k8s.namespace.name
+        - k8s.node.name
+
+exporters:
+  otlp_http:
+    endpoint: "${env:OBSTACK_INGEST_ENDPOINT:-http://ingest:4318}"
+    headers:
+      # Phase-1 bearer key (D4), taken from the collector's own env (D39
+      # rider): the same wire format apps use, so ingest treats the
+      # collector as any other authenticated client. Production supplies
+      # this via a values file or a mounted secret — never a committed
+      # literal.
+      Authorization: "Bearer ${env:OBSTACK_COLLECTOR_API_KEY}"
+
+extensions:
+  # Explicit 0.0.0.0: the default (localhost:13133) only answers loopback
+  # connections, which a kubelet probe against the pod IP does not use.
+  health_check:
+    endpoint: 0.0.0.0:13133
+
+  # Checkpoints each tailed file's read offset to disk so a restart resumes
+  # instead of re-shipping from the top (T1 review escalation). The
+  # directory must be writable and must survive the collector's own
+  # restarts — a scratch emptyDir does not — so it is env-supplied rather
+  # than baked in here, the same mechanism as the exclusion above.
+  # `create_directory: true` because the first boot's volume is empty.
+  file_storage:
+    directory: ${env:OBSTACK_COLLECTOR_STORAGE_DIR:-/var/lib/obstack-collector}
+    create_directory: true
+
+service:
+  extensions: [health_check, file_storage]
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [k8s_attributes, batch]
+      exporters: [otlp_http]
+    logs:
+      receivers: [otlp, file_log]
+      processors: [k8s_attributes, batch]
+      exporters: [otlp_http]

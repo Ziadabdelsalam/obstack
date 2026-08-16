@@ -1,0 +1,16 @@
+# T1's config.yaml, packaged byte-for-byte (deploy/collector/README.md: "T4
+# packages this file, byte-for-byte, as the DaemonSet's ConfigMap; it is not
+# re-derived there"). files/collector-config.yaml is that copy — pinned
+# against deploy/collector/config.yaml by the contract test in
+# services/ingest/internal/mapping/, the same K1/D40 mechanism as the
+# ClickHouse users config.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-collector
+  labels:
+    {{- include "obstack.labels" . | nindent 4 }}
+    app.kubernetes.io/component: collector
+data:
+  config.yaml: |-
+{{ .Files.Get "files/collector-config.yaml" | indent 4 }}
