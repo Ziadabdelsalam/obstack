@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import test from "node:test";
 import { createClient } from "@clickhouse/client";
+import { NEARBY_LOG_CAP } from "@/lib/nearby-logs";
 
 // run with: docker compose -f deploy/compose/docker-compose.yml up -d --wait clickhouse
 // then:     npm test --workspace apps/web
@@ -298,6 +299,74 @@ test("nearby-logs join (D37.4) against a seeded ClickHouse", async (t) => {
     assert.ok(
       !bodies.includes(noPodBody),
       "a pod-less log leaked into the pod-carrying trace's nearby logs",
+    );
+  });
+
+  // E2: a chatty pod files NEARBY_LOG_CAP + 1 trace-less rows in the window
+  // (one more than the query fetches, `NEARBY_LOG_CAP + 1`, so ordering alone
+  // decides which are dropped), all chronologically before one row that lands
+  // inside the trace's own [min_start, max_end] interval. Under a bare
+  // `ORDER BY timestamp LIMIT fetch_limit` the chatty filler alone fills the
+  // fetch and the in-interval row never survives selection; proximity rank (0
+  // for anything in-interval) always sorts it first regardless of filler
+  // count. This subtest seeds its own trace/pod so it cannot perturb the
+  // counts asserted above.
+  await t.test("falsification probe (E2): a chatty pod cannot evict an in-interval row from the cap", async () => {
+    const chattyId = `it_chatty_${suffix}`;
+    const chattyPod = `it-chattypod-${suffix}`;
+    const chattyStart = t0 + BigInt(3_600) * NS_PER_SECOND; // offset well clear of the main trace's own window
+    const chattyDuration = durationNs;
+    const inIntervalBody = `PROBE:chatty-in-interval ${suffix}`;
+
+    await seed.insert({
+      table: "spans",
+      format: "JSONEachRow",
+      values: [
+        spanRow({
+          trace_id: chattyId,
+          span_id: "s1",
+          start_time: chTimestamp(chattyStart),
+          duration_ns: chattyDuration.toString(),
+          k8s_namespace: namespace,
+          k8s_pod: chattyPod,
+        }),
+      ],
+    });
+
+    const fillers = Array.from({ length: NEARBY_LOG_CAP + 1 }, (_, i) =>
+      logRow({
+        trace_id: "",
+        // chronologically before chattyStart, spaced 1ms apart, all inside the
+        // ±window but outside [chattyStart, chattyStart+duration] — so every
+        // filler has a strictly positive proximity rank.
+        timestamp: chTimestamp(chattyStart - windowNs + BigInt(i) * NS_PER_MS),
+        body: `PROBE:chatty-filler-${i} ${suffix}`,
+        k8s_namespace: namespace,
+        k8s_pod: chattyPod,
+      }),
+    );
+    const inIntervalRow = logRow({
+      trace_id: "",
+      timestamp: chTimestamp(chattyStart + BigInt(2) * NS_PER_SECOND), // inside [chattyStart, chattyStart+5s] — proximity rank 0
+      body: inIntervalBody,
+      k8s_namespace: namespace,
+      k8s_pod: chattyPod,
+    });
+    await seed.insert({ table: "logs", format: "JSONEachRow", values: [...fillers, inIntervalRow] });
+
+    const chattyTrace = await queryTrace(chattyId);
+    assert.ok(chattyTrace, "queryTrace found no row for the chatty-pod trace");
+    assert.ok(
+      chattyTrace.logs.some((l) => l.body === inIntervalBody),
+      `the in-interval row was evicted by ${NEARBY_LOG_CAP} chronologically-earlier filler rows — selection is not proximity-ranked`,
+    );
+    // E3: the same fixture has NEARBY_LOG_CAP + 1 real candidates — the render
+    // must still cap at exactly NEARBY_LOG_CAP; the extra fetched row proves
+    // truncation internally but is never one of the rows returned.
+    assert.equal(
+      chattyTrace.logs.length,
+      NEARBY_LOG_CAP,
+      `queryTrace returned ${chattyTrace.logs.length} nearby rows for a fixture with ${NEARBY_LOG_CAP + 1} real candidates — the cap+1 fetch is leaking past the slice`,
     );
   });
 });

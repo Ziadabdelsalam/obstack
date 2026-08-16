@@ -121,12 +121,33 @@ ORDER BY timestamp`;
  * range read; `INDEX idx_pod k8s_pod TYPE bloom_filter` narrows it further
  * (0002_logs.sql:22,26). Window bound is `[min_start - W, max_end + W]`
  * (kickoff Decision 4), `W` = `NEARBY_LOG_WINDOW_NS`, computed here rather than
- * in JS so the Int64 arithmetic never touches a JS number. Capped at
- * `NEARBY_LOG_CAP` (kickoff Decision 5) — the UI counter never claims more rows
- * than this query can return. The ORDER BY carries a tiebreak beyond
- * `timestamp` (SPANS_SQL's `start_time, span_id` precedent): logs have no
- * unique key, and with a LIMIT a bare timestamp sort would decide *which* rows
- * survive the cap by physical read order.
+ * in JS so the Int64 arithmetic never touches a JS number.
+ *
+ * Selection (E2, reviewer-escalated): the inner subquery orders by proximity —
+ * `greatest(min_start - ts, ts - max_end, 0)`, zero for any row inside the
+ * trace's own `[min_start, max_end]` interval — before `timestamp` and the
+ * existing tiebreak chain (`k8s_pod, k8s_container, body`; logs have no unique
+ * key, so a bare `timestamp` sort under a LIMIT would let physical read order
+ * decide which rows survive the cap). A chatty pod that emits more than
+ * `NEARBY_LOG_CAP` trace-less rows in the window could otherwise fill the cap
+ * with rows chronologically earliest in the window and evict rows that are
+ * actually inside the trace's own span — proximity rank fixes that: in-interval
+ * rows always sort first, so they are never evicted below `NEARBY_LOG_CAP`
+ * other candidates. Below the cap this changes nothing: rank ties (mostly 0)
+ * fall through to `timestamp` and the query returns the same set as before.
+ *
+ * Truncation (E3): fetches `NEARBY_LOG_CAP + 1` — the caller slices to
+ * `NEARBY_LOG_CAP` and treats a fetch of `NEARBY_LOG_CAP + 1` as proof more
+ * rows exist, rather than assuming it from a bare `= NEARBY_LOG_CAP` count
+ * (indistinguishable from "there were exactly that many"). The slice has to
+ * happen on THIS proximity order, not on a chronological one: an outer
+ * `ORDER BY timestamp` here would put the extra row last by time rather than
+ * last by priority, so the caller's slice could drop an in-interval row
+ * instead of the lowest-priority filler it fetched purely to detect
+ * truncation. Chronological order for the rail already comes from
+ * `LogsRail.tsx`'s own `sort((a, b) => a.atMs - b.atMs)` before it renders —
+ * this query does not need to re-sort what a downstream consumer already
+ * sorts, and must not sort in a way that corrupts the slice above it.
  */
 const NEARBY_LOGS_SQL = `
 SELECT
@@ -150,8 +171,14 @@ WHERE workspace_id = {workspace_id:String}
   )
   AND timestamp >= fromUnixTimestamp64Nano({min_start_ns:Int64} - {window_ns:Int64})
   AND timestamp <= fromUnixTimestamp64Nano({min_start_ns:Int64} + {duration_ns:Int64} + {window_ns:Int64})
-ORDER BY timestamp, k8s_pod, k8s_container, body
-LIMIT {cap:UInt32}`;
+ORDER BY
+    greatest(
+        {min_start_ns:Int64} - toUnixTimestamp64Nano(timestamp),
+        toUnixTimestamp64Nano(timestamp) - ({min_start_ns:Int64} + {duration_ns:Int64}),
+        0
+    ),
+    timestamp, k8s_pod, k8s_container, body
+LIMIT {fetch_limit:UInt32}`;
 
 /**
  * Trace detail: one summary lookup, then spans, solid logs and nearby logs by
@@ -170,16 +197,22 @@ export async function queryTrace(id: string): Promise<Trace | undefined> {
     trace_id: id,
     min_start_ns: summary.min_start_ns,
   };
-  const [spanRows, logRows, nearbyLogRows] = await Promise.all([
+  const [spanRows, logRows, nearbyFetched] = await Promise.all([
     queryRows<SpanRow>(SPANS_SQL, params),
     queryRows<LogRow>(LOGS_SQL, params),
     queryRows<LogRow>(NEARBY_LOGS_SQL, {
       ...params,
       duration_ns: summary.duration_ns,
       window_ns: NEARBY_LOG_WINDOW_NS,
-      cap: NEARBY_LOG_CAP,
+      fetch_limit: NEARBY_LOG_CAP + 1,
     }),
   ]);
+  // E3: fetching one past the cap turns "truncated" into a fact instead of a
+  // guess — `nearbyFetched.length > NEARBY_LOG_CAP` is the only honest way to
+  // know more rows exist; a bare `=== NEARBY_LOG_CAP` count is indistinguishable
+  // from "there were exactly that many". The rendered set is still sliced to
+  // the cap here; only the extra fetched row is used, never shown.
+  const nearbyLogRows = nearbyFetched.slice(0, NEARBY_LOG_CAP);
   return toTrace(summary, spanRows, logRows, nearbyLogRows);
 }
 
