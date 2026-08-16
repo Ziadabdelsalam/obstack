@@ -1,5 +1,6 @@
 import "server-only";
 import type { Trace } from "@/lib/types";
+import { NOW } from "@/mock/generate";
 import { statCards, timeseries } from "@/mock/metrics";
 import { allTraces, getTrace as getMockTrace } from "@/mock/traces";
 import {
@@ -8,10 +9,13 @@ import {
   type OverviewRange,
 } from "@/server/queries/overview";
 import {
-  DEFAULT_TRACE_LIMIT,
+  DEFAULT_TRACE_RANGE_MS,
+  TRACE_PAGE_SIZE,
   queryTrace,
-  queryTraceList,
+  queryTraceSearch,
+  splitSearchTerms,
   type TraceFilter,
+  type TraceSearchResult,
 } from "@/server/queries/traces";
 
 export type {
@@ -20,7 +24,8 @@ export type {
   OverviewRange,
   OverviewStat,
 } from "@/server/queries/overview";
-export type { TraceFilter } from "@/server/queries/traces";
+export type { TraceFilter, TraceSearchResult } from "@/server/queries/traces";
+export { DEFAULT_TRACE_RANGE_MS, TRACE_PAGE_SIZE } from "@/server/queries/traces";
 
 /** The workspace every live query binds to — surfaced so pages can label it (F6). */
 export { workspaceId } from "@/server/clickhouse";
@@ -52,9 +57,19 @@ export const dataMode: DataMode = resolveMode();
 // Which routes render live data is a presentation concern shared with client
 // components, so the D21 registry lives in `@/lib/live-routes`, not here.
 
-/** Mock search keeps its full-text reach over spans and logs; live search is summary-level. */
-function mockMatches(trace: Trace, q: string): boolean {
-  if (!q) return true;
+/**
+ * Mock free text — the mock half of the search contract (`search-contract.md`;
+ * live half: `queries/traces.ts`). Reach in view-model terms: summary fields ∪
+ * span names ∪ `llm.prompt`/`llm.completion` ∪ trace-carrying log bodies —
+ * nearby rows (no `traceId`) are OUT, exactly as live's `trace_id != ''` leg.
+ * Terms AND; each is a case-insensitive substring over any one field. Terms
+ * are whitespace-split, so no term can span the `join(" ")` field boundary.
+ * Exported for the parity tests, which assert this and the live SQL return the
+ * same verdicts over an equivalent fixture.
+ */
+export function mockMatches(trace: Trace, q: string): boolean {
+  const terms = splitSearchTerms(q);
+  if (terms.length === 0) return true;
   const hay = [
     trace.rootName,
     trace.id,
@@ -62,32 +77,72 @@ function mockMatches(trace: Trace, q: string): boolean {
     ...trace.services,
     ...trace.spans.map((s) => s.name),
     ...trace.spans.map((s) => s.llm?.prompt ?? ""),
-    ...trace.logs.map((l) => l.body),
+    ...trace.spans.map((s) => s.llm?.completion ?? ""),
+    ...trace.logs.filter((l) => l.traceId).map((l) => l.body),
   ]
     .join(" ")
     .toLowerCase();
-  return q
-    .toLowerCase()
-    .split(/\s+/)
-    .every((term) => hay.includes(term));
+  return terms.every((term) => hay.includes(term.toLowerCase()));
+}
+
+/** The PRD §8 structured filters plus the D50 time bound, mock side (search-contract.md). */
+function mockMatchesFilter(trace: Trace, filter: TraceFilter, sinceMs: number): boolean {
+  const status = filter.status ?? "all";
+  const maxCost = filter.maxCostUsd ?? -1;
+  return (
+    Date.parse(trace.startedAt) >= sinceMs &&
+    (status === "all" || trace.status === status) &&
+    trace.durationMs >= (filter.minMs ?? 0) &&
+    trace.costUsd >= (filter.minCostUsd ?? 0) &&
+    (maxCost < 0 || trace.costUsd <= maxCost) &&
+    (!filter.service || trace.services.includes(filter.service)) &&
+    (!filter.model || trace.models.includes(filter.model)) &&
+    mockMatches(trace, filter.q ?? "")
+  );
+}
+
+/**
+ * Mock search over an explicit trace list: filter, order, page, exact filtered
+ * total — the same D44 contract shape `queryTraceSearch` answers. The list is
+ * a parameter so unit tests can prove pagination and ordering over fixtures
+ * larger than a page; `searchTraces` below always passes `allTraces`. Order
+ * matches live's `ORDER BY min(min_start) DESC, trace_id`: start descending,
+ * then trace id ascending by codepoint (ClickHouse `String` order). Reference
+ * clock (D50): the mock clock `NOW`, never the wall clock — mock traces are
+ * generated inside ~6h behind `NOW`, so a wall-clock reference would empty
+ * every mock surface (F6/F7).
+ */
+export function mockSearchTraces(all: Trace[], filter: TraceFilter): TraceSearchResult {
+  const sinceMs = NOW - (filter.rangeMs ?? DEFAULT_TRACE_RANGE_MS);
+  const matched = all
+    .filter((t) => mockMatchesFilter(t, filter, sinceMs))
+    .sort(
+      (a, b) =>
+        Date.parse(b.startedAt) - Date.parse(a.startedAt) ||
+        (a.id < b.id ? -1 : a.id > b.id ? 1 : 0),
+    );
+  const page = Math.max(1, Math.floor(filter.page ?? 1));
+  const start = (page - 1) * TRACE_PAGE_SIZE;
+  return { traces: matched.slice(start, start + TRACE_PAGE_SIZE), total: matched.length };
 }
 
 export async function getTrace(id: string): Promise<Trace | undefined> {
   return dataMode === "live" ? queryTrace(id) : getMockTrace(id);
 }
 
+/** The traces-list entry point (D44): one page plus the exact filtered total. */
+export async function searchTraces(filter: TraceFilter = {}): Promise<TraceSearchResult> {
+  return dataMode === "live" ? queryTraceSearch(filter) : mockSearchTraces(allTraces, filter);
+}
+
+/**
+ * Pre-D44 list shape: page 1 of `searchTraces`, total dropped. Still what
+ * `app/traces/page.tsx` renders from; T4 (wave 2) moves that page onto
+ * `searchTraces` and deletes this export along with the second unfiltered
+ * read it exists to serve.
+ */
 export async function listTraces(filter: TraceFilter = {}): Promise<Trace[]> {
-  if (dataMode === "live") return queryTraceList(filter);
-  const status = filter.status ?? "all";
-  return allTraces
-    .filter(
-      (t) =>
-        (status === "all" || t.status === status) &&
-        t.durationMs >= (filter.minMs ?? 0) &&
-        t.costUsd >= (filter.minCostUsd ?? 0) &&
-        mockMatches(t, filter.q ?? ""),
-    )
-    .slice(0, filter.limit ?? DEFAULT_TRACE_LIMIT);
+  return (await searchTraces(filter)).traces;
 }
 
 export async function getOverview(range: OverviewRange = "6h"): Promise<Overview> {

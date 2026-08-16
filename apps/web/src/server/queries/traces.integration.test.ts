@@ -3,6 +3,8 @@ import { randomBytes } from "node:crypto";
 import test from "node:test";
 import { createClient } from "@clickhouse/client";
 import { NEARBY_LOG_CAP } from "@/lib/nearby-logs";
+// type-only: erased at runtime, so it cannot run ahead of the env setup below
+import type { Span } from "@/lib/types";
 
 // run with: docker compose -f deploy/compose/docker-compose.yml up -d --wait clickhouse
 // then:     npm test --workspace apps/web
@@ -89,6 +91,10 @@ function spanRow(overrides: {
   k8s_namespace: string;
   k8s_pod: string;
   parent_span_id?: string;
+  name?: string;
+  service?: string;
+  status_code?: string;
+  cost_usd?: number;
   layer?: string;
   gen_ai_request_model?: string;
   gen_ai_response_model?: string;
@@ -598,5 +604,402 @@ test("read-time coalesce (D42(d)) against a seeded ClickHouse", async (t) => {
       tieWinner,
       "same-timestamp content rows folded by physical row order — LOGS_SQL's ORDER BY is not total, so this trace's prompt can change after a merge",
     );
+  });
+});
+
+// T1 (D44/D45/D50): the live half of the search contract (search-contract.md)
+// against a real server — pagination and the exact filtered total, the PRD §8
+// structured filters, the free-text semi-join legs, and the D50 time bound.
+// Every probe set here is scoped to this run's own tokens/services, so the
+// rows the earlier tests seeded into the shared workspace can never satisfy or
+// pollute an assertion. The mock half of every assertion lives in
+// data.test.ts; the parity subtest at the bottom pins the two halves to the
+// same verdicts over an equivalent fixture (D13: one contract).
+test("trace search (D44/D45) against a seeded ClickHouse", async (t) => {
+  if (!(await clickhouseReachable())) {
+    t.skip(
+      `no ClickHouse at ${CLICKHOUSE_URL}; start deploy/compose (down -v first) to run this test`,
+    );
+    return;
+  }
+
+  const { queryTraceSearch, TRACE_PAGE_SIZE } = await import("./traces");
+  const { mockMatches } = await import("@/server/data");
+
+  const suffix = randomBytes(6).toString("hex");
+  const HOUR_MS = 3_600_000;
+  const nowMs = Date.now();
+
+  // ---- D44: pagination, deterministic order, the exact filtered total ------
+  // One page plus five, ALL at the same start_time: with min(min_start) equal
+  // across the whole set, only the mandatory trace_id tie-break can order the
+  // pages — under a bare `ORDER BY min(min_start) DESC` the page boundary is
+  // physical-order luck and the exact-sequence assertions below go red.
+  const PAGE_SVC = `svc-page-${suffix}`;
+  const pageCount = TRACE_PAGE_SIZE + 5;
+  const pageIds = Array.from(
+    { length: pageCount },
+    (_, i) => `it_page_${suffix}_${String(i).padStart(3, "0")}`,
+  );
+  const pageStart = chTimestamp(BigInt(nowMs) * NS_PER_MS);
+
+  // ---- PRD §8 filter probes: one control row per filter --------------------
+  // Every filt trace's root name carries FILT_TOKEN, so `q: FILT_TOKEN` scopes
+  // each probe to exactly this set; the excluded control re-appearing means the
+  // clause under test was dropped.
+  const FILT_TOKEN = `filtprobe${suffix}`;
+  const FILT_SVC = `svc-filt-${suffix}`;
+  const OTHER_SVC = `svc-other-${suffix}`;
+  const MODEL_PROBE = `model-probe-${suffix}`;
+  const filtId = (k: string) => `it_filt_${k}_${suffix}`;
+  const filtSpan = (
+    k: string,
+    over: { service?: string; status_code?: string; cost_usd?: number; duration_s?: number; gen_ai_request_model?: string; start_ms?: number },
+  ) =>
+    spanRow({
+      trace_id: filtId(k),
+      span_id: "s1",
+      name: `POST /probe ${FILT_TOKEN}`,
+      service: over.service ?? FILT_SVC,
+      status_code: over.status_code,
+      cost_usd: over.cost_usd,
+      gen_ai_request_model: over.gen_ai_request_model,
+      start_time: chTimestamp(BigInt(over.start_ms ?? nowMs) * NS_PER_MS),
+      duration_ns: (BigInt(over.duration_s ?? 1) * NS_PER_SECOND).toString(),
+      k8s_namespace: "",
+      k8s_pod: "",
+    });
+
+  // ---- D45 free-text legs + parity fixture ---------------------------------
+  const rootTok = `zqroot${suffix}`; // summary leg: root name
+  const tokSpanName = `zqspanname${suffix}`; // spans leg: child span name
+  const tokPrompt = `zqprompt${suffix}`; // spans leg: prompt column
+  const tokCompletion = `zqcompletion${suffix}`; // spans leg: completion column
+  const tokBody = `zqbody${suffix}`; // logs leg: narrative body
+  const tokCarrierP = `zqcarrierp${suffix}`; // logs leg: D42 carrier prompt
+  const tokCarrierC = `zqcarrierc${suffix}`; // logs leg: D42 carrier completion
+  const tokTraceless = `zqtraceless${suffix}`; // trace-less row: reachable by NO traces-list query
+  const tokAbsent = `zqabsent${suffix}`; // seeded nowhere
+  const SPANLEG = `it_srch_span_${suffix}`;
+  const LOGLEG = `it_srch_log_${suffix}`;
+  const srchStart = chTimestamp(BigInt(nowMs) * NS_PER_MS);
+
+  await seed.insert({
+    table: "spans",
+    format: "JSONEachRow",
+    values: [
+      ...pageIds.map((id) =>
+        spanRow({
+          trace_id: id,
+          span_id: "s1",
+          service: PAGE_SVC,
+          start_time: pageStart,
+          duration_ns: NS_PER_SECOND.toString(),
+          k8s_namespace: "",
+          k8s_pod: "",
+        }),
+      ),
+      filtSpan("a", { cost_usd: 0.01, gen_ai_request_model: "gpt-4o-mini" }),
+      filtSpan("b", { status_code: "error" }),
+      filtSpan("c", { duration_s: 10 }),
+      filtSpan("d", { cost_usd: 0.05 }),
+      filtSpan("e", { gen_ai_request_model: MODEL_PROBE }),
+      filtSpan("f", { start_ms: nowMs - 7 * HOUR_MS }), // outside the 6h default window
+      filtSpan("g", { service: OTHER_SVC }),
+      // SPANLEG: every token lives on SPAN rows only — root name in the
+      // summary, the rest reachable through the spans semi-join alone.
+      spanRow({
+        trace_id: SPANLEG,
+        span_id: "root",
+        name: `POST /${rootTok}`,
+        start_time: srchStart,
+        duration_ns: NS_PER_SECOND.toString(),
+        k8s_namespace: "",
+        k8s_pod: "",
+      }),
+      spanRow({
+        trace_id: SPANLEG,
+        span_id: "llm1",
+        parent_span_id: "root",
+        name: `chat ${tokSpanName}`,
+        layer: "llm",
+        gen_ai_request_model: "gpt-4o-mini",
+        gen_ai_response_model: "gpt-4o-mini",
+        prompt: `user: hello ${tokPrompt}`,
+        completion: `assistant: ${tokCompletion}`,
+        start_time: srchStart,
+        duration_ns: NS_PER_SECOND.toString(),
+        k8s_namespace: "",
+        k8s_pod: "",
+      }),
+      // LOGLEG: an event-form-only trace — its LLM span's own columns are
+      // empty; every token lives on LOG rows only (logs semi-join alone).
+      spanRow({
+        trace_id: LOGLEG,
+        span_id: "root",
+        name: "POST /worker",
+        start_time: srchStart,
+        duration_ns: NS_PER_SECOND.toString(),
+        k8s_namespace: "",
+        k8s_pod: "",
+      }),
+      spanRow({
+        trace_id: LOGLEG,
+        span_id: "llm1",
+        parent_span_id: "root",
+        layer: "llm",
+        gen_ai_request_model: "gpt-4o-mini",
+        prompt: "",
+        completion: "",
+        start_time: srchStart,
+        duration_ns: NS_PER_SECOND.toString(),
+        k8s_namespace: "",
+        k8s_pod: "",
+      }),
+    ],
+  });
+
+  await seed.insert({
+    table: "logs",
+    format: "JSONEachRow",
+    values: [
+      // D42 content carriers (bodyless): excluded from the rail's DISPLAY, but
+      // IN the search reach (D45 — the UI folds this content into LlmDetail).
+      logRow({
+        trace_id: LOGLEG,
+        span_id: "llm1",
+        timestamp: srchStart,
+        body: "",
+        prompt: `event prompt ${tokCarrierP}`,
+        k8s_namespace: "",
+        k8s_pod: "",
+      }),
+      logRow({
+        trace_id: LOGLEG,
+        span_id: "llm1",
+        timestamp: srchStart,
+        body: "",
+        completion: `event completion ${tokCarrierC}`,
+        k8s_namespace: "",
+        k8s_pod: "",
+      }),
+      logRow({
+        trace_id: LOGLEG,
+        timestamp: srchStart,
+        body: `worker heartbeat ${tokBody}`,
+        k8s_namespace: "",
+        k8s_pod: "",
+      }),
+      // trace-less: the traces list must never reach it (contract: trace-carrying rows only)
+      logRow({
+        trace_id: "",
+        timestamp: srchStart,
+        body: `stray ${tokTraceless}`,
+        k8s_namespace: "",
+        k8s_pod: "",
+      }),
+    ],
+  });
+
+  await t.test("D44: the total is the exact filtered count over the page's own predicate, not the page length", async () => {
+    const page1 = await queryTraceSearch({ service: PAGE_SVC });
+    assert.equal(
+      page1.total,
+      pageCount,
+      `total must be the filtered count (${pageCount}), not the page length (${page1.traces.length})`,
+    );
+    assert.equal(page1.traces.length, TRACE_PAGE_SIZE);
+    assert.deepEqual(
+      page1.traces.map((tr) => tr.id),
+      pageIds.slice(0, TRACE_PAGE_SIZE),
+      "equal-start traces must order by trace id ascending — the mandatory D44 tie-break",
+    );
+  });
+
+  await t.test("D44: page 2 is a disjoint, ordered continuation reproducible from its parameters alone", async () => {
+    const page2 = await queryTraceSearch({ service: PAGE_SVC, page: 2 });
+    assert.deepEqual(
+      page2.traces.map((tr) => tr.id),
+      pageIds.slice(TRACE_PAGE_SIZE),
+      "page 2 must be the continuation after page 1 — an ignored offset repeats page 1",
+    );
+    assert.equal(page2.total, pageCount, "the total must not depend on which page was asked for");
+  });
+
+  await t.test("PRD §8: each filter narrows with a control row that would pass without it", async () => {
+    const ids = async (filter: Parameters<typeof queryTraceSearch>[0]) =>
+      (await queryTraceSearch(filter)).traces.map((tr) => tr.id).sort();
+    // baseline: everything carrying the probe token inside the 6h window
+    assert.deepEqual(await ids({ q: FILT_TOKEN }), ["a", "b", "c", "d", "e", "g"].map(filtId), "baseline: f is time-excluded, everything else present");
+    // service — control: g (present in the baseline, gone here)
+    assert.deepEqual(await ids({ q: FILT_TOKEN, service: FILT_SVC }), ["a", "b", "c", "d", "e"].map(filtId));
+    // status — control: a
+    assert.deepEqual(await ids({ q: FILT_TOKEN, status: "error" }), [filtId("b")]);
+    // duration — control: a (1s)
+    assert.deepEqual(await ids({ q: FILT_TOKEN, minMs: 5000 }), [filtId("c")]);
+    // model — control: a (gpt-4o-mini)
+    assert.deepEqual(await ids({ q: FILT_TOKEN, model: MODEL_PROBE }), [filtId("e")]);
+    // cost floor — control: a (0.01)
+    assert.deepEqual(await ids({ q: FILT_TOKEN, minCostUsd: 0.03 }), [filtId("d")]);
+    // cost ceiling — controls: a (0.01) and d (0.05)
+    assert.deepEqual(await ids({ q: FILT_TOKEN, service: FILT_SVC, maxCostUsd: 0.005 }), ["b", "c", "e"].map(filtId));
+  });
+
+  await t.test("D50: the 6h default time bound is real; rangeMs widens it (control: the 7h-old trace)", async () => {
+    const withDefault = await queryTraceSearch({ q: FILT_TOKEN });
+    assert.ok(
+      !withDefault.traces.some((tr) => tr.id === filtId("f")),
+      "a 7h-old trace leaked past the 6h default window",
+    );
+    const widened = await queryTraceSearch({ q: FILT_TOKEN, rangeMs: 8 * HOUR_MS });
+    assert.ok(
+      widened.traces.some((tr) => tr.id === filtId("f")),
+      "rangeMs did not widen the window",
+    );
+    assert.equal(widened.total, 7);
+  });
+
+  // S2.2 L1 STANDING GUARD: one term reachable ONLY through the spans
+  // semi-join and one reachable ONLY through the logs semi-join. A later
+  // change that quietly drops either leg — or the whole semi-join mechanism —
+  // turns this red forever; it can never go hollow because the tokens exist
+  // nowhere else (not in summaries, not in the other leg).
+  await t.test("standing guard (S2.2 L1): a spans-leg-only term and a logs-leg-only term both resolve", async () => {
+    const bySpan = await queryTraceSearch({ q: tokPrompt });
+    assert.ok(
+      bySpan.traces.some((tr) => tr.id === SPANLEG),
+      "a term living only in a span prompt did not resolve — the spans semi-join leg is gone",
+    );
+    const byLog = await queryTraceSearch({ q: tokBody });
+    assert.ok(
+      byLog.traces.some((tr) => tr.id === LOGLEG),
+      "a term living only in a log body did not resolve — the logs semi-join leg is gone",
+    );
+  });
+
+  await t.test("D42 carrier rows are IN the prompts reach (D45): bodyless carrier content finds its trace", async () => {
+    const byCarrierPrompt = await queryTraceSearch({ q: tokCarrierP });
+    assert.ok(
+      byCarrierPrompt.traces.some((tr) => tr.id === LOGLEG),
+      "carrier prompt content did not resolve — the trace is unfindable by its own visible prompt (D13)",
+    );
+    const byCarrierCompletion = await queryTraceSearch({ q: tokCarrierC });
+    assert.ok(
+      byCarrierCompletion.traces.some((tr) => tr.id === LOGLEG),
+      "carrier completion content did not resolve",
+    );
+  });
+
+  await t.test("trace-less log rows are unreachable from the traces list (contract: trace-carrying rows only)", async () => {
+    const r = await queryTraceSearch({ q: tokTraceless });
+    assert.equal(r.total, 0, "a trace-less log row surfaced a trace in the traces list");
+    assert.deepEqual(r.traces, []);
+  });
+
+  // D13: one contract, two implementations. The fixtures mirror the seeded
+  // traces in view-model terms (search-contract.md's "mock mapping" section):
+  // LOGLEG's carrier content sits on `llm` — exactly where the live read folds
+  // it (D42(d)) — and its trace-less neighbour is a traceId-less log entry.
+  await t.test("live and mock return the same match verdicts over an equivalent fixture", async () => {
+    const span = (over: Partial<Span> & { id: string }): Span => ({
+      traceId: SPANLEG,
+      parentId: null,
+      name: "POST /chat",
+      layer: "api" as const,
+      service: "demo-agent-it",
+      startMs: 0,
+      durationMs: 1000,
+      status: "ok" as const,
+      attrs: {},
+      ...over,
+    });
+    const base = {
+      method: "POST",
+      service: "demo-agent-it",
+      startedAt: new Date(nowMs).toISOString(),
+      durationMs: 1000,
+      status: "ok" as const,
+      spanCount: 2,
+      totalTokens: 0,
+      costUsd: 0,
+      services: ["demo-agent-it"],
+      models: ["gpt-4o-mini"],
+    };
+    const llmDetail = (prompt: string, completion: string) => ({
+      model: "gpt-4o-mini",
+      inputTokens: 0,
+      outputTokens: 0,
+      costUsd: 0,
+      prompt,
+      completion,
+      finishReason: "stop" as const,
+    });
+    const spanlegFixture = {
+      ...base,
+      id: SPANLEG,
+      rootName: `POST /${rootTok}`,
+      spans: [
+        span({ id: "root", name: `POST /${rootTok}` }),
+        span({
+          id: "llm1",
+          parentId: "root",
+          name: `chat ${tokSpanName}`,
+          layer: "llm" as const,
+          llm: llmDetail(`user: hello ${tokPrompt}`, `assistant: ${tokCompletion}`),
+        }),
+      ],
+      logs: [],
+    };
+    const log = (body: string, traceId?: string) => ({
+      id: `${LOGLEG}-${body.slice(0, 8)}`,
+      traceId,
+      atMs: 1,
+      severity: "info" as const,
+      body,
+      namespace: "",
+      pod: "",
+      container: "app",
+    });
+    const loglegFixture = {
+      ...base,
+      id: LOGLEG,
+      rootName: "POST /worker",
+      spans: [
+        span({ id: "root", traceId: LOGLEG, name: "POST /worker" }),
+        span({
+          id: "llm1",
+          traceId: LOGLEG,
+          parentId: "root",
+          layer: "llm" as const,
+          llm: llmDetail(`event prompt ${tokCarrierP}`, `event completion ${tokCarrierC}`),
+        }),
+      ],
+      logs: [log(`worker heartbeat ${tokBody}`, LOGLEG), log(`stray ${tokTraceless}`)],
+    };
+
+    const cases: [string, boolean, boolean][] = [
+      [rootTok, true, false], // summary leg
+      [tokSpanName, true, false], // spans leg: name
+      [tokPrompt, true, false], // spans leg: prompt column
+      [tokCompletion, true, false], // spans leg: completion column
+      [tokBody, false, true], // logs leg: body
+      [tokCarrierP, false, true], // logs leg: carrier prompt
+      [tokCarrierC, false, true], // logs leg: carrier completion
+      [tokTraceless, false, false], // trace-less rows out, both modes
+      [tokAbsent, false, false],
+      [tokSpanName.toUpperCase(), true, false], // case-insensitive
+      [`${tokPrompt} ${tokCompletion}`, true, false], // AND across fields, one trace
+      [`${tokBody} ${tokCarrierP}`, false, true], // AND across log rows, one trace
+      [`${tokSpanName} ${tokBody}`, false, false], // AND never spans two traces
+      [`${tokSpanName} ${tokAbsent}`, false, false],
+    ];
+    for (const [q, expectSpanleg, expectLogleg] of cases) {
+      const live = await queryTraceSearch({ q });
+      const liveIds = live.traces.map((tr) => tr.id);
+      assert.equal(liveIds.includes(SPANLEG), expectSpanleg, `live verdict for ${JSON.stringify(q)} on the span-leg trace`);
+      assert.equal(liveIds.includes(LOGLEG), expectLogleg, `live verdict for ${JSON.stringify(q)} on the log-leg trace`);
+      assert.equal(mockMatches(spanlegFixture, q), expectSpanleg, `mock verdict for ${JSON.stringify(q)} on the span-leg fixture`);
+      assert.equal(mockMatches(loglegFixture, q), expectLogleg, `mock verdict for ${JSON.stringify(q)} on the log-leg fixture`);
+    }
   });
 });

@@ -1,0 +1,217 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import type { LogRecord, Span, Trace } from "@/lib/types";
+import { NOW } from "@/mock/generate";
+import { allTraces } from "@/mock/traces";
+import { mockMatches, mockSearchTraces } from "./data";
+import { TRACE_PAGE_SIZE } from "./queries/traces";
+
+// run with: node --conditions=react-server --test src/server/data.test.ts
+//
+// The mock half of the search contract (search-contract.md): free-text reach
+// and semantics for `mockMatches`, the PRD §8 structured filters, the D50 time
+// bound against the mock clock, and D44 pagination/ordering/totals for
+// `mockSearchTraces`. The live half of every assertion here has a twin in
+// traces.integration.test.ts; the parity subtest there proves the two halves
+// agree on an equivalent fixture.
+
+function makeSpan(overrides: Partial<Span> & { id: string }): Span {
+  return {
+    traceId: "t1",
+    parentId: null,
+    name: "POST /chat",
+    layer: "api",
+    service: "demo-agent",
+    startMs: 0,
+    durationMs: 100,
+    status: "ok",
+    attrs: {},
+    ...overrides,
+  };
+}
+
+function makeLog(overrides: Partial<LogRecord> & { id: string }): LogRecord {
+  return {
+    traceId: "t1",
+    atMs: 1,
+    severity: "info",
+    body: "an ordinary log line",
+    namespace: "ns",
+    pod: "pod-1",
+    container: "app",
+    ...overrides,
+  };
+}
+
+function makeTrace(overrides: Partial<Trace> & { id: string }): Trace {
+  return {
+    rootName: "POST /chat",
+    method: "POST",
+    service: "demo-agent",
+    startedAt: new Date(NOW - 60_000).toISOString(),
+    durationMs: 100,
+    status: "ok",
+    spanCount: 1,
+    totalTokens: 0,
+    costUsd: 0,
+    services: ["demo-agent"],
+    models: [],
+    spans: [],
+    logs: [],
+    ...overrides,
+  };
+}
+
+// ---- free text (D45, search-contract.md) ------------------------------------
+
+const reachTrace = makeTrace({
+  id: "t-reach",
+  spans: [
+    makeSpan({ id: "s1", name: "vector-search step" }),
+    makeSpan({
+      id: "s2",
+      layer: "llm",
+      llm: {
+        model: "gpt-4o-mini",
+        inputTokens: 1,
+        outputTokens: 1,
+        costUsd: 0,
+        prompt: "user: summarize the escalation",
+        completion: "the incident stems from a pool exhaustion",
+        finishReason: "stop",
+      },
+    }),
+  ],
+  logs: [
+    makeLog({ id: "l1", body: "cache miss for embedding" }),
+    // nearby row: no traceId — OUT of the traces-list reach (trace-carrying only)
+    makeLog({ id: "l2", traceId: undefined, body: "sidecar heartbeat nearbyonly" }),
+  ],
+});
+
+test("free text ANDs whitespace-split terms, each matching any reach field independently", () => {
+  assert.equal(mockMatches(reachTrace, "vector-search embedding"), true);
+  assert.equal(mockMatches(reachTrace, "  vector-search   embedding  "), true);
+  assert.equal(mockMatches(reachTrace, "vector-search doesnotexist"), false);
+  assert.equal(mockMatches(reachTrace, ""), true);
+});
+
+// The D45 correction this task lands: the old matcher read `llm?.prompt` only.
+// Red against that matcher (completion term unfindable), green with the fix.
+test("free text reaches llm completion (D45: the mock matcher gains completion)", () => {
+  assert.equal(mockMatches(reachTrace, "exhaustion"), true);
+  assert.equal(mockMatches(reachTrace, "escalation"), true, "sanity: prompt reach unchanged");
+});
+
+test("free text is case-insensitive in both directions", () => {
+  assert.equal(mockMatches(reachTrace, "EMBEDDING"), true);
+  assert.equal(mockMatches(makeTrace({ id: "t-upper", rootName: "POST /ADMIN" }), "admin"), true);
+});
+
+test("nearby (traceId-less) log bodies are OUT of the traces-list reach (contract: trace-carrying rows only)", () => {
+  assert.equal(mockMatches(reachTrace, "nearbyonly"), false);
+});
+
+// ---- structured filters (PRD §8) + time bound (D50) -------------------------
+
+const HOUR = 3_600_000;
+
+/** Every filter probe searches this set; each control row passes without the filter under test. */
+const filterSet: Trace[] = [
+  makeTrace({ id: "f-base", costUsd: 0.01, models: ["gpt-4o-mini"] }),
+  makeTrace({ id: "f-error", status: "error" }),
+  makeTrace({ id: "f-slow", durationMs: 10_000 }),
+  makeTrace({ id: "f-costly", costUsd: 0.05 }),
+  makeTrace({ id: "f-model", models: ["model-probe"] }),
+  makeTrace({ id: "f-old", startedAt: new Date(NOW - 7 * HOUR).toISOString() }),
+  makeTrace({ id: "f-othersvc", service: "other-svc", services: ["other-svc"] }),
+];
+
+const idsOf = (traces: Trace[]): string[] => traces.map((t) => t.id).sort();
+
+test("each structured filter narrows with a control row that would pass without it", () => {
+  // no filter: everything inside the default window (f-old is time-excluded, below)
+  assert.deepEqual(idsOf(mockSearchTraces(filterSet, {}).traces), [
+    "f-base",
+    "f-costly",
+    "f-error",
+    "f-model",
+    "f-othersvc",
+    "f-slow",
+  ]);
+  // service: f-othersvc is the control — present above, gone here
+  assert.deepEqual(idsOf(mockSearchTraces(filterSet, { service: "demo-agent" }).traces), [
+    "f-base",
+    "f-costly",
+    "f-error",
+    "f-model",
+    "f-slow",
+  ]);
+  // status: f-base is the control
+  assert.deepEqual(idsOf(mockSearchTraces(filterSet, { status: "error" }).traces), ["f-error"]);
+  // duration: f-base (100ms) is the control
+  assert.deepEqual(idsOf(mockSearchTraces(filterSet, { minMs: 5000 }).traces), ["f-slow"]);
+  // model: f-base (gpt-4o-mini) is the control
+  assert.deepEqual(idsOf(mockSearchTraces(filterSet, { model: "model-probe" }).traces), ["f-model"]);
+  // cost floor: f-base (0.01) is the control
+  assert.deepEqual(idsOf(mockSearchTraces(filterSet, { minCostUsd: 0.03 }).traces), ["f-costly"]);
+  // cost ceiling: f-costly (0.05) and f-base (0.01) are the controls
+  assert.deepEqual(idsOf(mockSearchTraces(filterSet, { maxCostUsd: 0.005 }).traces), [
+    "f-error",
+    "f-model",
+    "f-othersvc",
+    "f-slow",
+  ]);
+});
+
+test("D50 time bound: 6h default against the mock clock NOW; widening rangeMs readmits the old trace", () => {
+  const withDefault = mockSearchTraces(filterSet, {});
+  assert.ok(!idsOf(withDefault.traces).includes("f-old"), "a 7h-old trace leaked past the 6h default");
+  const widened = mockSearchTraces(filterSet, { rangeMs: 8 * HOUR });
+  assert.ok(idsOf(widened.traces).includes("f-old"), "rangeMs did not widen the window");
+  assert.equal(widened.total, filterSet.length);
+});
+
+// ---- pagination, order, totals (D44) ----------------------------------------
+
+// Same start for every fixture, ids deliberately inserted OUT of order: without
+// the trace-id tie-break a stable sort would return insertion order and page 1
+// would not be the first 200 ids — the "tie-unstable sort" failure, made
+// deterministic.
+const pageIds = Array.from(
+  { length: TRACE_PAGE_SIZE + 5 },
+  (_, i) => `p-${String(i).padStart(3, "0")}`,
+);
+const shuffled = [...pageIds].reverse();
+const pageSet: Trace[] = shuffled.map((id) => makeTrace({ id }));
+
+test("D44 pagination: page 1 is the first TRACE_PAGE_SIZE ids in order, page 2 the disjoint remainder", () => {
+  const page1 = mockSearchTraces(pageSet, {});
+  assert.equal(page1.traces.length, TRACE_PAGE_SIZE);
+  assert.deepEqual(
+    page1.traces.map((t) => t.id),
+    pageIds.slice(0, TRACE_PAGE_SIZE),
+    "equal-start fixtures must order by trace id ascending (the mandatory tie-break)",
+  );
+  const page2 = mockSearchTraces(pageSet, { page: 2 });
+  assert.deepEqual(page2.traces.map((t) => t.id), pageIds.slice(TRACE_PAGE_SIZE));
+});
+
+test("D44 total is a property of the data, not the page: both pages report the full filtered count", () => {
+  assert.equal(mockSearchTraces(pageSet, {}).total, pageIds.length);
+  assert.equal(mockSearchTraces(pageSet, { page: 2 }).total, pageIds.length);
+  assert.equal(mockSearchTraces(pageSet, { page: 9 }).traces.length, 0);
+  assert.equal(mockSearchTraces(pageSet, { page: 9 }).total, pageIds.length);
+});
+
+// ---- F6/F7: the mock default view survives ----------------------------------
+
+test("mock default unfiltered first page is today's full list (F6/F7: the 6h default empties nothing)", () => {
+  const { traces, total } = mockSearchTraces(allTraces, {});
+  assert.equal(total, allTraces.length, "the D50 default window dropped mock traces");
+  assert.equal(traces.length, allTraces.length);
+  assert.deepEqual(
+    traces.map((t) => t.id).sort(),
+    allTraces.map((t) => t.id).sort(),
+  );
+});

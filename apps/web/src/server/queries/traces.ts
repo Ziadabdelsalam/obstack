@@ -10,16 +10,57 @@ import {
 } from "@/server/adapters";
 import { queryRows, workspaceId } from "@/server/clickhouse";
 
-/** Both modes cap the list the same way; the traces UI has no pagination yet. */
-export const DEFAULT_TRACE_LIMIT = 200;
+/**
+ * D44: the traces list is offset/limit paginated with an exact filtered total
+ * per request. The page size is fixed here; the page number lives in the URL
+ * (T4). 200 is the pre-pagination list cap carried forward as the page size.
+ */
+export const TRACE_PAGE_SIZE = 200;
 
+/**
+ * D50: every list query carries an explicit time bound; 6h is the one
+ * product-wide default (matches `getOverview`'s default range and the shipped
+ * header copy). The reference clock is per mode — see ../search-contract.md.
+ */
+export const DEFAULT_TRACE_RANGE_MS = 6 * 3_600_000;
+
+/**
+ * The traces-list filter (PRD §8): service, status, duration, model, cost
+ * range, free text, time range — applied server-side in BOTH modes under one
+ * matching contract (../search-contract.md).
+ */
 export interface TraceFilter {
-  /** free text over root name, trace id, models and services */
+  /** free text per the search contract (../search-contract.md) */
   q?: string;
   status?: "all" | "ok" | "error";
+  /** exact membership in the trace's services */
+  service?: string;
+  /** exact membership in the trace's models */
+  model?: string;
   minMs?: number;
   minCostUsd?: number;
-  limit?: number;
+  /** cost-range upper bound; absent or negative = unbounded */
+  maxCostUsd?: number;
+  /** time window back from the reference clock (D50); default `DEFAULT_TRACE_RANGE_MS` */
+  rangeMs?: number;
+  /** 1-based page of `TRACE_PAGE_SIZE` rows (D44); default 1 */
+  page?: number;
+}
+
+/** One page of the traces list plus the exact filtered total (D44). */
+export interface TraceSearchResult {
+  traces: Trace[];
+  /** count over the same filtered predicate as the page — never the page length */
+  total: number;
+}
+
+/**
+ * Whitespace-split free text into terms (../search-contract.md). Both
+ * implementations tokenize through this one function, so the "what is a term"
+ * clause of the contract cannot fork between modes.
+ */
+export function splitSearchTerms(q: string): string[] {
+  return q.split(/\s+/).filter(Boolean);
 }
 
 /**
@@ -51,23 +92,85 @@ FROM obstack.trace_summaries
 WHERE workspace_id = {workspace_id:String} AND trace_id = {trace_id:String}
 GROUP BY workspace_id, trace_id`;
 
-const SUMMARY_LIST_SQL = `
+/**
+ * Free-text legs (D45, ../search-contract.md): per term, OR across the summary
+ * fields and two trace-id SEMI-JOINS — `trace_summaries` stays the only row
+ * source (PRD §7/§8 as amended by D45); the spans/logs legs return ids, never
+ * rows. The logs leg reads trace-carrying rows only (`trace_id != ''`) and
+ * includes the D42 content-carrier columns: carriers are excluded from the
+ * rail's DISPLAY (adapters.ts), but their content is what the UI folds into
+ * `LlmDetail`, so it is in the search REACH.
+ *
+ * Placeholder-count generation is D45-sanctioned: the skeleton grows one
+ * `{qN:String}` placeholder set per term, but every VALUE stays a bound
+ * parameter — splicing a value into the string would be interpolation (D11,
+ * absolute).
+ */
+function freeTextClauses(termCount: number): string {
+  let sql = "";
+  for (let i = 0; i < termCount; i++) {
+    const q = `{q${i}:String}`;
+    sql += `
+   AND (positionCaseInsensitive(root_name, ${q}) > 0
+        OR positionCaseInsensitive(trace_id, ${q}) > 0
+        OR arrayExists(m -> positionCaseInsensitive(m, ${q}) > 0, models)
+        OR arrayExists(s -> positionCaseInsensitive(s, ${q}) > 0, services)
+        OR trace_id IN (
+            SELECT trace_id FROM obstack.spans
+            WHERE workspace_id = {workspace_id:String}
+              AND (positionCaseInsensitive(name, ${q}) > 0
+                   OR positionCaseInsensitive(prompt, ${q}) > 0
+                   OR positionCaseInsensitive(completion, ${q}) > 0))
+        OR trace_id IN (
+            SELECT trace_id FROM obstack.logs
+            WHERE workspace_id = {workspace_id:String}
+              AND trace_id != ''
+              AND (positionCaseInsensitive(body, ${q}) > 0
+                   OR positionCaseInsensitive(prompt, ${q}) > 0
+                   OR positionCaseInsensitive(completion, ${q}) > 0)))`;
+  }
+  return sql;
+}
+
+/**
+ * The grouped, filtered read the page and the count SHARE (D44: the total is
+ * computed over the same WHERE/HAVING as the page — one skeleton, assembled
+ * once per request, so the two can never drift). The D7 GROUP-BY rule (never
+ * FINAL, never a bare SELECT) applies to the count subquery identically —
+ * `count()` wraps this grouped read rather than counting raw summary rows.
+ *
+ * Every structured filter lives in HAVING because each one (min_start,
+ * duration, cost, status, services, models) is an aggregate of the trace's
+ * partial rows — a WHERE would judge each partial row alone and drop traces
+ * whose aggregates only pass once merged.
+ */
+const filteredSummariesSql = (termCount: number): string => `
 SELECT ${SUMMARY_COLUMNS}
 FROM obstack.trace_summaries
 WHERE workspace_id = {workspace_id:String}
 GROUP BY workspace_id, trace_id
-HAVING toUInt64(duration_ns) >= {min_ns:UInt64}
+HAVING min(min_start) >= fromUnixTimestamp64Milli({since_ms:Int64})
+   AND toUInt64(duration_ns) >= {min_ns:UInt64}
    AND cost_usd >= {min_cost:Float64}
+   AND ({max_cost:Float64} < 0 OR cost_usd <= {max_cost:Float64})
    AND ({status:String} = 'all'
         OR ({status:String} = 'error' AND toUInt64(error_count) > 0)
         OR ({status:String} = 'ok' AND toUInt64(error_count) = 0))
-   AND ({q:String} = ''
-        OR positionCaseInsensitive(root_name, {q:String}) > 0
-        OR positionCaseInsensitive(trace_id, {q:String}) > 0
-        OR arrayExists(m -> positionCaseInsensitive(m, {q:String}) > 0, models)
-        OR arrayExists(s -> positionCaseInsensitive(s, {q:String}) > 0, services))
-ORDER BY min(min_start) DESC
-LIMIT {limit:UInt32}`;
+   AND ({service:String} = '' OR has(services, {service:String}))
+   AND ({model:String} = '' OR has(models, {model:String}))${freeTextClauses(termCount)}`;
+
+/**
+ * D44 page order: `ORDER BY min(min_start) DESC, trace_id` — the tie-break is
+ * mandatory; offset paging over a tie-unstable sort returns overlapping pages
+ * after a merge.
+ */
+const searchPageSql = (termCount: number): string => `${filteredSummariesSql(termCount)}
+ORDER BY min(min_start) DESC, trace_id
+LIMIT {limit:UInt32} OFFSET {offset:UInt32}`;
+
+const searchCountSql = (termCount: number): string => `
+SELECT count() AS total
+FROM (${filteredSummariesSql(termCount)})`;
 
 /** Spans of one trace, offsets resolved against the summary's `min_start` (D12). */
 const SPANS_SQL = `
@@ -241,14 +344,34 @@ export async function queryTrace(id: string): Promise<Trace | undefined> {
   return toTrace(summary, spanRows, logRows, nearbyFetched);
 }
 
-export async function queryTraceList(filter: TraceFilter): Promise<Trace[]> {
-  const rows = await queryRows<TraceSummaryRow>(SUMMARY_LIST_SQL, {
+/**
+ * One traces-list request (D44): the page and its exact filtered total,
+ * computed concurrently over the same predicate — the live half of the search
+ * contract (../search-contract.md). The D50 reference clock is sampled ONCE
+ * here and bound into both queries; two separate `now()` evaluations could
+ * disagree across them and break "the total is the page's own predicate".
+ */
+export async function queryTraceSearch(filter: TraceFilter): Promise<TraceSearchResult> {
+  const terms = splitSearchTerms(filter.q ?? "");
+  const page = Math.max(1, Math.floor(filter.page ?? 1));
+  const params: Record<string, unknown> = {
     workspace_id: workspaceId,
-    q: filter.q ?? "",
-    status: filter.status ?? "all",
+    since_ms: Date.now() - (filter.rangeMs ?? DEFAULT_TRACE_RANGE_MS),
     min_ns: Math.round((filter.minMs ?? 0) * 1_000_000),
     min_cost: filter.minCostUsd ?? 0,
-    limit: filter.limit ?? DEFAULT_TRACE_LIMIT,
+    max_cost: filter.maxCostUsd ?? -1,
+    status: filter.status ?? "all",
+    service: filter.service ?? "",
+    model: filter.model ?? "",
+    limit: TRACE_PAGE_SIZE,
+    offset: (page - 1) * TRACE_PAGE_SIZE,
+  };
+  terms.forEach((term, i) => {
+    params[`q${i}`] = term;
   });
-  return rows.map(toTraceSummary);
+  const [rows, counts] = await Promise.all([
+    queryRows<TraceSummaryRow>(searchPageSql(terms.length), params),
+    queryRows<{ total: string }>(searchCountSql(terms.length), params),
+  ]);
+  return { traces: rows.map(toTraceSummary), total: Number(counts[0]?.total ?? 0) };
 }
