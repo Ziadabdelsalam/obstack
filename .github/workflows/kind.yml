@@ -1,0 +1,104 @@
+# S2.0 T3 — kind-cluster capability guard.
+#
+# Proves CI can create a kind cluster, load an image built *in this job* (no
+# registry involved), and get a workload to Ready on it — the capability
+# S2.2's Helm-based stack-on-kind is built on (D36: capability only, no stack
+# on kind here).
+#
+# Trigger policy (K5 decision RULE): measure the full job's wall-clock, then
+# pick a branch. Measured end to end (job start to job complete, including
+# cluster teardown) after F1 round 2's export-failure wait: ~1m37s
+# (https://github.com/Ziadabdelsalam/obstack/actions/runs/31933353051) — well
+# under the ~6 min line, so this runs on every PR like `web` and `go` and
+# joins the required-checks set. If a future change pushes the job past
+# ~6 min, switch this trigger block to `ci:kind` label + push-to-master +
+# workflow_dispatch and drop `kind` from required checks (K5) — do not leave
+# it required-but-conditional. Branch protection itself is T4's step; this
+# workflow only supplies the `kind` check name it will reference.
+name: kind
+
+on:
+  pull_request:
+    branches: [master]
+
+concurrency:
+  group: kind-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  kind:
+    name: kind
+    runs-on: ubuntu-latest
+    # The job's own bound. `kubectl wait` is capped at 120s, but the image
+    # build, cluster create and image load are not — and a required check that
+    # hangs holds a PR for the 360-minute default.
+    timeout-minutes: 15
+    # One path anchor for the job (K3 ii): every step below reads these, none
+    # repeats a literal path.
+    env:
+      AGENT_APP_DIR: demo/agent-app
+      PROOF_MANIFEST: .github/ci/kind-proof-workload.yaml
+      CLUSTER_NAME: kind-proof
+      IMAGE_TAG: demo-agent:${{ github.sha }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+
+      - name: Build demo agent image (local only — no registry, no push)
+        run: docker build -t "$IMAGE_TAG" "$AGENT_APP_DIR"
+
+      - name: Create kind cluster
+        uses: helm/kind-action@v1.14.0
+        with:
+          cluster_name: ${{ env.CLUSTER_NAME }}
+
+      - name: Load the just-built image into kind (no registry path exists)
+        run: kind load docker-image "$IMAGE_TAG" --name "$CLUSTER_NAME"
+
+      - name: Apply the proof workload
+        run: sed "s#IMAGE_PLACEHOLDER#$IMAGE_TAG#" "$PROOF_MANIFEST" | kubectl apply -f -
+
+      - name: Wait for the proof workload to report Ready
+        run: kubectl wait --for=condition=Ready pod/kind-proof-workload --timeout=120s
+
+      # F1 round 2 (advisor-ordered, corrected): round 1's hold-and-recheck
+      # proved nothing — with only /healthz probes hitting the app, the span
+      # and log batch queues never hold anything (excluded_urls="healthz"),
+      # so the exporter is never called and no export against the black hole
+      # ever happens. The manifest's LOOP_INTERVAL_S now makes the app call
+      # its own /chat on a timer, so this step waits for real evidence: the
+      # app emitted telemetry, the export against the black-holed endpoint
+      # failed, and the process stayed alive and serving anyway. That is the
+      # whole claim — nothing stronger. (restartCount is gone: under
+      # restartPolicy: Never a crash is dead-on-arrival, which the
+      # phase/Ready re-assert below already catches.)
+      - name: Observe an export failure against the black hole, then confirm the process is still serving
+        run: |
+          deadline=$((SECONDS + 60))
+          found=""
+          while [ "$SECONDS" -lt "$deadline" ]; do
+            found=$(kubectl logs pod/kind-proof-workload | grep "Failed to export" | head -1 || true)
+            [ -n "$found" ] && break
+            sleep 2
+          done
+          if [ -z "$found" ]; then
+            echo "no export-failure line seen from the app within 60s — fail-open was not observed" >&2
+            exit 1
+          fi
+          echo "observed: $found"
+          phase=$(kubectl get pod/kind-proof-workload -o jsonpath='{.status.phase}')
+          ready=$(kubectl get pod/kind-proof-workload -o jsonpath="{.status.conditions[?(@.type=='Ready')].status}")
+          echo "phase=$phase ready=$ready"
+          if [ "$phase" != "Running" ] || [ "$ready" != "True" ]; then
+            echo "pod is not Running/Ready after the observed export failure — did not fail open" >&2
+            exit 1
+          fi
+
+      - name: Diagnose on failure
+        if: failure()
+        run: |
+          kubectl describe pod/kind-proof-workload || true
+          kubectl logs pod/kind-proof-workload || true

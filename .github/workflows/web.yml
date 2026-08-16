@@ -1,0 +1,45 @@
+name: web
+
+on:
+  pull_request:
+    branches:
+      - master
+
+concurrency:
+  group: web-${{ github.head_ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    # Single path anchor for this job (K3-ii): repo root today, `apps/web` after
+    # the S2.1 restructure. Every step below runs relative to this one value.
+    working-directory: .
+
+jobs:
+  web:
+    runs-on: ubuntu-latest
+    # Bounds a required check: without it a wedged build would hold the PR
+    # for the 360-minute GitHub default.
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      - uses: actions/setup-node@v7.0.0
+        with:
+          # Active-LTS major meeting Next 16.3's documented floor (Node.js
+          # 20.9.0+, node_modules/next/dist/docs/01-app/02-guides/upgrading/version-16.md).
+          node-version: '24'
+          # Caches npm's package-download cache only, keyed on package-lock.json.
+          # Does not cache `.next` build output, so it carries no risk of the M1
+          # F6 finding (build reuses cached prerenders across OBSTACK_DATA_MODE
+          # changes) — nothing OBSTACK_DATA_MODE-shaped is persisted here.
+          cache: 'npm'
+
+      - run: npm ci
+
+      - run: npm test
+
+      - run: npm run build
