@@ -104,6 +104,20 @@ ORDER BY start_time, span_id`;
  * already this query's WHERE clause). NEARBY_LOGS_SQL below does not select
  * these: its rows always carry `trace_id = ''`, which can never match this
  * trace's own trace_id, so a nearby row can never be a coalesce candidate.
+ *
+ * The ORDER BY is TOTAL over what the fold reads, and has to be: D42(d) makes
+ * "earliest timestamp wins" a contract, and `obstack.logs` has no unique key,
+ * so under a bare `ORDER BY timestamp` two content rows for the same span at
+ * the same timestamp come back in physical order — which is not stable. Two
+ * such rows landing in different parts flip their relative order once
+ * ClickHouse merges those parts, so the folded prompt/completion for a trace
+ * would silently change value with no new data (verified against a seeded
+ * server: the same SELECT returns a different first row before and after
+ * `OPTIMIZE`). Tie-breaking on `span_id, prompt, completion` makes the fold's
+ * OUTCOME deterministic — rows that tie on all four carry the same content, so
+ * whichever wins produces the same value. Sort cost is nil in practice: the
+ * comparison only reaches the String columns when timestamp and span_id are
+ * equal, over one trace's own log rows.
  */
 const LOGS_SQL = `
 SELECT
@@ -120,7 +134,7 @@ SELECT
     k8s_container
 FROM obstack.logs
 WHERE workspace_id = {workspace_id:String} AND trace_id = {trace_id:String}
-ORDER BY timestamp`;
+ORDER BY timestamp, span_id, prompt, completion`;
 
 /**
  * Nearby logs (D37.4): a second, unrelated read from the solid one above —

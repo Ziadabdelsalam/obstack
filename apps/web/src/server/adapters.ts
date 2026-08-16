@@ -144,10 +144,17 @@ function toLlmDetail(
   };
 }
 
+/**
+ * `eventFillBySpan` is REQUIRED, not defaulted: a default empty map would let a
+ * future caller drop the D42(d) coalesce silently (an event-form-only trace
+ * would render a blank prompt and look like missing data), and the compiler
+ * would not say a word. Callers with nothing to fill from pass an empty map
+ * explicitly.
+ */
 export function toSpan(
   row: SpanRow,
   traceId: string,
-  eventFillBySpan: Map<string, { prompt?: string; completion?: string }> = new Map(),
+  eventFillBySpan: Map<string, { prompt?: string; completion?: string }>,
 ): Span {
   const layer = toLayer(row.layer);
   const status = toStatus(row.status_code);
@@ -228,9 +235,10 @@ export function toTraceSummary(row: TraceSummaryRow): Trace {
  * D42(d) rail rule (T6): a `LOGS_SQL` row carrying non-empty extracted content
  * (`prompt` and/or `completion`) with an EMPTY `body` is a content carrier —
  * structured GenAI content from the log-record wire form, not a narrative log
- * line. It is excluded from the rail AND its counter (the counter below
- * derives from `Trace.logs`, so filtering here is the only place that needs
- * to happen — D13/D21: the counter must never claim a row it did not render).
+ * line. It is excluded from the rail AND its counter (`TraceExplorer.tsx`
+ * derives both `solidCount` and `nearbyCount` from `Trace.logs`, so filtering
+ * here is the only place that needs to happen — D13/D21: the counter must
+ * never claim a row it did not render).
  * It still folds into the matching LLM span's `LlmDetail` via
  * `eventDerivedFillBySpan` above, or folds nowhere if its `span_id` matches no
  * span in this trace (an orphan row — invisible, same as any other row this

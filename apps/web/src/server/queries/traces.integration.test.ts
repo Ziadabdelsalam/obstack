@@ -550,4 +550,54 @@ test("read-time coalesce (D42(d)) against a seeded ClickHouse", async (t) => {
     // instead, duplicating the folded content into the rail.
     assert.equal(trace.logs.length, 2, `expected 2 rendered rows (narrative + visible), got ${trace.logs.length}`);
   });
+
+  // D42(d) says earliest-timestamp wins and says it is DETERMINISTIC. Equal
+  // timestamps are the case that tests that claim: `obstack.logs` has no unique
+  // key, so under a bare `ORDER BY timestamp` the winner is whichever row the
+  // storage happens to hand back first — insertion order inside a part, and a
+  // DIFFERENT order once ClickHouse merges parts, i.e. the rendered prompt
+  // would change on its own with no new data. LOGS_SQL therefore tie-breaks on
+  // `span_id, prompt, completion`. Rows arrive here in one batch in reverse
+  // tiebreak order, which is exactly the physical order a non-total sort would
+  // return: drop the tiebreak and this assertion reads the second value.
+  await t.test("two content rows at the SAME timestamp resolve deterministically, not by physical order", async () => {
+    const tieTraceId = `it_coalesce_tie_${suffix}`;
+    const tieTs = chTimestamp(t0);
+    const tieWinner = `PROBE:aaa-tie-winner ${suffix}`;
+    const tieLoser = `PROBE:zzz-tie-loser ${suffix}`;
+
+    await seed.insert({
+      table: "spans",
+      format: "JSONEachRow",
+      values: [
+        spanRow({
+          trace_id: tieTraceId,
+          span_id: llmSpanId,
+          start_time: tieTs,
+          duration_ns: spanDurationNs.toString(),
+          k8s_namespace: "",
+          k8s_pod: "",
+          layer: "llm",
+          gen_ai_request_model: "gpt-4o-mini",
+          gen_ai_response_model: "gpt-4o-mini",
+        }),
+      ],
+    });
+    await seed.insert({
+      table: "logs",
+      format: "JSONEachRow",
+      values: [
+        logRow({ trace_id: tieTraceId, timestamp: tieTs, body: "", k8s_namespace: "", k8s_pod: "", span_id: llmSpanId, prompt: tieLoser }),
+        logRow({ trace_id: tieTraceId, timestamp: tieTs, body: "", k8s_namespace: "", k8s_pod: "", span_id: llmSpanId, prompt: tieWinner }),
+      ],
+    });
+
+    const tieTrace = await queryTrace(tieTraceId);
+    assert.ok(tieTrace, "queryTrace found no row for the tie trace");
+    assert.equal(
+      tieTrace.spans.find((s) => s.id === llmSpanId)?.llm?.prompt,
+      tieWinner,
+      "same-timestamp content rows folded by physical row order — LOGS_SQL's ORDER BY is not total, so this trace's prompt can change after a merge",
+    );
+  });
 });

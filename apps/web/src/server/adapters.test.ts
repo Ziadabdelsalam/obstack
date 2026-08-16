@@ -85,8 +85,11 @@ const logRow: LogRow = {
   k8s_container: "",
 };
 
+/** `toSpan`'s event-fill map for the cases that have nothing to fill from. */
+const NO_FILL = new Map<string, { prompt?: string; completion?: string }>();
+
 test("span row maps offsets, durations and identity", () => {
-  const span = toSpan(spanRow, summaryRow.trace_id);
+  const span = toSpan(spanRow, summaryRow.trace_id, NO_FILL);
   assert.equal(span.id, "b1");
   assert.equal(span.traceId, summaryRow.trace_id);
   assert.equal(span.parentId, null);
@@ -104,6 +107,7 @@ test("child span keeps its parent and error status", () => {
   const span = toSpan(
     { ...spanRow, parent_span_id: "b1", status_code: "error", status_message: "boom" },
     summaryRow.trace_id,
+    NO_FILL,
   );
   assert.equal(span.parentId, "b1");
   assert.equal(span.status, "error");
@@ -111,7 +115,7 @@ test("child span keeps its parent and error status", () => {
 });
 
 test("llm span carries the GenAI columns, response model wins", () => {
-  const span = toSpan(llmRow, summaryRow.trace_id);
+  const span = toSpan(llmRow, summaryRow.trace_id, NO_FILL);
   assert.equal(span.startMs, 12.5);
   assert.deepEqual(span.llm, {
     model: "gpt-4o-mini-2024-07-18",
@@ -126,7 +130,7 @@ test("llm span carries the GenAI columns, response model wins", () => {
 
 test("finish reason folds onto the UI union", () => {
   const reason = (finish_reason: string, status_code = "unset") =>
-    toSpan({ ...llmRow, finish_reason, status_code }, "t")!.llm!.finishReason;
+    toSpan({ ...llmRow, finish_reason, status_code }, "t", NO_FILL)!.llm!.finishReason;
   assert.equal(reason("max_tokens"), "length");
   assert.equal(reason("content_filter"), "truncated");
   assert.equal(reason("end_turn"), "stop");
@@ -135,8 +139,8 @@ test("finish reason folds onto the UI union", () => {
 });
 
 test("unclassified layer falls back to other", () => {
-  assert.equal(toSpan({ ...spanRow, layer: "other" }, "t").layer, "other");
-  assert.equal(toSpan({ ...spanRow, layer: "wat" }, "t").layer, "other");
+  assert.equal(toSpan({ ...spanRow, layer: "other" }, "t", NO_FILL).layer, "other");
+  assert.equal(toSpan({ ...spanRow, layer: "wat" }, "t", NO_FILL).layer, "other");
 });
 
 test("log row maps a negative offset and severity", () => {
@@ -307,6 +311,29 @@ test("empty span columns hydrate from event-derived content, per field independe
   assert.equal(span?.llm?.completion, "PROBE:event-completion");
 });
 
+// The case that separates per-FIELD precedence from per-ROW precedence: the
+// span carries a prompt but no completion. An implementation that decided
+// "this span has its own content, ignore the event rows" would keep every
+// other test in this block green and still be wrong per D42(d) — the empty
+// completion column must still take the event-derived fill.
+test("precedence is per field, not per row: a span's own prompt survives while its empty completion fills from an event row", () => {
+  const promptOnlySpan: SpanRow = { ...llmRow, span_id: "b5", completion: "" };
+  const eventRow = contentCarrier({
+    at_offset_ns: "1000000",
+    span_id: "b5",
+    prompt: "PROBE:event-prompt-must-lose",
+    completion: "PROBE:event-completion-must-win",
+  });
+  const trace = toTrace(summaryRow, [promptOnlySpan], [eventRow], []);
+  const span = trace.spans.find((s) => s.id === "b5");
+  assert.equal(span?.llm?.prompt, "user: hello", "the span's own non-empty prompt column must still win");
+  assert.equal(
+    span?.llm?.completion,
+    "PROBE:event-completion-must-win",
+    "an empty completion column must fill from the event row even though the prompt column was populated",
+  );
+});
+
 test("earliest-timestamp content row wins; a later row for the same field does not displace it (red if it did)", () => {
   const earliest = contentCarrier({ at_offset_ns: "1000000", span_id: "b5", prompt: "PROBE:earliest" });
   const later = contentCarrier({ at_offset_ns: "2000000", span_id: "b5", prompt: "PROBE:later-must-not-win" });
@@ -358,10 +385,9 @@ test("orphan content rows (span_id matches no span in this trace) fold nowhere a
 test("coalesce disabled leaves an event-form-only trace with an empty prompt, proving the fill is real", () => {
   const eventOnlyLog = contentCarrier({ at_offset_ns: "1000000", span_id: "b5", prompt: "PROBE:event-only-prompt" });
 
-  // "coalesce disabled": toSpan's event-fill map defaults to empty when
-  // omitted, so calling it directly (as toTrace never does) is the literal
-  // disabled state.
-  const withoutCoalesce = toSpan(emptyLlmRow, summaryRow.trace_id);
+  // "coalesce disabled": handing toSpan an empty fill map (as toTrace never
+  // does — it always builds the real one) is the literal disabled state.
+  const withoutCoalesce = toSpan(emptyLlmRow, summaryRow.trace_id, NO_FILL);
   assert.equal(withoutCoalesce.llm?.prompt, "", "sanity: with no fill supplied there is nothing to show");
 
   // toTrace always builds and passes the fill map — the same span, read
