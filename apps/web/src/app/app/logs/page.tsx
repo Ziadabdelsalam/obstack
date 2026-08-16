@@ -15,10 +15,17 @@ function toSeverity(value: Param): Severity {
   return SEVERITY_ORDER.includes(v as Severity) ? (v as Severity) : "debug";
 }
 
-/** Absent or unrecognised = the D50 product-wide default. */
+/**
+ * Absent or unrecognised = the D50 product-wide default.
+ *
+ * `Object.hasOwn`, never `v in LOG_RANGES`: `in` walks the prototype chain, so
+ * `?range=toString` resolved to `Function.prototype.toString`, made the window
+ * `NaN` and 500'd the route in live mode (silently emptied it in mock) instead
+ * of falling back to the default this comment promises.
+ */
 function toRange(value: Param): LogRange {
   const v = one(value);
-  return v in LOG_RANGES ? (v as LogRange) : DEFAULT_LOG_RANGE;
+  return Object.hasOwn(LOG_RANGES, v) ? (v as LogRange) : DEFAULT_LOG_RANGE;
 }
 
 /**

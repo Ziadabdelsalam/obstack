@@ -48,10 +48,14 @@ interface Filters {
 /**
  * The URL is the single source of filter state, so a deep link reproduces a
  * view exactly and a saved view is literally this string (D47(ii)). Defaults
- * are omitted, which is what makes a bare `/app/logs` the default view; the
- * page owns the authoritative defaults (`DEFAULT_LOG_RANGE`, severity floor
- * `debug`) and re-derives them from an absent parameter, so a disagreement here
- * would cost a redundant URL parameter, never a wrong bound.
+ * are omitted, which is what makes a bare `/app/logs` the default view.
+ *
+ * The two default literals below (`"debug"`, `"6h"`) MUST equal the page's own
+ * (`toSeverity`'s floor and `DEFAULT_LOG_RANGE`). They are restated rather than
+ * imported because the definition site is `server-only` and this is a client
+ * component. A disagreement is not cosmetic: whichever value this function
+ * omits is re-derived by the page as ITS default, so selecting that value in a
+ * control would silently apply a different bound. Change one, change both.
  */
 function toSearch({ q, sev, pod, onTrace, range }: Filters): string {
   const p = new URLSearchParams();

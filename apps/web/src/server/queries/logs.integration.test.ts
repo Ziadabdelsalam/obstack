@@ -111,6 +111,8 @@ test("logs search (D48/D51) against a seeded ClickHouse", async (t) => {
   const ONLYBODY = `zqonlybody${suffix}`; // one row's body, nowhere else
   const PODTOKEN = `zqpodname${suffix}`; // a POD NAME only — never a body
   const CARRIERTOK = `zqcarrier${suffix}`; // a carrier row's prompt only
+  const PROMPTTOK = `zqprompt${suffix}`; // a RENDERED row's prompt only
+  const COMPLTOK = `zqcompletion${suffix}`; // a RENDERED row's completion only
   const ACCENT_SEEDED = `CAFÉ-${suffix}`; // D56: the same word, case-differing
   const ACCENT_QUERY = `café-${suffix}`; //      on its non-ASCII letter
 
@@ -118,6 +120,7 @@ test("logs search (D48/D51) against a seeded ClickHouse", async (t) => {
   const OTHER_POD = `it-otherpod-${suffix}`;
   const PODNAME_POD = `it-pod-${PODTOKEN}`;
   const CARRIER_POD = `it-carrieronly-${suffix}`;
+  const OLD_POD = `it-oldpod-${suffix}`;
   const CAP_POD = `it-cappod-${suffix}`;
   const EXACT_POD = `it-exactpod-${suffix}`;
   const TRACE_ID = `it_logtrace_${suffix}`;
@@ -134,6 +137,7 @@ test("logs search (D48/D51) against a seeded ClickHouse", async (t) => {
   const bodyI = `baseline ${TOKEN} theta`;
   const bodyJ = `baseline ${TOKEN} iota`;
   const bodyK = `baseline ${TOKEN} kappa`;
+  const bodyL = `baseline ${TOKEN} lambda`;
 
   await seed.insert({
     table: "logs",
@@ -158,6 +162,22 @@ test("logs search (D48/D51) against a seeded ClickHouse", async (t) => {
       // pod is not an option
       logRow({ timestamp: at(9_000), body: bodyJ, k8s_pod: "" }),
       logRow({ timestamp: at(10_000), body: bodyK, k8s_pod: POD, severity_number: 5, severity_text: "DEBUG" }),
+      // NOT a carrier: a real log line that ALSO carries GenAI content. Ingest
+      // fills `body` from the record and `prompt`/`completion` from the GenAI
+      // attributes independently (`mapping/logs.go:66,73-74`), so this shape is
+      // reachable through the product. It RENDERS — and D51(e) still says free
+      // text on this surface reads `body` only, which the carrier row cannot
+      // prove (the carrier rule removes it whatever the reach is).
+      logRow({
+        timestamp: at(11_000),
+        body: bodyL,
+        k8s_pod: POD,
+        prompt: `genai in ${PROMPTTOK}`,
+        completion: `genai out ${COMPLTOK}`,
+      }),
+      // Only this pod's rows sit outside the default window, so it is the pod
+      // option list's time-bound control row.
+      logRow({ timestamp: at(7 * HOUR_MS + 60_000), body: `stale ${suffix}`, k8s_pod: OLD_POD }),
       // cap fixtures: one pod with exactly the cap, one with cap+1
       ...Array.from({ length: LOG_SEARCH_CAP }, (_, i) =>
         logRow({ timestamp: at(20_000 + i), body: `exact ${suffix} ${i}`, k8s_pod: EXACT_POD }),
@@ -182,6 +202,7 @@ test("logs search (D48/D51) against a seeded ClickHouse", async (t) => {
       bodyI,
       bodyJ,
       bodyK,
+      bodyL,
     ]);
   });
 
@@ -197,6 +218,7 @@ test("logs search (D48/D51) against a seeded ClickHouse", async (t) => {
       bodyH,
       bodyI,
       bodyJ,
+      bodyL,
     ]);
     // pod — controls: bodyB (other pod), bodyI (pod-name pod), bodyJ (pod-less)
     assert.deepEqual(await bodies({ q: TOKEN, pod: POD }), [
@@ -206,6 +228,7 @@ test("logs search (D48/D51) against a seeded ClickHouse", async (t) => {
       bodyG,
       bodyH,
       bodyK,
+      bodyL,
     ]);
     // on-trace only — control: every trace-less row above
     assert.deepEqual(await bodies({ q: TOKEN, onTraceOnly: true }), [bodyD]);
@@ -244,12 +267,23 @@ test("logs search (D48/D51) against a seeded ClickHouse", async (t) => {
     // free text must not see it: this surface searches bodies.
     assert.deepEqual(await bodies({ pod: PODNAME_POD }), [bodyI]);
     assert.deepEqual(await bodies({ q: PODTOKEN }), []);
+    // GenAI content on a RENDERED row is the reach's other falsifier, and the
+    // only single-mutation one: bodyL is in the result set (proved right here,
+    // so a lost fixture cannot make the two absences below hollow) and carries
+    // prompt/completion text that free text must not reach. Widen the reach to
+    // `prompt` or `completion` and exactly these two lines go red — the carrier
+    // row cannot do that job, because the carrier rule removes it either way.
+    assert.deepEqual(await bodies({ q: `${TOKEN} lambda` }), [bodyL]);
+    assert.deepEqual(await bodies({ q: PROMPTTOK }), []);
+    assert.deepEqual(await bodies({ q: COMPLTOK }), []);
     // ...and it must not see carrier content either (D51(e): carriers are out of
-    // render, count AND match). Evidence note, S2.0 L1: this assertion is held
+    // render, count AND match). Evidence note, S2.0 L1: THIS assertion is held
     // up by TWO independent mechanisms — the body-only reach and the carrier row
     // exclusion — so removing either ALONE leaves it green (measured). Its
     // falsifier is the pair: reach widened to `prompt` AND the row exclusion
-    // dropped turns it red. Belt-and-braces, stated rather than overclaimed.
+    // dropped turns it red. Belt-and-braces, stated rather than overclaimed —
+    // and neither mechanism rests on it: the reach has the bodyL pair above and
+    // the PODTOKEN line, the row exclusion has the carrier subtest below.
     assert.deepEqual(await bodies({ q: CARRIERTOK }), []);
   });
 
@@ -290,6 +324,15 @@ test("logs search (D48/D51) against a seeded ClickHouse", async (t) => {
     const { pods } = await queryLogSearch({});
     assert.deepEqual(pods, [CAP_POD, EXACT_POD, PODNAME_POD, POD, OTHER_POD].sort());
     assert.ok(!pods.includes(""), "the pod-less rows' empty pod was offered as an option");
+    // The option list is bound by the WINDOW, not just by the carrier rule:
+    // OLD_POD's only row is 7h old, so it is absent by default and returns when
+    // the range widens. Drop `since_ms` from POD_OPTIONS_SQL and this goes red —
+    // without it, no fixture distinguishes the two reads' windows.
+    assert.ok(!pods.includes(OLD_POD), "a pod with no row inside the window was offered");
+    assert.ok(
+      (await queryLogSearch({ rangeMs: 8 * HOUR_MS })).pods.includes(OLD_POD),
+      "widening the range did not widen the pod option list",
+    );
     const leaked = pods.filter((p) => podOptions.includes(p));
     assert.deepEqual(
       leaked,
