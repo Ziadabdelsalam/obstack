@@ -36,6 +36,7 @@ jobs:
         uses: actions/setup-go@v7.0.0
         with:
           go-version-file: services/ingest/go.mod
+          cache-dependency-path: services/ingest/go.sum
 
       - name: gofmt
         run: |
