@@ -39,8 +39,8 @@ const pages: Item[] = [
   { label: "Evals", hint: "ai assist", href: "/app/evals" },
   { label: "Quickstart", hint: "page", href: "/app/onboarding" },
   { label: "Settings", hint: "page", href: "/app/settings" },
-  { label: "Errors only", hint: "saved view", href: "/app/traces?status=error" },
-  { label: "Slow traces (>5s)", hint: "saved view", href: "/app/traces?minMs=5000" },
+  { label: "Errors only", hint: "filter", href: "/app/traces?status=error" },
+  { label: "Slow traces (>5s)", hint: "filter", href: "/app/traces?minMs=5000" },
 ];
 
 const traceItems: Item[] = storyTraces.map((t) => ({

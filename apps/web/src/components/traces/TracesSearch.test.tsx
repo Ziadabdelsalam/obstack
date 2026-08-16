@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
+import { readdirSync, readFileSync } from "node:fs";
+import path from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import { LayerDot } from "@/components/ui/LayerChip";
 import { layerColor } from "@/lib/layers";
 import { NOW } from "@/mock/generate";
@@ -12,11 +15,13 @@ import {
 } from "@/lib/saved-views";
 import {
   EMPTY_TRACES_FILTERS,
+  TRACES_PATH,
   parseTracesUrl,
   toTraceFilter,
   tracesHref,
   tracesSearchString,
   tracesViewFilters,
+  type TracesFilters,
 } from "@/lib/traces-filter";
 import {
   TRACE_PAGE_SIZE,
@@ -277,4 +282,119 @@ test("a view saved from the bar survives a reload, applies whole, and never carr
     entries.delete(SAVED_VIEWS_STORAGE_KEY);
     assert.deepEqual(readSavedViews("traces"), []);
   });
+});
+
+// ---------------------------------------------------------------------------
+// D63: the command palette links into this surface, so its hrefs are part of
+// this surface's URL contract. They are read out of the palette's source rather
+// than restated here — a copy would drift exactly where the ruling says the
+// entries must stay true.
+
+const SRC_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
+const PALETTE = path.join(SRC_ROOT, "components/shell/CommandPalette.tsx");
+
+const paletteItems = [
+  ...readFileSync(PALETTE, "utf8").matchAll(
+    /label:\s*"((?:[^"\\]|\\.)*)",\s*hint:\s*"((?:[^"\\]|\\.)*)",\s*href:\s*"((?:[^"\\]|\\.)*)"/g,
+  ),
+].map(([, label, hint, href]) => ({ label, hint, href }));
+
+/**
+ * A keep/drop pair per filter dimension a palette link can move. Derived from
+ * the link's own parsed value, so the rows cannot agree with a stale copy of
+ * the href; a link that moves a dimension with no pair here fails rather than
+ * passing unchecked.
+ */
+const controlRows: {
+  dimension: keyof TracesFilters;
+  rows: (filters: TracesFilters) => [Partial<Trace>, Partial<Trace>];
+}[] = [
+  {
+    dimension: "status",
+    rows: (f) => [
+      { status: f.status as Trace["status"] },
+      { status: f.status === "error" ? "ok" : "error" },
+    ],
+  },
+  {
+    dimension: "minMs",
+    rows: (f) => [{ durationMs: f.minMs * 2 }, { durationMs: Math.floor(f.minMs / 2) }],
+  },
+];
+
+test("every command-palette link into the traces list is a real filter on it (D63)", () => {
+  assert.ok(
+    paletteItems.length > 20,
+    `the palette's items no longer parse out of its source (${paletteItems.length} found) — this guard would pass vacuously`,
+  );
+  const links = paletteItems.filter((i) => i.href.startsWith(`${TRACES_PATH}?`));
+  assert.ok(links.length >= 2, `only ${links.length} palette links reach ${TRACES_PATH}`);
+
+  for (const { label, href } of links) {
+    const query = href.slice(`${TRACES_PATH}?`.length);
+    const filters = parseTracesUrl(Object.fromEntries(new URLSearchParams(query)));
+
+    // Every parameter the href carries is one this surface knows: a name the
+    // parse does not recognise falls back to its default and vanishes here.
+    assert.deepEqual(
+      [...new URLSearchParams(tracesSearchString(filters))].sort(),
+      [...new URLSearchParams(query)].sort(),
+      `${label}: ${href} is not this surface's parameter vocabulary`,
+    );
+
+    const moved = (Object.keys(filters) as (keyof TracesFilters)[]).filter(
+      (key) => filters[key] !== EMPTY_TRACES_FILTERS[key],
+    );
+    assert.notDeepEqual(moved, [], `${label}: the link asks for the unfiltered list`);
+
+    for (const dimension of moved) {
+      const control = controlRows.find((c) => c.dimension === dimension);
+      assert.ok(control, `${label}: no control rows for ${dimension} — extend this guard`);
+      const [keep, drop] = control.rows(filters);
+      const rows = [makeTrace({ id: "keep", ...keep }), makeTrace({ id: "drop", ...drop })];
+      assert.deepEqual(
+        ids(mockSearchTraces(rows, toTraceFilter(EMPTY_TRACES_FILTERS))).sort(),
+        ["drop", "keep"],
+        `${label}: the control row needs the ${dimension} filter to be dropped`,
+      );
+      assert.deepEqual(
+        ids(mockSearchTraces(rows, toTraceFilter(filters))),
+        ["keep"],
+        `${label}: the link does not narrow on ${dimension}`,
+      );
+    }
+  }
+});
+
+/** Every source under `src/`, collected by walking — nothing is listed by hand. */
+function sourceFiles(dir: string): string[] {
+  return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) return sourceFiles(full);
+    return /\.tsx?$/.test(entry.name) ? [full] : [];
+  });
+}
+
+test("nothing outside T2's store calls a hardcoded filter one of the user's views (D63)", () => {
+  const self = path.resolve(fileURLToPath(import.meta.url));
+  const files = sourceFiles(SRC_ROOT).filter((f) => f !== self);
+  assert.ok(files.length > 50, `the sweep read ${files.length} sources — it is not looking at this app`);
+
+  // The phrase as a quoted string: what a component renders or labels, not the
+  // prose around it. Matched a line at a time — a file-wide match would pair
+  // the quote of some unrelated className with another one pages away and call
+  // every comment a claim. Assembled from parts so this file is not its own hit.
+  const claim = new RegExp(`"[^"]*saved ${"view"}s?[^"]*"`, "i");
+  const hits = files
+    .filter((f) => readFileSync(f, "utf8").split("\n").some((line) => claim.test(line)))
+    .map((f) => path.relative(SRC_ROOT, f));
+
+  // Positive control: the matcher does find the phrase where the feature writes
+  // it, so the emptiness below is an absence and not a dead regex (S2.0 L1).
+  assert.ok(hits.includes("lib/saved-views.ts"), `the sweep found no occurrence at all (hits: ${hits.join(", ")})`);
+  assert.deepEqual(
+    hits.filter((f) => !f.includes("saved-views")),
+    [],
+    "a view is one the user saved and can delete (T2's store); a hardcoded filter is a filter",
+  );
 });
