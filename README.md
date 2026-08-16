@@ -80,11 +80,11 @@ kubectl wait --for=condition=Ready pod/kind-proof-workload --timeout=120s
 kind delete cluster --name kind-proof
 ```
 
-### Required checks (pending user action)
+### Required checks (deliberately not enforced)
 
-A red check does **not** block merge yet: branch protection is not configured, and it cannot be set from CI or the API on this repository — both `PUT/GET /repos/:owner/:repo/branches/master/protection` and `/rulesets` return `403 Upgrade to GitHub Pro or make this repository public` while the repo is private on a personal plan.
+A red check does **not** block merge: branch protection cannot be set on this repository — both `PUT/GET /repos/:owner/:repo/branches/master/protection` and `/rulesets` return `403 Upgrade to GitHub Pro or make this repository public` while the repo is private on a personal plan. The decision (2026-08-16) is to **skip enforcement for now**: the checks run on every PR and are advisory; merges go through the project's review process instead. Revisit when the repo goes public or the plan changes.
 
-To close that gap, on `master` (Settings → Branches → Add rule) require exactly these three status checks by name — **`web`**, **`go`**, **`kind`** — with "Require branches to be up to date before merging" (strict) enabled, admin enforcement off, no required approving reviews, and no push restrictions. The names are the workflow job names; renaming a job silently voids its required check, so they are fixed (K3).
+If enforcement is ever enabled, on `master` (Settings → Branches → Add rule) require exactly these three status checks by name — **`web`**, **`go`**, **`kind`** — with "Require branches to be up to date before merging" (strict) enabled, admin enforcement off, no required approving reviews, and no push restrictions. The names are the workflow job names; renaming a job silently voids its required check, so they are fixed (K3).
 
 ## Documents
 
