@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { NEARBY_LOG_CAP } from "@/lib/nearby-logs";
 import {
   toLogRecord,
   toSpan,
@@ -234,4 +235,26 @@ test("a trace with no nearby rows renders only the solid ones (D13/D21: never in
   const trace = toTrace(summaryRow, [spanRow], [logRow], []);
   assert.equal(trace.logs.length, 1);
   assert.equal(trace.logs[0].traceId, summaryRow.trace_id);
+});
+
+// `nearbyLogRows` arrives unsliced from `queryTrace` (up to NEARBY_LOG_CAP + 1,
+// per NEARBY_LOGS_SQL's `fetch_limit`) — `toTrace` is the one place that both
+// slices to the cap and sets `nearbyLogsTruncated`, from the same length check.
+const makeNearbyFillers = (count: number): LogRow[] =>
+  Array.from({ length: count }, (_, i) => ({
+    ...nearbyLogRow,
+    at_offset_ns: String(9_500_000_000 + i),
+    body: `filler-${i}`,
+  }));
+
+test("nearbyLogsTruncated is omitted — never false — at exactly the cap (D13/D21: no unproven claim)", () => {
+  const trace = toTrace(summaryRow, [spanRow], [], makeNearbyFillers(NEARBY_LOG_CAP));
+  assert.equal("nearbyLogsTruncated" in trace, false);
+  assert.equal(trace.logs.length, NEARBY_LOG_CAP);
+});
+
+test("nearbyLogsTruncated is true and the render still caps at NEARBY_LOG_CAP when the adapter sees cap+1", () => {
+  const trace = toTrace(summaryRow, [spanRow], [], makeNearbyFillers(NEARBY_LOG_CAP + 1));
+  assert.equal(trace.nearbyLogsTruncated, true);
+  assert.equal(trace.logs.length, NEARBY_LOG_CAP);
 });

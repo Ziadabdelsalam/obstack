@@ -83,4 +83,6 @@ export interface Trace {
   logs: LogRecord[];
   k8sEvents?: K8sEvent[];
   explanation?: Explanation;
+  /** true only when the nearby-logs query is known to have more rows than the cap (D13/D21); omitted — never false — otherwise. Mock mode never sets it. */
+  nearbyLogsTruncated?: boolean;
 }

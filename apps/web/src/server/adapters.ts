@@ -1,5 +1,6 @@
 import "server-only";
 import type { Layer, LlmDetail, LogRecord, Severity, Span, SpanStatus, Trace } from "@/lib/types";
+import { NEARBY_LOG_CAP } from "@/lib/nearby-logs";
 
 /**
  * ClickHouse rows → the view-model types in `src/lib/types.ts` (D12). No new UI
@@ -183,6 +184,15 @@ export function toTraceSummary(row: TraceSummaryRow): Trace {
  * what distinguishes them: a real, non-empty `trace_id` maps to `traceId` set,
  * an empty one maps to `traceId: undefined`, which `LogsRail` already renders
  * as NEARBY. No separate nearby adapter is needed.
+ *
+ * `nearbyLogRows` arrives UNSLICED from `queryTrace` — up to `NEARBY_LOG_CAP + 1`
+ * rows, per NEARBY_LOGS_SQL's `fetch_limit`. This adapter is the one place
+ * that both slices to the cap and sets `nearbyLogsTruncated`, from the same
+ * length check, so the two facts can never drift apart (advisor ruling: the
+ * adapter owns this because it is the only layer that sees the cap+1 fetch).
+ * `nearbyLogsTruncated` is set `true` only when truncation is proven and
+ * otherwise OMITTED — never `false` — matching the `explanation`/`k8sEvents`
+ * optional-field pattern above (D12).
  */
 export function toTrace(
   summary: TraceSummaryRow,
@@ -192,11 +202,14 @@ export function toTrace(
 ): Trace {
   const spans = spanRows.map((row) => toSpan(row, summary.trace_id));
   const root = spans.find((s) => s.parentId === null);
+  const nearbyLogsTruncated = nearbyLogRows.length > NEARBY_LOG_CAP;
+  const nearby = nearbyLogRows.slice(0, NEARBY_LOG_CAP);
   return {
     ...toTraceSummary(summary),
     rootName: summary.root_name || root?.name || "(unnamed root)",
     service: summary.root_service || root?.service || "",
     spans,
-    logs: [...logRows, ...nearbyLogRows].map((row, i) => toLogRecord(row, i)),
+    logs: [...logRows, ...nearby].map((row, i) => toLogRecord(row, i)),
+    ...(nearbyLogsTruncated ? { nearbyLogsTruncated: true } : {}),
   };
 }

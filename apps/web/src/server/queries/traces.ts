@@ -208,12 +208,11 @@ export async function queryTrace(id: string): Promise<Trace | undefined> {
     }),
   ]);
   // E3: fetching one past the cap turns "truncated" into a fact instead of a
-  // guess — `nearbyFetched.length > NEARBY_LOG_CAP` is the only honest way to
-  // know more rows exist; a bare `=== NEARBY_LOG_CAP` count is indistinguishable
-  // from "there were exactly that many". The rendered set is still sliced to
-  // the cap here; only the extra fetched row is used, never shown.
-  const nearbyLogRows = nearbyFetched.slice(0, NEARBY_LOG_CAP);
-  return toTrace(summary, spanRows, logRows, nearbyLogRows);
+  // guess — a bare `=== NEARBY_LOG_CAP` count is indistinguishable from "there
+  // were exactly that many". `nearbyFetched` is passed through UNSLICED —
+  // `toTrace` (adapters.ts) is the one place that both slices to the cap and
+  // sets `Trace.nearbyLogsTruncated`, from the same length check.
+  return toTrace(summary, spanRows, logRows, nearbyFetched);
 }
 
 export async function queryTraceList(filter: TraceFilter): Promise<Trace[]> {
