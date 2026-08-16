@@ -100,6 +100,21 @@ test("the header's default bound is the facade's default bound (D50)", () => {
   assert.equal(toTraceFilter({ ...EMPTY_TRACES_FILTERS, range: "1h" }).rangeMs, 3_600_000);
 });
 
+test("a prototype member is not a time range (D66)", () => {
+  // `range in TRACE_RANGE_HOURS` accepts every name on Object.prototype, so
+  // `?range=toString` used to reach `traceRangeMs` and return NaN — which the
+  // live query sends as `since_ms` and ClickHouse rejects, a 500 on a
+  // hand-typed URL. Every inherited name that a browser can put in a query
+  // string, not just the one that was reported.
+  for (const name of ["toString", "constructor", "valueOf", "hasOwnProperty"]) {
+    const filters = parseTracesUrl({ range: name });
+    assert.equal(filters.range, DEFAULT_TRACE_RANGE, `?range=${name} is not a range`);
+    const rangeMs = toTraceFilter(filters).rangeMs;
+    assert.equal(Number.isFinite(rangeMs), true, `?range=${name} asked the query for ${rangeMs} ms`);
+    assert.equal(rangeMs, DEFAULT_TRACE_RANGE_MS);
+  }
+});
+
 test("the page parameter is the store's PAGE_PARAM, never a second literal (D53)", () => {
   assert.equal(tracesSearchString({ ...EMPTY_TRACES_FILTERS, page: 3 }), `${PAGE_PARAM}=3`);
   assert.equal(parseTracesUrl({ [PAGE_PARAM]: "3" }).page, 3);

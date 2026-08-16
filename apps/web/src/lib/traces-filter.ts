@@ -113,7 +113,12 @@ export function parseTracesUrl(params: Record<string, UrlParam>): TracesFilters 
     minMs: positive(params.minMs),
     minCost: positive(params.minCost),
     maxCost: ceiling(params.maxCost),
-    range: range in TRACE_RANGE_HOURS ? (range as TraceRange) : DEFAULT_TRACE_RANGE,
+    // `Object.hasOwn`, never `in`: `in` walks the prototype chain, so
+    // `?range=toString` would name `Function.prototype.toString` a range and
+    // hand the query `NaN` milliseconds (D66). Same guard, same reason, as the
+    // logs surface's range parse — the canonical one, cross-cited here so the
+    // two surfaces cannot diverge on what a valid range name is.
+    range: Object.hasOwn(TRACE_RANGE_HOURS, range) ? (range as TraceRange) : DEFAULT_TRACE_RANGE,
     page: Number.isFinite(page) && page >= 1 ? Math.floor(page) : 1,
   };
 }
