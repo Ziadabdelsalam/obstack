@@ -1,9 +1,16 @@
-# A normal chart resource (no hook annotation), created only after every
-# pre-install hook — ClickHouse and the migrate Job among them — has already
-# finished. `OBSTACK_MIGRATE_ON_BOOT=false` means these pods only verify the
-# schema at boot (services/ingest/cmd/ingest/main.go's ensureSchema) and log
-# "schema verified" — the migrate Job is the sprint's one migration runner
-# (deploy/compose/README.md's "Exactly one migration runner per upgrade").
+# `OBSTACK_MIGRATE_ON_BOOT=false` means these pods only verify the schema at
+# boot (services/ingest/cmd/ingest/main.go's ensureSchema) and log "schema
+# verified" — the migrate Job (templates/ingest/migrate-job.yaml) is the
+# sprint's one migration runner (deploy/compose/README.md's "Exactly one
+# migration runner per upgrade").
+#
+# On a fresh `helm install`, this Deployment and the migrate Job are created
+# in the same batch as ClickHouse — nothing orders them. These pods can
+# therefore crash-loop for a few restarts before the schema exists: that is
+# the verify-and-refuse invariant working as designed (PR #4), visibly,
+# rather than an install-time defect. `helm install --wait` still blocks on
+# the real signal — this Deployment cannot report Available until its pods
+# stop refusing.
 apiVersion: apps/v1
 kind: Deployment
 metadata:

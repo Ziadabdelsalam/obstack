@@ -1,40 +1,64 @@
-# PR #4's design, first real execution (deploy/compose/README.md:147-186):
-# the one migration runner per upgrade is a `pre-install`/`pre-upgrade` hook
-# running `/ingest migrate`, so N ingest replicas never race each other on
-# DDL. `before-hook-creation` clears out the previous run's Job before this
-# one is created (every upgrade re-triggers it); `hook-succeeded` also drops
-# it once it passes, so a failed Job is left behind for `kubectl logs`/
-# `describe` rather than silently swept.
+# PR #4's design (deploy/compose/README.md:147-186), one runner per upgrade —
+# split by `.Release.IsInstall` per advisor ruling (c) on the T4
+# chart-structure escalation (README.md has the full story). One template,
+# two renderings, the same pod spec either way:
 #
-# Weight 0, after ClickHouse's -5 (see templates/clickhouse/deployment.yaml)
-# so ClickHouse's create request lands first — but Helm does not wait for a
-# hook Deployment's rollout before moving to the next weight, so this Job
-# still cannot assume ClickHouse is actually answering yet. The initContainer
-# below is what makes that true, the same role compose's
-# `depends_on: condition: service_healthy` plays for the ingest container.
+# - INSTALL: a normal, revision-named Job. ClickHouse
+#   (templates/clickhouse/deployment.yaml) is a normal resource too, created
+#   in the very same batch — Helm enforces no ordering between them at all on
+#   a fresh install, so the initContainer below is what makes ClickHouse
+#   actually reachable before `/ingest migrate` runs, the same role
+#   compose's `depends_on: condition: service_healthy` plays for the ingest
+#   container. Meanwhile ingest's own verify-and-refuse boot check
+#   (OBSTACK_MIGRATE_ON_BOOT=false — templates/ingest/deployment.yaml)
+#   crash-loops the serving pods, loudly, until this Job succeeds.
+#   `ttlSecondsAfterFinished` cleans the completed Job up — a
+#   hook-delete-policy only applies to hooks, which this rendering is not.
+# - UPGRADE (the `else` branch): a `pre-upgrade` hook, because the ordering
+#   guarantee is both meaningful and actually deliverable here — ClickHouse
+#   has been running since install, so there is no cold-start race to design
+#   around, and "migrate finishes before the upgraded ingest replicas roll"
+#   is a real Helm hook doing real work: Helm creates and waits for
+#   `pre-upgrade` hook Jobs before touching any of the release's normal
+#   resources. Revision-named, so no run ever collides with a predecessor;
+#   `before-hook-creation` clears any leftover of the same name anyway, and
+#   `hook-succeeded` drops the Job once it passes, so a FAILED Job is left
+#   behind for `kubectl logs`/`describe` rather than silently swept.
+#
+# Either way: exactly one process applies the schema per revision, and
+# serving pods only ever verify (deploy/compose/README.md's "Exactly one
+# migration runner per upgrade" — unchanged by any of this).
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: {{ .Release.Name }}-migrate
+  name: {{ .Release.Name }}-migrate-{{ .Release.Revision }}
   labels:
     {{- include "obstack.labels" . | nindent 4 }}
     app.kubernetes.io/component: migrate
+  {{- if not .Release.IsInstall }}
   annotations:
-    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook": pre-upgrade
     "helm.sh/hook-weight": "0"
     "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+  {{- end }}
 spec:
   backoffLimit: 1
   # Sized for a genuinely fresh cluster, which is the case the done-check
   # names: a node that has never run this chart has to pull
   # clickhouse/clickhouse-server (~250 MB) before ClickHouse can start, and
-  # that pull is minutes, not seconds, on a cold cache — measured at ~5 min
-  # here. A budget that only fits a warm node turns the first install on a
-  # new machine (and every CI run that does not pre-load the image) into a
-  # failed release. `helm --timeout` is the caller's own, shorter-if-they-say-
-  # so bound on the same wait; this is only the backstop that keeps a truly
-  # wedged Job from running forever.
-  activeDeadlineSeconds: 600
+  # that pull is minutes, not seconds, on a cold cache — measured at 7m28s
+  # on this chart's own re-probe cluster. The initContainer's poll budget
+  # (420 × 2s = 840s) and this deadline are sized off that measurement, not
+  # a guess; a budget that only fits a warm node turns the first install on
+  # a new machine into a failed release. `helm --timeout` is the caller's
+  # own, shorter-if-they-say-so bound on the same wait; this is only the
+  # backstop that keeps a truly wedged Job from running forever.
+  activeDeadlineSeconds: 900
+  {{- if .Release.IsInstall }}
+  # Not a hook-delete-policy — this Job isn't a hook on install — so this is
+  # what keeps a completed install's Job from lingering forever.
+  ttlSecondsAfterFinished: 600
+  {{- end }}
   template:
     metadata:
       labels:
@@ -44,15 +68,21 @@ spec:
     spec:
       restartPolicy: Never
       initContainers:
+        # Kept in BOTH renderings on purpose: on install it turns "retry the
+        # whole pod on Kubernetes' capped exponential backoff until the cold
+        # pull finishes" into "run migrate within 2s of ClickHouse answering"
+        # — so backoffLimit stays a signal about migrate actually failing,
+        # not about how slow the image pull was. On upgrade ClickHouse is
+        # already serving and the first probe exits immediately.
         - name: wait-for-clickhouse
           image: {{ .Values.utilityImage }}
           command:
             - sh
             - -c
             - |
-              for i in $(seq 1 285); do
+              for i in $(seq 1 420); do
                 wget -q -O /dev/null http://{{ .Release.Name }}-clickhouse:8123/ping && exit 0
-                echo "waiting for clickhouse ($i/285)..."
+                echo "waiting for clickhouse ($i/420)..."
                 sleep 2
               done
               echo "clickhouse did not become reachable in time" >&2
@@ -67,5 +97,10 @@ spec:
             # one-shot DDL runner has no business holding the ingest bearer
             # keys just to satisfy a validator it never consults
             # (config.LoadDSN's own doc comment; deploy/compose/README.md).
+            #
+            # The password comes from the obstack.migrate.clickhousePassword
+            # helper (_helpers.tpl), not .Values.clickhouse.ingestPassword
+            # directly — see that helper's doc comment for why a
+            # password-rotating upgrade needs the two to diverge.
             - name: CLICKHOUSE_DSN
-              value: clickhouse://obstack_ingest:{{ .Values.clickhouse.ingestPassword }}@{{ .Release.Name }}-clickhouse:9000/obstack
+              value: clickhouse://obstack_ingest:{{ include "obstack.migrate.clickhousePassword" . }}@{{ .Release.Name }}-clickhouse:9000/obstack

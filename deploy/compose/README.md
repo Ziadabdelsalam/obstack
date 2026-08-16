@@ -179,11 +179,15 @@ way to break it here is `docker compose up --scale ingest=2` — don't.
 
 Kubernetes cannot get it for free, because the natural chart default is two or
 more replicas and every one of them would boot into the same DDL. The M4 chart
-splits the two roles instead:
+splits the two roles instead. The Job's lifecycle differs by operation —
+install: normal Job; upgrades: `pre-upgrade` hook — because on an install
+ClickHouse does not exist yet for a hook to run against, while on an upgrade
+it has been running since install (`deploy/helm/obstack/README.md` has the
+full reasoning); either way exactly one Job applies the schema per revision.
 
 | | applies the schema | serves traffic |
 |---|---|---|
-| what | a `Job` (Helm `pre-install`/`pre-upgrade` hook) running `/ingest migrate` | the ingest `Deployment`, any replica count |
+| what | a `Job` running `/ingest migrate` — a normal, revision-named resource on install, a `pre-upgrade` hook on upgrade | the ingest `Deployment`, any replica count |
 | env | `CLICKHOUSE_DSN` only | the full ingest config, plus `OBSTACK_MIGRATE_ON_BOOT=false` |
 
 `/ingest migrate` is a one-shot: it applies what is missing, logs the versions,

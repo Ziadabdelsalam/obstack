@@ -7,11 +7,11 @@
 # Every image below is pinned to an exact tag (D14 precedent) — bumping one
 # is a deliberate edit here, never a floating tag.
 
-# ClickHouse is installed as a pre-install hook (README.md, "Why ClickHouse
-# is a pre-install hook"), so every value in this block takes effect at
-# INSTALL time only: `helm upgrade --set clickhouse.…` does not re-apply
-# them, and changing a password on a live release breaks it (the DSNs move,
-# the ClickHouse user does not). Change these at install, or reinstall.
+# Live on upgrade like every other value (advisor ruling (c) — ClickHouse is
+# a normal, release-managed resource): an image bump or a password change
+# rolls the ClickHouse pod and converges, with the schema surviving on the
+# Deployment's hostPath data dir. See README.md, "Why ClickHouse is a normal
+# resource, and the migrate Job renders two ways".
 clickhouse:
   image: clickhouse/clickhouse-server:26.3.17.110
   # Dev/CI defaults, matching deploy/compose/docker-compose.yml's own. A

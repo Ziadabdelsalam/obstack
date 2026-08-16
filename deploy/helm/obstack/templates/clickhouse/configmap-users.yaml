@@ -4,9 +4,9 @@
 # it — pinned byte-for-byte by the contract test in
 # services/ingest/internal/mapping/ rather than trusted to stay in sync.
 #
-# A pre-install hook, weighted before the migrate Job (-5 < 0): ClickHouse
-# itself is a hook too (see deployment.yaml for why), and this ConfigMap is
-# one of its volumes.
+# A normal resource, same as the Deployment it configures — see
+# deployment.yaml's checksum/config annotation for what makes an edit here
+# actually reach a running ClickHouse.
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -14,9 +14,6 @@ metadata:
   labels:
     {{- include "obstack.labels" . | nindent 4 }}
     app.kubernetes.io/component: clickhouse
-  annotations:
-    "helm.sh/hook": pre-install
-    "helm.sh/hook-weight": "-5"
 data:
   obstack-users.xml: |-
 {{ .Files.Get "files/obstack-users.xml" | indent 4 }}
