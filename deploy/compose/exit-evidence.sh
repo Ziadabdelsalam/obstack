@@ -35,6 +35,12 @@ CDP_PORT="${CDP_PORT:-9333}"
 CH="${CLICKHOUSE_URL:-http://127.0.0.1:8123}"
 BASE="http://127.0.0.1:$APP_PORT"
 OUT="${OUT_DIR:-$(mktemp -d)}"
+# The README documents `OUT_DIR=...` as an override, and an override that has to
+# already exist is an override that does not work: with a missing directory every
+# `> "$OUT/..."` redirection fails and the run reports the smoke step, the seed
+# and the build as FAILures that never happened. Create it, so the documented
+# command is the command (S2.1 L3).
+mkdir -p "$OUT" || { printf 'exit-evidence: FAIL — cannot create OUT_DIR %s\n' "$OUT"; exit 1; }
 
 pass=0; fail=0
 step() { printf '\n== %s\n' "$1"; }
