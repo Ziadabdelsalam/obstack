@@ -7,8 +7,8 @@
 #
 # Trigger policy (K5 decision RULE): measure the full job's wall-clock, then
 # pick a branch. Measured end to end (job start to job complete, including
-# cluster teardown) on the scratch PR: 1m19s
-# (https://github.com/Ziadabdelsalam/obstack/actions/runs/31932100700) — well
+# cluster teardown) after F1 round 2's export-failure wait: ~1m37s
+# (https://github.com/Ziadabdelsalam/obstack/actions/runs/31933353051) — well
 # under the ~6 min line, so this runs on every PR like `web` and `go` and
 # joins the required-checks set. If a future change pushes the job past
 # ~6 min, switch this trigger block to `ci:kind` label + push-to-master +

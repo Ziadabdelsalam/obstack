@@ -6,7 +6,7 @@ on:
       - master
 
 concurrency:
-  group: web-${{ github.head_ref || github.ref }}
+  group: web-${{ github.head_ref }}
   cancel-in-progress: true
 
 permissions:
@@ -21,6 +21,9 @@ defaults:
 jobs:
   web:
     runs-on: ubuntu-latest
+    # Bounds a required check: without it a wedged build would hold the PR
+    # for the 360-minute GitHub default.
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7.0.1
 

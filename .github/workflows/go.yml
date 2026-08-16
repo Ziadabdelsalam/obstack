@@ -5,7 +5,7 @@ on:
     branches: [master]
 
 concurrency:
-  group: go-${{ github.head_ref || github.ref }}
+  group: go-${{ github.head_ref }}
   cancel-in-progress: true
 
 permissions:
