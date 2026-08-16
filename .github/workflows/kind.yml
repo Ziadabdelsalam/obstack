@@ -13,19 +13,29 @@
 # joins the required-checks set. If a future change pushes the job past
 # ~6 min, switch this trigger block to `ci:kind` label + push-to-master +
 # workflow_dispatch and drop `kind` from required checks (K5) — do not leave
-# it required-but-conditional.
+# it required-but-conditional. Branch protection itself is T4's step; this
+# workflow only supplies the `kind` check name it will reference.
+name: kind
+
 on:
   pull_request:
     branches: [master]
 
 concurrency:
-  group: kind-${{ github.event.pull_request.number || github.ref }}
+  group: kind-${{ github.event.pull_request.number }}
   cancel-in-progress: true
+
+permissions:
+  contents: read
 
 jobs:
   kind:
     name: kind
     runs-on: ubuntu-latest
+    # The job's own bound. `kubectl wait` is capped at 120s, but the image
+    # build, cluster create and image load are not — and a required check that
+    # hangs holds a PR for the 360-minute default.
+    timeout-minutes: 15
     # One path anchor for the job (K3 ii): every step below reads these, none
     # repeats a literal path.
     env:
@@ -44,9 +54,6 @@ jobs:
         uses: helm/kind-action@v1.14.0
         with:
           cluster_name: ${{ env.CLUSTER_NAME }}
-          # Cluster only — the demo app is loaded and applied by hand below,
-          # kind-action's own chart-testing steps are unused here.
-          install_only: "false"
 
       - name: Load the just-built image into kind (no registry path exists)
         run: kind load docker-image "$IMAGE_TAG" --name "$CLUSTER_NAME"
