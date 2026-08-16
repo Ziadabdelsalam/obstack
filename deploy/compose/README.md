@@ -178,8 +178,9 @@ unset and therefore true, applying the schema at boot as it always has. The one
 way to break it here is `docker compose up --scale ingest=2` — don't.
 
 Kubernetes cannot get it for free, because the natural chart default is two or
-more replicas and every one of them would boot into the same DDL. The M4 chart
-splits the two roles instead. The Job's lifecycle differs by operation —
+more replicas and every one of them would boot into the same DDL. The chart
+(`deploy/helm/obstack/`, the one M4 extends in place — D35) splits the two
+roles instead. The Job's lifecycle differs by operation —
 install: normal Job; upgrades: `pre-upgrade` hook — because on an install
 ClickHouse does not exist yet for a hook to run against, while on an upgrade
 it has been running since install (`deploy/helm/obstack/README.md` has the

@@ -349,6 +349,11 @@ chart):
   (`deploy/compose/trace-checks.ts`);
 - **D37.1** ≥1 SOLID log row carrying the trace's `trace_id` AND populated
   `k8s_namespace`/`k8s_pod`;
+- **D43** the standing guard: every span of the trace carries a non-empty
+  `k8s_node` — the only observable evidence `k8s_attributes` is alive on the
+  app-OTLP path (SOLID `k8s_namespace`/`k8s_pod` come from the app's own
+  stamping, NEARBY's from the filelog path), so a reverted association order
+  or a collector bump that broke it goes red instead of silently regressing;
 - **D37.2** ≥1 NEARBY row from the uninstrumented `sidecar` container —
   zero is a red check, never a silent pass;
 - **D37.3** zero duplicated bodies across the OTLP and filelog paths, in

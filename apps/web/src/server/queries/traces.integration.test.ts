@@ -15,13 +15,12 @@ import { NEARBY_LOG_CAP } from "@/lib/nearby-logs";
 // only a real server can prove it.
 //
 // It skips when no ClickHouse answers, like services/ingest's
-// integration_test.go — but note that only half of that precedent exists here:
-// the `go` check starts the compose ClickHouse and then FAILS the job on any
-// "--- SKIP" line (.github/workflows/go.yml, "D36 skip trap"), so those tests
-// cannot go quietly green. `web` starts no ClickHouse and greps no output, so
-// today this file runs only where a human or the sprint's `stack` job supplies
-// one. Closing that (ClickHouse service + skip trap in web.yml) is a CI change
-// outside T3's ownership — escalated, not absorbed here.
+// integration_test.go — and, since T3's E1 escalation landed on T5, the same
+// full precedent now holds on both checks: `web` brings up the compose
+// ClickHouse (plus `ingest`, the schema owner) before `npm test` and then
+// FAILS the job on any unexpected skip (.github/workflows/web.yml, "D36 skip
+// trap", mirroring go.yml's), so this file executes on every PR and cannot go
+// quietly green by skipping.
 //
 // Env vars mirror deploy/compose/README.md's live-mode block exactly
 // (CLICKHOUSE_URL / CLICKHOUSE_USER / CLICKHOUSE_PASSWORD) so this reads
