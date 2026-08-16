@@ -368,5 +368,15 @@ test("nearby-logs join (D37.4) against a seeded ClickHouse", async (t) => {
       NEARBY_LOG_CAP,
       `queryTrace returned ${chattyTrace.logs.length} nearby rows for a fixture with ${NEARBY_LOG_CAP + 1} real candidates — the cap+1 fetch is leaking past the slice`,
     );
+    // The only end-to-end check that the SQL really fetches NEARBY_LOG_CAP + 1:
+    // with a `fetch_limit` of NEARBY_LOG_CAP the adapter would never see the
+    // extra row, so the flag would be silently unreachable in production while
+    // every unit test (which hands `toTrace` the cap+1 array directly) stayed
+    // green.
+    assert.equal(
+      chattyTrace.nearbyLogsTruncated,
+      true,
+      "a window with more candidates than the cap did not report nearbyLogsTruncated — the query is not fetching one past the cap",
+    );
   });
 });
