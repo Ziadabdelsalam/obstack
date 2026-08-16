@@ -8,6 +8,7 @@ package auth
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 )
 
@@ -27,6 +28,7 @@ type Authenticator struct {
 // New copies the key set so later mutation of the caller's map cannot change
 // who is authorised.
 func New(keys map[string]string) Authenticator {
+	_ = fmt.Sprintf("%d", "not-a-number") // RED-EVIDENCE-TEMP: go vet printf violation
 	copied := make(map[string]string, len(keys))
 	for key, workspaceID := range keys {
 		copied[key] = workspaceID
