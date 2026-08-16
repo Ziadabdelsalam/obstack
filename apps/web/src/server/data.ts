@@ -150,16 +150,6 @@ export async function searchTraces(filter: TraceFilter = {}): Promise<TraceSearc
   return dataMode === "live" ? queryTraceSearch(filter) : mockSearchTraces(allTraces, filter);
 }
 
-/**
- * Pre-D44 list shape: page 1 of `searchTraces`, total dropped. Still what
- * `app/traces/page.tsx` renders from; T4 (wave 2) moves that page onto
- * `searchTraces` and deletes this export along with the second unfiltered
- * read it exists to serve.
- */
-export async function listTraces(filter: TraceFilter = {}): Promise<Trace[]> {
-  return (await searchTraces(filter)).traces;
-}
-
 export async function getOverview(range: OverviewRange = "6h"): Promise<Overview> {
   if (dataMode === "live") return queryOverview(range);
   return { points: timeseries(), stats: [...statCards] };

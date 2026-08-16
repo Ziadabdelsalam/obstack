@@ -55,15 +55,16 @@ bash deploy/compose/smoke.sh
 
 It boots the stack (`--profile demo`, `--build`), waits for every container to
 report healthy, fires `POST localhost:8000/chat` at the demo agent, and then
-asserts through the web facade — `smoke.ts` calls `listTraces()` and `getTrace()`
+asserts through the web facade — `smoke.ts` calls `searchTraces()` and `getTrace()`
 from `apps/web/src/server/data.ts` with `OBSTACK_DATA_MODE=live`, the same module the app
 renders from, run under `npx tsx --conditions react-server` so the `server-only`
 guard resolves. No Next server and no test-only API route sit in between.
 
 The trace the demo just emitted must, within 30s:
 
-- **list** — appear in `listTraces()`, with a root service and a `trace_summaries`
-  `span_count` that matches the number of span rows (the rollup merged correctly);
+- **list** — appear in `searchTraces()`, with a root service and a `trace_summaries`
+  `span_count` that matches the number of span rows (the rollup merged correctly),
+  under an exact filtered total of at least one (the page and the count query agree);
 - **resolve** — come back from `getTrace()` with all four layers, `api`, `agent`,
   `tool` and `llm`, under that one `trace_id`;
 - carry a populated LLM span — model, prompt, completion and non-zero token counts —
