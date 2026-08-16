@@ -1,0 +1,78 @@
+# `OBSTACK_MIGRATE_ON_BOOT=false` means these pods only verify the schema at
+# boot (services/ingest/cmd/ingest/main.go's ensureSchema) and log "schema
+# verified" — the migrate Job (templates/ingest/migrate-job.yaml) is the
+# sprint's one migration runner (deploy/compose/README.md's "Exactly one
+# migration runner per upgrade").
+#
+# On a fresh `helm install`, this Deployment and the migrate Job are created
+# in the same batch as ClickHouse — nothing orders them — so these pods hold
+# in Init:0/1, restart count zero, behind the SAME wait-for-clickhouse init
+# container the migrate Job runs (obstack.waitForClickhouse, _helpers.tpl —
+# one define, two includes). An earlier revision let them crash-loop on
+# "connection refused" instead and called that the invariant working as
+# designed; that was falsified as machine-specific — on a cold node the loop
+# hits kubelet's 5-minute CrashLoopBackOff cap and adds up to 5 minutes of
+# dead wait AFTER the migration has already succeeded, failing
+# `install --wait` while the stack converged healthy. The refusal invariant
+# is about SCHEMA STATE, not ClickHouse reachability: install-time refusals
+# may be ZERO, and the invariant's proof of record is the inverted-control
+# probe (README.md), not install-time churn. The verify-and-refuse check
+# itself is untouched in the main container — a reachable-but-unmigrated
+# ClickHouse is still refused loudly — so a restart here now means a refusal
+# or a defect, never pull speed. Init containers gate startup only: a
+# running pod that loses ClickHouse crash-loops exactly as before. And
+# `helm install --wait` still blocks on the real signal — this Deployment
+# cannot report Available until its pods verify the schema.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-ingest
+  labels:
+    {{- include "obstack.labels" . | nindent 4 }}
+    app.kubernetes.io/component: ingest
+spec:
+  replicas: {{ .Values.ingest.replicaCount }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: obstack
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: ingest
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: obstack
+        app.kubernetes.io/instance: {{ .Release.Name }}
+        app.kubernetes.io/component: ingest
+    spec:
+      initContainers:
+        {{- include "obstack.waitForClickhouse" . | nindent 8 }}
+      containers:
+        - name: ingest
+          image: {{ .Values.ingest.image }}
+          imagePullPolicy: {{ .Values.ingest.pullPolicy }}
+          env:
+            - name: CLICKHOUSE_DSN
+              value: clickhouse://obstack_ingest:{{ .Values.clickhouse.ingestPassword }}@{{ .Release.Name }}-clickhouse:9000/obstack
+            - name: OBSTACK_API_KEYS
+              value: {{ .Values.ingest.apiKeys | quote }}
+            - name: OBSTACK_MIGRATE_ON_BOOT
+              value: "false"
+          ports:
+            - name: otlp-grpc
+              containerPort: 4317
+            - name: otlp-http
+              containerPort: 4318
+            - name: admin
+              containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: admin
+            initialDelaySeconds: 3
+            periodSeconds: 3
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: admin
+            initialDelaySeconds: 10
+            periodSeconds: 10

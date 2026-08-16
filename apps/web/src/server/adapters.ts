@@ -1,5 +1,6 @@
 import "server-only";
 import type { Layer, LlmDetail, LogRecord, Severity, Span, SpanStatus, Trace } from "@/lib/types";
+import { NEARBY_LOG_CAP } from "@/lib/nearby-logs";
 
 /**
  * ClickHouse rows → the view-model types in `src/lib/types.ts` (D12). No new UI
@@ -60,9 +61,19 @@ export interface LogRow {
   /** nanos from the trace's `min_start`; negative for logs emitted before it */
   at_offset_ns: string;
   trace_id: string;
+  /**
+   * The LLM span this row's GenAI content belongs to (D38 FINAL / D42). Only
+   * `LOGS_SQL` selects this — `NEARBY_LOGS_SQL` rows always carry `trace_id =
+   * ''` and can never be a coalesce candidate for this trace, so it never
+   * needs the column.
+   */
+  span_id?: string;
   severity_number: number;
   severity_text: string;
   body: string;
+  /** log-record GenAI content (D38 FINAL / D42); only `LOGS_SQL` selects these */
+  prompt?: string;
+  completion?: string;
   k8s_namespace: string;
   k8s_pod: string;
   k8s_container: string;
@@ -88,20 +99,63 @@ const FINISH_REASONS: Record<string, LlmDetail["finishReason"]> = {
   error: "error",
 };
 
-function toLlmDetail(row: SpanRow, status: SpanStatus): LlmDetail {
+/**
+ * D42(d) read-time coalesce: per (span_id, field), the earliest-timestamp log
+ * row whose that field is non-empty. `logRows` arrives from `LOGS_SQL`'s
+ * `ORDER BY timestamp`, so "earliest" is just "first non-empty match in array
+ * order" — first write wins, resolved independently per field so a
+ * prompt-only row and a later completion-only row for the same span each fill
+ * their own slot. This is the ONLY place multiple content rows for one span
+ * get reduced to one candidate value per field; `toLlmDetail` below still
+ * decides whether the span's own column beats it.
+ */
+function eventDerivedFillBySpan(
+  logRows: LogRow[],
+): Map<string, { prompt?: string; completion?: string }> {
+  const bySpan = new Map<string, { prompt?: string; completion?: string }>();
+  for (const row of logRows) {
+    if (!row.span_id || (!row.prompt && !row.completion)) continue;
+    const fill = bySpan.get(row.span_id) ?? {};
+    if (row.prompt && fill.prompt === undefined) fill.prompt = row.prompt;
+    if (row.completion && fill.completion === undefined) fill.completion = row.completion;
+    bySpan.set(row.span_id, fill);
+  }
+  return bySpan;
+}
+
+function toLlmDetail(
+  row: SpanRow,
+  status: SpanStatus,
+  eventFill: { prompt?: string; completion?: string } | undefined,
+): LlmDetail {
   return {
     model: row.gen_ai_response_model || row.gen_ai_request_model,
     inputTokens: row.input_tokens,
     outputTokens: row.output_tokens,
     costUsd: row.cost_usd,
-    prompt: row.prompt,
-    completion: row.completion,
+    // D42(d): a non-empty span column always wins; only when it is empty does
+    // the earliest event-derived row fill it in, per field independently.
+    // Content never enters cost/token computation above — those stay
+    // span-attribute-sourced (D9) regardless of which branch fills the text.
+    prompt: row.prompt || eventFill?.prompt || "",
+    completion: row.completion || eventFill?.completion || "",
     finishReason:
       status === "error" ? "error" : (FINISH_REASONS[row.finish_reason] ?? "stop"),
   };
 }
 
-export function toSpan(row: SpanRow, traceId: string): Span {
+/**
+ * `eventFillBySpan` is REQUIRED, not defaulted: a default empty map would let a
+ * future caller drop the D42(d) coalesce silently (an event-form-only trace
+ * would render a blank prompt and look like missing data), and the compiler
+ * would not say a word. Callers with nothing to fill from pass an empty map
+ * explicitly.
+ */
+export function toSpan(
+  row: SpanRow,
+  traceId: string,
+  eventFillBySpan: Map<string, { prompt?: string; completion?: string }>,
+): Span {
   const layer = toLayer(row.layer);
   const status = toStatus(row.status_code);
   return {
@@ -118,7 +172,7 @@ export function toSpan(row: SpanRow, traceId: string): Span {
     status,
     statusMessage: row.status_message || undefined,
     attrs: row.attributes,
-    llm: layer === "llm" ? toLlmDetail(row, status) : undefined,
+    llm: layer === "llm" ? toLlmDetail(row, status, eventFillBySpan.get(row.span_id)) : undefined,
   };
 }
 
@@ -177,18 +231,61 @@ export function toTraceSummary(row: TraceSummaryRow): Trace {
   };
 }
 
+/**
+ * D42(d) rail rule (T6): a `LOGS_SQL` row carrying non-empty extracted content
+ * (`prompt` and/or `completion`) with an EMPTY `body` is a content carrier —
+ * structured GenAI content from the log-record wire form, not a narrative log
+ * line. It is excluded from the rail AND its counter (`TraceExplorer.tsx`
+ * derives both `solidCount` and `nearbyCount` from `Trace.logs`, so filtering
+ * here is the only place that needs to happen — D13/D21: the counter must
+ * never claim a row it did not render).
+ * It still folds into the matching LLM span's `LlmDetail` via
+ * `eventDerivedFillBySpan` above, or folds nowhere if its `span_id` matches no
+ * span in this trace (an orphan row — invisible, same as any other row this
+ * trace never asked for). A content row that ALSO carries a non-empty `body`
+ * renders in the rail as an ordinary log AND still competes for the fold per
+ * the precedence above — this filter is only about bodyless carriers. This is
+ * a documented display rule, not a silent filter: the row is real, ingested,
+ * and counted at the DB (T2's integration test asserts that).
+ */
+const isContentCarrier = (row: LogRow): boolean => Boolean(row.prompt || row.completion) && !row.body;
+
+/**
+ * `logRows` (solid, `trace_id` matched) and `nearbyLogRows` (D37.4, `trace_id`
+ * always `''`) both go through `toLogRecord` unchanged — the shape is already
+ * what distinguishes them: a real, non-empty `trace_id` maps to `traceId` set,
+ * an empty one maps to `traceId: undefined`, which `LogsRail` already renders
+ * as NEARBY. No separate nearby adapter is needed. `logRows` is filtered
+ * through `isContentCarrier` first (T6, D42(d)) — `nearbyLogRows` never needs
+ * that filter, since `NEARBY_LOGS_SQL` never selects `prompt`/`completion`.
+ *
+ * `nearbyLogRows` arrives UNSLICED from `queryTrace` — up to `NEARBY_LOG_CAP + 1`
+ * rows, per NEARBY_LOGS_SQL's `fetch_limit`. This adapter is the one place
+ * that both slices to the cap and sets `nearbyLogsTruncated`, from the same
+ * length check, so the two facts can never drift apart (advisor ruling: the
+ * adapter owns this because it is the only layer that sees the cap+1 fetch).
+ * `nearbyLogsTruncated` is set `true` only when truncation is proven and
+ * otherwise OMITTED — never `false` — matching the `explanation`/`k8sEvents`
+ * optional-field pattern above (D12).
+ */
 export function toTrace(
   summary: TraceSummaryRow,
   spanRows: SpanRow[],
   logRows: LogRow[],
+  nearbyLogRows: LogRow[],
 ): Trace {
-  const spans = spanRows.map((row) => toSpan(row, summary.trace_id));
+  const eventFillBySpan = eventDerivedFillBySpan(logRows);
+  const spans = spanRows.map((row) => toSpan(row, summary.trace_id, eventFillBySpan));
   const root = spans.find((s) => s.parentId === null);
+  const nearbyLogsTruncated = nearbyLogRows.length > NEARBY_LOG_CAP;
+  const nearby = nearbyLogRows.slice(0, NEARBY_LOG_CAP);
+  const renderedLogs = logRows.filter((row) => !isContentCarrier(row));
   return {
     ...toTraceSummary(summary),
     rootName: summary.root_name || root?.name || "(unnamed root)",
     service: summary.root_service || root?.service || "",
     spans,
-    logs: logRows.map((row, i) => toLogRecord(row, i)),
+    logs: [...renderedLogs, ...nearby].map((row, i) => toLogRecord(row, i)),
+    ...(nearbyLogsTruncated ? { nearbyLogsTruncated: true } : {}),
   };
 }

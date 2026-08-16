@@ -25,6 +25,24 @@ docker compose --profile demo up -d --build
 Ingest applies the schema at boot, so a clean checkout needs nothing else. See
 [Smoke test](#smoke-test--the-phase-1-exit-criterion) below to prove it works.
 
+## Collector — optional OTLP + filelog route
+
+A second, opt-in path into ingest, alongside the default `demo → ingest`
+one above (D39/Q2): apps can route their OTLP through `obstack-collector`
+instead of straight at `ingest:4318`, which buys filelog tailing of
+container stdout and (on Kubernetes) `k8sattributes` pod enrichment. It is a
+compose **profile**, not a change to the default path — `demo → ingest` and
+`smoke.sh` above are byte-untouched by it.
+
+```bash
+bash deploy/collector/up.sh
+```
+
+See `deploy/collector/README.md` for the collector's own config, its image
+pin and verification, and the filelog exclusion pattern (the mechanism that
+keeps a container's logs from landing twice when it already ships via
+OTLP) documented in terms a customer could copy.
+
 ## Smoke test — the Phase 1 exit criterion
 
 Phase 1 is done when a trace emitted by an app instrumented with plain OpenTelemetry
@@ -160,12 +178,17 @@ unset and therefore true, applying the schema at boot as it always has. The one
 way to break it here is `docker compose up --scale ingest=2` — don't.
 
 Kubernetes cannot get it for free, because the natural chart default is two or
-more replicas and every one of them would boot into the same DDL. The M4 chart
-splits the two roles instead:
+more replicas and every one of them would boot into the same DDL. The chart
+(`deploy/helm/obstack/`, the one M4 extends in place — D35) splits the two
+roles instead. The Job's lifecycle differs by operation —
+install: normal Job; upgrades: `pre-upgrade` hook — because on an install
+ClickHouse does not exist yet for a hook to run against, while on an upgrade
+it has been running since install (`deploy/helm/obstack/README.md` has the
+full reasoning); either way exactly one Job applies the schema per revision.
 
 | | applies the schema | serves traffic |
 |---|---|---|
-| what | a `Job` (Helm `pre-install`/`pre-upgrade` hook) running `/ingest migrate` | the ingest `Deployment`, any replica count |
+| what | a `Job` running `/ingest migrate` — a normal, revision-named resource on install, a `pre-upgrade` hook on upgrade | the ingest `Deployment`, any replica count |
 | env | `CLICKHOUSE_DSN` only | the full ingest config, plus `OBSTACK_MIGRATE_ON_BOOT=false` |
 
 `/ingest migrate` is a one-shot: it applies what is missing, logs the versions,

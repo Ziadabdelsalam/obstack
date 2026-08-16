@@ -1,0 +1,110 @@
+# obstack-collector — the Docker Compose form.
+#
+# Local-dev/CI counterpart to config.yaml (the Kubernetes/DaemonSet form —
+# read its header first). Kubernetes gives filelog real pod/container
+# identity for free (the /var/log/pods path encodes it) and lets
+# k8s_attributes enrich further from the cluster API; Compose has neither a
+# pod log convention nor a Kubernetes API to query, so this file tails
+# Docker's own json-file logs instead and carries no k8s_attributes stage —
+# there is nothing for it to ask.
+#
+# Brought up with `deploy/collector/up.sh` (wraps
+# `docker compose --profile collector up`) — see deploy/compose/README.md.
+# The collector container runs as root: Docker's own container log files are
+# root:root, mode 0640, the same requirement any log-shipping sidecar has
+# against the host's Docker log directory.
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+  # Docker's json-file log driver writes every container's stdout/stderr to
+  # /var/lib/docker/containers/<id>/<id>-json.log; `format: docker` parses
+  # that line shape. Both `include` and `exclude` are by container ID rather
+  # than by name (D37.3's pattern, adapted): Docker's log path is ID-keyed,
+  # not name-keyed the way Kubernetes' is, and an ID does not exist until the
+  # container does — `up.sh` resolves both below and exports them before
+  # starting this service.
+  #
+  # `include` is scoped to two specific containers, not the host-wide
+  # `/var/lib/docker/containers/*/*.log` glob: this collector shares the
+  # Docker daemon with whatever else is running on the machine it's
+  # developed on, and unscoped tailing would both ingest a stranger's
+  # container logs into this workspace and choke on log lines in formats
+  # this parser was never asked to handle. A real deployment scopes this the
+  # same way — name the containers you actually want tailed.
+  file_log:
+    include:
+      # obstack-clickhouse: the "positive" case — a container that does not
+      # ship via OTLP, so its stdout should land as filelog rows.
+      - "/var/lib/docker/containers/${env:OBSTACK_COLLECTOR_TAIL_CONTAINER_ID:-__none__}/*-json.log"
+      # obstack-demo-agent: ships via OTLP already (telemetry.py), so it
+      # belongs in `exclude` below too — included here only so the
+      # falsification probe has something real to exclude.
+      - "/var/lib/docker/containers/${env:OBSTACK_COLLECTOR_EXCLUDE_CONTAINER_ID:-__none__}/*-json.log"
+    exclude:
+      - "/var/lib/docker/containers/${env:OBSTACK_COLLECTOR_EXCLUDE_CONTAINER_ID:-__none__}/*-json.log"
+    include_file_path: true
+    start_at: beginning
+    # Checkpointed via file_storage below: without it every restart re-reads
+    # every file from `start_at: beginning` and re-ships every historical
+    # line — a second duplicate door D37.3's exclusion does not cover, since
+    # it excludes a whole container, not "lines already sent."
+    storage: file_storage
+    operators:
+      - type: container
+        format: docker
+        # The K8s form's path already fits the operator's
+        # namespace_pod_uid/container/n.log convention, so it derives
+        # k8s.namespace.name/k8s.pod.name/k8s.container.name for free
+        # (config.yaml relies on exactly that). Compose's ID-keyed path never
+        # matches that shape, and the operator treats a non-match as an
+        # error rather than a no-op, so this form turns that lookup off.
+        add_metadata_from_filepath: false
+
+processors:
+  batch: {}
+
+exporters:
+  otlp_http:
+    endpoint: "${env:OBSTACK_INGEST_ENDPOINT:-http://ingest:4318}"
+    headers:
+      # Phase-1 bearer key (D4/D39 rider): dev default matches the ingest
+      # container's own default key (`docker-compose.yml`'s
+      # OBSTACK_API_KEYS), acceptable per M1 precedent. Production supplies
+      # this via a values file or a mounted secret — never a committed
+      # literal.
+      Authorization: "Bearer ${env:OBSTACK_COLLECTOR_API_KEY:-ok_dev_local}"
+
+extensions:
+  # Explicit 0.0.0.0: the default (localhost:13133) only answers connections
+  # from inside the container's own network namespace, which a host port
+  # publish does not go through.
+  health_check:
+    endpoint: 0.0.0.0:13133
+
+  # Checkpoints each tailed file's read offset to disk so a restart resumes
+  # instead of re-shipping from the top (T1 review escalation). The
+  # directory must be writable and must survive the collector's own
+  # restarts — docker-compose.yml backs it with a named volume, not the
+  # container's own ephemeral layer. `create_directory: true` because the
+  # first boot's volume is empty.
+  file_storage:
+    directory: ${env:OBSTACK_COLLECTOR_STORAGE_DIR:-/var/lib/obstack-collector}
+    create_directory: true
+
+service:
+  extensions: [health_check, file_storage]
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [otlp_http]
+    logs:
+      receivers: [otlp, file_log]
+      processors: [batch]
+      exporters: [otlp_http]

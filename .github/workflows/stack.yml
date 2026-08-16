@@ -1,0 +1,81 @@
+# S2.2 T5 — stack-on-kind: the sprint's exit assertion (D35: Helm is the ONLY
+# kind path; D37: the three-part correlation evidence). The job runs
+# deploy/helm/obstack/acceptance.sh — the exact script the chart README tells
+# a human to run (S2.1 L3), no bespoke CI sequence and no CI-only timeout
+# arithmetic: the Helm budget lives in that script, sourced from the chart
+# README. The script builds + side-loads the images, installs the real chart,
+# drives POST /chat, asserts the D37 bundle through the D17 tsx facade harness
+# against the cluster's ClickHouse, restarts the collector (the T1
+# file_storage rider), and lands the D38(e) event-form GenAI fixture through
+# the collector.
+#
+# Trigger policy (K5/D41 decision RULE): measure the full job's wall-clock,
+# then pick a branch. Measured end to end on a real PR run — checkout, npm
+# ci, image builds, kind cluster, pulls + side-load, helm install, all
+# assertions and riders: 4m06s
+# (https://github.com/Ziadabdelsalam/obstack/actions/runs/31959860805) —
+# under the ~6 min line, so this runs on every PR like `web`/`go`/`kind` and
+# joins that set (branch protection itself is deliberately skipped by user
+# decision, so "required" is the advisory set the merge process gates on).
+# The number includes the script's image pre-pull + side-load block — the
+# sanctioned optimization, not a correctness mechanism. If a future change
+# pushes the job past ~6 min, switch to `ci:stack` label + workflow_dispatch
+# + ALWAYS on push to master (a red `stack` on master is stop-the-line for
+# the next PR — D41's rider), and drop `stack` from the required set; never
+# leave it required-but-conditional. `stack` is a K3-stable name from its
+# first run; `web`/`go`/`kind` are untouched.
+name: stack
+
+on:
+  pull_request:
+    branches: [master]
+
+concurrency:
+  group: stack-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  stack:
+    name: stack
+    runs-on: ubuntu-latest
+    # Bounds the job the same way web/go/kind bound theirs: a wedged install
+    # would otherwise hold the runner for the 360-minute default. The
+    # acceptance script's own Helm budget (900s cold install) plus builds,
+    # pulls and assertions fits well inside this.
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+
+      - uses: actions/setup-node@v7.0.0
+        with:
+          # Same floor as web.yml: the acceptance harness is the D17 tsx
+          # facade path, running the app's own server modules.
+          node-version: '24'
+          cache: 'npm'
+
+      - run: npm ci
+
+      - name: Create kind cluster
+        uses: helm/kind-action@v1.14.0
+        with:
+          cluster_name: obstack-stack
+
+      # The whole exit assertion — identical to a human's local run
+      # (README.md, "Running the acceptance"): the script reads the cluster
+      # from the current kubectl context, which kind-action just set.
+      - name: Stack acceptance (deploy/helm/obstack/acceptance.sh)
+        run: bash deploy/helm/obstack/acceptance.sh
+
+      - name: Diagnose on failure
+        if: failure()
+        run: |
+          kubectl get pods -o wide || true
+          kubectl get events --sort-by=.metadata.creationTimestamp | tail -40 || true
+          helm status obstack || true
+          kubectl logs ds/obstack-collector --tail=80 || true
+          kubectl logs deploy/obstack-ingest --tail=40 || true
+          kubectl logs deploy/obstack-demo -c demo-agent --tail=40 || true

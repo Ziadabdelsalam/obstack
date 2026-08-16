@@ -46,7 +46,7 @@ const (
 
 	insertLogs = `INSERT INTO obstack.logs (
 		workspace_id, timestamp, trace_id, span_id, severity_number, severity_text,
-		body, service, k8s_namespace, k8s_pod, k8s_container,
+		body, service, prompt, completion, k8s_namespace, k8s_pod, k8s_container,
 		attributes, resource_attributes)`
 )
 
@@ -151,7 +151,7 @@ func (w *Writer) insertLogs(ctx context.Context, rows []mapping.LogRow) error {
 	for _, r := range rows {
 		if err := batch.Append(
 			r.WorkspaceID, r.Timestamp, r.TraceID, r.SpanID, r.SeverityNumber, r.SeverityText,
-			r.Body, r.Service, r.K8sNamespace, r.K8sPod, r.K8sContainer,
+			r.Body, r.Service, r.Prompt, r.Completion, r.K8sNamespace, r.K8sPod, r.K8sContainer,
 			r.Attributes, r.ResourceAttributes,
 		); err != nil {
 			batch.Abort()

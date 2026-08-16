@@ -46,19 +46,24 @@ Everything visual is real code (Next.js + Tailwind + Recharts). With `OBSTACK_DA
 
 ## CI
 
-Three checks run on every pull request against `master`: `web`, `go`, `kind`. Workflow definitions live in `.github/workflows/{web,go,kind}.yml`. Making them *blocking* is branch protection, which is not configured yet — see "Required checks" below.
+Four checks run on every pull request against `master`: `web`, `go`, `kind`, `stack`. Workflow definitions live in `.github/workflows/{web,go,kind,stack}.yml`. Making them *blocking* is branch protection, which is not configured yet — see "Required checks" below.
 
-- **`web`** (`.github/workflows/web.yml`) — Node 24, the active-LTS major meeting Next 16.3's documented floor (20.9.0+, per `node_modules/next/dist/docs/01-app/02-guides/upgrading/version-16.md`). Runs `npm ci` against the committed `package-lock.json`, then `npm test` (the tsx `node:test` runner) and `npm run build`. `setup-node`'s `cache: 'npm'` caches npm's package download cache only, keyed on `package-lock.json`; no `.next` build output is cached, because a cache keyed on `package-lock.json` alone would risk reusing prerenders across `OBSTACK_DATA_MODE` changes (the M1 F6 finding). CI therefore always builds from a clean checkout.
+- **`web`** (`.github/workflows/web.yml`) — Node 24, the active-LTS major meeting Next 16.3's documented floor (20.9.0+, per `node_modules/next/dist/docs/01-app/02-guides/upgrading/version-16.md`). Brings up ClickHouse **and `ingest`** via the same compose services local dev uses (ingest owns the schema, so a bare ClickHouse has no `obstack` database for the ClickHouse-backed tests to read), then runs `npm ci` against the committed `package-lock.json`, `npm test` (the tsx `node:test` runner) and `npm run build`. Like `go`, it fails on any unexpected test skip — the `node:test` runner's own skipped-count must be present and must agree with the skip lines the trap can see, so a self-skipping integration test cannot read as coverage it doesn't have. `setup-node`'s `cache: 'npm'` caches npm's package download cache only, keyed on `package-lock.json`; no `.next` build output is cached, because a cache keyed on `package-lock.json` alone would risk reusing prerenders across `OBSTACK_DATA_MODE` changes (the M1 F6 finding). CI therefore always builds from a clean checkout.
 - **`go`** (`.github/workflows/go.yml`) — Go 1.25.4 (pinned in `services/ingest/go.mod`), anchored on `services/ingest`. Brings up ClickHouse via the same compose service local dev uses, then runs `gofmt -l`, `go vet ./...` and `go test -v -count=1 ./...` against it, carrying the two D11 users (`obstack_ingest` write, `obstack_web` readonly). `-count=1` is load-bearing — without it, Go can replay a cached package result from `GOCACHE` and report "PASS" without ever contacting ClickHouse. Any `--- SKIP` in the test output fails the job: a ClickHouse-dependent test that can't reach a server errors instead of silently skipping and reading as coverage it doesn't have.
 - **`kind`** (`.github/workflows/kind.yml`) — builds the demo agent image (`demo/agent-app/Dockerfile`) tagged with the commit SHA, creates a kind cluster, loads that image in (`imagePullPolicy: Never` makes a registry fallback impossible), and applies the proof workload (`.github/ci/kind-proof-workload.yaml`). After the pod reports Ready, the job waits for it to emit real telemetry against a deliberately black-holed OTLP endpoint and confirms it stayed `Running`/`Ready` anyway — proving the OpenTelemetry SDK's fail-open property, not just that the container started. **Trigger policy**: runs on every PR, same as `web` and `go` — there is no label or manual trigger, so opening a PR or pushing to its branch is what fires it. Measured end-to-end wall-clock (job start to cluster teardown) is ~1m37s (run [31933353051](https://github.com/Ziadabdelsalam/obstack/actions/runs/31933353051)), well under the ~6-minute line the trigger policy is decided on — past that line the job would move to a `ci:kind` label + push-to-`master` + `workflow_dispatch` trigger and drop out of the required-checks set rather than leave a required check some PRs never fire.
+- **`stack`** (`.github/workflows/stack.yml`) — stands the whole stack up on a kind cluster through the real Helm chart (`deploy/helm/obstack/`, the only kind path — D35) by running `deploy/helm/obstack/acceptance.sh`, the exact script the chart README tells a human to run. It drives one `POST /chat` at the demo app and asserts the sprint's correlation evidence through the tsx facade harness against the cluster's ClickHouse: the four-layer waterfall, ≥1 solid log row with pod metadata, ≥1 nearby row from the uninstrumented sidecar, and zero duplicated bodies. **Trigger policy**: every PR, same as the other three — measured wall-clock is ~4m (e.g. run [31962751881](https://github.com/Ziadabdelsalam/obstack/actions/runs/31962751881)), under the same ~6-minute line; past it the job moves to a `ci:stack` label + push-to-`master` + `workflow_dispatch` and drops out of the required-checks set.
 
 ### Reproducing each check locally
 
 ```bash
-# web
+# web — ClickHouse + ingest first (ingest applies the schema the
+# ClickHouse-backed tests read), from the repo root
+docker compose -f deploy/compose/docker-compose.yml up -d --wait --wait-timeout 120 clickhouse ingest
 npm ci
-npm test
+CLICKHOUSE_URL=http://127.0.0.1:8123 CLICKHOUSE_USER=obstack_web CLICKHOUSE_PASSWORD=obstack_web_dev \
+  npm test
 npm run build
+docker compose -f deploy/compose/docker-compose.yml down -v
 
 # go — ClickHouse first, from the repo root
 docker compose -f deploy/compose/docker-compose.yml up -d --wait --wait-timeout 120 clickhouse
@@ -78,13 +83,18 @@ kind load docker-image demo-agent:local --name kind-proof
 sed 's#IMAGE_PLACEHOLDER#demo-agent:local#' .github/ci/kind-proof-workload.yaml | kubectl apply -f -
 kubectl wait --for=condition=Ready pod/kind-proof-workload --timeout=120s
 kind delete cluster --name kind-proof
+
+# stack — needs Docker, kind, helm, kubectl, curl, and `npm ci` run once
+kind create cluster --name obstack-stack
+bash deploy/helm/obstack/acceptance.sh
+kind delete cluster --name obstack-stack
 ```
 
 ### Required checks (deliberately not enforced)
 
 A red check does **not** block merge: branch protection cannot be set on this repository — both `PUT/GET /repos/:owner/:repo/branches/master/protection` and `/rulesets` return `403 Upgrade to GitHub Pro or make this repository public` while the repo is private on a personal plan. The decision (2026-08-16) is to **skip enforcement for now**: the checks run on every PR and are advisory; merges go through the project's review process instead. Revisit when the repo goes public or the plan changes.
 
-If enforcement is ever enabled, on `master` (Settings → Branches → Add rule) require exactly these three status checks by name — **`web`**, **`go`**, **`kind`** — with "Require branches to be up to date before merging" (strict) enabled, admin enforcement off, no required approving reviews, and no push restrictions. The names are the workflow job names; renaming a job silently voids its required check, so they are fixed (K3).
+If enforcement is ever enabled, on `master` (Settings → Branches → Add rule) require exactly these four status checks by name — **`web`**, **`go`**, **`kind`**, **`stack`** — with "Require branches to be up to date before merging" (strict) enabled, admin enforcement off, no required approving reviews, and no push restrictions. The names are the workflow job names; renaming a job silently voids its required check, so they are fixed (K3).
 
 ## Documents
 

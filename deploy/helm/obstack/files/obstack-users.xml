@@ -1,0 +1,53 @@
+<!--
+  obstack ClickHouse users (D11).
+
+  Two distinct users, both defined here in config rather than created by
+  convention at runtime:
+
+    obstack_ingest  write path  — owns the `obstack` database and its DDL,
+                                  applied by services/ingest at boot.
+    obstack_web     read path   — readonly=2, SELECT only. The web app cannot
+                                  write, and that is enforced by the server.
+
+  Passwords come from the environment so this file carries no secrets; see
+  deploy/compose/docker-compose.yml for the dev defaults.
+-->
+<clickhouse>
+    <profiles>
+        <obstack_ingest>
+            <max_execution_time>60</max_execution_time>
+        </obstack_ingest>
+
+        <obstack_web>
+            <!-- 2 = read queries and SET are allowed, INSERT and DDL are not. -->
+            <readonly>2</readonly>
+            <max_execution_time>30</max_execution_time>
+        </obstack_web>
+    </profiles>
+
+    <users>
+        <obstack_ingest>
+            <password from_env="OBSTACK_CLICKHOUSE_INGEST_PASSWORD"/>
+            <networks>
+                <ip>::/0</ip>
+            </networks>
+            <profile>obstack_ingest</profile>
+            <quota>default</quota>
+            <grants>
+                <query>GRANT ALL ON obstack.*</query>
+            </grants>
+        </obstack_ingest>
+
+        <obstack_web>
+            <password from_env="OBSTACK_CLICKHOUSE_WEB_PASSWORD"/>
+            <networks>
+                <ip>::/0</ip>
+            </networks>
+            <profile>obstack_web</profile>
+            <quota>default</quota>
+            <grants>
+                <query>GRANT SELECT ON obstack.*</query>
+            </grants>
+        </obstack_web>
+    </users>
+</clickhouse>

@@ -1,0 +1,17 @@
+# Exactly the T1 hand-off (deploy/collector/README.md, "What config.yaml
+# assumes of its DaemonSet"): k8s_attributes runs `auth_type: serviceAccount`
+# and watches the API to resolve pod identity from `pods` and `namespaces`
+# only — it reads no labels and no owner references, so `replicasets` is
+# deliberately absent. Adding it later is what widens this rule, not a chart
+# preference.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ .Release.Name }}-collector
+  labels:
+    {{- include "obstack.labels" . | nindent 4 }}
+    app.kubernetes.io/component: collector
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "namespaces"]
+    verbs: ["get", "list", "watch"]

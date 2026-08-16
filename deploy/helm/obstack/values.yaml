@@ -1,0 +1,59 @@
+# obstack Helm chart — values. M2 scope only (D35): CI-grade ClickHouse,
+# ingest, the obstack-collector DaemonSet and the demo app. No self-hosted
+# values surface here — no ingress, no TLS, no resource sizing, no secret
+# backend selection, no `web` image, no TTL tiers. That is M4's job; see
+# README.md's scope boundary.
+#
+# Every image below is pinned to an exact tag (D14 precedent) — bumping one
+# is a deliberate edit here, never a floating tag.
+
+# Live on upgrade like every other value (advisor ruling (c) — ClickHouse is
+# a normal, release-managed resource): an image bump or a password change
+# rolls the ClickHouse pod and converges, with the schema surviving on the
+# Deployment's hostPath data dir. See README.md, "Why ClickHouse is a normal
+# resource, and the migrate Job renders two ways".
+clickhouse:
+  image: clickhouse/clickhouse-server:26.3.17.110
+  # Dev/CI defaults, matching deploy/compose/docker-compose.yml's own. A
+  # real deployment overrides these with --set or -f, same as compose's env
+  # overrides — there is no chart-owned Secret to route around (D35: no
+  # self-hosted secret-backend story here).
+  ingestPassword: obstack_ingest_dev
+  webPassword: obstack_web_dev
+
+ingest:
+  # Built locally and loaded into kind (`kind load docker-image`) — no
+  # registry in the path, the same mechanism S2.0's kind check uses for the
+  # demo image. A real deployment sets `--set ingest.image=<registry
+  # image> --set ingest.pullPolicy=IfNotPresent`.
+  image: obstack-ingest:kind
+  pullPolicy: Never
+  # Proves the split this chart exists for: N replicas verifying the same
+  # schema, none of them applying it (deploy/compose/README.md's "Exactly
+  # one migration runner per upgrade").
+  replicaCount: 2
+  # D4 format: key:workspace_id[,…].
+  apiKeys: ok_dev_local:ws_demo
+
+collector:
+  image: otel/opentelemetry-collector-k8s:0.158.0
+  apiKey: ok_dev_local
+  # Must name the demo pod's instrumented container below (D37.3) — the
+  # collector's filelog exclusion is keyed on the container name.
+  excludeContainer: demo-agent
+  # T1 review escalation (file_storage checkpointing): the per-node hostPath
+  # the DaemonSet mounts below at this same path, so a collector restart
+  # resumes instead of re-shipping every historical line.
+  storageDir: /var/lib/obstack-collector
+
+demo:
+  image: obstack-demo-agent:kind
+  pullPolicy: Never
+
+# A small, pinned utility image (D14 — exact tag, never floating), used
+# wherever this chart needs a shell and no OTel SDK: the demo pod's second,
+# uninstrumented container (D37.2 — the genuine NEARBY log source), and the
+# shared wait-for-clickhouse init container (`obstack.waitForClickhouse`,
+# templates/_helpers.tpl — one define, included by both the migrate Job and
+# the ingest Deployment).
+utilityImage: busybox:1.37.0
