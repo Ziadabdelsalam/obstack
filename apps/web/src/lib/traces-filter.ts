@@ -104,7 +104,7 @@ function ceiling(value: UrlParam): number {
 export function parseTracesUrl(params: Record<string, UrlParam>): TracesFilters {
   const status = one(params.status);
   const range = one(params.range);
-  const page = Number(one(params[PAGE_PARAM]));
+  const page = Math.floor(Number(one(params[PAGE_PARAM])));
   return {
     q: one(params.q),
     status: STATUSES.includes(status as Status) ? (status as Status) : "all",
@@ -119,7 +119,11 @@ export function parseTracesUrl(params: Record<string, UrlParam>): TracesFilters 
     // logs surface's range parse — the canonical one, cross-cited here so the
     // two surfaces cannot diverge on what a valid range name is.
     range: Object.hasOwn(TRACE_RANGE_HOURS, range) ? (range as TraceRange) : DEFAULT_TRACE_RANGE,
-    page: Number.isFinite(page) && page >= 1 ? Math.floor(page) : 1,
+    // A SAFE integer, not merely a finite one (D66's class): the page becomes a
+    // query offset, and past 2^53 JavaScript prints large numbers in
+    // exponential notation — `1e21` reached the query as the literal "2e+23",
+    // which ClickHouse cannot parse, and the surface answered 500.
+    page: Number.isSafeInteger(page) && page >= 1 ? page : 1,
   };
 }
 

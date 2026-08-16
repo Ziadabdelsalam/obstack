@@ -115,6 +115,20 @@ test("a prototype member is not a time range (D66)", () => {
   }
 });
 
+test("a page number that cannot be an exact offset is not a page (D66's class)", () => {
+  // Same failure shape as the range above, reached through the page key: the
+  // page becomes `(page - 1) * TRACE_PAGE_SIZE` in the query, and a JavaScript
+  // number at that size prints as "2e+23", which ClickHouse rejects — 500 on a
+  // hand-typed link. Only exactly-representable pages are pages.
+  for (const typed of ["1e21", "99999999999999999999", "Infinity", "1e999"]) {
+    assert.equal(parseTracesUrl({ [PAGE_PARAM]: typed }).page, 1, `?${PAGE_PARAM}=${typed}`);
+  }
+  // The bound is exactness, not smallness: an addressable page still parses,
+  // and a fractional one still floors rather than falling back.
+  assert.equal(parseTracesUrl({ [PAGE_PARAM]: "9007199254740991" }).page, 9007199254740991);
+  assert.equal(parseTracesUrl({ [PAGE_PARAM]: "2.9" }).page, 2);
+});
+
 test("the page parameter is the store's PAGE_PARAM, never a second literal (D53)", () => {
   assert.equal(tracesSearchString({ ...EMPTY_TRACES_FILTERS, page: 3 }), `${PAGE_PARAM}=3`);
   assert.equal(parseTracesUrl({ [PAGE_PARAM]: "3" }).page, 3);
