@@ -103,9 +103,16 @@ docker exec obstack-clickhouse clickhouse-client --user obstack_web --password o
 
 # same containers, same everything, except the exclude list is overridden to
 # empty for this one run — up.sh already exported the two container-ID env
-# vars `include` and `exclude` both need:
+# vars `include` and `exclude` both need. The one-off collector also gets its
+# own OBSTACK_COLLECTOR_STORAGE_DIR: file_storage (see Checkpointing below)
+# takes an exclusive lock on its directory, so sharing the running
+# collector's `collector-storage` volume fails the probe at startup with
+# `cannot start pipelines: failed to start "file_log" receiver: storage
+# client: timeout` — and a private, empty checkpoint is what this probe
+# wants anyway, since it is asking filelog to read a file from the top.
 docker compose -f deploy/compose/docker-compose.yml --profile collector run --rm \
   -e OBSTACK_COLLECTOR_TAIL_CONTAINER_ID -e OBSTACK_COLLECTOR_EXCLUDE_CONTAINER_ID -e OBSTACK_COLLECTOR_API_KEY \
+  -e OBSTACK_COLLECTOR_STORAGE_DIR=/tmp/obstack-collector-probe \
   --entrypoint /otelcol-k8s collector \
   --config /etc/otelcol/config.yaml --set 'receivers.file_log.exclude=[]'
 # ... after another chat request through the demo app ...
@@ -190,8 +197,8 @@ docker logs obstack-collector 2>&1 | grep "Resuming from previously known offset
 Without the checkpoint, the same restart re-ships every line that file
 holds: a one-off container built from `config.compose.yaml` with its
 `storage: file_storage` line removed logs no "Resuming…" line on restart,
-and the count above doubles (5 → 10) on first start and doubles again
-(10 → 15) on every restart after — proven by hand against an isolated
+and the count above gains the file's five lines again on every start
+(5 → 10 → 15) — proven by hand against an isolated
 project (`docker compose -p <name> ... down -v` first is safe there; it is
 never safe against a stack this repo's tooling did not start).
 
