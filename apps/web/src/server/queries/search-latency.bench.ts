@@ -161,6 +161,14 @@ async function doMeasure(): Promise<void> {
     { label: "free text, log-body needle (1 match)", filter: { q: "d46needle" }, expectTotal: 1 },
     { label: "free text, span-prompt needle (1 match)", filter: { q: "d46promptneedle" }, expectTotal: 1 },
     { label: "free text, absent term (0 matches, full scan)", filter: { q: "d46absent" }, expectTotal: 0 },
+    // Cost scales with TERM COUNT, not with match count: every term appends its
+    // own pair of semi-join subqueries, so an N-term query pays N full scans of
+    // `spans` and `logs`. A single-term number alone would understate what the
+    // M3 index decision is being asked to price, so the record carries both
+    // ends — and a high-cardinality term (semi-join set = every trace) to show
+    // that a large result set is not itself the cost driver.
+    { label: "free text, high-cardinality term (matches every trace)", filter: { q: "cache" }, expectTotal: TRACES },
+    { label: "free text, FOUR terms (4x semi-join scans) — worst case measured", filter: { q: "cache retry upstream digest" }, expectTotal: TRACES },
     { label: "no free text, default first page", filter: {}, expectTotal: TRACES },
   ];
   for (const c of cases) {

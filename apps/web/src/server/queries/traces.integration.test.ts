@@ -651,6 +651,16 @@ test("trace search (D44/D45) against a seeded ClickHouse", async (t) => {
   const FILT_SVC = `svc-filt-${suffix}`;
   const OTHER_SVC = `svc-other-${suffix}`;
   const MODEL_PROBE = `model-probe-${suffix}`;
+
+  // ---- D44 order DIRECTION: start DESCENDING ------------------------------
+  // The page fixture below shares ONE start time across all 205 rows, so it can
+  // only ever prove the `, trace_id` tie-break — flipping `DESC` to `ASC` left
+  // it (and the whole suite) green. These three carry DISTINCT starts and ids
+  // ordered AGAINST the expected result, so the assertion fails under `ASC` and
+  // under a tie-break-only sort alike.
+  const ORDER_SVC = `svc-order-${suffix}`;
+  const orderIds = ["a", "b", "c"].map((k) => `it_ord_${k}_${suffix}`);
+  const orderStartsMs = [nowMs - 180_000, nowMs - 120_000, nowMs - 60_000]; // a oldest … c newest
   const filtId = (k: string) => `it_filt_${k}_${suffix}`;
   const filtSpan = (
     k: string,
@@ -699,6 +709,32 @@ test("trace search (D44/D45) against a seeded ClickHouse", async (t) => {
           k8s_pod: "",
         }),
       ),
+      ...orderIds.map((id, i) =>
+        spanRow({
+          trace_id: id,
+          span_id: "s1",
+          service: ORDER_SVC,
+          start_time: chTimestamp(BigInt(orderStartsMs[i]) * NS_PER_MS),
+          duration_ns: NS_PER_SECOND.toString(),
+          k8s_namespace: "",
+          k8s_pod: "",
+        }),
+      ),
+      // A summary row at `trace_id = ''`: `trace_summaries` is fed by a
+      // materialized view with NO write-side trace-id filter, so a span that
+      // arrives without a trace id really does produce one (verified against a
+      // live server). This row is what makes the logs leg's `trace_id != ''`
+      // falsifiable — see the trace-less subtest below. Its name and service
+      // are deliberately neutral so it cannot satisfy any other probe here.
+      spanRow({
+        trace_id: "",
+        span_id: "s1",
+        name: "POST /orphan-no-trace-id",
+        start_time: srchStart,
+        duration_ns: NS_PER_SECOND.toString(),
+        k8s_namespace: "",
+        k8s_pod: "",
+      }),
       filtSpan("a", { cost_usd: 0.01, gen_ai_request_model: "gpt-4o-mini" }),
       filtSpan("b", { status_code: "error" }),
       filtSpan("c", { duration_s: 10 }),
@@ -826,6 +862,15 @@ test("trace search (D44/D45) against a seeded ClickHouse", async (t) => {
     assert.equal(page2.total, pageCount, "the total must not depend on which page was asked for");
   });
 
+  await t.test("D44: the page order is start DESCENDING (newest first), not just tie-broken", async () => {
+    const ordered = await queryTraceSearch({ service: ORDER_SVC });
+    assert.deepEqual(
+      ordered.traces.map((tr) => tr.id),
+      [...orderIds].reverse(),
+      "distinct-start traces must come back newest-first — `ORDER BY min(min_start) DESC`; an ASC sort (or an id-only sort) returns them oldest-first",
+    );
+  });
+
   await t.test("PRD §8: each filter narrows with a control row that would pass without it", async () => {
     const ids = async (filter: Parameters<typeof queryTraceSearch>[0]) =>
       (await queryTraceSearch(filter)).traces.map((tr) => tr.id).sort();
@@ -877,6 +922,36 @@ test("trace search (D44/D45) against a seeded ClickHouse", async (t) => {
     );
   });
 
+  // The D45 reach set opens with the SUMMARY fields, and none of them is
+  // reachable through either semi-join: the spans leg searches `name`/`prompt`/
+  // `completion` only, so a model name, a service name and a trace id are
+  // answerable ONLY by the summary predicates. Each assertion below goes red on
+  // deleting exactly one of them. (`root_name` has no independent probe and can
+  // have none: it is `argMinIf` of the ROOT SPAN's `name`, so every value it can
+  // hold is also a `spans.name` the spans leg already matches — the summary
+  // predicate is a fast path over that leg, not separate reach. In mock mode
+  // `rootName` IS a separate field, and data.test.ts guards it there.)
+  await t.test("D45 summary-field reach: model, service and trace id resolve with no semi-join to help", async () => {
+    const byModel = await queryTraceSearch({ q: MODEL_PROBE });
+    assert.deepEqual(
+      byModel.traces.map((tr) => tr.id),
+      [filtId("e")],
+      "a model name resolved nowhere — `arrayExists(m -> …, models)` is gone and model search is dead (spans.gen_ai_* is in no leg)",
+    );
+    const byService = await queryTraceSearch({ q: OTHER_SVC });
+    assert.deepEqual(
+      byService.traces.map((tr) => tr.id),
+      [filtId("g")],
+      "a service name resolved nowhere — `arrayExists(s -> …, services)` is gone (spans.service is in no leg)",
+    );
+    const byTraceId = await queryTraceSearch({ q: filtId("a") });
+    assert.deepEqual(
+      byTraceId.traces.map((tr) => tr.id),
+      [filtId("a")],
+      "pasting a trace id into the search box resolved nothing — `positionCaseInsensitive(trace_id, …)` is gone",
+    );
+  });
+
   await t.test("D42 carrier rows are IN the prompts reach (D45): bodyless carrier content finds its trace", async () => {
     const byCarrierPrompt = await queryTraceSearch({ q: tokCarrierP });
     assert.ok(
@@ -890,18 +965,29 @@ test("trace search (D44/D45) against a seeded ClickHouse", async (t) => {
     );
   });
 
-  // This absence claim holds BY CONSTRUCTION (D45's own wording): the logs leg
-  // returns trace ids and a trace-less row's '' can never match a summary row,
-  // so no single-clause removal turns it red — the SQL's `trace_id != ''` is
-  // the contract's explicit restriction plus scan narrowing, not the load-
-  // bearing exclusion. Its falsification partner (S2.0 L1) is the standing
-  // guard above: the SAME token placement on a trace-CARRYING row does resolve
-  // (tokBody), so this assertion is proven to observe the mechanism, not a
-  // dead leg.
-  await t.test("trace-less log rows are unreachable from the traces list (contract: trace-carrying rows only)", async () => {
+  // The logs leg's `AND trace_id != ''` is LOAD-BEARING, not a by-construction
+  // restatement of the semi-join. `trace_summaries` is fed by a materialized
+  // view with no write-side trace-id filter, so a span that arrives without a
+  // trace id produces a real summary row at `trace_id = ''` — this fixture
+  // seeds exactly that (the orphan span above). Without the clause the logs
+  // leg hands `''` back for any matching trace-less row, that `''` summary
+  // satisfies `trace_id IN (…)`, and the traces list renders a phantom trace
+  // with an empty id and a dead detail link. Dropping the clause turns this
+  // subtest red; the standing guard above is its live-mechanism partner
+  // (the SAME token on a trace-CARRYING row does resolve).
+  await t.test("trace-less log rows are unreachable from the traces list, even with an empty-id summary present", async () => {
     const r = await queryTraceSearch({ q: tokTraceless });
     assert.equal(r.total, 0, "a trace-less log row surfaced a trace in the traces list");
     assert.deepEqual(r.traces, []);
+    // The falsifier only bites if the empty-id summary really exists: prove it
+    // is there and reachable by its own root name, so this probe can never go
+    // hollow through the fixture silently disappearing.
+    const orphan = await queryTraceSearch({ q: "orphan-no-trace-id" });
+    assert.deepEqual(
+      orphan.traces.map((tr) => tr.id),
+      [""],
+      "the empty-trace-id summary fixture is missing — the probe above would then be green by construction",
+    );
   });
 
   // D13: one contract, two implementations. The fixtures mirror the seeded
@@ -986,7 +1072,10 @@ test("trace search (D44/D45) against a seeded ClickHouse", async (t) => {
     };
 
     const cases: [string, boolean, boolean][] = [
-      [rootTok, true, false], // summary leg
+      // NB: rootTok is the ROOT SPAN's name, so live answers it from the spans
+      // leg as well as from `root_name` — it does not isolate the summary leg.
+      // The summary-only reach fields have their own subtest above.
+      [rootTok, true, false],
       [tokSpanName, true, false], // spans leg: name
       [tokPrompt, true, false], // spans leg: prompt column
       [tokCompletion, true, false], // spans leg: completion column

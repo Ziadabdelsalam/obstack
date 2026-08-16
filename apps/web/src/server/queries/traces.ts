@@ -101,6 +101,13 @@ GROUP BY workspace_id, trace_id`;
  * rail's DISPLAY (adapters.ts), but their content is what the UI folds into
  * `LlmDetail`, so it is in the search REACH.
  *
+ * `trace_id != ''` is load-bearing, not decorative: the summaries materialized
+ * view has no write-side trace-id filter, so a span arriving without a trace id
+ * yields a real summary row at `trace_id = ''`. Without the clause a matching
+ * trace-less log hands `''` to the semi-join, that summary satisfies the `IN`,
+ * and the list renders a phantom trace with an empty id. The integration
+ * suite's trace-less subtest seeds that summary and goes red on removal.
+ *
  * Placeholder-count generation is D45-sanctioned: the skeleton grows one
  * `{qN:String}` placeholder set per term, but every VALUE stays a bound
  * parameter — splicing a value into the string would be interpolation (D11,

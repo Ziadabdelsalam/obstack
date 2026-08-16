@@ -112,6 +112,28 @@ test("nearby (traceId-less) log bodies are OUT of the traces-list reach (contrac
   assert.equal(mockMatches(reachTrace, "nearbyonly"), false);
 });
 
+// The D45 reach set opens with the summary fields, and nothing else in the
+// matcher covers them: every token below lives on exactly one summary field and
+// nowhere else in the trace, so deleting that one entry from `mockMatches`'s
+// haystack turns exactly one assertion red. The live twin is the
+// "D45 summary-field reach" subtest in traces.integration.test.ts.
+test("free text reaches the summary fields: root name, trace id, models, services", () => {
+  const summaryTrace = makeTrace({
+    id: "t-idtok-9f3",
+    rootName: "POST /roottok-only",
+    service: "svctok-only",
+    services: ["svctok-only"],
+    models: ["modeltok-only"],
+    spans: [makeSpan({ id: "s1", name: "unrelated step" })],
+    logs: [makeLog({ id: "l1", body: "unrelated body" })],
+  });
+  assert.equal(mockMatches(summaryTrace, "roottok-only"), true, "root name is in the reach");
+  assert.equal(mockMatches(summaryTrace, "idtok-9f3"), true, "the trace id is in the reach");
+  assert.equal(mockMatches(summaryTrace, "modeltok-only"), true, "models are in the reach");
+  assert.equal(mockMatches(summaryTrace, "svctok-only"), true, "services are in the reach");
+  assert.equal(mockMatches(summaryTrace, "absenttok-only"), false, "control: an unseeded token matches nothing");
+});
+
 // ---- structured filters (PRD §8) + time bound (D50) -------------------------
 
 const HOUR = 3_600_000;
@@ -195,6 +217,24 @@ test("D44 pagination: page 1 is the first TRACE_PAGE_SIZE ids in order, page 2 t
   );
   const page2 = mockSearchTraces(pageSet, { page: 2 });
   assert.deepEqual(page2.traces.map((t) => t.id), pageIds.slice(TRACE_PAGE_SIZE));
+});
+
+// `pageSet` above shares ONE start across every fixture, so it can only ever
+// prove the `, trace_id` tie-break — flipping the comparator's start term left
+// it (and the whole suite) green. These three carry DISTINCT starts, with ids
+// ordered AGAINST the expected result, so the assertion fails both on an
+// ascending start sort and on a tie-break-only sort.
+test("D44 order direction: distinct-start traces come back newest-first", () => {
+  const distinctStarts: Trace[] = [
+    makeTrace({ id: "o-a", startedAt: new Date(NOW - 180_000).toISOString() }),
+    makeTrace({ id: "o-b", startedAt: new Date(NOW - 120_000).toISOString() }),
+    makeTrace({ id: "o-c", startedAt: new Date(NOW - 60_000).toISOString() }),
+  ];
+  assert.deepEqual(
+    mockSearchTraces(distinctStarts, {}).traces.map((t) => t.id),
+    ["o-c", "o-b", "o-a"],
+    "start DESCENDING is half the D44 order — an ascending (or id-only) sort returns oldest-first",
+  );
 });
 
 test("D44 total is a property of the data, not the page: both pages report the full filtered count", () => {

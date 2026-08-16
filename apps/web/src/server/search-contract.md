@@ -34,10 +34,19 @@ this file and a fork between them is the parity bug T1 exists to close (D13):
   `logs[].body`. The mock data model has no separate carrier rows — event-form
   content already lives on `llm`, which is exactly where the live read folds it
   (D42(d)) — so the two reaches are equivalent.
-- **Case-folding note**: live compares with ClickHouse `positionCaseInsensitive`
-  (ASCII folding, the form the shipped summary search already used); mock
-  compares with JS `toLowerCase` (Unicode). The contract's tested surface is
-  ASCII; exotic case pairs may verdict differently between modes.
+- **Case-folding note — a KNOWN, measured divergence, open at the contract
+  review.** Live compares with ClickHouse `positionCaseInsensitive` (ASCII
+  folding only, the form the shipped summary search already used); mock compares
+  with JS `toLowerCase` (full Unicode). Wherever a term and the text differ in
+  case on a non-ASCII letter the two modes disagree, and live is the stricter
+  one — it misses matches mock finds. Measured against the compose server:
+  searching `café` finds `CAFÉ` in mock, not in live; likewise `привет`/`ПРИВЕТ`
+  and `αθηνα`/`ΑΘΗΝΑ`. This is not confined to exotic input — any accented word
+  in a prompt qualifies. Same-case non-ASCII text matches in both modes (it is a
+  byte-equal substring), so the divergence needs a case difference to bite.
+  ClickHouse's `positionCaseInsensitiveUTF8` folds Unicode and agrees with the
+  mock on all of the above; whether to swap is a contract-review decision, not
+  an implementation one, and it is recorded here rather than quietly chosen.
 
 ## Structured filters (PRD §8, server-side in both modes)
 
