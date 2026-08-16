@@ -99,5 +99,48 @@ services:
       start_period: 5s
     restart: unless-stopped
 
+  # Not started by a plain `docker compose up`, and not part of the default
+  # `demo` path either — it is a second, opt-in ingest route (D39/Q2): apps
+  # can still point straight at `ingest:4318` (M1's signed `smoke.sh` does,
+  # byte-untouched), or route through here for the collector distro's
+  # filelog tailing and (on Kubernetes) k8sattributes enrichment. Bring it
+  # up with `deploy/collector/up.sh`, not a bare `--profile collector up` —
+  # see deploy/collector/README.md for why.
+  collector:
+    image: otel/opentelemetry-collector-k8s:0.158.0
+    container_name: obstack-collector
+    profiles: [collector]
+    # Docker's own container log files are root:root, mode 0640 — the same
+    # requirement any log-shipping sidecar has against the host's Docker log
+    # directory.
+    user: "0:0"
+    depends_on:
+      ingest:
+        condition: service_healthy
+    environment:
+      OBSTACK_INGEST_ENDPOINT: http://ingest:4318
+      # Phase-1 key (D39 rider); dev default matches ingest's own default
+      # key above. Never a committed literal in production — see
+      # deploy/collector/README.md.
+      OBSTACK_COLLECTOR_API_KEY: ${OBSTACK_COLLECTOR_API_KEY:-ok_dev_local}
+      # Both set by `deploy/collector/up.sh` once the containers they name
+      # exist; unset (matching nothing) if this service is started
+      # standalone, so filelog tails nothing rather than the whole host.
+      OBSTACK_COLLECTOR_TAIL_CONTAINER_ID: ${OBSTACK_COLLECTOR_TAIL_CONTAINER_ID:-}
+      OBSTACK_COLLECTOR_EXCLUDE_CONTAINER_ID: ${OBSTACK_COLLECTOR_EXCLUDE_CONTAINER_ID:-}
+    command: ["--config", "/etc/otelcol/config.yaml"]
+    volumes:
+      - ../collector/config.compose.yaml:/etc/otelcol/config.yaml:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+    ports:
+      - "127.0.0.1:5317:4317" # OTLP/gRPC
+      - "127.0.0.1:5318:4318" # OTLP/HTTP
+      - "127.0.0.1:13133:13133" # health_check extension
+    # No container-level healthcheck: the upstream image is a single static
+    # binary with no shell (D14 — unmodified upstream), so there is nothing
+    # to exec a probe with. `up.sh` polls the health_check extension above
+    # from the host instead.
+    restart: unless-stopped
+
 volumes:
   clickhouse-data:

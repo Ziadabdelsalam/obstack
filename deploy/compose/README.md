@@ -25,6 +25,24 @@ docker compose --profile demo up -d --build
 Ingest applies the schema at boot, so a clean checkout needs nothing else. See
 [Smoke test](#smoke-test--the-phase-1-exit-criterion) below to prove it works.
 
+## Collector — optional OTLP + filelog route
+
+A second, opt-in path into ingest, alongside the default `demo → ingest`
+one above (D39/Q2): apps can route their OTLP through `obstack-collector`
+instead of straight at `ingest:4318`, which buys filelog tailing of
+container stdout and (on Kubernetes) `k8sattributes` pod enrichment. It is a
+compose **profile**, not a change to the default path — `demo → ingest` and
+`smoke.sh` above are byte-untouched by it.
+
+```bash
+bash deploy/collector/up.sh
+```
+
+See `deploy/collector/README.md` for the collector's own config, its image
+pin and verification, and the filelog exclusion pattern (the mechanism that
+keeps a container's logs from landing twice when it already ships via
+OTLP) documented in terms a customer could copy.
+
 ## Smoke test — the Phase 1 exit criterion
 
 Phase 1 is done when a trace emitted by an app instrumented with plain OpenTelemetry

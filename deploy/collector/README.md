@@ -1,0 +1,125 @@
+# obstack-collector
+
+A distribution, not a fork (D14, PRD §5): `obstack-collector` is the upstream
+OpenTelemetry Collector, unmodified, configured by the two files in this
+directory. It receives OTLP (traces and logs) from instrumented apps, tails
+container stdout/stderr with the filelog receiver, attaches pod/container
+identity, and forwards everything to ingest with the workspace's bearer key.
+
+Two config files, one per topology:
+
+| File | Form | Runs under |
+|------|------|------------|
+| `config.yaml` | Kubernetes / DaemonSet | T4's chart, byte-for-byte as the ConfigMap |
+| `config.compose.yaml` | Docker Compose | this repo's `collector` compose profile |
+
+They are separate files, not one file with an environment switch, because
+`k8s_attributes` needs a Kubernetes API to query and `file_log` needs the
+kubelet's `/var/log/pods` convention — neither exists under Compose. Compose
+tails Docker's own json-file container logs instead and carries no
+`k8s_attributes` stage; see `config.compose.yaml`'s header for the detail.
+Both files share everything else: the OTLP receiver, the bearer-key export
+to ingest, and the filelog exclusion pattern below.
+
+## Image
+
+`otel/opentelemetry-collector-k8s:0.158.0` (D14 — pinned to the exact patch,
+never a floating tag). This is deliberate: `otel/opentelemetry-collector`
+(core) ships neither `file_log` nor `k8s_attributes`, and
+`otel/opentelemetry-collector-contrib` (full contrib) ships components this
+distro has no use for. `opentelemetry-collector-k8s` is upstream's own
+curated middle distro for exactly this job. Verified, not assumed:
+
+```bash
+docker run --rm otel/opentelemetry-collector-k8s:0.158.0 components
+```
+
+lists both `file_log` (`receiver/filelogreceiver`) and `k8s_attributes`
+(`processor/k8sattributesprocessor`), plus the `otlp` receiver and
+`otlp_http` exporter both configs use.
+
+## Bearer key (D39 rider)
+
+Both configs read `OBSTACK_COLLECTOR_API_KEY` from the environment and send
+it as `Authorization: Bearer <key>` to ingest — the same wire format any
+OTLP client uses (D4). `config.compose.yaml` defaults it to `ok_dev_local`
+(M1 precedent — it matches `docker-compose.yml`'s own ingest default key, so
+the profile works out of the box for local dev). `config.yaml` has no
+default: production supplies the key through a Helm values file or a mounted
+secret. Neither file ever carries a literal key.
+
+## The filelog exclusion (D37.3) — the recommended customer pattern
+
+A container whose OTel SDK already exports logs via OTLP should not also
+have its stdout tailed by filelog: that is the same log line landing twice —
+once with real trace context, once without. The fix is to exclude that
+container from filelog entirely, not to deduplicate after the fact (D37.5
+rejects query-layer dedupe for the same reason: it would have to guess which
+copy is authoritative).
+
+**On Kubernetes**, exclude by container name — the pod log path already
+names it, so no lookup is needed:
+
+```yaml
+file_log:
+  exclude:
+    - /var/log/pods/*/<your-instrumented-container-name>/*.log
+```
+
+**Under Docker Compose**, the log path is keyed by container ID instead of
+name, and the ID does not exist until the container does, so `up.sh`
+resolves it once at bring-up and passes it in as an environment variable,
+used in both `include` (there has to be a file to exclude) and `exclude`.
+The mechanism is the same idea (exclude this container's log file), adapted
+to the identifier Compose actually gives you. `include` is also scoped, not
+the host-wide `/var/lib/docker/containers/*/*.log` glob — see
+`config.compose.yaml`'s comment for why tailing every container on the
+machine is the wrong default even in dev.
+
+### Falsification probe (S2.0 L1)
+
+Proven by removing the exclusion and watching the same line land twice, not
+by inspecting the config and assuming it works. The collector's own `--set`
+flag overrides one config property without touching the shipped file or its
+env-var wiring (`--help`: "Array config properties are overridden"):
+
+```bash
+# with the exclusion in place (up.sh's normal path): a chat request's log
+# lines are OTLP-shipped only — filelog does not also produce a copy.
+bash deploy/collector/up.sh
+curl -fsS -X POST http://127.0.0.1:8000/chat -H 'content-type: application/json' -d '{"message":"probe"}'
+docker exec obstack-clickhouse clickhouse-client --user obstack_web --password obstack_web_dev \
+  --query "SELECT count() FROM obstack.logs WHERE body LIKE '%chat request received: probe%'"
+# -> 1 (the OTLP-shipped row, with a real trace_id)
+
+# same containers, same everything, except the exclude list is overridden to
+# empty for this one run — up.sh already exported the two container-ID env
+# vars `include` and `exclude` both need:
+docker compose -f deploy/compose/docker-compose.yml --profile collector run --rm \
+  -e OBSTACK_COLLECTOR_TAIL_CONTAINER_ID -e OBSTACK_COLLECTOR_EXCLUDE_CONTAINER_ID -e OBSTACK_COLLECTOR_API_KEY \
+  --entrypoint /otelcol-k8s collector \
+  --config /etc/otelcol/config.yaml --set 'receivers.file_log.exclude=[]'
+# ... after another chat request through the demo app ...
+docker exec obstack-clickhouse clickhouse-client --user obstack_web --password obstack_web_dev \
+  --query "SELECT count() FROM obstack.logs WHERE body LIKE '%chat request received%'"
+# -> 2 for that request's body (the OTLP-shipped row still carries the real
+#    trace_id; the filelog copy, with trace_id = '', is the same line a
+#    second time — the duplicate the exclusion exists to prevent)
+```
+
+## Bring-up
+
+```bash
+bash deploy/collector/up.sh
+```
+
+Not a bare `docker compose --profile collector up`: the script brings up
+`clickhouse`, `ingest` and `demo` first, resolves the container IDs `include`
+and `exclude` need, and only then starts `collector` with them wired — see
+the script's own header for why the ordering matters. `docker compose
+down -v` first if the stack has been up across a schema change (same rule as
+`smoke.sh`).
+
+The default `demo → ingest` path (`docker compose --profile demo up`) and
+`smoke.sh` are untouched by any of this (D39/Q2): the collector is a second,
+opt-in route, not a replacement for the signed one.
