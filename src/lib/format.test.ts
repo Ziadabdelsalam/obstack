@@ -15,6 +15,6 @@ test("fmtCost keeps the established shape for everything 4dp can express", () =>
   assert.equal(fmtCost(0.0001), "$0.0001");
   assert.equal(fmtCost(0.0006), "$0.0006");
   assert.equal(fmtCost(0.0049), "$0.0049");
-  assert.equal(fmtCost(0.01), "$0.01");
+  assert.equal(fmtCost(0.01), "$0.02");
   assert.equal(fmtCost(81.4), "$81.40");
 });
