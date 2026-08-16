@@ -50,6 +50,11 @@ receivers:
       - "/var/lib/docker/containers/${env:OBSTACK_COLLECTOR_EXCLUDE_CONTAINER_ID:-__none__}/*-json.log"
     include_file_path: true
     start_at: beginning
+    # Checkpointed via file_storage below: without it every restart re-reads
+    # every file from `start_at: beginning` and re-ships every historical
+    # line — a second duplicate door D37.3's exclusion does not cover, since
+    # it excludes a whole container, not "lines already sent."
+    storage: file_storage
     operators:
       - type: container
         format: docker
@@ -82,8 +87,18 @@ extensions:
   health_check:
     endpoint: 0.0.0.0:13133
 
+  # Checkpoints each tailed file's read offset to disk so a restart resumes
+  # instead of re-shipping from the top (T1 review escalation). The
+  # directory must be writable and must survive the collector's own
+  # restarts — docker-compose.yml backs it with a named volume, not the
+  # container's own ephemeral layer. `create_directory: true` because the
+  # first boot's volume is empty.
+  file_storage:
+    directory: ${env:OBSTACK_COLLECTOR_STORAGE_DIR:-/var/lib/obstack-collector}
+    create_directory: true
+
 service:
-  extensions: [health_check]
+  extensions: [health_check, file_storage]
   pipelines:
     traces:
       receivers: [otlp]

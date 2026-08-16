@@ -60,6 +60,11 @@ receivers:
       - /var/log/pods/*/${env:OBSTACK_COLLECTOR_EXCLUDE_CONTAINER:-__none__}/*.log
     include_file_path: true
     start_at: beginning
+    # Checkpointed via file_storage below: without it every restart re-reads
+    # every file from `start_at: beginning` and re-ships every historical
+    # line — a second duplicate door D37.3's exclusion does not cover, since
+    # it excludes a whole container, not "lines already sent."
+    storage: file_storage
     operators:
       - type: container
 
@@ -111,8 +116,18 @@ extensions:
   health_check:
     endpoint: 0.0.0.0:13133
 
+  # Checkpoints each tailed file's read offset to disk so a restart resumes
+  # instead of re-shipping from the top (T1 review escalation). The
+  # directory must be writable and must survive the collector's own
+  # restarts — a scratch emptyDir does not — so it is env-supplied rather
+  # than baked in here, the same mechanism as the exclusion above.
+  # `create_directory: true` because the first boot's volume is empty.
+  file_storage:
+    directory: ${env:OBSTACK_COLLECTOR_STORAGE_DIR:-/var/lib/obstack-collector}
+    create_directory: true
+
 service:
-  extensions: [health_check]
+  extensions: [health_check, file_storage]
   pipelines:
     traces:
       receivers: [otlp]

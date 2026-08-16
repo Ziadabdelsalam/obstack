@@ -132,6 +132,13 @@ services:
     volumes:
       - ../collector/config.compose.yaml:/etc/otelcol/config.yaml:ro
       - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      # Backs the file_storage extension's checkpoint directory (T1 review
+      # escalation): a named volume survives `docker compose restart
+      # collector`, unlike the container's own ephemeral layer, so a
+      # restart resumes tailing instead of re-shipping every historical
+      # line. Matches config.compose.yaml's OBSTACK_COLLECTOR_STORAGE_DIR
+      # default — `down -v` clears it along with everything else.
+      - collector-storage:/var/lib/obstack-collector
     ports:
       - "127.0.0.1:5317:4317" # OTLP/gRPC
       - "127.0.0.1:5318:4318" # OTLP/HTTP
@@ -144,3 +151,4 @@ services:
 
 volumes:
   clickhouse-data:
+  collector-storage:

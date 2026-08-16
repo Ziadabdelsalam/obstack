@@ -19,7 +19,8 @@ kubelet's `/var/log/pods` convention — neither exists under Compose. Compose
 tails Docker's own json-file container logs instead and carries no
 `k8s_attributes` stage; see `config.compose.yaml`'s header for the detail.
 Both files share everything else: the OTLP receiver, the bearer-key export
-to ingest, and the filelog exclusion pattern below.
+to ingest, the filelog exclusion pattern below, and the `file_storage`
+checkpointing further down.
 
 ## Image
 
@@ -135,11 +136,64 @@ deployment's job. A DaemonSet running this file must provide:
 - **`OBSTACK_COLLECTOR_EXCLUDE_CONTAINER`** set to the instrumented
   container's name (D37.3). Without it the collector tails that container
   too and its lines land twice.
+- **A writable, persistent directory for `file_storage`** — a per-node
+  `hostPath` (e.g. `/var/lib/obstack-collector`, matched by
+  `OBSTACK_COLLECTOR_STORAGE_DIR` if a different path is used), not an
+  `emptyDir`. It must survive the collector's own pod restarts, or every
+  restart re-ships every historical line — see Checkpointing below. Compose
+  satisfies the same contract with the `collector-storage` named volume in
+  `docker-compose.yml`.
 - **A liveness/readiness probe against `:13133`**, which is why the
   `health_check` extension binds `0.0.0.0` rather than its localhost
   default.
 - **The pod's own OTLP endpoints, `:4317`/`:4318`**, reachable by the apps
   that route through it.
+
+## Checkpointing (`file_storage`) — the second duplicate door
+
+D37.3's exclusion decides *which containers* filelog reads; it says nothing
+about *which lines of an included file were already shipped*. Without a
+checkpoint, `start_at: beginning` means every collector restart re-reads
+every matched file from its first byte and re-ships every line it already
+sent — a duplicate the exclusion cannot cover, because the container was
+never excluded in the first place. The `file_storage` extension persists
+each tailed file's read offset to `OBSTACK_COLLECTOR_STORAGE_DIR` (default
+`/var/lib/obstack-collector`), referenced by `file_log`'s `storage:` field,
+so a restart resumes instead of starting over. Both config files declare
+this identically — same extension block, same env var, same default
+directory — because the mechanism does not change between topologies, only
+what backs the directory does: T4's per-node `hostPath` vs. Compose's
+`collector-storage` named volume.
+
+### Falsification probe
+
+Proven both directions — a restart does not re-ship with the checkpoint in
+place, and does re-ship without it — not by reading the config and trusting
+the extension does what its name says:
+
+```bash
+# with file_storage wired (the shipped config): five ClickHouse startup
+# lines land once.
+bash deploy/collector/up.sh
+docker exec obstack-clickhouse clickhouse-client --user obstack_web --password obstack_web_dev \
+  --query "SELECT count() FROM obstack.logs WHERE service = ''"
+# -> 5
+
+# restart the collector mid-tail — nothing else touched.
+docker compose -f deploy/compose/docker-compose.yml --profile collector restart collector
+docker exec obstack-clickhouse clickhouse-client --user obstack_web --password obstack_web_dev \
+  --query "SELECT count() FROM obstack.logs WHERE service = ''"
+# -> 5, unchanged. The collector's own logs confirm why:
+docker logs obstack-collector 2>&1 | grep "Resuming from previously known offset"
+```
+
+Without the checkpoint, the same restart re-ships every line that file
+holds: a one-off container built from `config.compose.yaml` with its
+`storage: file_storage` line removed logs no "Resuming…" line on restart,
+and the count above doubles (5 → 10) on first start and doubles again
+(10 → 15) on every restart after — proven by hand against an isolated
+project (`docker compose -p <name> ... down -v` first is safe there; it is
+never safe against a stack this repo's tooling did not start).
 
 ## Bring-up
 
