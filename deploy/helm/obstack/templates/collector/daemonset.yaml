@@ -17,6 +17,14 @@ spec:
       app.kubernetes.io/component: collector
   template:
     metadata:
+      annotations:
+        # otelcol reads its config once, at process start, and the file
+        # provider does not watch it — so a ConfigMap change alone leaves
+        # every node's collector running the old pipeline until someone
+        # restarts it by hand. Hashing the packaged config into the pod
+        # template makes `helm upgrade` roll the DaemonSet exactly when
+        # T1's config.yaml actually changed, and never otherwise.
+        checksum/config: {{ .Files.Get "files/collector-config.yaml" | sha256sum }}
       labels:
         app.kubernetes.io/name: obstack
         app.kubernetes.io/instance: {{ .Release.Name }}
@@ -46,7 +54,7 @@ spec:
             - name: OBSTACK_COLLECTOR_STORAGE_DIR
               value: {{ .Values.collector.storageDir | quote }}
           ports:
-            # hostPort, not routed through a Service: templates/demo/pod.yaml
+            # hostPort, not routed through a Service: templates/demo/deployment.yaml
             # reaches this node's own collector via the Downward API's
             # status.hostIP, so k8s_attributes' `from: connection` pod
             # association sees the sending pod's real, un-NATed source IP

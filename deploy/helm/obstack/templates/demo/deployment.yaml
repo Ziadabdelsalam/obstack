@@ -1,0 +1,112 @@
+# A Deployment, not a bare Pod, for the reason this chart exists at all: M4
+# extends it in place (D35). A bare Pod rejects every `helm upgrade` that
+# changes anything but a container image — `pod updates may not change fields
+# other than spec.containers[*].image` — so the one override values.yaml
+# itself documents for a real deployment (`--set demo.pullPolicy=…`) fails the
+# release outright, and nothing recreates the pod if a node evicts it.
+#
+# Both containers stay in ONE pod on purpose: D37.2's nearby-log evidence
+# joins on (workspace_id, k8s_namespace, k8s_pod), so the uninstrumented
+# sidecar has to share the instrumented app's pod identity, not merely its
+# node. replicas is 1 — this is the demo app, not a scaling surface.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-demo
+  labels:
+    {{- include "obstack.labels" . | nindent 4 }}
+    app.kubernetes.io/component: demo
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: obstack
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: demo
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: obstack
+        app.kubernetes.io/instance: {{ .Release.Name }}
+        app.kubernetes.io/component: demo
+    spec:
+      containers:
+        # `demo-agent` is `.Values.collector.excludeContainer` (D37.3): it ships
+        # its own telemetry via OTLP already, so the collector's filelog receiver
+        # must not also tail its stdout.
+        - name: demo-agent
+          image: {{ .Values.demo.image }}
+          imagePullPolicy: {{ .Values.demo.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8000
+          env:
+            - name: HOST_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.hostIP
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            # Pure standard OTel config (D15), the same shape as
+            # docker-compose.yml's demo service — except the endpoint, the
+            # missing bearer header, and OTEL_RESOURCE_ATTRIBUTES: D37.1 routes
+            # this app's OTLP to the node-local obstack-collector (this pod's
+            # own node, via the Downward API's status.hostIP and the
+            # DaemonSet's hostPort — see templates/collector/daemonset.yaml)
+            # instead of straight at ingest. The collector's own otlp receiver
+            # takes no bearer key — it stamps its own
+            # (OBSTACK_COLLECTOR_API_KEY) on the way out — so this app sends
+            # none. k8s_attributes' `from: connection` pod association
+            # (config.yaml) cannot resolve this pod through a same-node hostPort
+            # hairpin — hostPort is a node-level DNAT, and a pod calling its own
+            # node's IP is commonly SNAT'd for the return path to route,
+            # discarding the real source IP before the collector ever sees it —
+            # so this app also stamps k8s.pod.name/k8s.namespace.name onto its
+            # own Resource via the Downward API, which is config.yaml's other,
+            # documented pod-association rule.
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: k8s.pod.name=$(POD_NAME),k8s.namespace.name=$(POD_NAMESPACE)
+            - name: OTEL_SERVICE_NAME
+              value: demo-agent
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: http://$(HOST_IP):4318
+            - name: OTEL_EXPORTER_OTLP_PROTOCOL
+              value: http/protobuf
+            # Stable HTTP semantic conventions, so the server spans carry
+            # http.request.method — the attribute ingest classifies the api
+            # layer on.
+            - name: OTEL_SEMCONV_STABILITY_OPT_IN
+              value: http
+            # Same reasoning as docker-compose.yml's demo service: a five-second
+            # flush interval reads as a broken pipeline on a cluster meant to be
+            # watched interactively.
+            - name: OTEL_BSP_SCHEDULE_DELAY
+              value: "1000"
+            - name: OTEL_BLRP_SCHEDULE_DELAY
+              value: "1000"
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 3
+        # D37.2: a second, uninstrumented container — no OTel SDK at all, so its
+        # stdout is the genuine NEARBY log source (a trace-less line the
+        # collector's filelog receiver tails from /var/log/pods, D37's fallback
+        # join). It is not in collector.excludeContainer, so filelog reads it.
+        - name: sidecar
+          image: {{ .Values.utilityImage }}
+          command:
+            - sh
+            - -c
+            - |
+              while true; do
+                echo "sidecar heartbeat $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+                sleep 5
+              done

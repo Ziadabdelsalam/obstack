@@ -70,12 +70,24 @@ in a release's lifetime — sufficient for CI/kind, where the whole cluster is
 thrown away between runs, and exactly what "CI-grade" means here as opposed
 to what M4 needs from a production ClickHouse.
 
-**Known limitation, not silently inherited:** Helm does not track
-install-hook resources as part of a release's managed manifest, so
-`helm uninstall` does **not** remove the ClickHouse Deployment/Service/
-ConfigMap — this is standard, documented Helm hook behaviour, reproduced
-while building this chart. Clean up by hand if you `helm uninstall` outside
-a throwaway cluster:
+**Known limitations, not silently inherited.** Both follow from the same
+fact — an install-hook resource is created once and is not part of the
+release's managed manifest — and both were reproduced while building this
+chart, not inferred:
+
+1. **`helm uninstall` does not remove ClickHouse** (Deployment, Service,
+   ConfigMap). A *failed* `helm install` leaves them running too, with the
+   release in `failed` state and nothing to uninstall.
+2. **Every `clickhouse.*` value is inert after the first install.**
+   `helm upgrade --set clickhouse.image=…` leaves the running Deployment on
+   its original image; the ClickHouse hook is never re-applied. Worse,
+   `--set clickhouse.ingestPassword=…` on an existing release *does* change
+   the DSN the migrate Job and the ingest Deployment use while leaving the
+   ClickHouse user's password as installed — the pre-upgrade hook then fails
+   authentication and the upgrade fails. Change a `clickhouse.*` value only
+   at install time; on an existing release, reinstall.
+
+Clean up by hand if you `helm uninstall` outside a throwaway cluster:
 
 ```bash
 kubectl delete deploy,svc,configmap -l app.kubernetes.io/instance=<release>
@@ -127,7 +139,7 @@ hairpin, and hairpin traffic is commonly SNAT'd for the return path to route
 a second, documented pod-association rule for exactly this case
 (`resource_attribute` `k8s.pod.name`/`k8s.namespace.name`), so the demo
 pod's `OTEL_RESOURCE_ATTRIBUTES` stamps both via the Downward API
-(`templates/demo/pod.yaml`) — this is what actually makes SOLID rows carry
+(`templates/demo/deployment.yaml`) — this is what actually makes SOLID rows carry
 pod metadata, not the connection alone. Any app instrumented against this
 chart's collector needs the same two resource attributes for the same
 reason.
@@ -164,7 +176,11 @@ kind load docker-image obstack-ingest:kind --name t4-chart
 kind load docker-image obstack-demo-agent:kind --name t4-chart
 
 helm lint deploy/helm/obstack
-helm install obstack deploy/helm/obstack --timeout 180s --wait
+# 600s, not a minute or two: a node that has never run this chart pulls
+# clickhouse/clickhouse-server (~250 MB) before anything else can start, and
+# nothing here fakes that away. Pre-pull it (`docker pull` + `kind load
+# docker-image`) if you want the ~90s install instead.
+helm install obstack deploy/helm/obstack --timeout 600s --wait
 
 # every component Ready
 kubectl get pods,deploy,ds
@@ -173,11 +189,11 @@ kubectl get pods,deploy,ds
 kubectl get events --sort-by=.metadata.creationTimestamp
 kubectl logs deploy/obstack-ingest | grep "schema verified"
 
-# no-op re-run
-helm upgrade obstack deploy/helm/obstack --timeout 180s --wait
-# (the migrate Job is deleted on success by hook-delete-policy; drop
-# `,hook-succeeded` from templates/ingest/migrate-job.yaml's annotation
-# temporarily to read its "schema already up to date" log before upgrading)
+# no-op re-run. The Job is deleted on success by hook-delete-policy, so read
+# its log while the upgrade is still running, from a second shell:
+#   until kubectl logs job/obstack-migrate -c migrate 2>/dev/null; do sleep 1; done
+#   -> {"msg":"schema already up to date"}
+helm upgrade obstack deploy/helm/obstack --timeout 600s --wait
 
 # falsification probe: un-migrated ClickHouse
 kubectl exec deploy/obstack-clickhouse -- clickhouse-client \
