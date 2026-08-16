@@ -31,6 +31,14 @@ spec:
           value: "http://203.0.113.1:4318"
         - name: OTEL_SERVICE_NAME
           value: "kind-proof-workload"
+        # F1 round 2: with only the kubelet's /healthz probes hitting the app,
+        # both the span and log batch queues stay empty forever
+        # (excluded_urls="healthz") and the exporter is never actually called —
+        # fail-open would be assumed, not observed. LOOP_INTERVAL_S makes the
+        # app self-generate real /chat traffic, so real spans and logs queue up
+        # and the black-holed exporter genuinely fails.
+        - name: LOOP_INTERVAL_S
+          value: "3"
       readinessProbe:
         httpGet:
           path: /healthz
