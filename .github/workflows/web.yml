@@ -36,8 +36,16 @@ jobs:
       # makes the ClickHouse-backed integration tests
       # (apps/web/src/server/queries/traces.integration.test.ts) actually run
       # here instead of skipping (T3's E1 escalation, ruled onto this job).
-      - name: Start ClickHouse (deploy/compose)
-        run: docker compose -f deploy/compose/docker-compose.yml up -d --wait --wait-timeout 120 clickhouse
+      #
+      # `ingest` rides along for the same K1 reason: it owns the obstack
+      # database and its DDL, applied at boot from the migrations embedded in
+      # the binary (docker-compose.yml's own words). A bare `up clickhouse` on
+      # CI's fresh volume has no schema at all, so the tests fail with
+      # UNKNOWN_DATABASE — measured on this job's first enforced run, not
+      # assumed — and the alternative (this job hand-applying DDL) would be a
+      # second definition of the migration path, which K1 refuses.
+      - name: Start ClickHouse + ingest (deploy/compose)
+        run: docker compose -f deploy/compose/docker-compose.yml up -d --wait --wait-timeout 120 clickhouse ingest
 
       - uses: actions/setup-node@v7.0.0
         with:

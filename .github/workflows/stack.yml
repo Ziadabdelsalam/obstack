@@ -9,10 +9,21 @@
 # file_storage rider), and lands the D38(e) event-form GenAI fixture through
 # the collector.
 #
-# Trigger policy (K5/D41): measurement trigger — every PR while the job's
-# real wall-clock is being measured; the K5 branch is applied from that
-# number. `stack` is a K3-stable name from its first run; `web`/`go`/`kind`
-# are untouched.
+# Trigger policy (K5/D41 decision RULE): measure the full job's wall-clock,
+# then pick a branch. Measured end to end on a real PR run — checkout, npm
+# ci, image builds, kind cluster, pulls + side-load, helm install, all
+# assertions and riders: 4m06s
+# (https://github.com/Ziadabdelsalam/obstack/actions/runs/31959860805) —
+# under the ~6 min line, so this runs on every PR like `web`/`go`/`kind` and
+# joins that set (branch protection itself is deliberately skipped by user
+# decision, so "required" is the advisory set the merge process gates on).
+# The number includes the script's image pre-pull + side-load block — the
+# sanctioned optimization, not a correctness mechanism. If a future change
+# pushes the job past ~6 min, switch to `ci:stack` label + workflow_dispatch
+# + ALWAYS on push to master (a red `stack` on master is stop-the-line for
+# the next PR — D41's rider), and drop `stack` from the required set; never
+# leave it required-but-conditional. `stack` is a K3-stable name from its
+# first run; `web`/`go`/`kind` are untouched.
 name: stack
 
 on:
