@@ -55,8 +55,8 @@ jobs:
         with:
           cluster_name: ${{ env.CLUSTER_NAME }}
 
-      - name: Load the just-built image into kind (no registry path exists)
-        run: kind load docker-image "$IMAGE_TAG" --name "$CLUSTER_NAME"
+      # RED-EVIDENCE-TEMP: kind-load step dropped, to prove the workload
+      # can't silently fall back to a registry. Revert before merge.
 
       - name: Apply the proof workload
         run: sed "s#IMAGE_PLACEHOLDER#$IMAGE_TAG#" "$PROOF_MANIFEST" | kubectl apply -f -
