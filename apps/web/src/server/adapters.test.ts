@@ -258,3 +258,115 @@ test("nearbyLogsTruncated is true and the render still caps at NEARBY_LOG_CAP wh
   assert.equal(trace.nearbyLogsTruncated, true);
   assert.equal(trace.logs.length, NEARBY_LOG_CAP);
 });
+
+// T6 (D38 FINAL / D42(d)): read-time coalesce — an LLM span's LlmDetail
+// hydrates its prompt/completion from event-derived (log-record) rows sharing
+// its span_id when the span's own columns are empty, per field independently,
+// earliest-timestamp wins. `logRow` above already carries `at_offset_ns:
+// "-2000000"` and no span_id/prompt/completion, so it stays an ordinary log
+// throughout this block unless a test overrides those fields explicitly.
+const emptyLlmRow: SpanRow = { ...llmRow, span_id: "b5", prompt: "", completion: "" };
+
+const contentCarrier = (overrides: Partial<LogRow>): LogRow => ({
+  ...logRow,
+  trace_id: summaryRow.trace_id,
+  body: "", // content carriers are bodyless by definition (D42(d))
+  ...overrides,
+});
+
+test("a non-empty span column always wins over event-derived content (red when inverted)", () => {
+  const eventRow = contentCarrier({
+    at_offset_ns: "1000000",
+    span_id: llmRow.span_id,
+    prompt: "PROBE:event-prompt-must-lose",
+    completion: "PROBE:event-completion-must-lose",
+  });
+  const trace = toTrace(summaryRow, [llmRow], [eventRow], []);
+  const span = trace.spans.find((s) => s.id === llmRow.span_id);
+  // llmRow's own prompt/completion ("user: hello" / "hi there") must survive
+  // untouched — inverting the precedence (event wins over a populated column)
+  // would make this assertion fail.
+  assert.equal(span?.llm?.prompt, "user: hello");
+  assert.equal(span?.llm?.completion, "hi there");
+});
+
+test("empty span columns hydrate from event-derived content, per field independently", () => {
+  const promptOnly = contentCarrier({
+    at_offset_ns: "1000000",
+    span_id: "b5",
+    prompt: "PROBE:event-prompt",
+  });
+  const completionOnly = contentCarrier({
+    at_offset_ns: "2000000",
+    span_id: "b5",
+    completion: "PROBE:event-completion",
+  });
+  const trace = toTrace(summaryRow, [emptyLlmRow], [promptOnly, completionOnly], []);
+  const span = trace.spans.find((s) => s.id === "b5");
+  assert.equal(span?.llm?.prompt, "PROBE:event-prompt");
+  assert.equal(span?.llm?.completion, "PROBE:event-completion");
+});
+
+test("earliest-timestamp content row wins; a later row for the same field does not displace it (red if it did)", () => {
+  const earliest = contentCarrier({ at_offset_ns: "1000000", span_id: "b5", prompt: "PROBE:earliest" });
+  const later = contentCarrier({ at_offset_ns: "2000000", span_id: "b5", prompt: "PROBE:later-must-not-win" });
+  // logRows arrives timestamp-ordered from LOGS_SQL — pass them in that order.
+  const trace = toTrace(summaryRow, [emptyLlmRow], [earliest, later], []);
+  const span = trace.spans.find((s) => s.id === "b5");
+  assert.equal(span?.llm?.prompt, "PROBE:earliest");
+});
+
+test("a content row with a non-empty body renders in the rail as a normal log AND still folds", () => {
+  const visible = contentCarrier({
+    at_offset_ns: "1000000",
+    span_id: "b5",
+    prompt: "PROBE:visible-content",
+    body: "PROBE:visible-body",
+  });
+  const trace = toTrace(summaryRow, [emptyLlmRow], [visible], []);
+  const span = trace.spans.find((s) => s.id === "b5");
+  assert.equal(span?.llm?.prompt, "PROBE:visible-content", "a body-carrying content row must still fold");
+  assert.equal(trace.logs.length, 1, "a body-carrying content row must still render in the rail");
+  assert.equal(trace.logs[0].body, "PROBE:visible-body");
+});
+
+// Probe 4 (D42(e)): removing `isContentCarrier`'s filter in `toTrace` makes
+// this assertion fail — `trace.logs.length` would be 2 (the carrier's content
+// duplicated alongside the narrative row) instead of 1, and TraceExplorer's
+// `nearbyCount`/`solidCount` (both derived from `trace.logs`) would then claim
+// a row the fold above already renders as LlmDetail — verified red-then-green
+// by commenting out the filter in adapters.ts and re-running this test.
+test("content-carrier rows (empty body) are excluded from the rendered logs and therefore from the counter", () => {
+  const carrier = contentCarrier({ at_offset_ns: "1000000", span_id: "b5", prompt: "PROBE:carrier-content" });
+  const narrative = { ...logRow, trace_id: summaryRow.trace_id, body: "an ordinary log line" };
+  const trace = toTrace(summaryRow, [emptyLlmRow], [narrative, carrier], []);
+  assert.equal(trace.logs.length, 1, "the bodyless content carrier must not be counted among the rendered logs");
+  assert.ok(
+    trace.logs.every((l) => l.body !== ""),
+    "an empty-body content carrier rendered as a blank rail row",
+  );
+});
+
+test("orphan content rows (span_id matches no span in this trace) fold nowhere and render nowhere", () => {
+  const orphan = contentCarrier({ at_offset_ns: "1000000", span_id: "no-such-span", prompt: "PROBE:orphan" });
+  const trace = toTrace(summaryRow, [emptyLlmRow], [orphan], []);
+  const span = trace.spans.find((s) => s.id === "b5");
+  assert.equal(span?.llm?.prompt, "", "an orphan content row must not fold into an unrelated span");
+  assert.equal(trace.logs.length, 0, "an orphan content row must not render in the rail");
+});
+
+test("coalesce disabled leaves an event-form-only trace with an empty prompt, proving the fill is real", () => {
+  const eventOnlyLog = contentCarrier({ at_offset_ns: "1000000", span_id: "b5", prompt: "PROBE:event-only-prompt" });
+
+  // "coalesce disabled": toSpan's event-fill map defaults to empty when
+  // omitted, so calling it directly (as toTrace never does) is the literal
+  // disabled state.
+  const withoutCoalesce = toSpan(emptyLlmRow, summaryRow.trace_id);
+  assert.equal(withoutCoalesce.llm?.prompt, "", "sanity: with no fill supplied there is nothing to show");
+
+  // toTrace always builds and passes the fill map — the same span, read
+  // through the real path, must come back hydrated.
+  const trace = toTrace(summaryRow, [emptyLlmRow], [eventOnlyLog], []);
+  const span = trace.spans.find((s) => s.id === "b5");
+  assert.equal(span?.llm?.prompt, "PROBE:event-only-prompt");
+});

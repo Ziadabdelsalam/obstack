@@ -89,6 +89,12 @@ function spanRow(overrides: {
   duration_ns: string;
   k8s_namespace: string;
   k8s_pod: string;
+  parent_span_id?: string;
+  layer?: string;
+  gen_ai_request_model?: string;
+  gen_ai_response_model?: string;
+  prompt?: string;
+  completion?: string;
 }) {
   return {
     workspace_id: WORKSPACE_ID,
@@ -122,6 +128,9 @@ function logRow(overrides: {
   body: string;
   k8s_namespace: string;
   k8s_pod: string;
+  span_id?: string;
+  prompt?: string;
+  completion?: string;
 }) {
   return {
     workspace_id: WORKSPACE_ID,
@@ -130,6 +139,8 @@ function logRow(overrides: {
     severity_text: "INFO",
     service: "demo-agent-it",
     k8s_container: "sidecar",
+    prompt: "",
+    completion: "",
     attributes: {},
     resource_attributes: {},
     ...overrides,
@@ -378,5 +389,165 @@ test("nearby-logs join (D37.4) against a seeded ClickHouse", async (t) => {
       true,
       "a window with more candidates than the cap did not report nearbyLogsTruncated — the query is not fetching one past the cap",
     );
+  });
+});
+
+// T6 (D38 FINAL / D42(d)): read-time coalesce. `adapters.test.ts` proves the
+// precedence logic against fabricated LogRow objects; this proves LOGS_SQL
+// itself actually selects span_id/prompt/completion from a real server and
+// that the whole read (SQL -> adapter) produces the right LlmDetail and rail —
+// a fabricated LogRow cannot exercise the SELECT list at all.
+test("read-time coalesce (D42(d)) against a seeded ClickHouse", async (t) => {
+  if (!(await clickhouseReachable())) {
+    t.skip(
+      `no ClickHouse at ${CLICKHOUSE_URL}; start deploy/compose (down -v first) to run this test`,
+    );
+    return;
+  }
+
+  const { queryTrace } = await import("./traces");
+
+  const suffix = randomBytes(6).toString("hex");
+  const traceId = `it_coalesce_${suffix}`;
+  const llmSpanId = "llm1";
+  const t0 = BigInt(Date.now()) * NS_PER_MS;
+  const spanDurationNs = NS_PER_SECOND;
+
+  const earliestPrompt = `PROBE:earliest-prompt ${suffix}`;
+  const laterPrompt = `PROBE:later-prompt-must-not-win ${suffix}`;
+  const completionText = `PROBE:completion ${suffix}`;
+  const visibleBody = `PROBE:visible-content-row ${suffix}`;
+  const visiblePromptLoses = `PROBE:visible-row-prompt-must-not-win ${suffix}`;
+  const orphanContent = `PROBE:orphan-content ${suffix}`;
+  const narrativeBody = `PROBE:ordinary-log-line ${suffix}`;
+
+  await seed.insert({
+    table: "spans",
+    format: "JSONEachRow",
+    values: [
+      spanRow({
+        trace_id: traceId,
+        span_id: "root",
+        start_time: chTimestamp(t0),
+        duration_ns: (spanDurationNs * BigInt(3)).toString(),
+        k8s_namespace: "",
+        k8s_pod: "",
+      }),
+      // The LLM span's own prompt/completion columns stay empty (as an
+      // event-form-only producer would leave them) — the read must fill both
+      // from the log rows below.
+      spanRow({
+        trace_id: traceId,
+        span_id: llmSpanId,
+        parent_span_id: "root",
+        start_time: chTimestamp(t0 + spanDurationNs),
+        duration_ns: spanDurationNs.toString(),
+        k8s_namespace: "",
+        k8s_pod: "",
+        layer: "llm",
+        gen_ai_request_model: "gpt-4o-mini",
+        gen_ai_response_model: "gpt-4o-mini",
+        prompt: "",
+        completion: "",
+      }),
+    ],
+  });
+
+  await seed.insert({
+    table: "logs",
+    format: "JSONEachRow",
+    values: [
+      // earliest prompt-only content carrier — must win the fold (empty body)
+      logRow({
+        trace_id: traceId,
+        timestamp: chTimestamp(t0 + spanDurationNs),
+        body: "",
+        k8s_namespace: "",
+        k8s_pod: "",
+        span_id: llmSpanId,
+        prompt: earliestPrompt,
+      }),
+      // later prompt-only row for the same span — must NOT displace the earliest
+      logRow({
+        trace_id: traceId,
+        timestamp: chTimestamp(t0 + spanDurationNs + NS_PER_MS),
+        body: "",
+        k8s_namespace: "",
+        k8s_pod: "",
+        span_id: llmSpanId,
+        prompt: laterPrompt,
+      }),
+      // completion-only content carrier, folds independently of the prompt field
+      logRow({
+        trace_id: traceId,
+        timestamp: chTimestamp(t0 + spanDurationNs + BigInt(2) * NS_PER_MS),
+        body: "",
+        k8s_namespace: "",
+        k8s_pod: "",
+        span_id: llmSpanId,
+        completion: completionText,
+      }),
+      // a content row that ALSO carries a body: renders in the rail as a
+      // normal log AND still competes for the fold (loses — later than the
+      // earliest prompt row above).
+      logRow({
+        trace_id: traceId,
+        timestamp: chTimestamp(t0 + spanDurationNs + BigInt(3) * NS_PER_MS),
+        body: visibleBody,
+        k8s_namespace: "",
+        k8s_pod: "",
+        span_id: llmSpanId,
+        prompt: visiblePromptLoses,
+      }),
+      // an ordinary narrative log, unaffected by any of this
+      logRow({
+        trace_id: traceId,
+        timestamp: chTimestamp(t0),
+        body: narrativeBody,
+        k8s_namespace: "",
+        k8s_pod: "",
+      }),
+      // orphan content row: span_id matches nothing in this trace — folds
+      // nowhere (no span to fill) and renders nowhere (bodyless carrier).
+      logRow({
+        trace_id: traceId,
+        timestamp: chTimestamp(t0 + spanDurationNs),
+        body: "",
+        k8s_namespace: "",
+        k8s_pod: "",
+        span_id: "no-such-span",
+        prompt: orphanContent,
+      }),
+    ],
+  });
+
+  const trace = await queryTrace(traceId);
+  assert.ok(trace, "queryTrace found no row for the seeded trace");
+  const llmSpan = trace.spans.find((s) => s.id === llmSpanId);
+  assert.ok(llmSpan?.llm, "the LLM span did not carry an llm detail");
+
+  await t.test("empty span columns hydrate from the earliest-timestamp event-derived row, per field", () => {
+    assert.equal(llmSpan!.llm!.prompt, earliestPrompt);
+    assert.equal(llmSpan!.llm!.completion, completionText);
+  });
+
+  await t.test("a later content row never displaces the earliest fill (red if it did)", () => {
+    assert.notEqual(llmSpan!.llm!.prompt, laterPrompt);
+    assert.notEqual(llmSpan!.llm!.prompt, visiblePromptLoses);
+  });
+
+  await t.test("bodyless content carriers and orphan rows are invisible in the rail; a body-carrying content row still renders", () => {
+    const bodies = trace.logs.map((l) => l.body);
+    assert.ok(bodies.includes(narrativeBody), "the ordinary narrative log dropped out of the rail");
+    assert.ok(bodies.includes(visibleBody), "the body-carrying content row must still render");
+    assert.ok(!bodies.includes(orphanContent), "an orphan content row rendered despite matching no span");
+    assert.ok(
+      trace.logs.every((l) => l.body !== ""),
+      "an empty-body content carrier rendered as a blank rail row",
+    );
+    // Probe 4: exactly the two non-carrier rows render — a regression that
+    // dropped the isContentCarrier filter would show all five logs rows here
+    // instead, duplicating the folded content into the rail.
+    assert.equal(trace.logs.length, 2, `expected 2 rendered rows (narrative + visible), got ${trace.logs.length}`);
   });
 });

@@ -96,13 +96,25 @@ FROM obstack.spans
 WHERE workspace_id = {workspace_id:String} AND trace_id = {trace_id:String}
 ORDER BY start_time, span_id`;
 
+/**
+ * `span_id`/`prompt`/`completion` (D38 FINAL / D42, T6): the log-record GenAI
+ * wire form lands its content on its own row here, keyed back to the LLM span
+ * by `span_id` (D42(d) — the read-time coalesce in `adapters.ts` matches on
+ * `(workspace_id, trace_id, span_id)`, and `workspace_id`/`trace_id` are
+ * already this query's WHERE clause). NEARBY_LOGS_SQL below does not select
+ * these: its rows always carry `trace_id = ''`, which can never match this
+ * trace's own trace_id, so a nearby row can never be a coalesce candidate.
+ */
 const LOGS_SQL = `
 SELECT
+    span_id,
     toString(toUnixTimestamp64Nano(timestamp) - {min_start_ns:Int64}) AS at_offset_ns,
     trace_id,
     severity_number,
     severity_text,
     body,
+    prompt,
+    completion,
     k8s_namespace,
     k8s_pod,
     k8s_container
