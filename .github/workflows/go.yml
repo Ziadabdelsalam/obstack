@@ -74,8 +74,8 @@ jobs:
       # while proving nothing, which is exactly what D36 forbids.
       - name: go test
         env:
-          OBSTACK_TEST_CLICKHOUSE_DSN: clickhouse://obstack_ingest:obstack_ingest_dev@127.0.0.1:1/obstack
-          OBSTACK_TEST_CLICKHOUSE_READONLY_DSN: clickhouse://obstack_web:obstack_web_dev@127.0.0.1:1/obstack
+          OBSTACK_TEST_CLICKHOUSE_DSN: clickhouse://obstack_ingest:obstack_ingest_dev@127.0.0.1:9000/obstack
+          OBSTACK_TEST_CLICKHOUSE_READONLY_DSN: clickhouse://obstack_web:obstack_web_dev@127.0.0.1:9000/obstack
         run: |
           set +e
           go test -v -count=1 ./... 2>&1 | tee test-output.log
