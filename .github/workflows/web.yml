@@ -30,6 +30,15 @@ jobs:
     steps:
       - uses: actions/checkout@v7.0.1
 
+      # K1, same mechanism as go.yml: ClickHouse comes up via the same compose
+      # service local dev uses — one definition of the D11 users
+      # (deploy/compose/clickhouse/users.d), never a second copy. This is what
+      # makes the ClickHouse-backed integration tests
+      # (apps/web/src/server/queries/traces.integration.test.ts) actually run
+      # here instead of skipping (T3's E1 escalation, ruled onto this job).
+      - name: Start ClickHouse (deploy/compose)
+        run: docker compose -f deploy/compose/docker-compose.yml up -d --wait --wait-timeout 120 clickhouse
+
       - uses: actions/setup-node@v7.0.0
         with:
           # Active-LTS major meeting Next 16.3's documented floor (Node.js
@@ -43,6 +52,75 @@ jobs:
 
       - run: npm ci
 
-      - run: npm test
+      # D36 skip trap, mirroring go.yml's: the integration tests skip
+      # themselves when no ClickHouse answers, so a green run proves nothing
+      # unless an unexpected skip fails the job. The env is the readonly web
+      # user against the compose ClickHouse above — deploy/compose/README.md's
+      # live-mode block, reused rather than copied into a second config
+      # artifact.
+      #
+      # node:test's reporter differs by version/TTY (tap piped on some
+      # versions, spec on others), so the trap fails CLOSED: the runner's own
+      # "skipped N" summary must be present and must agree with the skip lines
+      # this grep can see — a reporter change that hid skips goes red instead
+      # of hollow (S2.0 L1).
+      - env:
+          CLICKHOUSE_URL: http://127.0.0.1:8123
+          CLICKHOUSE_USER: obstack_web
+          CLICKHOUSE_PASSWORD: obstack_web_dev
+        run: |
+          set +e
+          npm test 2>&1 | tee test-output.log
+          status=${PIPESTATUS[0]}
+          set -e
+
+          # Skip allowlist (K4): empty today. Add test names here, with a
+          # comment naming the reviewed reason, before adding a skip to any
+          # *.test.ts file — an unlisted skip must fail this job.
+          allowed_skips=()
+
+          # The runner's own summary count ("# skipped N" under tap,
+          # "ℹ skipped N" under spec). Missing summary = fail closed.
+          skip_count=$(grep -E ' skipped [0-9]+$' test-output.log | awk '{print $NF}' | tail -1)
+          if [ -z "$skip_count" ]; then
+            echo "::error::no node:test skipped-count summary in the output — the skip trap cannot verify, failing closed"
+            exit 1
+          fi
+
+          # Per-skip lines: "ok N - name # SKIP reason" (tap) or
+          # "﹣ name (skipped: reason)" (spec).
+          skip_lines=$(grep -E -- '# SKIP|\(skipped' test-output.log || true)
+          seen=0
+          fail=0
+          while IFS= read -r line; do
+            [ -z "$line" ] && continue
+            seen=$((seen + 1))
+            listed=0
+            for a in "${allowed_skips[@]:-}"; do
+              # the :- fallback expands an empty allowlist to one empty
+              # entry, and *""* would match every line — never allowlist it
+              [ -z "$a" ] && continue
+              case "$line" in *"$a"*) listed=1 ;; esac
+            done
+            if [ "$listed" -eq 0 ]; then
+              echo "::error::unexpected test skip, not on the allowlist: $line"
+              fail=1
+            fi
+          done <<< "$skip_lines"
+
+          if [ "$seen" -ne "$skip_count" ]; then
+            echo "::error::the runner counted $skip_count skip(s) but the trap saw $seen skip line(s) — reporter format drift, failing closed"
+            fail=1
+          fi
+
+          if [ "$fail" -eq 1 ]; then
+            exit 1
+          fi
+
+          exit "$status"
 
       - run: npm run build
+
+      - name: Stop ClickHouse (deploy/compose)
+        if: always()
+        run: docker compose -f deploy/compose/docker-compose.yml down -v

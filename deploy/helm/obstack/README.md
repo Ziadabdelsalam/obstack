@@ -330,8 +330,53 @@ kubectl delete job -l app.kubernetes.io/component=migrate   # only after a faile
 kind delete cluster --name t4-chart
 ```
 
-D37's three-part evidence (SOLID rows with pod metadata, a NEARBY row from
-the sidecar, zero duplicated bodies) is queryable straight from ClickHouse
-once the stack is up — send `POST /chat` at the demo pod's Service
-(`obstack-demo:8000`) and read `obstack.spans`/`obstack.logs`. T5 wires this
-into CI as the sprint's signed exit evidence.
+## Running the acceptance (the same thing CI runs)
+
+The sprint's exit assertion is one script, `acceptance.sh`, and the `stack`
+CI job (`.github/workflows/stack.yml`) runs exactly it (S2.1 L3 — no
+CI-only sequence, no CI-only timeout arithmetic: the Helm budgets above,
+900s cold install / 300s upgrade, live in the script). It builds this
+repo's two images, side-loads every pinned image into the kind node (an
+optimization, not a correctness mechanism — without it the node pulls the
+same tags itself inside the install budget), installs or upgrades the
+chart, fires `POST /chat`, and asserts through the D17 tsx facade harness
+(`acceptance.ts` — the app's own `@/server/data` facade against the
+cluster's ClickHouse, because the `web` image is deliberately not in this
+chart):
+
+- the four-layer waterfall (api/agent/tool/llm), token counts and a
+  non-zero priced cost — the same shared checks compose's `smoke.sh` runs
+  (`deploy/compose/trace-checks.ts`);
+- **D37.1** ≥1 SOLID log row carrying the trace's `trace_id` AND populated
+  `k8s_namespace`/`k8s_pod`;
+- **D37.2** ≥1 NEARBY row from the uninstrumented `sidecar` container —
+  zero is a red check, never a silent pass;
+- **D37.3** zero duplicated bodies across the OTLP and filelog paths, in
+  both shapes: the same `(atMs, body)` twice, and a trace-less row whose
+  body contains an OTLP-shipped body (the exclusion-removed shape);
+- the T1 rider: `kubectl rollout restart` of the collector DaemonSet, a
+  second `/chat` proving the restarted pipeline live end-to-end, then the
+  first trace re-checked — previously-shipped lines must NOT re-ship
+  (`file_storage` checkpointing);
+- the D38(e) rider: an event-form GenAI log record
+  (`gen_ai.input.messages`/`gen_ai.output.messages`) sent through the
+  collector's own OTLP endpoint lands with `prompt`/`completion` filled
+  verbatim.
+
+Prerequisites: `docker`, `kind`, `helm`, `kubectl`, `curl` on PATH; a kind
+cluster as the current kubectl context; `npm ci` run once at the repo root
+(the harness runs via tsx). Then:
+
+```bash
+kind create cluster --name t5
+bash deploy/helm/obstack/acceptance.sh
+kind delete cluster --name t5
+```
+
+Re-running against a cluster that already has the release takes the
+`helm upgrade` path (300s budget) — the pre-upgrade migrate hook runs as a
+no-op and the same assertions repeat. The script port-forwards ClickHouse,
+the demo Service and the collector on 18123/18000/14318 (overridable via
+`CLICKHOUSE_PORT`/`DEMO_PORT`/`COLLECTOR_PORT`), deliberately off the
+compose stack's ports so a running compose stack is never what it asserts
+against.
