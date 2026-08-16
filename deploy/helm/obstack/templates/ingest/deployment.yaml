@@ -5,12 +5,24 @@
 # migration runner per upgrade").
 #
 # On a fresh `helm install`, this Deployment and the migrate Job are created
-# in the same batch as ClickHouse — nothing orders them. These pods can
-# therefore crash-loop for a few restarts before the schema exists: that is
-# the verify-and-refuse invariant working as designed (PR #4), visibly,
-# rather than an install-time defect. `helm install --wait` still blocks on
-# the real signal — this Deployment cannot report Available until its pods
-# stop refusing.
+# in the same batch as ClickHouse — nothing orders them — so these pods hold
+# in Init:0/1, restart count zero, behind the SAME wait-for-clickhouse init
+# container the migrate Job runs (obstack.waitForClickhouse, _helpers.tpl —
+# one define, two includes). An earlier revision let them crash-loop on
+# "connection refused" instead and called that the invariant working as
+# designed; that was falsified as machine-specific — on a cold node the loop
+# hits kubelet's 5-minute CrashLoopBackOff cap and adds up to 5 minutes of
+# dead wait AFTER the migration has already succeeded, failing
+# `install --wait` while the stack converged healthy. The refusal invariant
+# is about SCHEMA STATE, not ClickHouse reachability: install-time refusals
+# may be ZERO, and the invariant's proof of record is the inverted-control
+# probe (README.md), not install-time churn. The verify-and-refuse check
+# itself is untouched in the main container — a reachable-but-unmigrated
+# ClickHouse is still refused loudly — so a restart here now means a refusal
+# or a defect, never pull speed. Init containers gate startup only: a
+# running pod that loses ClickHouse crash-loops exactly as before. And
+# `helm install --wait` still blocks on the real signal — this Deployment
+# cannot report Available until its pods verify the schema.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -32,6 +44,8 @@ spec:
         app.kubernetes.io/instance: {{ .Release.Name }}
         app.kubernetes.io/component: ingest
     spec:
+      initContainers:
+        {{- include "obstack.waitForClickhouse" . | nindent 8 }}
       containers:
         - name: ingest
           image: {{ .Values.ingest.image }}

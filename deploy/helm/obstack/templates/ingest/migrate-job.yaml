@@ -9,9 +9,11 @@
 #   a fresh install, so the initContainer below is what makes ClickHouse
 #   actually reachable before `/ingest migrate` runs, the same role
 #   compose's `depends_on: condition: service_healthy` plays for the ingest
-#   container. Meanwhile ingest's own verify-and-refuse boot check
-#   (OBSTACK_MIGRATE_ON_BOOT=false — templates/ingest/deployment.yaml)
-#   crash-loops the serving pods, loudly, until this Job succeeds.
+#   container. The ingest Deployment waits behind the SAME init container
+#   (one define, two includes — see initContainers below), and its
+#   verify-and-refuse boot check (OBSTACK_MIGRATE_ON_BOOT=false —
+#   templates/ingest/deployment.yaml) still refuses loudly if it reaches a
+#   ClickHouse this Job has not migrated yet.
 #   `ttlSecondsAfterFinished` cleans the completed Job up — a
 #   hook-delete-policy only applies to hooks, which this rendering is not.
 # - UPGRADE (the `else` branch): a `pre-upgrade` hook, because the ordering
@@ -68,25 +70,15 @@ spec:
     spec:
       restartPolicy: Never
       initContainers:
-        # Kept in BOTH renderings on purpose: on install it turns "retry the
-        # whole pod on Kubernetes' capped exponential backoff until the cold
-        # pull finishes" into "run migrate within 2s of ClickHouse answering"
-        # — so backoffLimit stays a signal about migrate actually failing,
-        # not about how slow the image pull was. On upgrade ClickHouse is
+        # ONE definition, TWO includes (obstack.waitForClickhouse,
+        # _helpers.tpl — K1): this Job and the ingest Deployment wait behind
+        # byte-identical init containers, so the poll budget cannot drift
+        # between them. Here it keeps `backoffLimit` a signal about migrate
+        # actually FAILING, never about how slow a cold image pull was; the
+        # same principle now covers ingest, whose restarts mean a schema
+        # refusal or a defect, never pull speed. On upgrade ClickHouse is
         # already serving and the first probe exits immediately.
-        - name: wait-for-clickhouse
-          image: {{ .Values.utilityImage }}
-          command:
-            - sh
-            - -c
-            - |
-              for i in $(seq 1 420); do
-                wget -q -O /dev/null http://{{ .Release.Name }}-clickhouse:8123/ping && exit 0
-                echo "waiting for clickhouse ($i/420)..."
-                sleep 2
-              done
-              echo "clickhouse did not become reachable in time" >&2
-              exit 1
+        {{- include "obstack.waitForClickhouse" . | nindent 8 }}
       containers:
         - name: migrate
           image: {{ .Values.ingest.image }}

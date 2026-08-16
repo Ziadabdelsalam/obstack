@@ -11,6 +11,33 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{- end -}}
 
 {{/*
+The wait-for-clickhouse init container — ONE definition included by BOTH the
+migrate Job and the ingest Deployment (K1's one-definition rule, in-chart),
+so the poll budget can never drift between the two. The budget
+(420 × 2s = 840s) is sized off the measured cold ClickHouse pull — 7m28s and
+~11m on two real machines — not a guess. Init containers gate startup only:
+a pod waiting here holds in Init:0/1 with zero restarts (no CrashLoopBackOff
+clock runs), and once the main container has started this has no effect at
+all — a running pod that loses ClickHouse crash-loops exactly as it always
+did.
+*/}}
+{{- define "obstack.waitForClickhouse" -}}
+- name: wait-for-clickhouse
+  image: {{ .Values.utilityImage }}
+  command:
+    - sh
+    - -c
+    - |
+      for i in $(seq 1 420); do
+        wget -q -O /dev/null http://{{ .Release.Name }}-clickhouse:8123/ping && exit 0
+        echo "waiting for clickhouse ($i/420)..."
+        sleep 2
+      done
+      echo "clickhouse did not become reachable in time" >&2
+      exit 1
+{{- end -}}
+
+{{/*
 The migrate Job's ClickHouse ingest password — NOT simply
 .Values.clickhouse.ingestPassword, and this is load-bearing, not decoration
 (found by testing a password rotation, not by inspecting the templates):

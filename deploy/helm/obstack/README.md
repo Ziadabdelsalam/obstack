@@ -101,20 +101,25 @@ with different correct answers.**
 **Install:** the migrate Job is a normal, revision-named
 (`<release>-migrate-<revision>`) resource, created in the *same* batch as
 ClickHouse, ingest, the collector and the demo app — Helm enforces no
-ordering between any of them here. Its `wait-for-clickhouse` initContainer
-polls ClickHouse's `/ping` and holds `/ingest migrate` back until ClickHouse
-actually answers (playing the same role compose's `depends_on: condition:
-service_healthy` plays for the ingest container — and keeping the Job's
-`backoffLimit` a signal about migrate *failing*, not about how long the
-~250 MB ClickHouse cold pull took). Until the Job succeeds, ingest's own
-verify-and-refuse boot check (`OBSTACK_MIGRATE_ON_BOOT=false`,
-`templates/ingest/deployment.yaml`) crash-loops the serving pods — loudly,
-with the exact documented error. **That brief crash-loop is the safety
-mechanism visibly working, not a defect**: the same invariant boot-time
-migration has always enforced ("nothing serves a schema it does not
-recognise"), just observable for a few restarts on a cold install instead of
-instantly. `ttlSecondsAfterFinished` cleans the completed Job up — there is
-no hook-delete-policy on an install, because this Job isn't a hook here.
+ordering between any of them here. The `wait-for-clickhouse` initContainer —
+**one definition** (`obstack.waitForClickhouse`, `templates/_helpers.tpl`),
+included by both the migrate Job *and* the ingest Deployment, so the poll
+budget cannot drift between them — polls ClickHouse's `/ping` and holds each
+pod back until ClickHouse actually answers (playing the same role compose's
+`depends_on: condition: service_healthy` plays: keeping the Job's
+`backoffLimit` a signal about migrate *failing* and ingest's restart count a
+signal about *refusal*, neither about how long the ~250 MB ClickHouse cold
+pull took). The ingest pods therefore sit in `Init:0/1` with zero restarts
+while ClickHouse pulls; their verify-and-refuse boot check
+(`OBSTACK_MIGRATE_ON_BOOT=false`, `templates/ingest/deployment.yaml`) is
+untouched and still refuses loudly, with the exact documented error, if a
+pod reaches a ClickHouse the Job has not migrated yet. **A clean install may
+show ZERO refusals, and that is honest, not a gap**: the invariant is about
+schema state, not ClickHouse reachability, and its proof of record is the
+inverted-control probe (strip the hook annotations and the refusal
+demonstrably fires — see the events probe below), not install-time churn.
+`ttlSecondsAfterFinished` cleans the completed Job up — there is no
+hook-delete-policy on an install, because this Job isn't a hook here.
 
 **Upgrade:** the same template renders as a `pre-upgrade` hook instead
 (revision-named, `before-hook-creation,hook-succeeded`), because on an
@@ -150,8 +155,8 @@ upgrade").
 - `helm install --wait` does **not** wait for a normal Job to complete, and
   the install-rendered migrate Job is a normal Job — but the green is still
   trustworthy: ingest's Deployment cannot report Available until its pods
-  stop refusing, which cannot happen before the migrate Job has applied the
-  schema. Add `--wait-for-jobs` if you also want Helm to block on the Job
+  verify the schema, which cannot happen before the migrate Job has applied
+  it. Add `--wait-for-jobs` if you also want Helm to block on the Job
   object itself; it changes nothing about correctness.
 - On `helm upgrade`, the migrate Job is a hook, and Helm **always** waits
   for hook Jobs to complete before touching any normal resource —
@@ -169,24 +174,28 @@ upgrade").
   the very change that would fix it. `helm upgrade --no-hooks` applies the
   normal resources without the hook; once ClickHouse is serving again, a
   normal `helm upgrade` runs the migration that `--no-hooks` skipped.
-- One `--timeout` spans both phases (hooks + resource waits). Cold-install
-  measurements from two different machines: ClickHouse's ~250 MB pull alone
-  took 7m28s on one and ~11m on the other, and after the migrate Job
-  succeeds the ingest pods wait out one more `CrashLoopBackOff` interval,
-  which is capped at 5 minutes. The fast run finished `install --wait` in
-  11m30s; the slow one blew through `--timeout 900s` — Helm marked the
-  release `failed` ("context deadline exceeded") while the stack itself
-  converged about a minute later, healthy but unreleased. So budget the
-  worst case the chart actually allows: the migrate Job's own
-  `activeDeadlineSeconds` (900s) plus that 5-minute backoff tail, i.e.
-  `--timeout 1500s` on a node that has never pulled these images. A warm
-  node installs in ~18s.
-- Expect brief `CrashLoopBackOff` on the ingest pods during a cold install
-  (see above) and a short ClickHouse gap during any upgrade that rolls it
-  (`Recreate`). Both converge on their own; neither needs intervention. The
-  cold-install tail is mostly `CrashLoopBackOff`'s own capped backoff: once
-  the migrate Job succeeds, ingest's next retry can be up to five minutes
-  out, and that wait is part of the measured 11m30s.
+- One `--timeout` spans both phases (hooks + resource waits). A cold
+  install's cost is the ClickHouse image pull plus seconds — measured pulls
+  of the ~250 MB image were 7m28s on one machine and ~11m on another, and
+  everything after the pull is single-digit seconds, because the shared
+  `wait-for-clickhouse` init container holds every waiting pod in `Init`
+  (where no backoff clock runs) and releases it within 2s of ClickHouse
+  answering. That init container is why `--wait` now tracks reality: the
+  release goes green when the stack converges, not a backoff interval later.
+  So the budget is the migrate Job's own `activeDeadlineSeconds`, i.e.
+  `--timeout 900s` on a node that has never pulled these images — the Job
+  already contains the worst case the chart allows (840s of init poll,
+  sized off the slower measured pull, plus seconds of migrate), and nothing
+  after the Job costs more than pod-start seconds. A warm node installs in
+  ~18s.
+- On a cold install expect the ingest pods (and the migrate Job's pod) to
+  sit in `Init:0/1` with zero restarts while ClickHouse pulls — a restart on
+  an ingest pod now means a schema refusal or a defect, never pull speed.
+  Expect a short ClickHouse gap during any upgrade that rolls it
+  (`Recreate`): already-running ingest pods crash-loop through it (init
+  containers gate startup only), and a rolling upgrade's *new* pods hold in
+  `Init` while the old ones serve. All of it converges on its own; none of
+  it needs intervention.
 
 ## The collector DaemonSet's contract
 
@@ -263,18 +272,19 @@ kind load docker-image obstack-ingest:kind --name t4-chart
 kind load docker-image obstack-demo-agent:kind --name t4-chart
 
 helm lint deploy/helm/obstack
-# 1500s = the migrate Job's own activeDeadlineSeconds (900s) plus the ingest
-# pods' capped CrashLoopBackOff tail — see "--wait and --wait-for-jobs,
-# precisely" above for what the timeout covers and why a cold node needs
-# this much. A warm node is done in ~18s.
-helm install obstack deploy/helm/obstack --timeout 1500s --wait
+# 900s = the migrate Job's own activeDeadlineSeconds, which already contains
+# the cold ClickHouse pull (the shared wait-for-clickhouse init container's
+# 840s poll budget) — see "--wait and --wait-for-jobs, precisely" above.
+# A warm node is done in ~18s.
+helm install obstack deploy/helm/obstack --timeout 900s --wait
 
 # every component Ready
 kubectl get pods,deploy,ds
 
 # the install-time migrate Job (name is revision-suffixed) applied the
-# schema; ingest only ever verified it, possibly after a few refusals while
-# ClickHouse was still starting (see "the migrate Job renders two ways")
+# schema; ingest only ever verified it — its pods held in Init:0/1 until
+# ClickHouse answered, and zero refusals here is the expected clean run
+# (see "the migrate Job renders two ways")
 kubectl logs job/obstack-migrate-1 -c migrate
 kubectl logs deploy/obstack-ingest | grep "schema verified"
 
