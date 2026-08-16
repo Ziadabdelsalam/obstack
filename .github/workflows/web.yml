@@ -14,9 +14,9 @@ permissions:
 
 defaults:
   run:
-    # Single path anchor for this job (K3-ii): repo root today, `apps/web` after
-    # the S2.1 restructure. Every step below runs relative to this one value.
-    working-directory: .
+    # Single path anchor for this job (K3-ii): `apps/web`, where the app moved
+    # in the S2.1 restructure. Every step below runs relative to this one value.
+    working-directory: apps/web
 
 jobs:
   web:
