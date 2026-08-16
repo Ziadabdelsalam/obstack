@@ -42,7 +42,7 @@ Point your own service at `http://localhost:4318` (OTLP/HTTP) or `:4317` (gRPC) 
 
 ## What's real vs. mock
 
-Everything visual is real code (Next.js + Tailwind + Recharts). With `OBSTACK_DATA_MODE=live` the traces list, the trace view and the overview charts read ingested telemetry from ClickHouse; every surface not yet wired to the pipeline is marked with a `SAMPLE DATA` badge in the UI. In the default mock mode all data is fictional, generated deterministically in `apps/web/src/mock/` — including three scripted failure stories that demonstrate cross-layer correlation (pod OOM-kill → truncated completion → 502; tool-timeout retry chain; provider rate-limit cascade).
+Everything visual is real code (Next.js + Tailwind + Recharts). With `OBSTACK_DATA_MODE=live` the traces list, the trace view, the logs explorer (`/app/logs`) and the overview charts read ingested telemetry from ClickHouse; every surface not yet wired to the pipeline is marked with a `SAMPLE DATA` badge in the UI. The logs explorer searches a bounded, capped window of the `logs` table and refreshes when you ask it to — nothing on any surface tails or polls. In the default mock mode all data is fictional, generated deterministically in `apps/web/src/mock/` — including three scripted failure stories that demonstrate cross-layer correlation (pod OOM-kill → truncated completion → 502; tool-timeout retry chain; provider rate-limit cascade).
 
 ## CI
 
