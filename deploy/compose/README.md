@@ -38,7 +38,7 @@ bash deploy/compose/smoke.sh
 It boots the stack (`--profile demo`, `--build`), waits for every container to
 report healthy, fires `POST localhost:8000/chat` at the demo agent, and then
 asserts through the web facade — `smoke.ts` calls `listTraces()` and `getTrace()`
-from `src/server/data.ts` with `OBSTACK_DATA_MODE=live`, the same module the app
+from `apps/web/src/server/data.ts` with `OBSTACK_DATA_MODE=live`, the same module the app
 renders from, run under `npx tsx --conditions react-server` so the `server-only`
 guard resolves. No Next server and no test-only API route sit in between.
 
@@ -71,7 +71,7 @@ OBSTACK_DATA_MODE=live \
 CLICKHOUSE_URL=http://127.0.0.1:8123 \
 CLICKHOUSE_USER=obstack_web \
 CLICKHOUSE_PASSWORD=obstack_web_dev \
-  npx next dev
+  npm run dev
 ```
 
 Open <http://localhost:3000/app/traces> and click the newest trace. Expect the

@@ -14,8 +14,11 @@ permissions:
 
 defaults:
   run:
-    # Single path anchor for this job (K3-ii): repo root today, `apps/web` after
-    # the S2.1 restructure. Every step below runs relative to this one value.
+    # Single path anchor for this job (K3-ii): the workspace root. CI runs the
+    # exact same root-delegated commands the runbooks tell humans to run (`npm
+    # ci`/`npm test`/`npm run build`) — one definition of the suite for both —
+    # and those root scripts cover `apps/web` transitively via the npm
+    # workspace wiring, so this anchor does not need to chase the app's path.
     working-directory: .
 
 jobs:

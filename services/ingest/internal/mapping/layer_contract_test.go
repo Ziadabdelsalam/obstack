@@ -1,12 +1,12 @@
 // The span layer vocabulary is declared three times in three languages: the
 // Enum8 on obstack.spans, the Layer* constants in this package, and the Layer
-// union in the web app's src/lib/types.ts. Nothing in either build makes them
-// agree. The expensive divergence is Go emitting a layer the Enum8 does not
-// contain — ClickHouse rejects the INSERT, so the drift surfaces as dropped
-// telemetry in production ingest rather than as a red build. A TS/SQL
-// divergence is cheaper but silent: src/server/adapters.ts relabels any layer
-// it does not recognise as "other", so an LLM span quietly loses its model,
-// tokens and cost.
+// union in the web app's apps/web/src/lib/types.ts. Nothing in either build
+// makes them agree. The expensive divergence is Go emitting a layer the
+// Enum8 does not contain — ClickHouse rejects the INSERT, so the drift
+// surfaces as dropped telemetry in production ingest rather than as a red
+// build. A TS/SQL divergence is cheaper but silent: apps/web/src/server/
+// adapters.ts relabels any layer it does not recognise as "other", so an
+// LLM span quietly loses its model, tokens and cost.
 //
 // This file reads all three declarations out of their real sources and compares
 // them, so the person changing the mapper learns about it from `go test ./...`.
@@ -62,7 +62,7 @@ const (
 	// Sibling of this test; parsed for the Layer* constants and the package doc.
 	mappingFile = "mapping.go"
 	// Relative to the repo root, not the Go module root.
-	tsTypesFile = "src/lib/types.ts"
+	tsTypesFile = "apps/web/src/lib/types.ts"
 )
 
 // Anchored on the column name because 0001_spans.sql holds three Enum8 columns

@@ -20,7 +20,7 @@ import { layerOrder } from "./layers";
 // layers here would make this file a fourth copy to keep in sync — the exact
 // failure it is supposed to prevent.
 
-const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../..");
 
 const source = (relative: string): string => {
   const file = path.join(repoRoot, relative);
@@ -68,8 +68,8 @@ const stripLineComments = (text: string, marker: string, quote: string): string 
 
 const ENUM8_SQL = "services/ingest/migrations/0001_spans.sql";
 const MAPPING_GO = "services/ingest/internal/mapping/mapping.go";
-const TYPES_TS = "src/lib/types.ts";
-const ADAPTERS_TS = "src/server/adapters.ts";
+const TYPES_TS = "apps/web/src/lib/types.ts";
+const ADAPTERS_TS = "apps/web/src/server/adapters.ts";
 
 // Reads the `layer` Enum8 as name -> ordinal. 0001_spans.sql declares three Enum8
 // columns and `kind` comes first, so this anchors on the column name rather than on

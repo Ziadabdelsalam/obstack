@@ -8,4 +8,4 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
 
 <!-- END:nextjs-agent-rules -->
 
-Repo note (outside the managed block): the managed copy is `apps/web/AGENTS.md` — `next dev` runs from `apps/web` and rewrites that one. On a Next upgrade, refresh by running `next dev` in `apps/web`, then mirror the block here; until then this copy may lag.
+Repo note (outside the managed block): in this monorepo `next` is hoisted — the vendored docs live at `<repo-root>/node_modules/next/dist/docs/`, not beside this file. This is the copy `next dev` manages (it runs from `apps/web`).

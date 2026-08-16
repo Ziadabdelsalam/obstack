@@ -1,13 +1,14 @@
 /**
  * Phase 1 acceptance assertion (D16/D17).
  *
- * Drives the real web facade — `src/server/data.ts`, the same module the app
+ * Drives the real web facade — `apps/web/src/server/data.ts`, the same module the app
  * renders from — against the trace the demo agent just emitted. No Next server,
  * no throwaway API route: `--conditions react-server` satisfies the `server-only`
- * guard and tsx resolves the `@/` paths.
+ * guard and tsx resolves the `@/` paths from the app's tsconfig.
  *
- * Normally invoked by `smoke.sh`; standalone:
- *   npx tsx --conditions react-server deploy/compose/smoke.ts <trace_id>
+ * Normally invoked by `smoke.sh`; standalone, from the repo root:
+ *   npx tsx --tsconfig apps/web/tsconfig.json --conditions react-server \
+ *     deploy/compose/smoke.ts <trace_id>
  */
 import type { Trace } from "@/lib/types";
 
