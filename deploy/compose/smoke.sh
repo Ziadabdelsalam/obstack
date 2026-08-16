@@ -44,4 +44,6 @@ printf '   trace_id=%s\n' "$trace_id"
 step "asserting through the web facade (OBSTACK_DATA_MODE=live)"
 cd "$repo_root"
 # Connection defaults live in smoke.ts (exported CLICKHOUSE_* still win).
-npx tsx --conditions react-server deploy/compose/smoke.ts "$trace_id"
+# --tsconfig points tsx at the app's tsconfig (apps/web) so the `@/` paths it
+# declares resolve smoke.ts's imports; smoke.ts itself stays in deploy/compose.
+npx tsx --tsconfig apps/web/tsconfig.json --conditions react-server deploy/compose/smoke.ts "$trace_id"

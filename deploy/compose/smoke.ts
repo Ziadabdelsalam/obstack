@@ -1,7 +1,7 @@
 /**
  * Phase 1 acceptance assertion (D16/D17).
  *
- * Drives the real web facade — `src/server/data.ts`, the same module the app
+ * Drives the real web facade — `apps/web/src/server/data.ts`, the same module the app
  * renders from — against the trace the demo agent just emitted. No Next server,
  * no throwaway API route: `--conditions react-server` satisfies the `server-only`
  * guard and tsx resolves the `@/` paths.
