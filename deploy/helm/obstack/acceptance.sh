@@ -124,7 +124,13 @@ rm -f "$archive"
 
 if helm status "$RELEASE" >/dev/null 2>&1; then
   step "upgrading release '$RELEASE' (already installed — pre-upgrade hook path)"
-  helm upgrade "$RELEASE" "$chart_dir" --wait --timeout "$UPGRADE_TIMEOUT"
+  # --reset-values because Helm v4 reuses the last release's user-supplied
+  # values when none are given (measured in T4's review, and again here: a
+  # release last installed with `--set collector.excludeContainer=…` for a
+  # probe silently keeps that value across a bare `helm upgrade`). This script
+  # asserts the chart's DEFAULTS, so the upgrade path must start from them —
+  # otherwise a re-run after a probe asserts a configuration nobody chose.
+  helm upgrade "$RELEASE" "$chart_dir" --reset-values --wait --timeout "$UPGRADE_TIMEOUT"
 else
   step "installing release '$RELEASE'"
   helm install "$RELEASE" "$chart_dir" --wait --timeout "$INSTALL_TIMEOUT"
