@@ -5,6 +5,7 @@ import Link from "next/link";
 import { ArrowLeft, ArrowRight, Link2, Sparkles, Check, GitCompareArrows, Share2, X, Copy } from "lucide-react";
 import { fmtCost, fmtMs, fmtTokens, timeAgo } from "@/lib/format";
 import { layerColor } from "@/lib/layers";
+import { NEARBY_LOG_CAP, NEARBY_LOG_WINDOW_S } from "@/lib/nearby-logs";
 import { StatusPill } from "@/components/ui/StatusPill";
 import { allTraces } from "@/mock/traces";
 import type { Trace } from "@/lib/types";
@@ -65,6 +66,11 @@ export function TraceExplorer({
   const selected = trace.spans.find((s) => s.id === selectedId) ?? trace.spans[0];
   const hasFailure = trace.status === "error" || trace.spans.some((s) => s.status === "error");
   const solidCount = trace.logs.filter((l) => l.traceId).length;
+  const nearbyCount = trace.logs.length - solidCount;
+  // The query caps nearby rows at NEARBY_LOG_CAP (D13/D21) — reaching the cap
+  // means more real rows may exist beyond what was rendered, so the counter
+  // says so rather than silently under-reporting.
+  const nearbyAtCap = nearbyCount === NEARBY_LOG_CAP;
 
   // service journey, in order of first activity — the pipeline this trace crossed
   const journey = useMemo(() => {
@@ -209,7 +215,8 @@ export function TraceExplorer({
                 correlated logs
               </h2>
               <span className="font-mono text-[10.5px] text-faint">
-                {solidCount} on trace · {trace.logs.length - solidCount} nearby (same pods, ±10s)
+                {solidCount} on trace · {nearbyCount} nearby (same pods, ±{NEARBY_LOG_WINDOW_S}s)
+                {nearbyAtCap ? ` · truncated at ${NEARBY_LOG_CAP}` : ""}
               </span>
             </div>
             <div className="px-3 py-1">

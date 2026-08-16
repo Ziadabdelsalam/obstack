@@ -177,10 +177,18 @@ export function toTraceSummary(row: TraceSummaryRow): Trace {
   };
 }
 
+/**
+ * `logRows` (solid, `trace_id` matched) and `nearbyLogRows` (D37.4, `trace_id`
+ * always `''`) both go through `toLogRecord` unchanged — the shape is already
+ * what distinguishes them: a real, non-empty `trace_id` maps to `traceId` set,
+ * an empty one maps to `traceId: undefined`, which `LogsRail` already renders
+ * as NEARBY. No separate nearby adapter is needed.
+ */
 export function toTrace(
   summary: TraceSummaryRow,
   spanRows: SpanRow[],
   logRows: LogRow[],
+  nearbyLogRows: LogRow[],
 ): Trace {
   const spans = spanRows.map((row) => toSpan(row, summary.trace_id));
   const root = spans.find((s) => s.parentId === null);
@@ -189,6 +197,6 @@ export function toTrace(
     rootName: summary.root_name || root?.name || "(unnamed root)",
     service: summary.root_service || root?.service || "",
     spans,
-    logs: logRows.map((row, i) => toLogRecord(row, i)),
+    logs: [...logRows, ...nearbyLogRows].map((row, i) => toLogRecord(row, i)),
   };
 }

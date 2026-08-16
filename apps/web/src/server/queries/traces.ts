@@ -1,5 +1,6 @@
 import "server-only";
 import type { Trace } from "@/lib/types";
+import { NEARBY_LOG_CAP, NEARBY_LOG_WINDOW_NS } from "@/lib/nearby-logs";
 import {
   toTrace,
   toTraceSummary,
@@ -109,7 +110,51 @@ FROM obstack.logs
 WHERE workspace_id = {workspace_id:String} AND trace_id = {trace_id:String}
 ORDER BY timestamp`;
 
-/** Trace detail: one summary lookup, then spans and logs by (workspace_id, trace_id). */
+/**
+ * Nearby logs (D37.4): a second, unrelated read from the solid one above —
+ * candidates carry no trace context at all (`trace_id = ''`), so this is not a
+ * widened version of `LOGS_SQL`. The join key is `(workspace_id, k8s_namespace,
+ * k8s_pod)`, with the pod/namespace set drawn from the trace's own spans (kickoff
+ * Decision 4) via a correlated subquery — no pod list is round-tripped through
+ * JS. `obstack.logs` is `ORDER BY (workspace_id, trace_id, timestamp)`, and
+ * trace-less rows sort together at `trace_id = ''`, so this is a contiguous
+ * range read; `INDEX idx_pod k8s_pod TYPE bloom_filter` narrows it further
+ * (0002_logs.sql:22,26). Window bound is `[min_start - W, max_end + W]`
+ * (kickoff Decision 4), `W` = `NEARBY_LOG_WINDOW_NS`, computed here rather than
+ * in JS so the Int64 arithmetic never touches a JS number. Capped at
+ * `NEARBY_LOG_CAP` (kickoff Decision 5) — the UI counter never claims more rows
+ * than this query can return.
+ */
+const NEARBY_LOGS_SQL = `
+SELECT
+    toString(toUnixTimestamp64Nano(timestamp) - {min_start_ns:Int64}) AS at_offset_ns,
+    trace_id,
+    severity_number,
+    severity_text,
+    body,
+    k8s_namespace,
+    k8s_pod,
+    k8s_container
+FROM obstack.logs
+WHERE workspace_id = {workspace_id:String}
+  AND trace_id = ''
+  AND (k8s_namespace, k8s_pod) IN (
+      SELECT DISTINCT k8s_namespace, k8s_pod
+      FROM obstack.spans
+      WHERE workspace_id = {workspace_id:String}
+        AND trace_id = {trace_id:String}
+        AND k8s_pod != ''
+  )
+  AND timestamp >= fromUnixTimestamp64Nano({min_start_ns:Int64} - {window_ns:Int64})
+  AND timestamp <= fromUnixTimestamp64Nano({min_start_ns:Int64} + {duration_ns:Int64} + {window_ns:Int64})
+ORDER BY timestamp
+LIMIT {cap:UInt32}`;
+
+/**
+ * Trace detail: one summary lookup, then spans, solid logs and nearby logs by
+ * (workspace_id, trace_id) — the nearby read is a peer of the solid one, not a
+ * rewrite of it (D28).
+ */
 export async function queryTrace(id: string): Promise<Trace | undefined> {
   const [summary] = await queryRows<TraceSummaryRow>(SUMMARY_BY_ID_SQL, {
     workspace_id: workspaceId,
@@ -122,11 +167,17 @@ export async function queryTrace(id: string): Promise<Trace | undefined> {
     trace_id: id,
     min_start_ns: summary.min_start_ns,
   };
-  const [spanRows, logRows] = await Promise.all([
+  const [spanRows, logRows, nearbyLogRows] = await Promise.all([
     queryRows<SpanRow>(SPANS_SQL, params),
     queryRows<LogRow>(LOGS_SQL, params),
+    queryRows<LogRow>(NEARBY_LOGS_SQL, {
+      ...params,
+      duration_ns: summary.duration_ns,
+      window_ns: NEARBY_LOG_WINDOW_NS,
+      cap: NEARBY_LOG_CAP,
+    }),
   ]);
-  return toTrace(summary, spanRows, logRows);
+  return toTrace(summary, spanRows, logRows, nearbyLogRows);
 }
 
 export async function queryTraceList(filter: TraceFilter): Promise<Trace[]> {

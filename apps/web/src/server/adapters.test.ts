@@ -186,7 +186,7 @@ test("error count promotes the trace to error, empty root falls back", () => {
 });
 
 test("trace detail stitches spans and logs, leaving explanation and k8sEvents undefined", () => {
-  const trace = toTrace(summaryRow, [spanRow, llmRow], [logRow]);
+  const trace = toTrace(summaryRow, [spanRow, llmRow], [logRow], []);
   assert.equal(trace.spans.length, 2);
   assert.equal(trace.logs.length, 1);
   assert.equal(trace.service, "demo-agent");
@@ -196,7 +196,42 @@ test("trace detail stitches spans and logs, leaving explanation and k8sEvents un
 });
 
 test("root span name and service backfill a summary whose root has not merged yet", () => {
-  const trace = toTrace({ ...summaryRow, root_name: "", root_service: "" }, [spanRow, llmRow], []);
+  const trace = toTrace({ ...summaryRow, root_name: "", root_service: "" }, [spanRow, llmRow], [], []);
   assert.equal(trace.rootName, "POST /chat");
   assert.equal(trace.service, "demo-agent");
+});
+
+// D37.4: nearby rows are a second, unrelated read (trace_id always ''), merged
+// onto the solid ones. toLogRecord already turns an empty trace_id into
+// `traceId: undefined` — the same mapping LOGS_SQL's rows go through — so
+// nearby rows need no adapter of their own; these tests pin that behavior at
+// the toTrace boundary instead of re-deriving it.
+const nearbyLogRow: LogRow = {
+  at_offset_ns: "9500000000", // +9.5s: inside the ±10s window, after trace end
+  trace_id: "",
+  severity_number: 9,
+  severity_text: "INFO",
+  body: "sidecar: heartbeat",
+  k8s_namespace: "obstack",
+  k8s_pod: "agent-worker-7d9fb-kx2rq",
+  k8s_container: "sidecar",
+};
+
+test("nearby rows land as undefined-traceId entries alongside solid ones, with signed offsets preserved", () => {
+  const beforeStart: LogRow = { ...nearbyLogRow, at_offset_ns: "-8000000000" }; // -8s, before trace start
+  const trace = toTrace(summaryRow, [spanRow], [logRow], [nearbyLogRow, beforeStart]);
+  assert.equal(trace.logs.length, 3);
+  const solid = trace.logs.filter((l) => l.traceId);
+  const nearby = trace.logs.filter((l) => !l.traceId);
+  assert.equal(solid.length, 1);
+  assert.equal(nearby.length, 2);
+  assert.ok(nearby.every((l) => l.traceId === undefined));
+  assert.ok(nearby.some((l) => l.atMs === 9500)); // positive: after trace end
+  assert.ok(nearby.some((l) => l.atMs === -8000)); // negative: before trace start
+});
+
+test("a trace with no nearby rows renders only the solid ones (D13/D21: never invented, never inferred)", () => {
+  const trace = toTrace(summaryRow, [spanRow], [logRow], []);
+  assert.equal(trace.logs.length, 1);
+  assert.equal(trace.logs[0].traceId, summaryRow.trace_id);
 });
