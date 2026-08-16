@@ -137,11 +137,59 @@ CLICKHOUSE_PASSWORD=obstack_web_dev
 
 The `obstack` database and all of its tables are created by the ingest service at
 boot from `services/ingest/migrations/`, tracked in `obstack.schema_migrations`.
-Nothing here ships DDL, and there is no `docker-entrypoint-initdb.d` — a fresh
-volume plus a booted ingest is the only supported way to get the schema.
+Nothing here ships DDL, and there is no `docker-entrypoint-initdb.d`: the schema
+only ever arrives through the ingest binary, either at boot or from the
+`/ingest migrate` one-shot described below.
 
 Pre-release, applied migrations are edited in place rather than superseded, so
 after pulling a schema change run `docker compose down -v` before `up`.
+
+### Exactly one migration runner per upgrade
+
+There is no lock around the migrations, and there is deliberately never going to
+be one. ClickHouse has no advisory locks; the only primitive that would serialise
+them is a KeeperMap table, which would make ClickHouse Keeper a hard dependency
+for every single-node self-hoster — a standing operational cost, paid forever,
+against a race the deployment model can rule out for free. So the rule is
+structural, and anything that deploys obstack has to honour it:
+
+**Exactly one process applies migrations per upgrade.**
+
+Compose gets that for free: one `ingest` container, `OBSTACK_MIGRATE_ON_BOOT`
+unset and therefore true, applying the schema at boot as it always has. The one
+way to break it here is `docker compose up --scale ingest=2` — don't.
+
+Kubernetes cannot get it for free, because the natural chart default is two or
+more replicas and every one of them would boot into the same DDL. The M4 chart
+splits the two roles instead:
+
+| | applies the schema | serves traffic |
+|---|---|---|
+| what | a `Job` (Helm `pre-install`/`pre-upgrade` hook) running `/ingest migrate` | the ingest `Deployment`, any replica count |
+| env | `CLICKHOUSE_DSN` only | the full ingest config, plus `OBSTACK_MIGRATE_ON_BOOT=false` |
+
+`/ingest migrate` is a one-shot: it applies what is missing, logs the versions,
+and exits 0, or exits non-zero and fails the release. It reads only
+`CLICKHOUSE_DSN` — deliberately not `OBSTACK_API_KEYS` — so the migration Job
+never has to mount the ingest bearer keys to satisfy a validator it does not use.
+
+That split is enforceable by privilege, not just by convention: the check those
+replicas run is strictly read-only, so the Deployment's `CLICKHOUSE_DSN` can name
+a user with no DDL grant at all — `obstack_web`'s `readonly=2` profile is enough
+to verify a schema — while only the Job's user can create anything.
+
+`OBSTACK_MIGRATE_ON_BOOT=false` does **not** mean "skip migrations". Those pods
+still check the schema before they bind anything and refuse to start if any
+version the binary carries is unapplied:
+
+```
+schema migrations 0004_… unapplied and OBSTACK_MIGRATE_ON_BOOT is false; run `ingest migrate` first
+```
+
+A chart that forgets its Job therefore crash-loops loudly instead of serving
+queries against a table missing columns. That is the same invariant boot-time
+migration has always enforced — nothing serves a schema it does not recognise —
+with only the question of *who applies* moved out of the serving path.
 
 ## Data
 
