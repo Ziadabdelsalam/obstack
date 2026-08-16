@@ -44,9 +44,15 @@ export function traceRangeMs(range: TraceRange): number {
   return TRACE_RANGE_HOURS[range] * 3_600_000;
 }
 
-const STATUSES = ["all", "ok", "error"] as const;
+/**
+ * The status values the URL takes — and the ones the bar's select offers, which
+ * renders this list rather than restating it: an option whose value the parse
+ * does not recognise is a control that silently filters nothing (K1, the same
+ * rule that makes the range select read `TRACE_RANGE_HOURS`).
+ */
+export const TRACE_STATUSES = ["all", "ok", "error"] as const;
 
-type Status = (typeof STATUSES)[number];
+type Status = (typeof TRACE_STATUSES)[number];
 
 /**
  * The PRD §8 filter set as the bar holds it: every value normalized, nothing
@@ -107,7 +113,7 @@ export function parseTracesUrl(params: Record<string, UrlParam>): TracesFilters 
   const page = Math.floor(Number(one(params[PAGE_PARAM])));
   return {
     q: one(params.q),
-    status: STATUSES.includes(status as Status) ? (status as Status) : "all",
+    status: TRACE_STATUSES.includes(status as Status) ? (status as Status) : "all",
     service: one(params.service),
     model: one(params.model),
     minMs: positive(params.minMs),

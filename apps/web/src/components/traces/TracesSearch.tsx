@@ -9,6 +9,7 @@ import { LayerDot } from "@/components/ui/LayerChip";
 import { SavedViewsMenu } from "@/components/saved-views/SavedViewsMenu";
 import {
   TRACE_RANGE_HOURS,
+  TRACE_STATUSES,
   parseTracesUrl,
   pushedUrl,
   syncUrl,
@@ -137,9 +138,11 @@ export function TracesSearch({
           aria-label="Status filter"
           className="rounded-md border border-line bg-surface px-2.5 py-1.5 text-[12.5px] text-mid focus:border-line-strong focus:outline-none"
         >
-          <option value="all">status: all</option>
-          <option value="ok">status: ok</option>
-          <option value="error">status: error</option>
+          {TRACE_STATUSES.map((s) => (
+            <option key={s} value={s}>
+              {`status: ${s}`}
+            </option>
+          ))}
         </select>
         <select
           value={edited.minMs}
