@@ -27,7 +27,7 @@ type Authenticator struct {
 // New copies the key set so later mutation of the caller's map cannot change
 // who is authorised.
 func New(keys map[string]string) Authenticator {
-	copied := make(map[string]string, len(keys))
+      copied := make(map[string]string, len(keys))
 	for key, workspaceID := range keys {
 		copied[key] = workspaceID
 	}
