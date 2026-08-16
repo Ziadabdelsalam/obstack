@@ -16,15 +16,16 @@
  *
  * Two exports, and the split is the point:
  *
- * - `syncUrl`/`pushedUrl` are the PURE decision core — a pending-push LIST and
- *   an incoming URL in, adopt-or-ignore and the pruned list out. Pure means the
- *   pinned test runner can drive every case, which neither bar's inline wiring
- *   ever allowed (D54(ii): `--conditions react-server` cannot import a real
- *   component module).
- * - `useFilterUrlSync` is a thin wrapper holding the state, the 250 ms debounce
- *   and the navigation call. It is kept thin precisely so that everything it
- *   wraps is the tested core; its own coverage of record is T5's browser run
- *   (D72, D54(iii) authority).
+ * - `syncUrl`/`pushedUrl`/`shouldSchedule` are the PURE decision core — every
+ *   question with an answer: adopt this URL or not, prune which pending push,
+ *   schedule a navigation or not. Pure means the pinned test runner can drive
+ *   every case, which neither bar's inline wiring ever allowed (D54(ii):
+ *   `--conditions react-server` cannot import a real component module).
+ * - `useFilterUrlSync` is the wrapper, and after D75 its residue is a timer, a
+ *   router call and the state they hang on — nothing in it decides anything.
+ *   That is what makes "everything it wraps is the tested core" a description
+ *   rather than a claim; its own coverage of record is T5's browser run (D72,
+ *   D54(iii) authority).
  *
  * The wrapper takes the navigation as a callback rather than calling
  * `useRouter` here, and that is load-bearing rather than stylistic: importing
@@ -84,6 +85,25 @@ export function syncUrl(sync: UrlSync, incoming: string): { adopt: boolean; sync
 }
 
 /**
+ * The other half of the decision: whether the edit currently in the controls is
+ * a navigation waiting to happen, or a state the URL already reflects.
+ *
+ * It is NOT a schedule when the edit equals the URL the server last rendered
+ * (the user typed and then deleted back to where they started), and not when it
+ * equals a navigation already in flight (the user retyped a value they had
+ * pushed a moment ago). Either way the URL is already going to say that; a
+ * timer would replace it with itself. Everything else diverges from the URL and
+ * has to be pushed.
+ *
+ * This lives in the core rather than in the wrapper because it decides, and a
+ * decision the pinned runner cannot reach is exactly what D72 moved out of the
+ * bars (D75).
+ */
+export function shouldSchedule(editedSearch: string, state: UrlSync): boolean {
+  return !(editedSearch === state.seen || state.pending.includes(editedSearch));
+}
+
+/**
  * The debounce that coalesces a typed word into one navigation, and so into one
  * server query. M1 behaviour on both surfaces, not re-litigated here.
  */
@@ -122,14 +142,14 @@ export function useFilterUrlSync({
     if (next.adopt) onAdopt();
   }
 
-  const settled = editedSearch === sync.seen || sync.pending.includes(editedSearch);
+  const schedule = shouldSchedule(editedSearch, sync);
 
   useEffect(() => {
-    if (settled) return;
+    if (!schedule) return;
     const timer = setTimeout(() => {
       setSync((s) => pushedUrl(s, editedSearch));
       navigate(editedSearch);
     }, URL_SYNC_DEBOUNCE_MS);
     return () => clearTimeout(timer);
-  }, [settled, editedSearch, navigate]);
+  }, [schedule, editedSearch, navigate]);
 }

@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { URL_SYNC_DEBOUNCE_MS, pushedUrl, syncUrl, type UrlSync } from "./use-filter-url-sync";
+import {
+  URL_SYNC_DEBOUNCE_MS,
+  pushedUrl,
+  shouldSchedule,
+  syncUrl,
+  type UrlSync,
+} from "./use-filter-url-sync";
 
 // run with: npm test --workspace apps/web
 //
@@ -68,6 +74,34 @@ test("adopting clears the list: an echo for the URL the bar left is not about it
     adopt: true,
     sync: { seen: "range=1h", pending: [] },
   });
+});
+
+/**
+ * The scheduling half of the rule (D75). The two convergence cases are the ones
+ * the reviewer traced: an edit can arrive back at a URL that is already true,
+ * either the one on screen or one still in flight, and scheduling a timer for
+ * it would replace the URL with itself.
+ */
+test("an edit that has converged back onto the URL schedules nothing (D75)", () => {
+  // Typed, then deleted back to where the server started: what the controls
+  // hold is what the URL already says.
+  assert.equal(shouldSchedule("q=pool", mounted), false);
+
+  // Retyped a value already in flight: the navigation for it is pending, so a
+  // second one would push the same string twice.
+  const inFlight = pushedUrl(mounted, "q=pooled");
+  assert.equal(shouldSchedule("q=pooled", inFlight), false, "an in-flight value was scheduled again");
+
+  // ...and the same convergence one edit later, with two pushes outstanding.
+  assert.equal(shouldSchedule("q=ab", pushedUrl(pushedUrl(mounted, "q=ab"), "q=abc")), false);
+});
+
+test("an edit that diverges from the URL is scheduled (D75)", () => {
+  assert.equal(shouldSchedule("q=pooled", mounted), true);
+  // Divergent while something else is in flight is still divergent.
+  assert.equal(shouldSchedule("q=poolers", pushedUrl(mounted, "q=pooled")), true);
+  // An empty filter set is a real navigation back to the bare list.
+  assert.equal(shouldSchedule("", mounted), true);
 });
 
 test("the debounce that coalesces a typed word is one constant, shared", () => {
