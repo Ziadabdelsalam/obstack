@@ -16,9 +16,17 @@ import {
  * filter bar and the logs explorer (D47(v)).
  *
  * Persistence lives entirely in `lib/saved-views` — this component holds no
- * second copy and writes no storage of its own. `filters` is the surface's
- * current filter object (the parameters it puts in the URL) and `onApply` hands
- * a view's parameters back: the surface owns the URL, this menu never navigates.
+ * second copy and writes no storage of its own.
+ *
+ * The prop contract both consumers implement (D47(v)):
+ * - `surface` — which namespace inside the one key the views come from.
+ * - `filters` — the surface's current filter object, exactly the parameters it
+ *   puts in the URL (string → string). Saving drops the `page` key by that
+ *   literal name, so a paginated surface must call its page parameter `page`.
+ * - `onApply` — receives the view's WHOLE filter set. The surface owns the URL,
+ *   this menu never navigates; applying REPLACES the surface's filter state
+ *   (a key the view does not carry is a filter that ends up unset) and returns
+ *   to the first page, because a view is a complete filter set and never a page.
  *
  * Views load when the menu opens, never during render — the app server-renders
  * and there is no `localStorage` there — so an open menu also shows what the

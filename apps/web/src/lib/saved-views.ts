@@ -24,7 +24,12 @@ export const SAVED_VIEWS_STORAGE_KEY = "obstack.saved-views";
 /** Envelope version. Anything else on disk reads as absent. */
 const ENVELOPE_VERSION = 1;
 
-/** A view is a question, not a position in a result set — the page never persists (D47). */
+/**
+ * A view is a question, not a position in a result set — the page never
+ * persists (D47(ii)). The strip is by LITERAL KEY: a surface that calls its
+ * page parameter anything but `page` persists it into the view and reopens the
+ * view on a stale page number. Both consumers name it `page` in the URL.
+ */
 const PAGE_PARAM = "page";
 
 /** The surfaces that keep views; each is a namespace inside the one envelope. */
@@ -32,7 +37,11 @@ export type SavedViewSurface = "traces" | "logs";
 
 /**
  * A view's filters are its surface's URL parameters — the same shape the URL
- * serializes, so applying a view is setting the URL: one state, not two.
+ * serializes (`Object.fromEntries(searchParams)`: one string value per key), so
+ * applying a view is setting the URL: one state, not two. A view holds the
+ * surface's WHOLE filter set, time range included, so applying one REPLACES the
+ * surface's filter state rather than patching it — a key the view does not
+ * carry is a filter the view does not set (D47(ii)).
  */
 export type SavedViewFilters = Record<string, string>;
 
@@ -134,6 +143,10 @@ export function readSavedViews(surface: SavedViewSurface): SavedView[] {
 
 /**
  * Create `name` on `surface`, or replace the view already holding that name.
+ * `filters` is stored whole — every filter the surface has, time range included
+ * — minus the `page` key, which is dropped (D47(ii); see `PAGE_PARAM`: the drop
+ * is by that literal key, so a caller's page parameter must be named `page`).
+ *
  * Returns the views that are actually persisted — on a refused write that is
  * the list from before the call, never the optimistic one (a menu must not
  * offer a view the browser dropped).
