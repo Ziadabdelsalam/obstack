@@ -19,6 +19,9 @@ jobs:
   go:
     name: go
     runs-on: ubuntu-latest
+    # Bounds a required check: without it a wedged step holds the PR for the
+    # 360-minute GitHub default. Green is ~50s.
+    timeout-minutes: 15
     steps:
       - name: Checkout
         uses: actions/checkout@v7.0.1
@@ -61,13 +64,21 @@ jobs:
       # job even if the tests themselves passed. No allowlist entries today —
       # a future legitimate skip is added here as a reviewed exception, not
       # absorbed silently.
+      #
+      # `-count=1` is load-bearing, not a habit: actions/setup-go restores
+      # GOCACHE across runs, and Go replays a cached package result (including
+      # its "--- PASS" lines) whenever the test binary and the env vars the
+      # tests read are unchanged. A change to the compose ClickHouse or its
+      # users.d would leave both unchanged, so the integration tests would
+      # report PASS from cache without ever contacting the server — green
+      # while proving nothing, which is exactly what D36 forbids.
       - name: go test
         env:
           OBSTACK_TEST_CLICKHOUSE_DSN: clickhouse://obstack_ingest:obstack_ingest_dev@127.0.0.1:9000/obstack
           OBSTACK_TEST_CLICKHOUSE_READONLY_DSN: clickhouse://obstack_web:obstack_web_dev@127.0.0.1:9000/obstack
         run: |
           set +e
-          go test -v ./... 2>&1 | tee test-output.log
+          go test -v -count=1 ./... 2>&1 | tee test-output.log
           status=${PIPESTATUS[0]}
           set -e
 
