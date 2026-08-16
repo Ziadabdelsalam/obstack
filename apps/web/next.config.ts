@@ -3,7 +3,8 @@ import path from "path";
 
 const nextConfig: NextConfig = {
   turbopack: {
-    root: path.join(__dirname),
+    // Workspace root (single lockfile), two levels up from apps/web.
+    root: path.join(__dirname, "..", ".."),
   },
 };
 
