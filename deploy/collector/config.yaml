@@ -3,8 +3,8 @@
 # A CONFIGURATION over an unmodified upstream image (D14, PRD §5
 # "distribution, not fork"): the binary is upstream's, only the pipeline
 # below is obstack's. Image pin and the verification that it actually
-# contains `file_log` and `k8s_attributes` — the core `otelcol-contrib`
-# distro does not — are in README.md.
+# contains `file_log` and `k8s_attributes` — the core
+# `otel/opentelemetry-collector` distro carries neither — are in README.md.
 #
 # T4 packages this file, byte-for-byte, as the DaemonSet's ConfigMap; it is
 # not re-derived there. It receives OTLP from instrumented apps, tails every
@@ -27,36 +27,53 @@ receivers:
   # The kubelet's own convention: every container's stdout/stderr, one file
   # per container, at /var/log/pods/<namespace>_<pod>_<uid>/<container>/*.log
   # (T4's DaemonSet mounts that host path read-only). The `container`
-  # operator parses the line shape (`format: docker` for the common
-  # dockershim/containerd-with-json-log case; cri-o and plain containerd
-  # bodies are auto-detected when `format` is left unset) and — because the
-  # path already names the namespace, pod and container — fills
+  # operator parses the line shape and — because the path already names the
+  # namespace, pod and container — fills
   # k8s.namespace.name/k8s.pod.name/k8s.container.name on the resource
   # before k8sattributes ever runs.
+  #
+  # `format` is deliberately left unset so the operator auto-detects it per
+  # file. Runtimes differ: Docker's json-file driver writes
+  # `{"log":...,"stream":...,"time":...}`, containerd and cri-o write CRI
+  # (`<ts> stdout F <line>`), and kind — the runtime this config is proven
+  # against — is containerd. Pinning `format: docker` makes every CRI line
+  # fail the operator ("expected { character for map value"): the body keeps
+  # its raw `<ts> stdout F ` prefix, the timestamp does not parse, and NO
+  # k8s.* attributes are derived at all, which silently empties the
+  # (namespace, pod) key the nearby-log join is built on.
   file_log:
     include:
       - /var/log/pods/*/*/*.log
     exclude:
-      # D37.3, the correctness mechanism, not a tuning knob: name every
-      # container whose OTel SDK already exports logs via OTLP here, so
-      # filelog never reads its file and nothing lands twice. The container
-      # name is the same one the pod log path uses — no lookup needed.
-      # T1 ships this empty (it has no real container names to name); T4
-      # fills it in for the demo pod's instrumented container, e.g.:
-      #   - /var/log/pods/*/demo-agent/*.log
-      []
+      # D37.3, the correctness mechanism, not a tuning knob: every container
+      # whose OTel SDK already exports logs via OTLP belongs here, so filelog
+      # never reads its file and nothing lands twice. The container name is
+      # the same one the pod log path uses — no lookup needed.
+      #
+      # Supplied by the deployment rather than edited into this file: T4's
+      # DaemonSet sets OBSTACK_COLLECTOR_EXCLUDE_CONTAINER to the demo pod's
+      # instrumented container name, so the chart's ConfigMap stays a
+      # byte-for-byte copy of this file instead of a second, drifting fork of
+      # it (K1/D40). Unset means the sentinel below, which matches no path.
+      # Customers with more than one instrumented container add literal globs
+      # to this list — `- /var/log/pods/*/<container-name>/*.log`.
+      - /var/log/pods/*/${env:OBSTACK_COLLECTOR_EXCLUDE_CONTAINER:-__none__}/*.log
     include_file_path: true
     start_at: beginning
     operators:
       - type: container
-        format: docker
 
 processors:
   batch: {}
 
-  # Enriches every span and log resource with pod identity (D37.1) beyond
-  # what filelog's own path parsing already gives it: labels, owner
-  # references, node name. Two association rules because OTLP-received and
+  # Enriches every span and log resource with pod identity (D37.1) — for an
+  # OTLP-received span that is the only source of it, since no log path was
+  # parsed. `extract.metadata` is exactly the set ingest has columns for
+  # (`internal/mapping/mapping.go`: k8s.namespace.name, k8s.pod.name,
+  # k8s.container.name from the log path, k8s.node.name); labels and owner
+  # references are deliberately not extracted — they would land in the
+  # attributes Map and cost a wider RBAC (replicasets) for data nothing
+  # reads. Two association rules because OTLP-received and
   # filelog-tailed records arrive at this processor differently — an app's
   # OTLP connection carries its pod's source IP; a filelog-tailed record
   # already carries k8s.pod.name/k8s.namespace.name from the container

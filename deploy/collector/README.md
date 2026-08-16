@@ -66,6 +66,14 @@ file_log:
     - /var/log/pods/*/<your-instrumented-container-name>/*.log
 ```
 
+`config.yaml` ships exactly that line with the container name supplied by
+the deployment, as `OBSTACK_COLLECTOR_EXCLUDE_CONTAINER`, so the chart's
+ConfigMap can stay a byte-for-byte copy of the file instead of an edited
+fork of it. Unset, it falls back to a sentinel that matches no path — a
+collector that never excludes anything, which is why the falsification probe
+below exists. More than one instrumented container: add the literal globs to
+the list.
+
 **Under Docker Compose**, the log path is keyed by container ID instead of
 name, and the ID does not exist until the container does, so `up.sh`
 resolves it once at bring-up and passes it in as an environment variable,
@@ -106,6 +114,32 @@ docker exec obstack-clickhouse clickhouse-client --user obstack_web --password o
 #    trace_id; the filelog copy, with trace_id = '', is the same line a
 #    second time — the duplicate the exclusion exists to prevent)
 ```
+
+## What `config.yaml` assumes of its DaemonSet (the T4 hand-off)
+
+The config is the whole distro, so everything else it needs is the
+deployment's job. A DaemonSet running this file must provide:
+
+- **A ServiceAccount** whose ClusterRole grants `get`, `list` and `watch` on
+  `pods` and `namespaces` cluster-wide — `k8s_attributes` uses
+  `auth_type: serviceAccount` and watches the API to resolve pod identity.
+  Nothing here reads labels or owner references, so `replicasets` is *not*
+  needed; adding it later is what widens this rule, not a chart preference.
+- **`/var/log/pods` mounted read-only** from the host. On containerd nodes
+  the files there are real files; where they are symlinks into
+  `/var/lib/docker/containers`, that directory must be mounted read-only
+  too or the tail resolves to nothing.
+- **`OBSTACK_COLLECTOR_API_KEY`** from a Secret (never a values literal —
+  see above) and **`OBSTACK_INGEST_ENDPOINT`** pointing at the ingest
+  Service's OTLP/HTTP port.
+- **`OBSTACK_COLLECTOR_EXCLUDE_CONTAINER`** set to the instrumented
+  container's name (D37.3). Without it the collector tails that container
+  too and its lines land twice.
+- **A liveness/readiness probe against `:13133`**, which is why the
+  `health_check` extension binds `0.0.0.0` rather than its localhost
+  default.
+- **The pod's own OTLP endpoints, `:4317`/`:4318`**, reachable by the apps
+  that route through it.
 
 ## Bring-up
 
