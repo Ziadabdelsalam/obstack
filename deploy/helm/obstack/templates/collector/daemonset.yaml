@@ -56,9 +56,11 @@ spec:
           ports:
             # hostPort, not routed through a Service: templates/demo/deployment.yaml
             # reaches this node's own collector via the Downward API's
-            # status.hostIP, so k8s_attributes' `from: connection` pod
-            # association sees the sending pod's real, un-NATed source IP
-            # (D37.1) rather than a Service's.
+            # status.hostIP — node-local delivery with no cluster Service in
+            # the path. It does NOT hand `from: connection` a usable source
+            # IP: the same-node hairpin SNATs it away (measured — see
+            # templates/demo/deployment.yaml), which is why the association
+            # leads with the stamped resource attributes (D43).
             - name: otlp-grpc
               containerPort: 4317
               hostPort: 4317

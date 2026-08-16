@@ -123,6 +123,26 @@ docker exec obstack-clickhouse clickhouse-client --user obstack_web --password o
 #    second time — the duplicate the exclusion exists to prevent)
 ```
 
+## Pod identity for OTLP senders (D43) — stamp, don't trust the connection
+
+An app that routes OTLP through this collector should stamp its own
+identity onto its Resource via the Downward API:
+
+```yaml
+- name: OTEL_RESOURCE_ATTRIBUTES
+  value: k8s.pod.name=$(POD_NAME),k8s.namespace.name=$(POD_NAMESPACE)
+```
+
+**Stamping guarantees identity; connection association is best-effort
+behind NAT.** `config.yaml`'s `pod_association` therefore leads with the
+stamped attributes and keeps `from: connection` as the fallback — it works
+wherever the collector sees the pod's real source IP, and measurably does
+not survive a same-node hostIP + hostPort hairpin (the very topology a
+DaemonSet collector invites), where SNAT discards the source IP. A sender
+that neither stamps nor arrives with a surviving source IP lands
+unenriched — no `k8s.*` attributes, empty nearby-join keys, no error
+anywhere.
+
 ## What `config.yaml` assumes of its DaemonSet (the T4 hand-off)
 
 The config is the whole distro, so everything else it needs is the

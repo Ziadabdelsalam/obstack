@@ -58,13 +58,30 @@ function sleep(ms: number): Promise<void> {
 function d37Problems(traceId: string, trace: Trace): string[] {
   const out: string[] = [];
 
-  // D37 part 1: ≥1 SOLID row — a log carrying this trace's trace_id AND the
-  // pod identity that routing app OTLP through the collector buys (D37.1).
+  // D37 part 1 (as restated by D43): ≥1 SOLID row — a log carrying this
+  // trace's trace_id AND populated pod identity, whose load-bearing source
+  // is the app's own resource self-identification (the recommended customer
+  // pattern); k8sattributes associates on those stamped attributes and
+  // enriches node identity on top.
   const solid = trace.logs.filter((l) => l.traceId === traceId);
   const solidWithPod = solid.filter((l) => l.namespace !== "" && l.pod !== "");
   if (solidWithPod.length === 0) {
     out.push(
       `no SOLID row carries pod metadata — ${solid.length} solid log(s), none with populated k8s_namespace/k8s_pod`,
+    );
+  }
+
+  // D43 standing guard: span k8s_node is the ONLY observable evidence the
+  // k8sattributes association is alive — SOLID ns/pod comes from the app's
+  // stamping and NEARBY ns/pod from the filelog path parsing, so without
+  // this line a collector version bump that broke the association (or a
+  // revert to connection-first ordering, which the same-node hairpin SNAT
+  // leaves fully inert) would regress silently while everything else
+  // stayed green.
+  const nodeless = trace.spans.filter((s) => !s.node);
+  if (nodeless.length > 0) {
+    out.push(
+      `${nodeless.length} of ${trace.spans.length} span(s) carry no k8s_node — k8sattributes is not enriching the app-OTLP path (D43)`,
     );
   }
 
@@ -152,6 +169,9 @@ async function assertTrace(traceId: string): Promise<void> {
   );
   console.log(
     `acceptance:   D37.1 SOLID: ${solidWithPod.length} row(s) carrying trace_id + pod metadata (${namespace}/${pod})`,
+  );
+  console.log(
+    `acceptance:   D43 k8sattributes alive: ${whole.spans.length} span(s) carry k8s_node (${whole.spans[0].node})`,
   );
   console.log(
     `acceptance:   D37.2 NEARBY: ${sidecar.length} row(s) from the uninstrumented "${SIDECAR_CONTAINER}" container (${nearby.length} nearby total)`,

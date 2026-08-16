@@ -71,28 +71,47 @@ receivers:
 processors:
   batch: {}
 
-  # Enriches every span and log resource with pod identity (D37.1) — for an
-  # OTLP-received span that is the only source of it, since no log path was
-  # parsed. `extract.metadata` is exactly the set ingest has columns for
+  # Attaches pod identity to OTLP-received records (D37.1/D43). The
+  # association order below is measured, not stylistic:
+  #
+  #   1. `resource_attribute` — the sender's own self-identification
+  #      (k8s.pod.name/k8s.namespace.name stamped onto its Resource via the
+  #      Downward API) is the PRIMARY association and the recommended
+  #      customer pattern (README.md): when the attributes are present they
+  #      are authoritative, and they are what actually carries pod identity
+  #      on a node-local (hostIP + hostPort) topology. Filelog-tailed
+  #      records associate here too — the container operator above fills the
+  #      same two attributes from the log path.
+  #   2. `from: connection` — the fallback, kept because it is a
+  #      non-stamping sender's only chance: it works wherever the collector
+  #      sees the pod's real source IP. It does NOT survive a same-node
+  #      hostPort hairpin, where the return-path SNAT discards the source IP
+  #      before the collector sees it — measured with this rule FIRST: it
+  #      matched no pod, short-circuited the association, and left this
+  #      processor fully inert on the app-OTLP path. That is why the
+  #      recommended pattern stamps rather than trusting the connection.
+  #
+  # A sender that neither stamps nor arrives with a surviving source IP
+  # lands UNENRICHED: no k8s.* attributes, empty nearby-join keys, and no
+  # error anywhere — stamping is what guarantees identity, connection
+  # association is best-effort behind any NAT.
+  #
+  # `extract.metadata` is exactly the set ingest has columns for
   # (`internal/mapping/mapping.go`: k8s.namespace.name, k8s.pod.name,
   # k8s.container.name from the log path, k8s.node.name); labels and owner
   # references are deliberately not extracted — they would land in the
   # attributes Map and cost a wider RBAC (replicasets) for data nothing
-  # reads. Two association rules because OTLP-received and
-  # filelog-tailed records arrive at this processor differently — an app's
-  # OTLP connection carries its pod's source IP; a filelog-tailed record
-  # already carries k8s.pod.name/k8s.namespace.name from the container
-  # operator above.
+  # reads.
   k8s_attributes:
     auth_type: serviceAccount
     pod_association:
-      - sources:
-          - from: connection
       - sources:
           - from: resource_attribute
             name: k8s.pod.name
           - from: resource_attribute
             name: k8s.namespace.name
+      - sources:
+          - from: connection
     extract:
       metadata:
         - k8s.pod.name
