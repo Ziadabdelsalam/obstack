@@ -63,11 +63,8 @@ jobs:
       # absorbed silently.
       - name: go test
         env:
-          # RED-EVIDENCE-TEMP: deliberately unreachable, to prove the skip
-          # trap turns the job red instead of green-with-skips. Revert before
-          # merge.
-          OBSTACK_TEST_CLICKHOUSE_DSN: clickhouse://obstack_ingest:obstack_ingest_dev@127.0.0.1:1/obstack
-          OBSTACK_TEST_CLICKHOUSE_READONLY_DSN: clickhouse://obstack_web:obstack_web_dev@127.0.0.1:1/obstack
+          OBSTACK_TEST_CLICKHOUSE_DSN: clickhouse://obstack_ingest:obstack_ingest_dev@127.0.0.1:9000/obstack
+          OBSTACK_TEST_CLICKHOUSE_READONLY_DSN: clickhouse://obstack_web:obstack_web_dev@127.0.0.1:9000/obstack
         run: |
           set +e
           go test -v ./... 2>&1 | tee test-output.log
