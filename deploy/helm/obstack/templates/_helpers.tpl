@@ -31,8 +31,16 @@ yet — and that is deliberately what the migrate Job authenticates with. By
 the time the *next* operation needs the new password (ingest's own DSN,
 applied as a main resource in the same batch as ClickHouse's own env
 change), both move together. `lookup` returns an empty dict outside a live
-cluster (`helm template`, `helm lint`), so this still renders without one;
-it falls back to the values password, same as install.
+cluster (`helm template`, `helm lint`, and `helm upgrade --dry-run=client`),
+so this still renders without one; it falls back to the values password,
+same as install. A client-side dry run therefore previews the NEW password
+in this DSN while the real upgrade will use the live one — `--dry-run=server`
+is the rendering that shows what actually runs. The same empty-dict fallback
+happens if the ClickHouse Deployment is missing entirely, and it is harmless
+for the same reason it is unreachable: with no Deployment there is no
+ClickHouse to authenticate against either, so the Job's
+`wait-for-clickhouse` init container fails the hook loudly instead of
+migrating with the wrong password.
 */}}
 {{- define "obstack.migrate.clickhousePassword" -}}
 {{- $password := .Values.clickhouse.ingestPassword -}}

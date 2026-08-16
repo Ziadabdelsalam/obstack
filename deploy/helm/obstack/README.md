@@ -45,7 +45,26 @@ fill:**
   survives pod replacement within a release's lifetime — enough for
   CI/kind, where the cluster is thrown away afterwards. M4 replaces the
   Deployment + hostPath with a StatefulSet and a PVC rather than inheriting
-  it silently.
+  it silently. Three consequences of node-disk storage, stated here rather
+  than left for M4 to rediscover — a PVC would have none of them:
+  - **`helm uninstall` does not remove the data.** Every *cluster* resource
+    goes; the node's `/var/lib/obstack-clickhouse/<release>` directory stays.
+    A later `helm install` of the *same* release name on the same node
+    adopts that database wholesale — measured: the reinstall's migrate Job
+    logged `schema already up to date` and the previous release's tables were
+    all still there. Wipe it (`docker exec <node> rm -rf
+    /var/lib/obstack-clickhouse/<release>`) or throw the cluster away when a
+    run has to start from empty data.
+  - **Single node only.** A `hostPath` follows the node, not the pod, and
+    nothing pins this Deployment to one node. On a multi-node cluster a
+    rescheduled ClickHouse pod comes up on a fresh, empty
+    `DirectoryOrCreate` directory — the same schema-loss wedge the hostPath
+    exists to prevent, just moved to another trigger. kind's single node is
+    the assumption everywhere below.
+  - **One release per cluster.** The path carries the release name but not
+    its namespace, and the collector's ClusterRole/ClusterRoleBinding are
+    named the same way, so two same-named releases in different namespaces
+    would share a data directory and fight over cluster-scoped RBAC.
 
 ## Why ClickHouse is a normal resource, and the migrate Job renders two ways
 
@@ -138,14 +157,30 @@ upgrade").
   for hook Jobs to complete before touching any normal resource —
   `--wait-for-jobs` adds nothing there. If an upgrade seems to hang before
   anything rolls, look at the hook Job's pod first (`kubectl describe job
-  <release>-migrate-<new revision>`): a hook that cannot finish blocks the
-  whole upgrade until `--timeout`.
-- One `--timeout` spans both phases (hooks + resource waits). On a node that
-  has never pulled `clickhouse/clickhouse-server`, the cold pull alone was
-  measured at 7m28s, and a full cold `install --wait` at 11m30s end-to-end —
-  hence `--timeout 900s` below, matching the Job's own
-  `activeDeadlineSeconds`. Pre-pull (`docker pull` + `kind load
-  docker-image`) if you want a much faster install.
+  <release>-migrate-<new revision>`). A hook that cannot finish blocks the
+  whole upgrade until `--timeout` — and so does one that has **already
+  failed**: measured under Helm v4.0.1, a hook Job that hit
+  `BackoffLimitExceeded` at 14:42:12 did not abort the upgrade, which sat
+  until its 900s deadline and reported the failure at 14:56:57. On an upgrade
+  ClickHouse is already warm, so keep that `--timeout` short (`300s` below):
+  it is also how long a broken migration takes to surface.
+- An upgrade cannot repair a ClickHouse that is already down — the
+  pre-upgrade hook's `wait-for-clickhouse` init container blocks in front of
+  the very change that would fix it. `helm upgrade --no-hooks` applies the
+  normal resources without the hook; once ClickHouse is serving again, a
+  normal `helm upgrade` runs the migration that `--no-hooks` skipped.
+- One `--timeout` spans both phases (hooks + resource waits). Cold-install
+  measurements from two different machines: ClickHouse's ~250 MB pull alone
+  took 7m28s on one and ~11m on the other, and after the migrate Job
+  succeeds the ingest pods wait out one more `CrashLoopBackOff` interval,
+  which is capped at 5 minutes. The fast run finished `install --wait` in
+  11m30s; the slow one blew through `--timeout 900s` — Helm marked the
+  release `failed` ("context deadline exceeded") while the stack itself
+  converged about a minute later, healthy but unreleased. So budget the
+  worst case the chart actually allows: the migrate Job's own
+  `activeDeadlineSeconds` (900s) plus that 5-minute backoff tail, i.e.
+  `--timeout 1500s` on a node that has never pulled these images. A warm
+  node installs in ~18s.
 - Expect brief `CrashLoopBackOff` on the ingest pods during a cold install
   (see above) and a short ClickHouse gap during any upgrade that rolls it
   (`Recreate`). Both converge on their own; neither needs intervention. The
@@ -228,10 +263,11 @@ kind load docker-image obstack-ingest:kind --name t4-chart
 kind load docker-image obstack-demo-agent:kind --name t4-chart
 
 helm lint deploy/helm/obstack
-# 900s, matching the migrate Job's activeDeadlineSeconds — see "--wait and
-# --wait-for-jobs, precisely" above for what the timeout covers and why a
-# cold node needs this much
-helm install obstack deploy/helm/obstack --timeout 900s --wait
+# 1500s = the migrate Job's own activeDeadlineSeconds (900s) plus the ingest
+# pods' capped CrashLoopBackOff tail — see "--wait and --wait-for-jobs,
+# precisely" above for what the timeout covers and why a cold node needs
+# this much. A warm node is done in ~18s.
+helm install obstack deploy/helm/obstack --timeout 1500s --wait
 
 # every component Ready
 kubectl get pods,deploy,ds
@@ -247,7 +283,7 @@ kubectl logs deploy/obstack-ingest | grep "schema verified"
 # a second shell (its name carries the new revision):
 #   until kubectl logs job/obstack-migrate-2 -c migrate 2>/dev/null; do sleep 1; done
 #   -> {"msg":"schema already up to date"}
-helm upgrade obstack deploy/helm/obstack --timeout 900s --wait
+helm upgrade obstack deploy/helm/obstack --timeout 300s --wait
 
 # ordering, when an upgrade carries a real schema change: the pre-upgrade
 # hook Job completes before any upgraded ingest pod is even created —
@@ -263,11 +299,17 @@ kubectl logs -l app.kubernetes.io/component=ingest --tail=5
 #     unapplied and OBSTACK_MIGRATE_ON_BOOT is false; run `ingest migrate`
 #     first"
 
-# clean uninstall — nothing is left behind now that every resource is
-# normal and release-managed (the node-side hostPath data dirs are files on
-# a throwaway node, not cluster resources)
+# clean uninstall — every resource this release owns goes, now that all of
+# them are normal and release-managed. Two things are not release resources
+# and therefore stay, both measured: the node-side hostPath data dirs (files
+# on a throwaway node — see the scope boundary), and any migrate Job left
+# over from an upgrade that failed or timed out. Hook resources live outside
+# the release manifest, and `hook-succeeded` only sweeps the ones that
+# passed while Helm was still watching; the rest linger, labelled, until
+# someone removes them.
 helm uninstall obstack --timeout 300s
 kubectl get all,cm,sa,clusterrole,clusterrolebinding -l app.kubernetes.io/instance=obstack
+kubectl delete job -l app.kubernetes.io/component=migrate   # only after a failed upgrade
 
 kind delete cluster --name t4-chart
 ```
