@@ -64,6 +64,23 @@ jobs:
       - name: Wait for the proof workload to report Ready
         run: kubectl wait --for=condition=Ready pod/kind-proof-workload --timeout=120s
 
+      # F1 (advisor-ordered): Ready right after apply only proves the container
+      # started — the black-hole OTLP endpoint's first export attempt hasn't
+      # happened yet (BatchSpanProcessor's default schedule delay is 5s), so
+      # fail-open was never actually exercised. Hold past that interval, then
+      # re-assert both conditions: Ready alone is insufficient, because a
+      # crash-restart can bring Ready back to true and hide the failure.
+      - name: Hold past the first export attempt, then re-confirm fail-open held
+        run: |
+          sleep 12
+          kubectl wait --for=condition=Ready pod/kind-proof-workload --timeout=30s
+          restarts=$(kubectl get pod/kind-proof-workload -o jsonpath='{.status.containerStatuses[0].restartCount}')
+          echo "restartCount after hold: $restarts"
+          if [ "$restarts" != "0" ]; then
+            echo "pod restarted $restarts time(s) — the black-hole OTLP endpoint crashed the container instead of failing open" >&2
+            exit 1
+          fi
+
       - name: Diagnose on failure
         if: failure()
         run: |
