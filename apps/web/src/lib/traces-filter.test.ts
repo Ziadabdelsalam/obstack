@@ -6,15 +6,12 @@ import {
   DEFAULT_TRACE_RANGE,
   EMPTY_TRACES_FILTERS,
   parseTracesUrl,
-  pushedUrl,
-  syncUrl,
   toTraceFilter,
   traceRangeMs,
   tracesHref,
   tracesSearchString,
   tracesViewFilters,
   type TracesFilters,
-  type UrlSync,
 } from "./traces-filter";
 
 // run with: node --conditions=react-server --test src/lib/traces-filter.test.ts
@@ -142,37 +139,6 @@ test("the page parameter is the store's PAGE_PARAM, never a second literal (D53)
   });
 });
 
-test("the bar adopts a URL it did not produce and ignores its own echo (carry-forward 2)", () => {
-  const mounted: UrlSync = { seen: "q=pool", pending: [] };
-
-  // Back/forward, a link into a filtered view, a view applied elsewhere.
-  const external = syncUrl(mounted, "status=error");
-  assert.equal(external.adopt, true);
-  assert.equal(external.sync.seen, "status=error");
-
-  // The bar's own navigation coming back must not overwrite what the user has
-  // typed since — but only once: the same URL reached again later is external.
-  const pushed = pushedUrl(mounted, "q=pooled");
-  const echo = syncUrl(pushed, "q=pooled");
-  assert.equal(echo.adopt, false);
-  assert.deepEqual(echo.sync, { seen: "q=pooled", pending: [] });
-  assert.equal(syncUrl({ seen: "q=other", pending: [] }, "q=pooled").adopt, true);
-
-  // Two edits in flight at once: each echo is consumed by itself, so a slow
-  // first render cannot rewind the second edit.
-  const two = pushedUrl(pushedUrl(mounted, "q=po"), "q=pool2");
-  const firstEcho = syncUrl(two, "q=po");
-  assert.equal(firstEcho.adopt, false);
-  assert.deepEqual(firstEcho.sync.pending, ["q=pool2"]);
-  assert.equal(syncUrl(firstEcho.sync, "q=pool2").adopt, false);
-
-  // Adopting means the bar moved elsewhere; an echo still in flight for where
-  // it was is no longer about its state.
-  assert.deepEqual(syncUrl(pushedUrl(mounted, "q=stale"), "range=1h").sync, {
-    seen: "range=1h",
-    pending: [],
-  });
-
-  // A re-render with the same URL is not a change at all.
-  assert.deepEqual(syncUrl(mounted, "q=pool"), { adopt: false, sync: mounted });
-});
+// The bar's URL-echo reconciliation is asserted in `use-filter-url-sync.test.ts`
+// (D72): the rule is shared with `/app/logs` now, so its cases live with the
+// module rather than with one surface's vocabulary.

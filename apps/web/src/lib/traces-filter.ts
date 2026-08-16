@@ -187,43 +187,7 @@ export function tracesViewFilters(filters: TracesFilters): SavedViewFilters {
   return Object.fromEntries(new URLSearchParams(tracesSearchString(filters)));
 }
 
-/**
- * What the bar remembers about the URL so it can tell its own navigation from
- * one that happened underneath it (carry-forward 2).
- */
-export interface UrlSync {
-  /** the query string the bar last received from the server */
-  seen: string;
-  /** query strings the bar navigated to whose server render has not come back yet */
-  pending: readonly string[];
-}
-
-/** Bookkeeping for a navigation the bar itself just started. */
-export function pushedUrl(sync: UrlSync, search: string): UrlSync {
-  return { seen: sync.seen, pending: [...sync.pending, search] };
-}
-
-/**
- * Carry-forward 2, the whole rule in one place: what to do with the query
- * string the server just rendered.
- *
- * A URL the bar did not produce — back/forward, a link into a filtered view, a
- * saved view applied elsewhere — is ADOPTED: the inputs take its values, or
- * they keep their mount-time values forever, which is the bug this replaces.
- * The bar's own navigation coming back is not, because the user usually types
- * on while it is in flight and adopting it would rewind their text; the echo is
- * consumed from `pending` so the same URL reached again later is external.
- * Adopting clears `pending` outright: the bar has been moved somewhere else, so
- * an echo still in flight for the URL it left is no longer about its state.
- */
-export function syncUrl(sync: UrlSync, incoming: string): { adopt: boolean; sync: UrlSync } {
-  if (incoming === sync.seen) return { adopt: false, sync };
-  const echo = sync.pending.indexOf(incoming);
-  if (echo >= 0) {
-    return {
-      adopt: false,
-      sync: { seen: incoming, pending: sync.pending.filter((_, i) => i !== echo) },
-    };
-  }
-  return { adopt: true, sync: { seen: incoming, pending: [] } };
-}
+// The URL-echo reconciliation is NOT here: `syncUrl`/`pushedUrl` moved to
+// `@/lib/use-filter-url-sync` (D72), because `/app/logs` needs the same rule
+// and had written a weaker one of its own. What stays in this module is this
+// surface's vocabulary — names, defaults, parse, serialize.

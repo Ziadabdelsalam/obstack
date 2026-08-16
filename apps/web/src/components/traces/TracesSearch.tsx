@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, type ReactNode } from "react";
+import { useCallback, useState, type ReactNode } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { ChevronLeft, ChevronRight, Search } from "lucide-react";
@@ -11,14 +11,12 @@ import {
   TRACE_RANGE_HOURS,
   TRACE_STATUSES,
   parseTracesUrl,
-  pushedUrl,
-  syncUrl,
   tracesHref,
   tracesSearchString,
   tracesViewFilters,
   type TracesFilters,
-  type UrlSync,
 } from "@/lib/traces-filter";
+import { useFilterUrlSync } from "@/lib/use-filter-url-sync";
 import type { Layer, Trace } from "@/lib/types";
 
 const serviceLayer: Record<string, Layer> = {
@@ -45,8 +43,12 @@ const COST_STEPS = [0.01, 0.1, 1] as const;
  * - an edit lands in `edited`, is serialized, and (debounced, so a typed word is
  *   one list query rather than one per keystroke) replaces the URL;
  * - a URL that moves underneath the bar — back/forward, a link into a filtered
- *   view, a saved view applied — is adopted into `edited` by `syncUrl`, so the
- *   inputs never keep mount-time values while the list shows something else.
+ *   view, a saved view applied — is adopted into `edited`, so the inputs never
+ *   keep mount-time values while the list shows something else.
+ *
+ * Both directions are `useFilterUrlSync` (D72), shared with `/app/logs`: the
+ * rule for telling an echo of this bar's own navigation from someone else's is
+ * one tested module, not one implementation per surface.
  *
  * `service` and `model` are typed exactly rather than picked from a list: the
  * facade has no distinct-values entry point, and a hardcoded option list would
@@ -68,30 +70,17 @@ export function TracesSearch({
   filters: TracesFilters;
 }) {
   const router = useRouter();
-  const urlSearch = tracesSearchString(filters);
   const [edited, setEdited] = useState<TracesFilters>(filters);
-  const [sync, setSync] = useState<UrlSync>({ seen: urlSearch, pending: [] });
 
-  // Adjusting state during render — React's own pattern for state derived from
-  // a prop that changed. The URL is the prop here, and `syncUrl` decides whether
-  // this one is the bar's own navigation coming back or someone else's.
-  if (urlSearch !== sync.seen) {
-    const next = syncUrl(sync, urlSearch);
-    setSync(next.sync);
-    if (next.adopt) setEdited(filters);
-  }
-
-  const editedSearch = tracesSearchString(edited);
-  const settled = editedSearch === sync.seen || sync.pending.includes(editedSearch);
-
-  useEffect(() => {
-    if (settled) return;
-    const timer = setTimeout(() => {
-      setSync((s) => pushedUrl(s, editedSearch));
-      router.replace(tracesHref(editedSearch), { scroll: false });
-    }, 250);
-    return () => clearTimeout(timer);
-  }, [settled, editedSearch, router]);
+  useFilterUrlSync({
+    urlSearch: tracesSearchString(filters),
+    editedSearch: tracesSearchString(edited),
+    navigate: useCallback(
+      (search: string) => router.replace(tracesHref(search), { scroll: false }),
+      [router],
+    ),
+    onAdopt: () => setEdited(filters),
+  });
 
   // Any filter change is a new question, so it starts at the first page; the
   // pager is the only control that moves `page`.

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { ArrowUpRight, RefreshCw, Search } from "lucide-react";
@@ -19,6 +19,7 @@ import {
   type LogsFilters,
 } from "@/lib/logs-filter";
 import type { SavedViewFilters } from "@/lib/saved-views";
+import { useFilterUrlSync } from "@/lib/use-filter-url-sync";
 import type { Severity } from "@/lib/types";
 // Type-only, so nothing from the server graph is emitted into the client
 // bundle: the D13 facade rule says this surface knows `@/server/data` and
@@ -92,59 +93,35 @@ export function LogsExplorer({
   nowMs: number;
 } & LogsFilters) {
   const router = useRouter();
-  const [filters, setFilters] = useState<LogsFilters>({
+  const applied: LogsFilters = {
     q: appliedQ,
     sev: appliedSev,
     pod: appliedPod,
     onTrace: appliedOnTrace,
     range: appliedRange,
+  };
+  const [filters, setFilters] = useState<LogsFilters>(applied);
+
+  // Both directions of the URL flow, shared with the traces bar (D72). This
+  // surface used to remember ONE pushed URL, which meant a late echo of an
+  // earlier keystroke read as somebody else's navigation and rewound the text
+  // typed since; the shared module keeps the pending pushes as a list, so each
+  // echo is consumed by itself.
+  useFilterUrlSync({
+    urlSearch: logsSearchString(applied),
+    editedSearch: logsSearchString(filters),
+    navigate: useCallback(
+      (search: string) => router.replace(logsHref(search), { scroll: false }),
+      [router],
+    ),
+    onAdopt: () => setFilters(applied),
   });
-
-  // What the server already rendered; the sync below is a no-op until it moves.
-  const pushed = useRef(
-    logsSearchString({
-      q: appliedQ,
-      sev: appliedSev,
-      pod: appliedPod,
-      onTrace: appliedOnTrace,
-      range: appliedRange,
-    }),
-  );
-
-  useEffect(() => {
-    const search = logsSearchString(filters);
-    if (search === pushed.current) return;
-    // Debounced so a typed word is one log query, not one per keystroke.
-    const timer = setTimeout(() => {
-      pushed.current = search;
-      router.replace(logsHref(search), { scroll: false });
-    }, 250);
-    return () => clearTimeout(timer);
-  }, [filters, router]);
-
-  // The other direction: the URL moved underneath the bar — back/forward, a
-  // link into a filtered view, or the saved view applied below — so the
-  // controls adopt what the server rendered instead of keeping mount-time
-  // values. Only a URL this component did not push counts as a move.
-  useEffect(() => {
-    const applied = {
-      q: appliedQ,
-      sev: appliedSev,
-      pod: appliedPod,
-      onTrace: appliedOnTrace,
-      range: appliedRange,
-    };
-    const search = logsSearchString(applied);
-    if (search === pushed.current) return;
-    pushed.current = search;
-    setFilters(applied);
-  }, [appliedQ, appliedSev, appliedPod, appliedOnTrace, appliedRange]);
 
   /**
    * A view carries the surface's WHOLE filter set, so applying one REPLACES the
    * state rather than patching it (D47(ii)): it sets the URL and the sync above
-   * adopts the server's parse of it — one state, one parser, never two.
-   * `pushed` is deliberately left alone so that adoption fires.
+   * adopts the server's parse of it — one state, one parser, never two. It
+   * records no pending push, deliberately, so that adoption fires.
    */
   const applyView = (view: SavedViewFilters) => {
     router.replace(logsHref(new URLSearchParams(view).toString()), { scroll: false });
