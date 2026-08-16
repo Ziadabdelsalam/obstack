@@ -1,8 +1,18 @@
 import "server-only";
 import type { Trace } from "@/lib/types";
 import { NOW } from "@/mock/generate";
+import { streamLogs } from "@/mock/logstream";
 import { statCards, timeseries } from "@/mock/metrics";
 import { allTraces, getTrace as getMockTrace } from "@/mock/traces";
+import {
+  DEFAULT_LOG_RANGE_MS,
+  SEVERITY_ORDER,
+  capLogRows,
+  queryLogSearch,
+  type LogFilter,
+  type LogLine,
+  type LogSearchResult,
+} from "@/server/queries/logs";
 import {
   queryOverview,
   type Overview,
@@ -26,6 +36,14 @@ export type {
 } from "@/server/queries/overview";
 export type { TraceFilter, TraceSearchResult } from "@/server/queries/traces";
 export { DEFAULT_TRACE_RANGE_MS, TRACE_PAGE_SIZE } from "@/server/queries/traces";
+export type { LogFilter, LogLine, LogRange, LogSearchResult } from "@/server/queries/logs";
+export {
+  DEFAULT_LOG_RANGE,
+  DEFAULT_LOG_RANGE_MS,
+  LOG_RANGES,
+  LOG_SEARCH_CAP,
+  SEVERITY_ORDER,
+} from "@/server/queries/logs";
 
 /** The workspace every live query binds to — surfaced so pages can label it (F6). */
 export { workspaceId } from "@/server/clickhouse";
@@ -148,4 +166,55 @@ export async function listTraces(filter: TraceFilter = {}): Promise<Trace[]> {
 export async function getOverview(range: OverviewRange = "6h"): Promise<Overview> {
   if (dataMode === "live") return queryOverview(range);
   return { points: timeseries(), stats: [...statCards] };
+}
+
+/**
+ * Mock free text on the LOGS surface — the mock half of the `/app/logs` search
+ * rule (live half: `queries/logs.ts`). Reach is the **body only** (D51(e)): a
+ * row this surface refuses to render must not be findable here either, and the
+ * pod is a filter of its own rather than a search field. Terms come from the
+ * one shared `splitSearchTerms`, AND across terms, case-insensitive substring —
+ * the traces contract's term rules over this surface's narrower reach.
+ */
+export function mockLogMatches(line: LogLine, q: string): boolean {
+  const body = line.body.toLowerCase();
+  return splitSearchTerms(q).every((term) => body.includes(term.toLowerCase()));
+}
+
+/**
+ * Mock `/app/logs` search over an explicit line list: filter, cap, pod options
+ * — the same `LogSearchResult` shape `queryLogSearch` answers. The list is a
+ * parameter so tests can drive fixtures the mock stream does not contain;
+ * `searchLogs` below always passes `streamLogs`, which `mock/logstream.ts`
+ * already sorts newest-first, so the rendered order matches live's
+ * `ORDER BY timestamp DESC`. Reference clock (D50): the mock clock `NOW`, never
+ * the wall clock — the mock stream lives inside ~6h behind `NOW` (F6/F7).
+ *
+ * The D42 content-carrier exclusion has no mock counterpart to apply: the mock
+ * stream has no bodyless rows at all (data.test.ts guards that, so a mock that
+ * grows carriers turns red here rather than rendering blank lines).
+ */
+export function mockSearchLogs(all: LogLine[], filter: LogFilter): LogSearchResult {
+  const sinceMs = NOW - (filter.rangeMs ?? DEFAULT_LOG_RANGE_MS);
+  const minRank = SEVERITY_ORDER.indexOf(filter.minSeverity ?? "debug");
+  const inWindow = all.filter((line) => line.ts >= sinceMs);
+  const matched = inWindow.filter(
+    (line) =>
+      SEVERITY_ORDER.indexOf(line.severity) >= minRank &&
+      (!filter.pod || line.pod === filter.pod) &&
+      (!filter.onTraceOnly || Boolean(line.traceId)) &&
+      mockLogMatches(line, filter.q ?? ""),
+  );
+  return {
+    ...capLogRows(matched),
+    // Same rule as live: the window and the carrier state decide the options,
+    // never the other filters.
+    pods: [...new Set(inWindow.filter((line) => line.pod).map((line) => line.pod))].sort(),
+    nowMs: NOW,
+  };
+}
+
+/** The `/app/logs` entry point: one capped window plus its pod options (D44/D48). */
+export async function searchLogs(filter: LogFilter = {}): Promise<LogSearchResult> {
+  return dataMode === "live" ? queryLogSearch(filter) : mockSearchLogs(streamLogs, filter);
 }

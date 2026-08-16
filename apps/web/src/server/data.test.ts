@@ -2,9 +2,16 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { LogRecord, Span, Trace } from "@/lib/types";
 import { NOW } from "@/mock/generate";
+import { streamLogs } from "@/mock/logstream";
 import { allTraces } from "@/mock/traces";
-import { mockMatches, mockSearchTraces } from "./data";
-import { TRACE_PAGE_SIZE } from "./queries/traces";
+import { mockLogMatches, mockMatches, mockSearchLogs, mockSearchTraces } from "./data";
+import {
+  DEFAULT_LOG_RANGE_MS,
+  LOG_SEARCH_CAP,
+  SEVERITY_ORDER,
+  type LogLine,
+} from "./queries/logs";
+import { DEFAULT_TRACE_RANGE_MS, TRACE_PAGE_SIZE } from "./queries/traces";
 
 // run with: node --conditions=react-server --test src/server/data.test.ts
 //
@@ -257,4 +264,125 @@ test("mock default unfiltered first page is today's full list (F6/F7: the 6h def
     traces.map((t) => t.id).sort(),
     allTraces.map((t) => t.id).sort(),
   );
+});
+
+// ---- /app/logs, the mock half (T3: D48 / D50 / D51(e)) ----------------------
+//
+// The live twin of every assertion here is `queries/logs.integration.test.ts`;
+// its parity subtest pins the two free-text implementations to the same
+// verdicts. What only this file can prove is the mock stream itself: that the
+// D50 window and the D51(e) rules leave the shipped mock surface intact.
+
+const logLine = (over: Partial<LogLine> & { id: string }): LogLine => ({
+  ts: NOW - 60_000,
+  severity: "info",
+  body: "an ordinary log line",
+  pod: "pod-1",
+  ...over,
+});
+
+test("D50: the logs default window is the SAME product-wide 6h the traces list uses", () => {
+  assert.equal(
+    DEFAULT_LOG_RANGE_MS,
+    DEFAULT_TRACE_RANGE_MS,
+    "the two surfaces drifted into different 6h defaults while both headers claim one bound",
+  );
+});
+
+test("mock logs free text reaches the BODY only (D51(e)), ANDing whitespace-split terms", () => {
+  const line = logLine({ id: "l1", body: "cache miss for embedding", pod: "gateway-84c5f-jw6th" });
+  assert.equal(mockLogMatches(line, "cache embedding"), true);
+  assert.equal(mockLogMatches(line, "  cache   embedding  "), true);
+  assert.equal(mockLogMatches(line, "cache doesnotexist"), false);
+  assert.equal(mockLogMatches(line, ""), true);
+  assert.equal(mockLogMatches(line, "EMBEDDING"), true);
+  assert.equal(
+    mockLogMatches(logLine({ id: "l2", body: "order CAFÉ latte" }), "café"),
+    true,
+    "D56: Unicode simple case folding, the mock twin of the positionCaseInsensitiveUTF8 probe",
+  );
+  // The pod was a free-text field on this surface until D51(e) ruled the reach
+  // to be the body: red against the old `body || pod` matcher.
+  assert.equal(mockLogMatches(line, "gateway"), false);
+});
+
+test("each mock logs filter narrows with a control line that would otherwise pass", () => {
+  const all: LogLine[] = [
+    logLine({ id: "keep-info", body: "keeper info line" }),
+    logLine({ id: "ctl-debug", body: "control debug line", severity: "debug" }),
+    logLine({ id: "ctl-pod", body: "control other pod", pod: "pod-2" }),
+    logLine({ id: "keep-trace", body: "keeper on trace", traceId: "t1" }),
+    logLine({ id: "ctl-old", body: "control out of window", ts: NOW - 7 * 3_600_000 }),
+  ];
+  const ids = (filter: Parameters<typeof mockSearchLogs>[1]) =>
+    mockSearchLogs(all, filter).logs.map((l) => l.id);
+
+  assert.deepEqual(ids({}), ["keep-info", "ctl-debug", "ctl-pod", "keep-trace"]);
+  assert.deepEqual(ids({ minSeverity: "info" }), ["keep-info", "ctl-pod", "keep-trace"]);
+  assert.deepEqual(ids({ pod: "pod-1" }), ["keep-info", "ctl-debug", "keep-trace"]);
+  assert.deepEqual(ids({ onTraceOnly: true }), ["keep-trace"]);
+  assert.deepEqual(ids({ q: "keeper" }), ["keep-info", "keep-trace"]);
+  assert.deepEqual(ids({ rangeMs: 8 * 3_600_000 }), [
+    "keep-info",
+    "ctl-debug",
+    "ctl-pod",
+    "keep-trace",
+    "ctl-old",
+  ]);
+});
+
+test("mock logs pod options describe the window, never the current narrowing", () => {
+  const all: LogLine[] = [
+    logLine({ id: "a", pod: "pod-b" }),
+    logLine({ id: "b", pod: "pod-a" }),
+    logLine({ id: "c", pod: "" }),
+    logLine({ id: "d", pod: "pod-old", ts: NOW - 7 * 3_600_000 }),
+  ];
+  assert.deepEqual(mockSearchLogs(all, { pod: "pod-a" }).pods, ["pod-a", "pod-b"]);
+  assert.deepEqual(mockSearchLogs(all, { rangeMs: 8 * 3_600_000 }).pods, [
+    "pod-a",
+    "pod-b",
+    "pod-old",
+  ]);
+});
+
+test("the cap is one slice and a proven fact, in mock mode too (E3)", () => {
+  const line = (i: number) => logLine({ id: `c${i}`, body: `line ${i}` });
+  const exact = Array.from({ length: LOG_SEARCH_CAP }, (_, i) => line(i));
+  assert.equal(mockSearchLogs(exact, {}).logs.length, LOG_SEARCH_CAP);
+  assert.equal(
+    mockSearchLogs(exact, {}).truncated,
+    false,
+    "exactly the cap reported as truncated — the flag is a count comparison, not a cap+1 fact",
+  );
+  const over = [...exact, line(LOG_SEARCH_CAP)];
+  assert.equal(mockSearchLogs(over, {}).logs.length, LOG_SEARCH_CAP);
+  assert.equal(mockSearchLogs(over, {}).truncated, true);
+});
+
+// S2.2 L1 standing guard: the D42 carrier exclusion is a LIVE-only rule because
+// the mock stream has no bodyless rows to exclude. That premise is asserted, not
+// assumed — a mock that grows carrier rows turns this red instead of quietly
+// rendering blank lines on the mock surface.
+test("the mock stream carries no bodyless rows, so the D42 carrier rule has no mock counterpart", () => {
+  assert.deepEqual(
+    streamLogs.filter((l) => !l.body).map((l) => l.id),
+    [],
+  );
+});
+
+test("mock default /app/logs window is today's list: the first cap rows of the stream, unchanged", () => {
+  const { logs, truncated, pods, nowMs } = mockSearchLogs(streamLogs, {});
+  assert.deepEqual(
+    logs.map((l) => l.id),
+    streamLogs.slice(0, LOG_SEARCH_CAP).map((l) => l.id),
+    "the D50 default window or the severity floor changed what mock mode renders by default",
+  );
+  assert.equal(truncated, streamLogs.length > LOG_SEARCH_CAP);
+  assert.deepEqual(pods, [...new Set(streamLogs.map((l) => l.pod))].sort());
+  assert.equal(nowMs, NOW, "mock ages must derive from the mock clock, never the wall clock (F6/F7)");
+});
+
+test("SEVERITY_ORDER is the one severity ranking both the SQL and the mock filter index into", () => {
+  assert.deepEqual([...SEVERITY_ORDER], ["debug", "info", "warn", "error", "fatal"]);
 });
