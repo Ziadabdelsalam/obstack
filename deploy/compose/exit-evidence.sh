@@ -56,9 +56,20 @@ page() { curl -s "$BASE$1" | sed 's/<!-- -->//g'; }
 rows_in() { grep -oa "$2" <<<"$1" | wc -l | tr -d ' '; }
 has() { case "$1" in *"$2"*) return 0 ;; *) return 1 ;; esac; }
 
+# Kill a process AND its descendants. `next start` runs under `npm exec`, so
+# killing the subshell this script launched leaves the server itself listening —
+# measured: the next run of this command then binds nothing (EADDRINUSE, into a
+# log nobody reads), asserts against the STALE server, and prints PASS.
+kill_tree() {
+  local pid="$1" child
+  [ -n "$pid" ] || return 0
+  for child in $(pgrep -P "$pid" 2>/dev/null); do kill_tree "$child"; done
+  kill "$pid" 2>/dev/null
+  return 0
+}
 cleanup() {
-  [ -n "${app_pid:-}" ] && kill "$app_pid" 2>/dev/null
-  [ -n "${chrome_pid:-}" ] && kill "$chrome_pid" 2>/dev/null
+  kill_tree "${app_pid:-}"
+  kill_tree "${chrome_pid:-}"
   return 0
 }
 trap cleanup EXIT
@@ -92,6 +103,16 @@ claim "the seed holds more traces than one page (the total is about data, not th
 claim "no P13-class phantom summary exists in the evidence workspace (D71(b))" "$([ "$PHANTOMS" = 0 ] && echo 0 || echo 1)" "$PHANTOMS found"
 
 step "serving the production build against it"
+# Refuse to assert against a server this run did not start. Every claim below
+# reads HTTP from $BASE and cannot tell one server from another, so a leftover
+# one answers for the build it was started with — and the badge decision is baked
+# at BUILD time (see below), which is exactly the thing these claims measure.
+if curl -s -m 2 -o /dev/null "$BASE/app/traces"; then
+  no "port $APP_PORT is free for this run's own server" \
+    "something already answers on $BASE — stop it (kill \$(lsof -ti tcp:$APP_PORT)) or set APP_PORT=..."
+  printf '\nexit-evidence: FAIL — refusing to measure a server this run did not start\n'
+  exit 1
+fi
 # Built with the SAME env it is served with, which is not a detail: the app
 # layout reads the mode at render time, and a statically prerendered route bakes
 # that decision at BUILD time — so a mock-mode build served live would ship
@@ -209,6 +230,16 @@ claim "$matrix_n hostile URLs answer 200 with the default 6h bound" "$([ "$matri
 
 step "the browser half (carry-forward 2 both surfaces, the late echo, saved views)"
 chrome="${CHROME:-/Applications/Google Chrome.app/Contents/MacOS/Google Chrome}"
+# Same refusal as the app port, and it matters more here: a Chrome this run did
+# not start keeps somebody else's profile, and "the saved view survived" would
+# then be a claim about localStorage a previous run wrote. The fresh
+# --user-data-dir below is only fresh if this is the browser we drive.
+if curl -s -m 2 -o /dev/null "http://127.0.0.1:$CDP_PORT/json/version"; then
+  no "CDP port $CDP_PORT is free for this run's own browser" \
+    "a debuggable browser already answers there — its profile is not this run's; stop it or set CDP_PORT=..."
+  printf '\nexit-evidence: FAIL — refusing to drive a browser this run did not start\n'
+  exit 1
+fi
 if [ -x "$chrome" ]; then
   "$chrome" --headless=new --remote-debugging-port="$CDP_PORT" --user-data-dir="$OUT/chrome" \
     --no-first-run --no-default-browser-check about:blank > "$OUT/chrome.log" 2>&1 &

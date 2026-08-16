@@ -128,8 +128,15 @@ the surfaces with `curl` and with a real headless browser
 exits non-zero on any failure; artifacts land in a temp directory it names
 (override with `OUT_DIR=...`).
 
-Two properties of the harness are worth knowing before changing it:
+Three properties of the harness are worth knowing before changing it:
 
+- **It only measures processes it started itself.** If anything already answers
+  on the app port (`APP_PORT`, 3210) or the CDP port (`CDP_PORT`, 9333) the run
+  refuses and exits non-zero, instead of asserting against a leftover server
+  from an earlier run — which serves an *older build* — or a browser carrying
+  somebody else's `localStorage`, which is what "the saved view survived" is
+  about. It also kills its own server and browser on the way out, `npm exec`
+  child included.
 - **It builds with the same environment it serves with.** The app layout decides
   the `SAMPLE DATA` badge from the data mode, and a statically prerendered route
   bakes that decision at *build* time — so a mock-mode build served in live mode
