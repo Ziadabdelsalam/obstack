@@ -172,8 +172,14 @@ upgrade").
 - An upgrade cannot repair a ClickHouse that is already down — the
   pre-upgrade hook's `wait-for-clickhouse` init container blocks in front of
   the very change that would fix it. `helm upgrade --no-hooks` applies the
-  normal resources without the hook; once ClickHouse is serving again, a
-  normal `helm upgrade` runs the migration that `--no-hooks` skipped.
+  normal resources without the hook — but **state the fixing value on that
+  command line**: Helm v4 carries the previous release's `--set` values
+  forward, so a bare `--no-hooks` re-run re-applies the very spec that broke
+  ClickHouse (measured: `helm get values` still showed the bad image and the
+  pod came back on it). Once ClickHouse is serving again, a normal
+  `helm upgrade` runs the migration that `--no-hooks` skipped; until it does,
+  the ingest pods refuse loudly with the documented error rather than serving
+  an unmigrated schema.
 - One `--timeout` spans both phases (hooks + resource waits). A cold
   install's cost is the ClickHouse image pull plus seconds — measured pulls
   of the ~250 MB image were 7m28s on one machine and ~11m on another, and

@@ -50,8 +50,10 @@ demo:
   image: obstack-demo-agent:kind
   pullPolicy: Never
 
-# A small, pinned utility image (D14 — exact tag, never floating), used in
-# two unrelated places that both just need a shell and no OTel SDK: the demo
-# pod's second, uninstrumented container (D37.2 — the genuine NEARBY log
-# source) and the migrate Job's wait-for-ClickHouse step below.
+# A small, pinned utility image (D14 — exact tag, never floating), used
+# wherever this chart needs a shell and no OTel SDK: the demo pod's second,
+# uninstrumented container (D37.2 — the genuine NEARBY log source), and the
+# shared wait-for-clickhouse init container (`obstack.waitForClickhouse`,
+# templates/_helpers.tpl — one define, included by both the migrate Job and
+# the ingest Deployment).
 utilityImage: busybox:1.37.0
