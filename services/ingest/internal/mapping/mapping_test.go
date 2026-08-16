@@ -383,6 +383,37 @@ func TestLogRecordFillsPromptCompletionFromMessages(t *testing.T) {
 	}
 }
 
+// The fixture above is the pre-serialised-string shape. Semconv types
+// gen_ai.input.messages as `any`, and upstream's Events API puts the message
+// array on the wire as a *structured* attribute value — the branch a real
+// producer hits. The contract says that lands as JSON, so pin the exact bytes:
+// they are what T6's read and every SDK downstream parses, and a pdata change
+// that reshaped them would be a change to obstack's stored content.
+func TestLogRecordFillsPromptFromStructuredMessages(t *testing.T) {
+	ld := plog.NewLogs()
+	record := ld.ResourceLogs().AppendEmpty().ScopeLogs().AppendEmpty().LogRecords().AppendEmpty()
+	record.SetTimestamp(pcommon.NewTimestampFromTime(start))
+
+	msg := record.Attributes().PutEmptySlice("gen_ai.input.messages").AppendEmpty().SetEmptyMap()
+	msg.PutStr("role", "user")
+	part := msg.PutEmptySlice("parts").AppendEmpty().SetEmptyMap()
+	part.PutStr("type", "text")
+	part.PutStr("content", "summarise the incident")
+
+	rows := mapping.LogRows(workspaceID, ld)
+	if len(rows) != 1 {
+		t.Fatalf("got %d rows, want 1", len(rows))
+	}
+
+	const want = `[{"parts":[{"content":"summarise the incident","type":"text"}],"role":"user"}]`
+	if rows[0].Prompt != want {
+		t.Errorf("prompt = %q, want %q", rows[0].Prompt, want)
+	}
+	if _, ok := rows[0].Attributes["gen_ai.input.messages"]; ok {
+		t.Error("gen_ai.input.messages is duplicated into the attributes map")
+	}
+}
+
 // A record carrying neither content attribute is the overwhelming majority
 // case (an ordinary log line) and must not gain phantom content.
 func TestLogRecordWithoutContentAttributesLeavesPromptCompletionEmpty(t *testing.T) {

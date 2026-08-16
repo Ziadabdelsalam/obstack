@@ -50,9 +50,11 @@
 //
 // Per field (prompt, completion) independently: a non-empty span column always
 // wins; only when it is empty does an event-derived (log-record) value fill it.
-// When more than one content-carrying log row matches a span_id, the earliest
-// timestamp among them wins — deterministic, because the read is already
-// timestamp-ordered. Content never enters cost or token computation, which
+// When more than one log row matches (workspace_id, trace_id, span_id), the
+// field is taken from the earliest-timestamp row whose *that* field is
+// non-empty — resolved per field, so a prompt-only row and a later
+// completion-only row each fill their own. Deterministic, because the read is
+// already timestamp-ordered. Content never enters cost or token computation, which
 // stays span-attribute-sourced (D9): no double-count by construction. T2 lands
 // the rows below; T6 implements the read that applies this precedence.
 //
