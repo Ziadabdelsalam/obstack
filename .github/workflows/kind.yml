@@ -6,12 +6,14 @@
 # on kind here).
 #
 # Trigger policy (K5 decision RULE): measure the full job's wall-clock, then
-# pick a branch. ≤~6 min → every PR, joins the required-checks set (this is
-# that branch — see the sprint result line for the measured run this was
-# decided from). If a future change pushes the job past ~6 min, switch this
-# trigger block to `ci:kind` label + push-to-master + workflow_dispatch and
-# drop `kind` from required checks (K5) — do not leave it
-# required-but-conditional.
+# pick a branch. Measured end to end (job start to job complete, including
+# cluster teardown) on the scratch PR: 1m19s
+# (https://github.com/Ziadabdelsalam/obstack/actions/runs/31932100700) — well
+# under the ~6 min line, so this runs on every PR like `web` and `go` and
+# joins the required-checks set. If a future change pushes the job past
+# ~6 min, switch this trigger block to `ci:kind` label + push-to-master +
+# workflow_dispatch and drop `kind` from required checks (K5) — do not leave
+# it required-but-conditional.
 on:
   pull_request:
     branches: [master]
