@@ -1,4 +1,13 @@
 import "server-only";
+// The URL contract is a client-safe module (D65); this layer imports it rather
+// than restating its vocabulary — server→lib is the same direction
+// `nearby-logs.ts` is imported in.
+import {
+  DEFAULT_LOG_RANGE,
+  DEFAULT_LOG_SEVERITY,
+  SEVERITY_ORDER,
+  logRangeMs,
+} from "@/lib/logs-filter";
 import type { Severity } from "@/lib/types";
 import { queryRows, workspaceId } from "@/server/clickhouse";
 import { splitSearchTerms } from "./traces";
@@ -26,35 +35,18 @@ import { splitSearchTerms } from "./traces";
 export const LOG_SEARCH_CAP = 200;
 
 /**
- * The severity floor vocabulary, weakest first — the index in this array IS the
- * rank the SQL below computes, so the filter, the stored rank and the rendered
- * label are one ordering with one definition.
- */
-export const SEVERITY_ORDER: readonly Severity[] = ["debug", "info", "warn", "error", "fatal"];
-
-/** The time-window vocabulary the URL carries; same tokens as `OverviewRange`. */
-export type LogRange = "1h" | "6h" | "24h";
-
-export const LOG_RANGES: Record<LogRange, number> = {
-  "1h": 3_600_000,
-  "6h": 6 * 3_600_000,
-  "24h": 24 * 3_600_000,
-};
-
-/**
  * D50: 6h is the one product-wide default range — the same window the traces
- * list and `getOverview` default to. `../data.test.ts` pins this equal to
- * `DEFAULT_TRACE_RANGE_MS`, so the two surfaces cannot drift into different
- * "defaults" while both headers claim one bound.
+ * list and `getOverview` default to. Derived from the URL contract's default
+ * label so the header's words and the query's bound cannot mean different
+ * windows; `lib/logs-filter.test.ts` pins it equal to `DEFAULT_TRACE_RANGE_MS`.
  */
-export const DEFAULT_LOG_RANGE: LogRange = "6h";
-export const DEFAULT_LOG_RANGE_MS = LOG_RANGES[DEFAULT_LOG_RANGE];
+export const DEFAULT_LOG_RANGE_MS = logRangeMs(DEFAULT_LOG_RANGE);
 
 /** The `/app/logs` filter set, applied server-side in BOTH modes (D13). */
 export interface LogFilter {
   /** free text over the log BODY only — see the reach note on `freeTextClauses` */
   q?: string;
-  /** severity floor; absent = `"debug"`, i.e. no floor */
+  /** severity floor; absent = `DEFAULT_LOG_SEVERITY`, i.e. no floor */
   minSeverity?: Severity;
   /** exact `k8s_pod` match; absent or empty = every pod */
   pod?: string;
@@ -246,7 +238,7 @@ export async function queryLogSearch(filter: LogFilter): Promise<LogSearchResult
   const params: Record<string, unknown> = {
     workspace_id: workspaceId,
     since_ms: sinceMs,
-    min_rank: SEVERITY_ORDER.indexOf(filter.minSeverity ?? "debug"),
+    min_rank: SEVERITY_ORDER.indexOf(filter.minSeverity ?? DEFAULT_LOG_SEVERITY),
     pod: filter.pod ?? "",
     on_trace_only: filter.onTraceOnly ? 1 : 0,
     fetch_limit: LOG_SEARCH_CAP + 1,

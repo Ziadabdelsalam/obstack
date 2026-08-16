@@ -5,13 +5,10 @@ import { NOW } from "@/mock/generate";
 import { streamLogs } from "@/mock/logstream";
 import { allTraces } from "@/mock/traces";
 import { mockLogMatches, mockMatches, mockSearchLogs, mockSearchTraces } from "./data";
-import {
-  DEFAULT_LOG_RANGE_MS,
-  LOG_SEARCH_CAP,
-  SEVERITY_ORDER,
-  type LogLine,
-} from "./queries/logs";
-import { DEFAULT_TRACE_RANGE_MS, TRACE_PAGE_SIZE } from "./queries/traces";
+import { SEVERITY_ORDER } from "@/lib/logs-filter";
+import { pods as infraPods } from "@/mock/infra";
+import { LOG_SEARCH_CAP, type LogLine } from "./queries/logs";
+import { TRACE_PAGE_SIZE } from "./queries/traces";
 
 // run with: node --conditions=react-server --test src/server/data.test.ts
 //
@@ -281,13 +278,9 @@ const logLine = (over: Partial<LogLine> & { id: string }): LogLine => ({
   ...over,
 });
 
-test("D50: the logs default window is the SAME product-wide 6h the traces list uses", () => {
-  assert.equal(
-    DEFAULT_LOG_RANGE_MS,
-    DEFAULT_TRACE_RANGE_MS,
-    "the two surfaces drifted into different 6h defaults while both headers claim one bound",
-  );
-});
+// D50's "one product-wide 6h" pin moved to `lib/logs-filter.test.ts` with the
+// default itself (D65) — the surface's URL contract owns the label, this file
+// owns the mock behaviour.
 
 test("mock logs free text reaches the BODY only (D51(e)), ANDing whitespace-split terms", () => {
   const line = logLine({ id: "l1", body: "cache miss for embedding", pod: "gateway-84c5f-jw6th" });
@@ -385,4 +378,28 @@ test("mock default /app/logs window is today's list: the first cap rows of the s
 
 test("SEVERITY_ORDER is the one severity ranking both the SQL and the mock filter index into", () => {
   assert.deepEqual([...SEVERITY_ORDER], ["debug", "info", "warn", "error", "fatal"]);
+});
+
+// D61: the infra table deep-links each pod to `/app/logs?pod=<full name>`. That
+// link is only honest if the name it sends is a value this surface can filter
+// on — free text reads the body only (D51(e)), which is why the old truncated
+// `?q=` form was a search for a pod name in message text. Measured in mock mode
+// before the fix: 9 of these 12 pods returned nothing; after it, every one of
+// them lands on rows. This is the standing guard for that (S2.2 L1): if the two
+// mock vocabularies ever drift apart, the link starts returning empty windows
+// and this goes red rather than the UI quietly lying.
+test("D61: every infra pod deep-link lands on a pod the logs surface actually offers", () => {
+  const offered = mockSearchLogs(streamLogs, {}).pods;
+  const missing = infraPods.filter((p) => !offered.includes(p.name));
+  assert.deepEqual(
+    missing.map((p) => p.name),
+    [],
+    "an infra pod is not in the logs surface's pod options — its `logs` link opens an empty window",
+  );
+  for (const pod of infraPods) {
+    assert.ok(
+      mockSearchLogs(streamLogs, { pod: pod.name }).logs.length > 0,
+      `the pod filter for ${pod.name} matched no rows, so the infra deep-link renders the empty state`,
+    );
+  }
 });

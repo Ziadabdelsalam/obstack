@@ -5,12 +5,38 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { ArrowUpRight, RefreshCw, Search } from "lucide-react";
 import { SavedViewsMenu } from "@/components/saved-views/SavedViewsMenu";
+// The surface's URL contract — parameter names, defaults, serialization —
+// shared with the server page so this bar cannot disagree with the parse on the
+// other side of the round trip (D65).
+import {
+  LOG_RANGE_HOURS,
+  SEVERITY_ORDER,
+  DEFAULT_LOG_SEVERITY,
+  logsHref,
+  logsSearchString,
+  logsViewFilters,
+  type LogRange,
+  type LogsFilters,
+} from "@/lib/logs-filter";
 import type { SavedViewFilters } from "@/lib/saved-views";
 import type { Severity } from "@/lib/types";
 // Type-only, so nothing from the server graph is emitted into the client
 // bundle: the D13 facade rule says this surface knows `@/server/data` and
 // nothing below it — never `@/server/queries/*`, never `@/mock/*` (D51(d)).
-import type { LogLine, LogRange } from "@/server/data";
+import type { LogLine } from "@/server/data";
+
+/**
+ * The severity floors the bar offers: every rank except the strongest, because
+ * a "fatal+" floor is a filter nobody reaches for and the weakest one is how
+ * the control says "no floor". Labels are derived, so the vocabulary has one
+ * definition (D65) — this dropdown cannot offer a value the parser rejects.
+ */
+const SEVERITY_CHOICES = SEVERITY_ORDER.slice(0, -1).map((sev) => ({
+  value: sev,
+  label: sev === DEFAULT_LOG_SEVERITY ? "severity: all" : `${sev}+`,
+}));
+
+const RANGE_CHOICES = Object.keys(LOG_RANGE_HOURS) as LogRange[];
 
 const sevColor: Record<Severity, string> = {
   debug: "var(--color-faint)",
@@ -35,36 +61,6 @@ function ago(nowMs: number, ts: number): string {
   if (m < 1) return "now";
   if (m < 60) return `${m}m`;
   return `${Math.floor(m / 60)}h${m % 60 ? ` ${m % 60}m` : ""}`;
-}
-
-interface Filters {
-  q: string;
-  sev: Severity;
-  pod: string;
-  onTrace: boolean;
-  range: LogRange;
-}
-
-/**
- * The URL is the single source of filter state, so a deep link reproduces a
- * view exactly and a saved view is literally this string (D47(ii)). Defaults
- * are omitted, which is what makes a bare `/app/logs` the default view.
- *
- * The two default literals below (`"debug"`, `"6h"`) MUST equal the page's own
- * (`toSeverity`'s floor and `DEFAULT_LOG_RANGE`). They are restated rather than
- * imported because the definition site is `server-only` and this is a client
- * component. A disagreement is not cosmetic: whichever value this function
- * omits is re-derived by the page as ITS default, so selecting that value in a
- * control would silently apply a different bound. Change one, change both.
- */
-function toSearch({ q, sev, pod, onTrace, range }: Filters): string {
-  const p = new URLSearchParams();
-  if (q) p.set("q", q);
-  if (sev !== "debug") p.set("sev", sev);
-  if (pod) p.set("pod", pod);
-  if (onTrace) p.set("onTrace", "1");
-  if (range !== "6h") p.set("range", range);
-  return p.toString();
 }
 
 /**
@@ -94,9 +90,9 @@ export function LogsExplorer({
   /** proven by the cap+1 fetch — more rows match than the surface renders */
   truncated: boolean;
   nowMs: number;
-} & Filters) {
+} & LogsFilters) {
   const router = useRouter();
-  const [filters, setFilters] = useState<Filters>({
+  const [filters, setFilters] = useState<LogsFilters>({
     q: appliedQ,
     sev: appliedSev,
     pod: appliedPod,
@@ -106,7 +102,7 @@ export function LogsExplorer({
 
   // What the server already rendered; the sync below is a no-op until it moves.
   const pushed = useRef(
-    toSearch({
+    logsSearchString({
       q: appliedQ,
       sev: appliedSev,
       pod: appliedPod,
@@ -116,12 +112,12 @@ export function LogsExplorer({
   );
 
   useEffect(() => {
-    const search = toSearch(filters);
+    const search = logsSearchString(filters);
     if (search === pushed.current) return;
     // Debounced so a typed word is one log query, not one per keystroke.
     const timer = setTimeout(() => {
       pushed.current = search;
-      router.replace(search ? `/app/logs?${search}` : "/app/logs", { scroll: false });
+      router.replace(logsHref(search), { scroll: false });
     }, 250);
     return () => clearTimeout(timer);
   }, [filters, router]);
@@ -138,7 +134,7 @@ export function LogsExplorer({
       onTrace: appliedOnTrace,
       range: appliedRange,
     };
-    const search = toSearch(applied);
+    const search = logsSearchString(applied);
     if (search === pushed.current) return;
     pushed.current = search;
     setFilters(applied);
@@ -151,11 +147,10 @@ export function LogsExplorer({
    * `pushed` is deliberately left alone so that adoption fires.
    */
   const applyView = (view: SavedViewFilters) => {
-    const search = new URLSearchParams(view).toString();
-    router.replace(search ? `/app/logs?${search}` : "/app/logs", { scroll: false });
+    router.replace(logsHref(new URLSearchParams(view).toString()), { scroll: false });
   };
 
-  const set = (patch: Partial<Filters>) => setFilters((f) => ({ ...f, ...patch }));
+  const set = (patch: Partial<LogsFilters>) => setFilters((f) => ({ ...f, ...patch }));
 
   return (
     <div className="px-5 py-4">
@@ -190,10 +185,11 @@ export function LogsExplorer({
           aria-label="Minimum severity"
           className="rounded-md border border-line bg-surface px-2.5 py-1.5 text-[12.5px] text-mid focus:border-line-strong focus:outline-none"
         >
-          <option value="debug">severity: all</option>
-          <option value="info">info+</option>
-          <option value="warn">warn+</option>
-          <option value="error">error+</option>
+          {SEVERITY_CHOICES.map((choice) => (
+            <option key={choice.value} value={choice.value}>
+              {choice.label}
+            </option>
+          ))}
         </select>
         <select
           value={filters.pod}
@@ -214,9 +210,11 @@ export function LogsExplorer({
           aria-label="Time range"
           className="rounded-md border border-line bg-surface px-2.5 py-1.5 text-[12.5px] text-mid focus:border-line-strong focus:outline-none"
         >
-          <option value="1h">last 1h</option>
-          <option value="6h">last 6h</option>
-          <option value="24h">last 24h</option>
+          {RANGE_CHOICES.map((range) => (
+            <option key={range} value={range}>
+              last {range}
+            </option>
+          ))}
         </select>
         <button
           type="button"
@@ -236,7 +234,7 @@ export function LogsExplorer({
         </button>
         <SavedViewsMenu
           surface="logs"
-          filters={Object.fromEntries(new URLSearchParams(toSearch(filters)))}
+          filters={logsViewFilters(filters)}
           onApply={applyView}
         />
       </div>

@@ -4,9 +4,9 @@ import { NOW } from "@/mock/generate";
 import { streamLogs } from "@/mock/logstream";
 import { statCards, timeseries } from "@/mock/metrics";
 import { allTraces, getTrace as getMockTrace } from "@/mock/traces";
+import { DEFAULT_LOG_SEVERITY, SEVERITY_ORDER } from "@/lib/logs-filter";
 import {
   DEFAULT_LOG_RANGE_MS,
-  SEVERITY_ORDER,
   capLogRows,
   queryLogSearch,
   type LogFilter,
@@ -36,14 +36,11 @@ export type {
 } from "@/server/queries/overview";
 export type { TraceFilter, TraceSearchResult } from "@/server/queries/traces";
 export { DEFAULT_TRACE_RANGE_MS, TRACE_PAGE_SIZE } from "@/server/queries/traces";
-export type { LogFilter, LogLine, LogRange, LogSearchResult } from "@/server/queries/logs";
-export {
-  DEFAULT_LOG_RANGE,
-  DEFAULT_LOG_RANGE_MS,
-  LOG_RANGES,
-  LOG_SEARCH_CAP,
-  SEVERITY_ORDER,
-} from "@/server/queries/logs";
+export type { LogFilter, LogLine, LogSearchResult } from "@/server/queries/logs";
+export { DEFAULT_LOG_RANGE_MS, LOG_SEARCH_CAP } from "@/server/queries/logs";
+// The logs URL vocabulary is NOT re-exported: it lives in `@/lib/logs-filter`
+// (D65), which the page and the bar import directly — a facade passthrough
+// would put a second import path on a client-safe module for no reason.
 
 /** The workspace every live query binds to — surfaced so pages can label it (F6). */
 export { workspaceId } from "@/server/clickhouse";
@@ -196,7 +193,7 @@ export function mockLogMatches(line: LogLine, q: string): boolean {
  */
 export function mockSearchLogs(all: LogLine[], filter: LogFilter): LogSearchResult {
   const sinceMs = NOW - (filter.rangeMs ?? DEFAULT_LOG_RANGE_MS);
-  const minRank = SEVERITY_ORDER.indexOf(filter.minSeverity ?? "debug");
+  const minRank = SEVERITY_ORDER.indexOf(filter.minSeverity ?? DEFAULT_LOG_SEVERITY);
   const inWindow = all.filter((line) => line.ts >= sinceMs);
   const matched = inWindow.filter(
     (line) =>

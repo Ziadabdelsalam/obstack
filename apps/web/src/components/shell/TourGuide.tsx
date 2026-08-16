@@ -46,10 +46,14 @@ const steps: TourStep[] = [
     body: "One request, every layer: API span, agent steps, LLM calls with prompts inline, and the infra track below — those diamonds are the pod being OOM-killed mid-completion. Try “Explain this trace”, and flip waterfall → replay to read the run as a transcript.",
   },
   {
+    // D60: this step annotates a LIVE-WIRED surface, so its words are a claim
+    // about real data in live mode — capability only, true in both modes.
+    // Nothing tails (D48) and no pod name is promised: the pod list is whatever
+    // the workspace logged in the window.
     path: "/app/logs",
     target: "logs",
-    title: "Logs — live tail, joined",
-    body: "Every pod's logs in one stream — app, kubelet, postgres, cert-manager. The green TRACE tag means the line belongs to a request; one click puts it back in context.",
+    title: "Logs — searched, filtered, joined",
+    body: "Search log bodies, then narrow by severity, pod, time range or on-trace-only. The TRACE tag means the line belongs to a request; one click puts it back in context.",
   },
   {
     path: "/app/issues",
