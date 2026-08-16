@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
+import { HOSTILE_URL_VALUES, type HostileUrlValue } from "@/lib/hostile-url-values";
 import { DEFAULT_TRACE_RANGE_MS } from "@/server/queries/traces";
 import {
   DEFAULT_LOG_RANGE,
@@ -67,15 +68,104 @@ test("D65: every filter round-trips URL → filters → URL unchanged", () => {
   }
 });
 
-// The reviewer's 500: `range in LOG_RANGE_HOURS` walks the prototype chain, so
-// `?range=toString` resolved to a Function, made the window NaN and 500'd the
-// route in live mode. Restore `in` and every key below goes red.
-test("D65: a prototype key is not a range (Object.hasOwn, never `in`)", () => {
-  for (const hostile of ["toString", "constructor", "valueOf", "hasOwnProperty", "__proto__", "nope"]) {
-    const parsed = parseLogsUrl({ range: hostile, sev: hostile });
-    assert.equal(parsed.range, DEFAULT_LOG_RANGE, `?range=${hostile} did not fall back to the default`);
-    assert.equal(parsed.sev, DEFAULT_LOG_SEVERITY, `?sev=${hostile} did not fall back to the default`);
-    assert.ok(Number.isFinite(logRangeMs(parsed.range)), `?range=${hostile} produced a non-finite window`);
+// ---- D68 totality: the shared hostile corpus, every value in every parameter
+
+/** Short, stable label for a message — the corpus holds a 5000-character value. */
+function label(value: HostileUrlValue): string {
+  if (Array.isArray(value)) return `[${value.join(",")}]`;
+  return value.length > 24 ? `${value.slice(0, 24)}…(${value.length} chars)` : JSON.stringify(value);
+}
+
+/**
+ * The two kinds of parameter this contract has, split by what "in domain"
+ * MEANS for each — the split is the property, not a convenience:
+ *
+ * - CLOSED parameters (`sev`, `range`, `onTrace`) hold one of a fixed set, so
+ *   hostile input can never become the value; it must fall back to the default.
+ * - OPEN parameters (`q`, `pod`) must ACCEPT the input verbatim. `?q=toString`
+ *   is a real body search and `?pod=__proto__` is a real pod filter that finds
+ *   nothing; asserting a default fallback there would assert a falsehood (D68).
+ *
+ * This contract has no NUMERIC parameter, so D68's numeric-bounds clause has
+ * nothing to bind to directly — but the parse DERIVES one number, the time
+ * window, and that is precisely where the measured failure was: `?range=
+ * toString` under `range in LOG_RANGE_HOURS` walked the prototype chain to a
+ * Function, made `since_ms` NaN and 500'd the route in live mode. So `rangeMs`
+ * is asserted finite and positive for every value in every parameter, and
+ * restoring `in` turns this test red.
+ */
+const CLOSED_PARAMS = ["sev", "range", "onTrace"] as const;
+const OPEN_PARAMS = ["q", "pod"] as const;
+
+test("D68 totality: no corpus value in any parameter escapes the contract's domain", () => {
+  // S2.0 L1: everything below is a loop, and a loop over an empty corpus is
+  // green by vacuity. The fixture's size and its load-bearing members are
+  // asserted BEFORE anything iterates, so a corpus that shrank — or lost the
+  // prototype names that caused the real 500 — is a failure here rather than a
+  // silently weaker guarantee everywhere it is inherited.
+  assert.equal(HOSTILE_URL_VALUES.length, 15, "the D68 corpus changed size; the ruling fixes its contents");
+  for (const required of ["toString", "constructor", "valueOf", "hasOwnProperty", "__proto__", "1e999", "NaN", ""]) {
+    assert.ok(HOSTILE_URL_VALUES.includes(required), `the corpus lost ${JSON.stringify(required)}`);
+  }
+  assert.ok(
+    HOSTILE_URL_VALUES.some((v) => Array.isArray(v)),
+    "the corpus lost its repeated-parameter value — the one shape only a router produces",
+  );
+  assert.ok(
+    HOSTILE_URL_VALUES.some((v) => typeof v === "string" && v.length >= 5000),
+    "the corpus lost its long value",
+  );
+
+  for (const value of HOSTILE_URL_VALUES) {
+    for (const param of [...CLOSED_PARAMS, ...OPEN_PARAMS]) {
+      const at = `?${param}=${label(value)}`;
+
+      // (a) never throws
+      const parsed = ((): LogsFilters => {
+        try {
+          return parseLogsUrl({ [param]: value });
+        } catch (error) {
+          assert.fail(`${at} threw ${String(error)} — a parse must never throw (D68)`);
+        }
+      })();
+
+      // (b) in-domain: the closed fields hold a member of their vocabulary AND,
+      // because no corpus value is a legal member, their default.
+      assert.ok(SEVERITY_ORDER.includes(parsed.sev), `${at} left sev outside its vocabulary: ${parsed.sev}`);
+      assert.ok(Object.hasOwn(LOG_RANGE_HOURS, parsed.range), `${at} left range outside its vocabulary: ${parsed.range}`);
+      assert.equal(parsed.sev, DEFAULT_LOG_SEVERITY, `${at} did not fall back to the default severity`);
+      assert.equal(parsed.range, DEFAULT_LOG_RANGE, `${at} did not fall back to the default range`);
+      assert.equal(parsed.onTrace, false, `${at} did not fall back to the default on-trace toggle`);
+
+      // The derived bound — the one number this contract produces, and the one
+      // the query layer subtracts from the clock.
+      const rangeMs = toLogFilter(parsed).rangeMs;
+      assert.ok(
+        typeof rangeMs === "number" && Number.isFinite(rangeMs) && rangeMs > 0,
+        `${at} produced a non-finite or non-positive window: ${rangeMs}`,
+      );
+
+      // The open fields accept the value — first-of-repeated, trimmed — and the
+      // parameter that was not attacked stays empty.
+      const accepted = (Array.isArray(value) ? value[0] : value).trim();
+      const untouched = param === "q" ? "pod" : "q";
+      if (param === "q" || param === "pod") {
+        assert.equal(parsed[param], accepted, `${at} rejected a legitimate free-string value`);
+        assert.equal(parsed[untouched], "", `${at} leaked into ${untouched}`);
+      } else {
+        assert.equal(parsed.q, "", `${at} leaked into q`);
+        assert.equal(parsed.pod, "", `${at} leaked into pod`);
+      }
+
+      // ...and whatever survived round-trips through the URL unchanged, so an
+      // accepted hostile string cannot mean one thing in a link and another in
+      // the bar that re-serializes it.
+      assert.deepEqual(
+        parseLogsUrl(Object.fromEntries(new URLSearchParams(logsSearchString(parsed)))),
+        parsed,
+        `${at} did not survive a serialize/parse round trip`,
+      );
+    }
   }
 });
 
