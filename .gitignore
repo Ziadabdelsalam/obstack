@@ -2,6 +2,8 @@
 
 # dependencies
 node_modules
+# the venv packages/obstack-py's README and the sdk-py job both create here
+.venv/
 /.pnp
 .pnp.*
 .yarn/*

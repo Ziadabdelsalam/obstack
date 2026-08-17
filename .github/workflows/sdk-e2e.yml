@@ -1,0 +1,106 @@
+# S2.4 D80 — `sdk-e2e`: the sprint's exit evidence, run as a check.
+#
+# One step, one command: `bash deploy/compose/sdk-evidence.sh`, verbatim, the
+# same line the root README and the sprint's evidence bundle tell a human to run
+# (S2.1 L3). Everything the exit clause claims is inside that script — both
+# sample apps landing a four-layer trace with the D8 GenAI attributes from
+# nothing but an install and two lines, both rendering through the shipped query
+# layer, standard OTLP proven against a stock upstream collector, fail-open
+# proven live against a dead port. Nothing about the run is defined here, so
+# there is no CI-only variant of the evidence to drift from the human one.
+#
+# The `stack` job is deliberately NOT extended with this (D80): it is the signed
+# kind/Helm path and it runs on every PR, and folding a heavier compose run into
+# it would put a required check's trigger policy at the mercy of this one.
+#
+# TRIGGER POLICY (K5/D41) — label + push-to-master + manual, NOT every PR, and
+# NOT in the required set. The number this decision is made on: the script takes
+# 361s (6m01s) from destroyed volumes with the three service images rebuilt from
+# an empty builder cache, and 69s when the images are already built — measured
+# on an Apple M4 (10 cores, 16 GB, Docker Desktop, 8 GB to the VM), the sample
+# images' `pip install` and `npm install` downloading over a domestic
+# connection. 6m01s is already at the ~6-minute line before a runner adds
+# checkout, `npm ci` and the pulls of ClickHouse, python, node, golang,
+# distroless and the collector image — none of which this machine paid, all of
+# which can only add. A job that straddles the line does not belong in the
+# every-PR set, so it takes the other branch of D41 whole: `ci:sdk-e2e` on a
+# PR, always on push to `master` (a red there is stop-the-line for the next PR),
+# and `workflow_dispatch` for anyone who wants it now. Never
+# required-but-conditional.
+#
+# Re-measure on the first real run and correct this header with the run URL, the
+# way `stack` and `kind` state theirs; if CI comes in comfortably under the
+# line, moving to every-PR is a one-line change to the `if:` below.
+#
+# `sdk-e2e` is a K3-stable name from this first run; `web`, `go`, `kind` and
+# `stack` are untouched.
+name: sdk-e2e
+
+on:
+  pull_request:
+    branches: [master]
+    # `labeled` is what makes the opt-in work: adding `ci:sdk-e2e` to an open
+    # PR fires the run, and pushes after that keep it running.
+    types: [opened, synchronize, reopened, labeled]
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+concurrency:
+  group: sdk-e2e-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  sdk-e2e:
+    name: sdk-e2e
+    # On a PR only with the label; on master and on demand, always.
+    if: >-
+      github.event_name != 'pull_request' ||
+      contains(github.event.pull_request.labels.*.name, 'ci:sdk-e2e')
+    runs-on: ubuntu-latest
+    # Generous against the 6m measurement because the runner pays for pulls and
+    # builds this machine had cached, and bounded for the reason every other job
+    # here is: the GitHub default is 360 minutes.
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+
+      - uses: actions/setup-node@v7.0.0
+        with:
+          # The rendering proof runs the app's own server modules through tsx,
+          # so this is the `web`/`stack` Node line, not the SDK's own floor.
+          node-version: '24'
+          cache: 'npm'
+
+      # sdk-checks.ts imports `@/server/data` — the shipped facade — so the
+      # root workspace install is a prerequisite of the evidence, not of CI.
+      - run: npm ci
+
+      - name: SDK exit evidence (deploy/compose/sdk-evidence.sh)
+        # OUT_DIR is the script's own documented override: it changes where the
+        # collector dumps and the sdk-checks log land, never what is asserted,
+        # and it is what lets the step below read a red run afterwards. Set per
+        # step because `runner` is not a context job-level `env` can see.
+        env:
+          OUT_DIR: ${{ runner.temp }}/sdk-evidence-out
+        run: bash deploy/compose/sdk-evidence.sh
+
+      - name: Diagnose on failure
+        if: failure()
+        env:
+          OUT_DIR: ${{ runner.temp }}/sdk-evidence-out
+        run: |
+          docker compose -f deploy/compose/docker-compose.yml --profile '*' ps -a || true
+          for svc in clickhouse ingest sdk-sample-py sdk-sample-ts; do
+            echo "::group::$svc"
+            docker compose -f deploy/compose/docker-compose.yml --profile sdk logs --tail 60 "$svc" || true
+            echo "::endgroup::"
+          done
+          echo "::group::artifacts"
+          ls -la "$OUT_DIR" || true
+          cat "$OUT_DIR"/sdk-checks.log || true
+          echo "::endgroup::"

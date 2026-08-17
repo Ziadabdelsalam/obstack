@@ -99,6 +99,83 @@ services:
       start_period: 5s
     restart: unless-stopped
 
+  # The two SDK sample apps (S2.4 D80). Same "traffic, not infrastructure"
+  # standing as `demo`, under their own profile so the sprint's evidence run —
+  # `bash deploy/compose/sdk-evidence.sh`, which is also what CI's `sdk-e2e`
+  # job runs — brings them up with `--profile sdk` and nothing else changes.
+  #
+  # Both build from the repository ROOT: each image installs its SDK out of
+  # packages/, which is above the sample's own directory. The
+  # `Dockerfile.dockerignore` beside each Dockerfile is what keeps that context
+  # to the two directories actually needed (85/86 kB measured, not the whole
+  # repo). Neither sample is an npm workspace member (D76) — demo/ stays
+  # outside the product build, exactly like demo/agent-app.
+  #
+  # The env blocks differ between the two on purpose, and the difference is
+  # measured rather than stylistic (D89/D91): obstack-py's batch processors do
+  # read OTEL_BSP_*/OTEL_BLRP_*, obstack-js's do not, and the pinned JS HTTP
+  # instrumentation does not consult OTEL_SEMCONV_STABILITY_OPT_IN either. A
+  # variable nothing reads, set here, would advertise an effect it does not
+  # have — so neither block carries one. See each sample's README.
+  sdk-sample-py:
+    build:
+      context: ../..
+      dockerfile: demo/sdk-sample-py/Dockerfile
+    container_name: obstack-sdk-sample-py
+    profiles: [sdk]
+    depends_on:
+      ingest:
+        condition: service_healthy
+    environment:
+      OTEL_SERVICE_NAME: sdk-sample-py
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://ingest:4318
+      # URL-encoded, like the demo's: the SDK drops a header with a raw space.
+      OTEL_EXPORTER_OTLP_HEADERS: Authorization=Bearer%20${OBSTACK_SDK_API_KEY:-ok_dev_local}
+      # Both processors flush every second, so one request is queryable a
+      # second later instead of five (demo precedent).
+      OTEL_BSP_SCHEDULE_DELAY: "1000"
+      OTEL_BLRP_SCHEDULE_DELAY: "1000"
+    ports:
+      - "127.0.0.1:8010:8010" # POST /chat, GET /healthz
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8010/healthz')"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 5s
+    # 20s, not the 10s default: the fail-open evidence leg runs this same
+    # service against a dead endpoint, where shutdown spends ~9s retrying the
+    # export before the flush gives up (measured, T4). At 10s docker's SIGKILL
+    # lands in the same second as the flush, which would make the leg's own
+    # teardown a coin flip rather than the app-observable fact it is testing.
+    stop_grace_period: 20s
+    restart: unless-stopped
+
+  sdk-sample-ts:
+    build:
+      context: ../..
+      dockerfile: demo/sdk-sample-ts/Dockerfile
+    container_name: obstack-sdk-sample-ts
+    profiles: [sdk]
+    depends_on:
+      ingest:
+        condition: service_healthy
+    environment:
+      OTEL_SERVICE_NAME: sdk-sample-ts
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://ingest:4318
+      OTEL_EXPORTER_OTLP_HEADERS: Authorization=Bearer%20${OBSTACK_SDK_API_KEY:-ok_dev_local}
+    ports:
+      - "127.0.0.1:8100:8100" # POST /chat, GET /healthz
+    healthcheck:
+      # The image is node with no curl; node's own fetch is the probe.
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8100/healthz').then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 5s
+    stop_grace_period: 20s
+    restart: unless-stopped
+
   # Not started by a plain `docker compose up`, and not part of the default
   # `demo` path either — it is a second, opt-in ingest route (D39/Q2): apps
   # can still point straight at `ingest:4318` (M1's signed `smoke.sh` does,
