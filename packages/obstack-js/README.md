@@ -71,10 +71,13 @@ export OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318
 export OTEL_EXPORTER_OTLP_HEADERS=Authorization=Bearer%20ok_dev_local
 ```
 
-`init()` sets one default, `OTEL_SEMCONV_STABILITY_OPT_IN=http`, and only if you
-have not set it yourself. Without it the HTTP instrumentation emits the legacy
-`http.method` instead of `http.request.method`, and the api layer of the trace
-silently disappears.
+`init()` sets nothing in your environment and reads nothing of its own. In
+particular it does **not** touch `OTEL_SEMCONV_STABILITY_OPT_IN`: at the pinned
+`@opentelemetry/instrumentation-http` range that variable is not consulted at
+all, and the stable `http.request.method` — the attribute obstack classifies the
+api layer on — is emitted whether it is set, unset or nonsense. There is no
+env-ordering hazard to work around here. (The Python SDK is genuinely different
+on this point; do not copy its setup across.)
 
 Two standard groups are **not** read, because `init()` builds the exporters and
 batch processors itself rather than letting the SDK assemble them from the

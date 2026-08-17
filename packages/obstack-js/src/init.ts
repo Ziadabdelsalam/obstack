@@ -39,12 +39,13 @@ export function init(): ObstackSDK {
   if (sdk) return sdk;
 
   try {
-    // Without this, upstream instrumentations emit the legacy `http.method`
-    // instead of `http.request.method` and ingest's api layer silently
-    // disappears from the trace. It is a standard OTel variable and only a
-    // default — an app that has already chosen is left alone.
-    process.env.OTEL_SEMCONV_STABILITY_OPT_IN ??= "http";
-
+    // No OTEL_SEMCONV_STABILITY_OPT_IN default here, deliberately (D91).
+    // @opentelemetry/instrumentation-http at the pinned range contains zero
+    // references to that variable and emits the stable `http.request.method`
+    // unconditionally (utils.js:258 client, :514 server), so a default would be
+    // dead code pretending to hold up the api layer. Python's obstack-py DOES
+    // need its setdefault — that is a real difference between the two SDKs, not
+    // an inconsistency to iron out.
     const node = new NodeSDK({
       // `spanProcessors` rather than `traceExporter` because the Vercel-AI
       // translation has to be a processor, and the two options are mutually

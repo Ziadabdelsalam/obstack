@@ -27,8 +27,12 @@ async function runFixture(
   scenario: Scenario,
   env: Record<string, string>,
 ): Promise<{ stdout: string; stderr: string }> {
+  const childEnv = { ...process.env };
+  // Cleared unless a scenario sets it, so "init() left the environment alone"
+  // is a statement about init() and not about whatever the CI runner exported.
+  delete childEnv.OTEL_SEMCONV_STABILITY_OPT_IN;
   return run(process.execPath, ["--import", "tsx", FIXTURE, scenario], {
-    env: { ...process.env, ...env },
+    env: { ...childEnv, ...env },
   });
 }
 
@@ -86,9 +90,9 @@ test("an app whose collector is listening comes up and exports", async () => {
   });
   const result = JSON.parse(stdout.trim());
   assert.equal(result.agent, "agent saw tool value");
-  // A pre-set value is left alone: `init()` only supplies a default. Without
-  // the default, upstream instrumentations emit the legacy `http.method` and
-  // ingest's api layer silently disappears.
+  // Whatever the app chose for OTEL_SEMCONV_STABILITY_OPT_IN is still there
+  // afterwards — see the companion assertion in the dead-endpoint test for the
+  // other half (unset stays unset). D91: this SDK writes no environment.
   assert.equal(result.semconv, "http/dup");
   assert.ok(received > 0, "nothing reached the collector, so the failure cases below prove nothing by comparison");
 });
@@ -100,7 +104,11 @@ test("a dead endpoint does not break the application", async () => {
   const result = JSON.parse(stdout.trim());
   assert.equal(result.agent, "agent saw tool value");
   assert.equal(result.handle, true);
-  assert.equal(result.semconv, "http");
+  // Unset before init(), unset after (D91). instrumentation-http at the pinned
+  // range never reads this variable and emits the stable http.request.method
+  // regardless, so a default here would be dead code that reads like a
+  // load-bearing one — and the api layer of the trace is fine without it.
+  assert.equal(result.semconv, undefined);
 });
 
 test("malformed OTEL_* environment does not break the application", async () => {
