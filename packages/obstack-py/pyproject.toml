@@ -1,0 +1,66 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+# Distribution name and import name differ because PyPI's `obstack` is taken by
+# an unrelated project (D79). `pip install obstack-py`, `import obstack` — the
+# scikit-learn/sklearn arrangement.
+name = "obstack-py"
+dynamic = ["version"]
+description = "Agent observability in two lines: OpenTelemetry, LLM auto-instrumentation and agent/tool spans for obstack"
+readme = "README.md"
+license = "Apache-2.0"
+# The floor the code actually needs: `str | None` annotations at runtime come
+# from `from __future__ import annotations`, but the match on modern typing and
+# the demo/compose images alike are 3.10 and up.
+requires-python = ">=3.10"
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "Programming Language :: Python :: 3",
+  "Topic :: System :: Monitoring",
+]
+
+# Ranges, not pins: a library that pins its dependencies exactly makes itself
+# uninstallable next to anything else in a customer's application. The exact
+# versions are pinned where exactness belongs — requirements-dev.txt for the
+# tests, the sample app's own requirements for the sample.
+dependencies = [
+  # TracerProvider, LoggerProvider, LoggingHandler and the batch processors.
+  "opentelemetry-sdk>=1.44,<2",
+  # The two OTLP/HTTP exporters init() builds with no arguments.
+  "opentelemetry-exporter-otlp-proto-http>=1.44,<2",
+  # BaseInstrumentor and unwrap(): the instrumentation lifecycle, not our own.
+  "opentelemetry-instrumentation>=0.65b0,<1",
+  # Upstream's designated home for the logging bridge handler init() hangs on
+  # the root logger; the opentelemetry-sdk copy is deprecated (D85). In-family
+  # with the line above, same release train.
+  "opentelemetry-instrumentation-logging>=0.65b0,<1",
+  # wrap_function_wrapper, used directly to patch the two provider client
+  # methods. It arrives with opentelemetry-instrumentation anyway; declared
+  # because this package imports it by name.
+  "wrapt>=1.0,<3",
+]
+
+# Provider clients are never dependencies. obstack instruments openai and
+# anthropic if the application already has them, and an SDK that dragged two
+# vendor clients into an application that uses neither would be indefensible.
+
+[project.optional-dependencies]
+# The api layer for FastAPI applications: init() instruments FastAPI globally
+# when this is installed (D77(c)). Left optional because the SDK has no opinion
+# about which web framework — or whether there is one at all.
+fastapi = ["opentelemetry-instrumentation-fastapi>=0.65b0,<1"]
+
+[project.urls]
+Homepage = "https://github.com/Ziadabdelsalam/observer-stack"
+
+[tool.hatch.version]
+path = "src/obstack/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/obstack"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
