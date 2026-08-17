@@ -4,7 +4,7 @@
 - milestone: **M2 — Correlation Complete** (vision doc `.planning/2026-08-15-obstack-backend-build-vision.md` §S2; phase plan `.planning/2026-08-16-s2-m2-phase-plan.md`)
 - sprints: S2.0 (CI) → S2.1 (restructure) → S2.2 (collector + nearby joins on kind) → S2.3 (search + LogsExplorer + saved views) → S2.4 (SDKs, exit-blocking per D34)
 - assembled by: S2.4 T5 (the phase plan's pre-registered critical item, §8)
-- status: **for advisor signature.** The merge call is the user's.
+- status: **SIGNED by the advisor 2026-08-17** (conditions discharged by the D93 closing commit — see the signature block). The merge call is the user's.
 
 This document does one thing: it takes the amended M2 exit line apart clause by
 clause and points each clause at dated, re-runnable, already-signed evidence. It
@@ -71,7 +71,9 @@ are carried below.
 
 **Owner: S2.4** (this sprint; exit-blocking per D34). Bundle:
 **`.planning/2026-08-17-s2.4-exit-evidence.md`** — 28 claims asserted, 28
-passed, 69s, from destroyed volumes, at tip `dc4163e` on `s2.4-sdks` (PR #13).
+passed, 71s, from destroyed volumes. Product tip `dc4163e`; the bundle is signed
+at the D93 closing commit on `s2.4-sdks` (PR #13), where the evidence command
+was re-run and all seven CI checks are green.
 
 | sub-clause | evidence |
 |---|---|
@@ -147,7 +149,18 @@ Stated so the milestone closes on what was measured (D13/D21):
 |---|---|
 | S2.2 evidence signed at | `02bd695` |
 | S2.3 evidence signed at | `4bfc877` (bundle `.planning/2026-08-17-s2.3-exit-evidence.md`) |
-| S2.4 evidence at | `dc4163e` + this sprint's T5 commit (bundle `.planning/2026-08-17-s2.4-exit-evidence.md`) |
+| S2.4 evidence signed at | **this commit — the D93 closing commit** on `s2.4-sdks` (PR #13); SHA recorded in the team plan on push. Bundle `.planning/2026-08-17-s2.4-exit-evidence.md`, whose evidence command was re-run in this tree |
 | M2 exit amendments | D30, D34 — both user-signed 2026-08-16 |
-| advisor signature | *pending* |
+| advisor signature | **SIGNED 2026-08-17** (Goal check, iteration 0/3: MET — GO). Conditional on, and discharged by, this commit: D93's `sdk-e2e` flip to every-PR with the label path removed, the bundle amendments carrying the real-runner numbers, the evidence command re-run at the final tip, and all seven checks green there |
 | merge call | the user's |
+
+**M2 — Correlation Complete — closes on that signature.** The M3 inheritance
+list of record is the advisor's: D29 (blocking: pricing cap + `as_of`), D30
+(saved views → Postgres, `localStorage` deleted), D79 (user-visible: publish or
+re-verify the package names), D88 (`ai@7` path owner), D78 standing (the SDK
+public API is frozen — a breaking change is an escalation), the named coverage
+seams (JS logging bridge, streaming, Responses API), D60/D63 (palette mock links
+404 in live mode), and M4 unchanged (D35 chart-in-place, S2.3 L6 build-env,
+`Writer.Close`). One watch item is pre-registered rather than acted on: `stack`
+measured 6m10s at `0a3c456` against 4m11s the same day — runner variance, no
+flip; three consecutive over-the-line runs move it to D41's over-branch.

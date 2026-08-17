@@ -13,36 +13,27 @@
 # kind/Helm path and it runs on every PR, and folding a heavier compose run into
 # it would put a required check's trigger policy at the mercy of this one.
 #
-# TRIGGER POLICY (K5/D41) — label + push-to-master + manual, NOT every PR, and
-# NOT in the required set. The number this decision is made on: the script takes
-# 361s (6m01s) from destroyed volumes with the three service images rebuilt from
-# an empty builder cache, and 69s when the images are already built — measured
-# on an Apple M4 (10 cores, 16 GB, Docker Desktop, 8 GB to the VM), the sample
+# TRIGGER POLICY (K5/D41, settled by D93) — every PR, like `sdk-py` and
+# `sdk-js`, and in the required set. Measured end to end on real runs of this
+# job: **3m43s** (https://github.com/Ziadabdelsalam/obstack/actions/runs/32050575928)
+# and **3m44s** (https://github.com/Ziadabdelsalam/obstack/actions/runs/32052107372)
+# — two runs, consistent, comfortably under the ~6-minute line.
+#
+# This replaces a first policy set from a local number, and the reason it
+# changed is worth keeping: the local measurement was 6m01s from destroyed
+# volumes with an EMPTY docker builder cache on an Apple M4, with the sample
 # images' `pip install` and `npm install` downloading over a domestic
-# connection. 6m01s is already at the ~6-minute line before a runner adds
-# checkout, `npm ci` and the pulls of ClickHouse, python, node, golang,
-# distroless and the collector image — none of which this machine paid, all of
-# which can only add. A job that straddles the line does not belong in the
-# every-PR set, so it takes the other branch of D41 whole: `ci:sdk-e2e` on a
-# PR, always on push to `master` (a red there is stop-the-line for the next PR),
-# and `workflow_dispatch` for anyone who wants it now. Never
-# required-but-conditional.
+# connection. Stating those conditions (S2.2 L2) is exactly what showed why the
+# number did not transfer — a GitHub runner's network and image mirrors are the
+# dominant term, and it pays them faster than this machine does. The deciding
+# machine for a CI trigger policy is the runner, not the laptop.
 #
-# Re-measure on the first real run and correct this header with the run URL, the
-# way `stack` and `kind` state theirs; if CI comes in comfortably under the
-# line, moving to every-PR is a one-line change to the `if:` below.
-#
-# `sdk-e2e` is a K3-stable name from this first run; `web`, `go`, `kind` and
+# `sdk-e2e` is a K3-stable name from its first run; `web`, `go`, `kind` and
 # `stack` are untouched.
 name: sdk-e2e
 
 on:
   pull_request:
-    branches: [master]
-    # `labeled` is what makes the opt-in work: adding `ci:sdk-e2e` to an open
-    # PR fires the run, and pushes after that keep it running.
-    types: [opened, synchronize, reopened, labeled]
-  push:
     branches: [master]
   workflow_dispatch:
 
@@ -56,14 +47,10 @@ permissions:
 jobs:
   sdk-e2e:
     name: sdk-e2e
-    # On a PR only with the label; on master and on demand, always.
-    if: >-
-      github.event_name != 'pull_request' ||
-      contains(github.event.pull_request.labels.*.name, 'ci:sdk-e2e')
     runs-on: ubuntu-latest
-    # Generous against the 6m measurement because the runner pays for pulls and
-    # builds this machine had cached, and bounded for the reason every other job
-    # here is: the GitHub default is 360 minutes.
+    # Roughly 8x the 3m44s measured green, and bounded for the reason every
+    # other job here is: the GitHub default is 360 minutes, and a wedged compose
+    # `up` would hold the PR for all of it.
     timeout-minutes: 30
     steps:
       - name: Checkout
