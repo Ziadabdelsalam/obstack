@@ -4,8 +4,10 @@ Two halves. The subprocess half runs `fail_open_app.py` — two lines of setup, 
 real init(), real exporters — under environments that break the telemetry
 stack, and checks the application still produced its answer; nothing about that
 claim can be tested inside a pytest process that has already installed a working
-pipeline. The in-process half breaks the tracer itself, which is the failure
-mode a dead endpoint never reaches because the batch processors swallow it.
+pipeline. The in-process half breaks the parts a dead endpoint never reaches
+because the batch processors swallow them: the tracer itself, and the values
+obstack reads on the way into a span — the point where instrumentation can get
+between an application and its own provider call.
 """
 
 from __future__ import annotations
@@ -16,11 +18,14 @@ import subprocess
 import sys
 from pathlib import Path
 
+import fake_provider
+import openai
 import pytest
 from opentelemetry import trace
 from opentelemetry.sdk.trace import Span
 
 import obstack
+from obstack.instrumentation import OpenAIInstrumentor
 
 APP = Path(__file__).with_name("fail_open_app.py")
 
@@ -105,6 +110,42 @@ def test_the_applications_exception_wins_over_the_instrumentations(
 
     with pytest.raises(RuntimeError, match="the tool is down"):
         answer_question()
+
+
+class _UnrenderableModel(str):
+    """A model name that is a good string right up until something renders it.
+
+    Not a contrivance: `model` is whatever the application handed the client, and
+    applications hand it lazily-resolved config objects and proxies. Rendering it
+    into the span name is the last thing obstack does before the provider is
+    called, which makes it the one place where instrumentation can break an LLM
+    call that would otherwise have succeeded.
+    """
+
+    def __str__(self) -> str:
+        raise RuntimeError("the model name refused to render")
+
+    def __format__(self, spec: str) -> str:
+        raise RuntimeError("the model name refused to render")
+
+
+def test_an_unrenderable_model_name_does_not_break_the_llm_call(
+    provider_url: str, spans
+) -> None:
+    OpenAIInstrumentor().instrument()
+    client = openai.OpenAI(
+        api_key=fake_provider.API_KEY, base_url=f"{provider_url}/v1", max_retries=0
+    )
+
+    response = client.chat.completions.create(
+        model=_UnrenderableModel(fake_provider.OPENAI_MODEL),
+        messages=[{"role": "user", "content": "why did p99 jump?"}],
+    )
+
+    assert response.choices[0].message.content == fake_provider.OPENAI_ANSWER
+    # Untraced, not half-traced: obstack stepped aside for the whole call rather
+    # than leaving a span it could not finish describing.
+    assert spans.get_finished_spans() == ()
 
 
 def _explode(*args, **kwargs):

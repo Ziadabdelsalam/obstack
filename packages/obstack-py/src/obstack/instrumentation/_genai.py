@@ -60,7 +60,20 @@ def call(
     kwargs: dict[str, Any],
 ) -> Any:
     """Run a synchronous provider call inside one LLM span."""
-    with _span(tracer, system, kwargs) as scope:
+    # Describing the call is the last thing that happens before the provider is
+    # reached, and it touches values the application supplied: `model` is
+    # whatever was passed, and putting it in the span name runs its __format__.
+    # The guard belongs here, structurally, rather than in an audit of whichever
+    # callee happens to touch a customer object today — nothing obstack does
+    # ahead of wrapped() may surface in the application as an exception.
+    try:
+        scope = _span(tracer, system, kwargs)
+    except Exception:  # noqa: BLE001
+        _log.warning(
+            "obstack could not describe the call; it runs untraced", exc_info=True
+        )
+        return wrapped(*args, **kwargs)
+    with scope:
         response = wrapped(*args, **kwargs)
         _record(scope, kwargs, read, response)
         return response
@@ -75,7 +88,15 @@ async def acall(
     kwargs: dict[str, Any],
 ) -> Any:
     """Run an asynchronous provider call inside one LLM span."""
-    with _span(tracer, system, kwargs) as scope:
+    # Same guard, same reason as `call` above.
+    try:
+        scope = _span(tracer, system, kwargs)
+    except Exception:  # noqa: BLE001
+        _log.warning(
+            "obstack could not describe the call; it runs untraced", exc_info=True
+        )
+        return await wrapped(*args, **kwargs)
+    with scope:
         response = await wrapped(*args, **kwargs)
         _record(scope, kwargs, read, response)
         return response
