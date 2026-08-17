@@ -34,16 +34,27 @@ import obstack
 obstack.init()
 ```
 
-Those are the two lines. Call them before your application object is created —
-`init()` instruments FastAPI globally by patching its constructor, so an app
-built beforehand is not covered.
+Those are the two lines, and they go **first — above every other import in your
+entry-point module**, before anything imports a library obstack instruments.
 
-Then mark the two things only your code knows about:
+`init()` turns the FastAPI instrumentation on by rebinding `fastapi.FastAPI`, so
+a module that already ran `from fastapi import FastAPI` holds the original class
+and the app it builds is never instrumented. Nothing errors when that happens:
+the api layer is simply absent. Measured on `demo/sdk-sample-py/` — 7 spans per
+request with `init()` above the imports, 3 with it below them.
+
+Your linter wants imports at the top of the file, so the entry point carries the
+exemption explicitly:
 
 ```python
 import obstack
-from openai import AsyncOpenAI
 
+obstack.init()  # first: everything imported below is instrumented, not before
+
+from fastapi import FastAPI  # noqa: E402
+from openai import AsyncOpenAI  # noqa: E402
+
+app = FastAPI()
 client = AsyncOpenAI()
 
 
@@ -62,7 +73,8 @@ async def answer_question(question: str) -> str:
     return completion.choices[0].message.content
 ```
 
-One request through that produces:
+The two decorators mark the only things obstack cannot observe for itself. One
+request through the app above produces:
 
 ```
 POST /chat                  api    from the FastAPI instrumentation
