@@ -1,0 +1,13 @@
+# Direct dependencies only, pinned exactly. This is an application, and an
+# application that does not pin cannot say which versions its evidence was
+# produced on. obstack-py is not here: it is installed from the repository by
+# path (see README.md) and states ranges, the way a library should.
+fastapi==0.141.1
+uvicorn==0.52.3
+# FastAPI brings it, but the request and response models below import it
+# directly, so it is pinned like any other direct dependency.
+pydantic==2.13.4
+# The provider client obstack instruments. Same version obstack-py's own
+# instrumentation tests drive, so the sample and the unit evidence are the same
+# client library.
+openai==3.1.0

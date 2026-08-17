@@ -1,0 +1,14 @@
+# BuildKit reads this file in place of the context root's .dockerignore because
+# it is named after the Dockerfile beside it — which is what lets a build whose
+# context is the whole repository stay out of the repository root.
+#
+# The build needs two directories; the rest of the context is node_modules, .git
+# and .next, hundreds of megabytes the daemon would copy for nothing.
+**
+!packages/obstack-py/**
+!demo/sdk-sample-py/**
+
+# Left behind by a local run of the sample or of obstack-py's suite; never part
+# of an image.
+**/__pycache__/**
+**/.pytest_cache/**
