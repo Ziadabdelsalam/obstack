@@ -361,6 +361,16 @@ YAML
   # Stopping the container is what flushes: both SDKs export on shutdown, and
   # waiting out a batch interval would be a guess where this is a fact.
   docker stop "$name" >/dev/null 2>&1
+  # The collector needs the same treatment for the same reason. Its file
+  # exporter writes through a buffered writer flushed on a ticker, so reading
+  # the file out from under a running collector returns whatever block boundary
+  # the writer last crossed: measured, one read in three came back a 4096-byte
+  # prefix carrying `"resourceSpans"` and none of the span names — the two
+  # assertions below going red for the harness's own timing while the SDK had
+  # done everything right (CI run 32050998523 is exactly that). Shutting the
+  # collector down flushes and closes the file, so what is copied is a finished
+  # file rather than a snapshot. It is removed a few lines below anyway.
+  docker stop "$OTLP_PROBE" >/dev/null 2>&1
   docker cp "$OTLP_PROBE:/out/otlp-spans.json" "$dump" >/dev/null 2>&1
 
   # `resourceSpans` rather than a non-empty file: the collector's logs pipeline

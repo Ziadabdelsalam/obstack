@@ -158,6 +158,48 @@ the ingest user has no mutation grant — so a second run would duplicate every
 row and silently inflate the counts the evidence checks; start from clean
 volumes instead.
 
+## SDK exit evidence — the S2.4 criterion (install + two lines, four layers)
+
+`smoke.sh` proves the bring-your-own-OpenTelemetry path. This run proves the
+other one: two sample apps whose only telemetry code is an obstack SDK install
+and the documented two lines each land the same four-layer trace with the D8
+GenAI attributes. One command from the repo root, and it is the same line CI's
+`sdk-e2e` job runs (S2.1 L3):
+
+```bash
+bash deploy/compose/sdk-evidence.sh
+```
+
+It destroys the compose volumes first, brings up `clickhouse` + `ingest` plus
+the `sdk` profile's two sample services (`sdk-sample-py` on 8010,
+`sdk-sample-ts` on 8100 — both built from the repository root), fires one
+documented request at each, and asserts, printing one `ok`/`FAIL` line per
+claim: four layers under one `trace_id` with the full D8 set and a non-zero
+ingest-computed cost; prompt and completion in the dedicated columns with
+neither the two keys nor the content itself anywhere in the attributes Map; both
+traces rendering through the shipped query layer (`sdk-checks.ts`, the same
+facade `smoke.ts` uses); standard OTLP on the wire, against a stock upstream
+collector that has never heard of obstack; fail-open live, each sample still
+answering 200 with its endpoint on a dead port; and the D15 floor, that
+`demo/agent-app/` is untouched.
+
+Like `exit-evidence.sh`, it only measures what it started itself — it **refuses
+to run** if a container of this compose project is still standing from another
+profile, if anything already answers on one of the six ports it uses, or if one
+of its probe-container names is taken. Stop them first, the way the refusal
+tells you to:
+
+```bash
+docker compose -f deploy/compose/docker-compose.yml --profile '*' down -v
+```
+
+The two sample services stay up after a passing run, under
+`restart: unless-stopped`, so the trace can be opened in the browser. They are
+harmless to the two runs above — `smoke.sh` asserts on the `trace_id` the demo
+agent hands back, and `exit-evidence.sh` counts a workspace of its own — but
+`--profile demo down -v` does not remove them, so use the `--profile '*'` line
+above when you want the project genuinely empty.
+
 Ports, published on `127.0.0.1` only — the dev passwords below live in this
 repo, so nothing is exposed to the network; services inside compose reach the
 server as `clickhouse:9000` instead:
