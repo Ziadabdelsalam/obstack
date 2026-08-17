@@ -15,9 +15,13 @@ anything else that speaks OTLP, with no obstack-specific setting anywhere.
 ## Install
 
 ```bash
-npm pack packages/obstack-js          # -> obstack-js-0.1.0.tgz
+npm pack ./packages/obstack-js        # -> obstack-js-0.1.0.tgz
 npm install ./obstack-js-0.1.0.tgz
 ```
+
+Both paths need the leading `./`. Without it npm reads a bare `a/b` as a GitHub
+shorthand and tries to clone `github.com/packages/obstack-js`, failing with an
+unhelpful git error 128.
 
 ## The two lines
 
