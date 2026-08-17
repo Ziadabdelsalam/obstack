@@ -55,15 +55,16 @@ bash deploy/compose/smoke.sh
 
 It boots the stack (`--profile demo`, `--build`), waits for every container to
 report healthy, fires `POST localhost:8000/chat` at the demo agent, and then
-asserts through the web facade — `smoke.ts` calls `listTraces()` and `getTrace()`
+asserts through the web facade — `smoke.ts` calls `searchTraces()` and `getTrace()`
 from `apps/web/src/server/data.ts` with `OBSTACK_DATA_MODE=live`, the same module the app
 renders from, run under `npx tsx --conditions react-server` so the `server-only`
 guard resolves. No Next server and no test-only API route sit in between.
 
 The trace the demo just emitted must, within 30s:
 
-- **list** — appear in `listTraces()`, with a root service and a `trace_summaries`
-  `span_count` that matches the number of span rows (the rollup merged correctly);
+- **list** — appear in `searchTraces()`, with a root service and a `trace_summaries`
+  `span_count` that matches the number of span rows (the rollup merged correctly),
+  under an exact filtered total of at least one (the page and the count query agree);
 - **resolve** — come back from `getTrace()` with all four layers, `api`, `agent`,
   `tool` and `llm`, under that one `trace_id`;
 - carry a populated LLM span — model, prompt, completion and non-zero token counts —
@@ -103,6 +104,59 @@ chrome it cannot back — the throughput ticker, the region tag and the free-tie
 banner are simply absent (F7). What is left unmarked is the fixed app furniture:
 the notification bell's unread count and the account menu are still demo content
 until M3 owns notifications and auth.
+
+## Exit evidence — the S2.3 criterion (search, pagination, saved views)
+
+`smoke.sh` proves one trace lands whole. The evidence run proves the two wired
+*surfaces* — the traces list and `/app/logs` — actually search real data, with
+real totals, real pagination and saved views that survive a reload. One command
+from the repo root, and it is the same command CI-adjacent reviewers and humans
+run (S2.1 L3):
+
+```bash
+bash deploy/compose/exit-evidence.sh
+```
+
+It destroys the compose volumes first, on purpose: the claim is about a stack
+built from nothing. Then it runs `smoke.sh`, seeds a dedicated workspace
+(`exit-seed.mjs`, 220 traces — deliberately more than the 200-row page — and
+245 log rows, more than the 200-row cap), counts that workspace **in
+ClickHouse** so every "N of M" the UI prints is checked against a denominator
+the app did not compute, serves the production build against it, and asserts
+the surfaces with `curl` and with a real headless browser
+(`exit-browser.mjs`, over CDP). It prints one `ok`/`FAIL` line per claim and
+exits non-zero on any failure; artifacts land in a temp directory it names
+(override with `OUT_DIR=...`).
+
+Three properties of the harness are worth knowing before changing it:
+
+- **It only measures processes it started itself.** If anything already answers
+  on the app port (`APP_PORT`, 3210) or the CDP port (`CDP_PORT`, 9333) the run
+  refuses and exits non-zero, instead of asserting against a leftover server
+  from an earlier run — which serves an *older build* — or a browser carrying
+  somebody else's `localStorage`, which is what "the saved view survived" is
+  about. It also kills its own server and browser on the way out, `npm exec`
+  child included.
+- **It builds with the same environment it serves with.** The app layout decides
+  the `SAMPLE DATA` badge from the data mode, and a statically prerendered route
+  bakes that decision at *build* time — so a mock-mode build served in live mode
+  ships unwired pages with no badge at all. Any deployment has the same
+  property: build in the mode you will serve.
+- **The badge check carries a positive control**, an unwired route that must
+  still show the badge. Without it, "no badge on `/app/traces`" would also pass
+  if the badge had been deleted everywhere.
+
+The dataset is designed so the free-text legs are falsifiable end to end: one
+token exists *only* inside a span's `prompt` column, another *only* inside a log
+row's `body`, and a third *only* on a D42 content-carrier row (empty body). The
+first two must be findable from the traces list; the third must be findable
+there too and must be invisible to `/app/logs`, which searches bodies only
+(D51(e)).
+
+The seeder refuses to run twice into a non-empty workspace. It cannot delete —
+the ingest user has no mutation grant — so a second run would duplicate every
+row and silently inflate the counts the evidence checks; start from clean
+volumes instead.
 
 Ports, published on `127.0.0.1` only — the dev passwords below live in this
 repo, so nothing is exposed to the network; services inside compose reach the

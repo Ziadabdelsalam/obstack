@@ -5,8 +5,9 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { layerOrder } from "./layers";
 
-// run with: npm test — whose glob is src/**/*.test.ts, so this guard has to sit
-// under src/ to run at all
+// run with: npm test — whose glob is src/**/*.test.{ts,tsx} (widened by D54(i);
+// it used to be .ts only, which silently never ran a .test.tsx file), so this
+// guard has to sit under src/ to run at all
 
 // The layer vocabulary is declared once per language and reconciled by nothing:
 // ClickHouse holds it as an Enum8, the ingest classifier as Go constants, the web

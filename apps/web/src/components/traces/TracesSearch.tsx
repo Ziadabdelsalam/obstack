@@ -1,18 +1,23 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useState, type ReactNode } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { Search, Bookmark, ChevronDown } from "lucide-react";
+import { ChevronLeft, ChevronRight, Search } from "lucide-react";
 import { fmtCost, fmtMs, fmtTokens, timeAgo } from "@/lib/format";
 import { LayerDot } from "@/components/ui/LayerChip";
+import { SavedViewsMenu } from "@/components/saved-views/SavedViewsMenu";
+import {
+  TRACE_RANGE_HOURS,
+  TRACE_STATUSES,
+  parseTracesUrl,
+  tracesHref,
+  tracesSearchString,
+  tracesViewFilters,
+  type TracesFilters,
+} from "@/lib/traces-filter";
+import { useFilterUrlSync } from "@/lib/use-filter-url-sync";
 import type { Layer, Trace } from "@/lib/types";
-
-const savedViews = [
-  { name: "Errors only", q: "", status: "error", minMs: 0 },
-  { name: "Slow agent runs (>5s)", q: "agent", status: "all", minMs: 5000 },
-  { name: "High cost (>$0.02)", q: "", status: "all", minMs: 0, minCost: 0.02 },
-] as const;
 
 const serviceLayer: Record<string, Layer> = {
   gateway: "api",
@@ -21,109 +26,119 @@ const serviceLayer: Record<string, Layer> = {
   "sync-worker": "infra",
 };
 
-interface Filters {
-  q: string;
-  status: string;
-  minMs: number;
-  minCost: number;
-}
-
-function toSearch({ q, status, minMs, minCost }: Filters): string {
-  const p = new URLSearchParams();
-  if (q) p.set("q", q);
-  if (status !== "all") p.set("status", status);
-  if (minMs > 0) p.set("minMs", String(minMs));
-  if (minCost > 0) p.set("minCost", String(minCost));
-  return p.toString();
-}
+/**
+ * Cost bounds the bar offers. The ladder is the control's vocabulary, not the
+ * filter's range: the URL contract takes any number, so a deep link or a saved
+ * view carrying a bound off the ladder still filters — the select just has no
+ * option to show for it.
+ */
+const COST_STEPS = [0.01, 0.1, 1] as const;
 
 /**
- * The filter bar owns its inputs, but matching happens server-side through the
- * facade: every change lands in the URL and the page re-reads the list. Nothing
- * here filters `traces` — that would fork the matching rules per mode.
+ * The traces filter bar. Every control's value lives in the URL and matching
+ * happens server-side through the facade — nothing here filters `traces`, which
+ * would fork the matching rules per mode (D13).
+ *
+ * Two directions of flow, and both are the URL:
+ * - an edit lands in `edited`, is serialized, and (debounced, so a typed word is
+ *   one list query rather than one per keystroke) replaces the URL;
+ * - a URL that moves underneath the bar — back/forward, a link into a filtered
+ *   view, a saved view applied — is adopted into `edited`, so the inputs never
+ *   keep mount-time values while the list shows something else.
+ *
+ * Both directions are `useFilterUrlSync` (D72), shared with `/app/logs`: the
+ * rule for telling an echo of this bar's own navigation from someone else's is
+ * one tested module, not one implementation per surface.
+ *
+ * `service` and `model` are typed exactly rather than picked from a list: the
+ * facade has no distinct-values entry point, and a hardcoded option list would
+ * be the mock's vocabulary — buttons that reliably return nothing on real data,
+ * which is why the shipped presets were dropped (D47(iv)).
  */
 export function TracesSearch({
   traces,
   total,
-  q: initialQ,
-  status: initialStatus,
-  minMs: initialMinMs,
-  minCost: initialMinCost,
+  nowMs,
+  pageCount,
+  filters,
 }: {
   traces: Trace[];
   total: number;
-} & Filters) {
+  /** the request's reference clock, per mode (D50/D64) — never sampled here */
+  nowMs: number;
+  pageCount: number;
+  filters: TracesFilters;
+}) {
   const router = useRouter();
-  const [q, setQ] = useState(initialQ);
-  const [status, setStatus] = useState<string>(initialStatus);
-  const [minMs, setMinMs] = useState<number>(initialMinMs);
-  const [minCost, setMinCost] = useState<number>(initialMinCost);
-  const [viewsOpen, setViewsOpen] = useState(false);
+  const [edited, setEdited] = useState<TracesFilters>(filters);
 
-  // What the server already rendered; the sync below is a no-op until it moves.
-  const pushed = useRef(
-    toSearch({
-      q: initialQ,
-      status: initialStatus,
-      minMs: initialMinMs,
-      minCost: initialMinCost,
-    }),
-  );
+  useFilterUrlSync({
+    urlSearch: tracesSearchString(filters),
+    editedSearch: tracesSearchString(edited),
+    navigate: useCallback(
+      (search: string) => router.replace(tracesHref(search), { scroll: false }),
+      [router],
+    ),
+    onAdopt: () => setEdited(filters),
+  });
 
-  useEffect(() => {
-    const search = toSearch({ q, status, minMs, minCost });
-    if (search === pushed.current) return;
-    // Debounced so a typed word is one list query, not one per keystroke.
-    const timer = setTimeout(() => {
-      pushed.current = search;
-      router.replace(search ? `/app/traces?${search}` : "/app/traces", {
-        scroll: false,
-      });
-    }, 250);
-    return () => clearTimeout(timer);
-  }, [q, status, minMs, minCost, router]);
-
-  const applyView = (v: (typeof savedViews)[number]) => {
-    setQ(v.q);
-    setStatus(v.status);
-    setMinMs(v.minMs);
-    setMinCost("minCost" in v ? (v.minCost as number) : 0);
-    setViewsOpen(false);
-  };
+  // Any filter change is a new question, so it starts at the first page; the
+  // pager is the only control that moves `page`.
+  const update = (patch: Partial<TracesFilters>) =>
+    setEdited((f) => ({ ...f, ...patch, page: 1 }));
 
   return (
     <div className="px-5 py-4">
       <div className="mb-4 flex items-center justify-between">
         <h1 className="font-display text-[19px] font-semibold text-ink">Traces</h1>
+        {/* The APPLIED bound, not a fixed string and not the pending one: these
+            rows and this total came from the URL's range (D50), so the label
+            reads `filters`, which changes only when the list does. */}
         <span className="font-mono text-[11px] text-faint">
-          last 6h · {traces.length} of {total} traces
+          last {filters.range} · {traces.length} of {total} traces
         </span>
       </div>
 
       {/* filter bar */}
       <div className="mb-3 flex flex-wrap items-center gap-2" data-tour="traces">
-        <div className="relative min-w-[260px] flex-1">
+        <div className="relative min-w-[240px] flex-1">
           <Search className="absolute top-1/2 left-2.5 h-3.5 w-3.5 -translate-y-1/2 text-faint" />
           <input
-            value={q}
-            onChange={(e) => setQ(e.target.value)}
+            value={edited.q}
+            onChange={(e) => update({ q: e.target.value })}
             placeholder="Search traces, spans, prompts, logs…"
             className="w-full rounded-md border border-line bg-surface py-1.5 pr-3 pl-8 text-[13px] text-ink placeholder:text-faint focus:border-line-strong focus:outline-none"
           />
         </div>
+        <input
+          value={edited.service}
+          onChange={(e) => update({ service: e.target.value })}
+          placeholder="service"
+          aria-label="Service filter"
+          className="w-[120px] rounded-md border border-line bg-surface px-2.5 py-1.5 text-[12.5px] text-ink placeholder:text-faint focus:border-line-strong focus:outline-none"
+        />
+        <input
+          value={edited.model}
+          onChange={(e) => update({ model: e.target.value })}
+          placeholder="model"
+          aria-label="Model filter"
+          className="w-[120px] rounded-md border border-line bg-surface px-2.5 py-1.5 text-[12.5px] text-ink placeholder:text-faint focus:border-line-strong focus:outline-none"
+        />
         <select
-          value={status}
-          onChange={(e) => setStatus(e.target.value)}
+          value={edited.status}
+          onChange={(e) => update({ status: e.target.value as TracesFilters["status"] })}
           aria-label="Status filter"
           className="rounded-md border border-line bg-surface px-2.5 py-1.5 text-[12.5px] text-mid focus:border-line-strong focus:outline-none"
         >
-          <option value="all">status: all</option>
-          <option value="ok">status: ok</option>
-          <option value="error">status: error</option>
+          {TRACE_STATUSES.map((s) => (
+            <option key={s} value={s}>
+              {`status: ${s}`}
+            </option>
+          ))}
         </select>
         <select
-          value={minMs}
-          onChange={(e) => setMinMs(Number(e.target.value))}
+          value={edited.minMs}
+          onChange={(e) => update({ minMs: Number(e.target.value) })}
           aria-label="Duration filter"
           className="rounded-md border border-line bg-surface px-2.5 py-1.5 text-[12.5px] text-mid focus:border-line-strong focus:outline-none"
         >
@@ -132,31 +147,51 @@ export function TracesSearch({
           <option value={5000}>&gt; 5s</option>
           <option value={10000}>&gt; 10s</option>
         </select>
-        <div className="relative">
-          <button
-            type="button"
-            onClick={() => setViewsOpen((o) => !o)}
-            className="flex items-center gap-1.5 rounded-md border border-line bg-surface px-2.5 py-1.5 text-[12.5px] text-mid hover:border-line-strong hover:text-ink"
-          >
-            <Bookmark className="h-3.5 w-3.5" />
-            saved views
-            <ChevronDown className="h-3 w-3" />
-          </button>
-          {viewsOpen && (
-            <div className="absolute right-0 z-10 mt-1 w-56 rounded-md border border-line bg-overlay py-1 shadow-xl">
-              {savedViews.map((v) => (
-                <button
-                  key={v.name}
-                  type="button"
-                  onClick={() => applyView(v)}
-                  className="block w-full px-3 py-1.5 text-left text-[12.5px] text-mid hover:bg-raised hover:text-ink"
-                >
-                  {v.name}
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
+        <select
+          value={edited.minCost}
+          onChange={(e) => update({ minCost: Number(e.target.value) })}
+          aria-label="Minimum cost filter"
+          className="rounded-md border border-line bg-surface px-2.5 py-1.5 text-[12.5px] text-mid focus:border-line-strong focus:outline-none"
+        >
+          <option value={0}>cost: any</option>
+          {COST_STEPS.map((c) => (
+            <option key={c} value={c}>
+              &gt; {fmtCost(c)}
+            </option>
+          ))}
+        </select>
+        <select
+          value={edited.maxCost}
+          onChange={(e) => update({ maxCost: Number(e.target.value) })}
+          aria-label="Maximum cost filter"
+          className="rounded-md border border-line bg-surface px-2.5 py-1.5 text-[12.5px] text-mid focus:border-line-strong focus:outline-none"
+        >
+          <option value={-1}>max cost: none</option>
+          {COST_STEPS.map((c) => (
+            <option key={c} value={c}>
+              ≤ {fmtCost(c)}
+            </option>
+          ))}
+        </select>
+        <select
+          value={edited.range}
+          onChange={(e) => update({ range: e.target.value as TracesFilters["range"] })}
+          aria-label="Time range filter"
+          className="rounded-md border border-line bg-surface px-2.5 py-1.5 text-[12.5px] text-mid focus:border-line-strong focus:outline-none"
+        >
+          {Object.keys(TRACE_RANGE_HOURS).map((r) => (
+            <option key={r} value={r}>
+              last {r}
+            </option>
+          ))}
+        </select>
+        {/* Views come from `lib/saved-views` and nowhere else: one filter set,
+            replaced whole, back to the first page. */}
+        <SavedViewsMenu
+          surface="traces"
+          filters={tracesViewFilters(edited)}
+          onApply={(view) => setEdited(parseTracesUrl(view))}
+        />
       </div>
 
       {/* results */}
@@ -225,13 +260,65 @@ export function TracesSearch({
                   {t.models.length ? t.models[t.models.length - 1] : "—"}
                 </td>
                 <td className="py-2 pr-3 text-right font-mono text-[11px] text-faint">
-                  {timeAgo(t.startedAt)}
+                  {timeAgo(t.startedAt, nowMs)}
                 </td>
               </tr>
             ))}
           </tbody>
         </table>
       </div>
+
+      {/* Pages are links, not state: page N is addressable, shareable and
+          rendered by the server from its URL alone (D44). They page `filters`,
+          the set these rows came from — not a half-typed edit still in the
+          bar, which is a list nobody is looking at yet. */}
+      {pageCount > 1 && (
+        <div className="mt-3 flex items-center justify-between">
+          <span className="font-mono text-[11px] text-faint">
+            page {filters.page} of {pageCount}
+          </span>
+          <span className="flex items-center gap-1.5">
+            <PageLink filters={filters} to={filters.page - 1} disabled={filters.page <= 1}>
+              <ChevronLeft className="h-3.5 w-3.5" />
+              prev
+            </PageLink>
+            <PageLink
+              filters={filters}
+              to={filters.page + 1}
+              disabled={filters.page >= pageCount}
+            >
+              next
+              <ChevronRight className="h-3.5 w-3.5" />
+            </PageLink>
+          </span>
+        </div>
+      )}
     </div>
+  );
+}
+
+/** A pager step: a real link while there is a page to reach, plain text at the end. */
+function PageLink({
+  filters,
+  to,
+  disabled,
+  children,
+}: {
+  filters: TracesFilters;
+  to: number;
+  disabled: boolean;
+  children: ReactNode;
+}) {
+  const className = "flex items-center gap-1 rounded-md border border-line px-2.5 py-1.5 text-[12.5px]";
+  if (disabled) {
+    return <span className={`${className} text-faint opacity-50`}>{children}</span>;
+  }
+  return (
+    <Link
+      href={tracesHref(tracesSearchString({ ...filters, page: to }))}
+      className={`${className} bg-surface text-mid hover:border-line-strong hover:text-ink`}
+    >
+      {children}
+    </Link>
   );
 }

@@ -72,7 +72,7 @@ export function problemsWith(
   }
 
   if (!listed) {
-    out.push(`trace resolves but does not appear in listTraces()`);
+    out.push(`trace resolves but does not appear in searchTraces()`);
   } else {
     if (!listed.service) out.push("listed trace has no root service");
     if (listed.spanCount !== trace.spans.length) {
@@ -103,13 +103,20 @@ export async function awaitWholeTrace(
   traceId: string,
   timeoutMs: number = ARRIVAL_TIMEOUT_MS,
 ): Promise<Trace> {
-  const { getTrace, listTraces } = await import("@/server/data");
+  const { getTrace, searchTraces } = await import("@/server/data");
 
   const deadline = Date.now() + timeoutMs;
   for (;;) {
     const trace = await getTrace(traceId);
-    const listed = trace ? (await listTraces()).find((t) => t.id === traceId) : undefined;
+    const search = trace ? await searchTraces() : undefined;
+    const listed = search?.traces.find((t) => t.id === traceId);
     const problems = problemsWith(traceId, trace, listed);
+    // D44's total is a second count over the page's own predicate, so a row on
+    // the page under a zero total means page and count drifted apart — the only
+    // place either query runs against a real stack (D59: strictly stronger).
+    if (search && listed && search.total < 1) {
+      problems.push(`searchTraces() paged ${traceId} but reported total ${search.total}`);
+    }
     if (problems.length === 0) return trace as Trace;
     if (Date.now() > deadline) {
       throw new TraceIncompleteError(traceId, timeoutMs, problems);

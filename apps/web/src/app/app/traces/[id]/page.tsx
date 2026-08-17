@@ -1,6 +1,6 @@
 import { notFound } from "next/navigation";
 import { connection } from "next/server";
-import { dataMode, getTrace } from "@/server/data";
+import { dataMode, getTrace, referenceNowMs } from "@/server/data";
 import { TraceExplorer } from "@/components/trace/TraceExplorer";
 
 export default async function TracePage({
@@ -19,5 +19,13 @@ export default async function TracePage({
   if (!trace) notFound();
   // the healthy-run comparison is a mock-corpus lookup, so live traces get no
   // compare link — a diff against a run that never happened (F8)
-  return <TraceExplorer trace={trace} compareEnabled={dataMode !== "live"} />;
+  // The "started" stat is an age, so it takes the request's clock (D50/D64) —
+  // the same one the list ages its rows against.
+  return (
+    <TraceExplorer
+      trace={trace}
+      nowMs={referenceNowMs()}
+      compareEnabled={dataMode !== "live"}
+    />
+  );
 }

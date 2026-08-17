@@ -12,6 +12,7 @@ export const liveWiredRoutes: readonly string[] = [
   "/app", // overview
   "/app/traces", // traces list
   "/app/traces/", // trace detail
+  "/app/logs", // logs explorer
 ];
 
 /**

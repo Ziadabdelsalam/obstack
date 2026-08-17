@@ -32,9 +32,12 @@ function Stat({ label, value }: { label: string; value: string }) {
  */
 export function TraceExplorer({
   trace,
+  nowMs,
   compareEnabled = true,
 }: {
   trace: Trace;
+  /** the request's reference clock, per mode (D50/D64) — never sampled here */
+  nowMs: number;
   compareEnabled?: boolean;
 }) {
   const firstError = useMemo(
@@ -177,7 +180,7 @@ export function TraceExplorer({
           label="pods"
           value={String(new Set(trace.spans.map((s) => s.pod).filter(Boolean)).size)}
         />
-        <Stat label="started" value={timeAgo(trace.startedAt)} />
+        <Stat label="started" value={timeAgo(trace.startedAt, nowMs)} />
       </div>
 
       {/* the pipeline this trace traveled, trigger to finish */}

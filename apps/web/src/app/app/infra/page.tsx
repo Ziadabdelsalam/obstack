@@ -110,8 +110,15 @@ export default function InfraPage() {
                     <td className="py-2.5 text-right font-mono text-[11px] text-mid">{p.cpuPct}%</td>
                     <td className="py-2.5 text-right font-mono text-[10.5px] text-faint">{p.age}</td>
                     <td className="py-2.5 pr-3.5 text-right">
+                      {/* D61: pod intent goes to the logs surface's POD FILTER,
+                          not to free text. `/app/logs` free text reads the log
+                          body only (D51(e)), so the old truncated-prefix `?q=`
+                          was a search for a pod name in message text — a link
+                          that reliably returned nothing (9 of these 12 pods
+                          measured empty). The full name is the filter value;
+                          truncating it would miss the pod entirely. */}
                       <Link
-                        href={`/app/logs?q=${encodeURIComponent(p.name.split("-").slice(0, 2).join("-"))}`}
+                        href={`/app/logs?pod=${encodeURIComponent(p.name)}`}
                         className="inline-flex items-center gap-0.5 font-mono text-[10px] hover:underline"
                         style={{ color: "var(--color-api)" }}
                       >
