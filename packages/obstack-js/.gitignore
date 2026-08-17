@@ -1,0 +1,4 @@
+# Build output. `prepack` regenerates it, and the repo's root .gitignore does not
+# cover `dist` — without this line every `npm pack` would show up as a diff.
+dist/
+*.tgz

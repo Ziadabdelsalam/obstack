@@ -1,0 +1,60 @@
+# S2.4 D80 — `sdk-js`: the obstack-js unit suite on every pull request. The
+# TypeScript half of the split `sdk-py` explains; both names are K3-stable from
+# this first run, and `web`/`go`/`kind`/`stack` are untouched.
+#
+# `npm test --workspace packages/obstack-js` is the package's own done-check
+# command and the one its README gives (S2.1 L3) — the repo's existing runner,
+# `tsx --test` with `node:test`, no second test framework. The suite drives the
+# real `openai`, `@anthropic-ai/sdk` and `ai` clients against local fakes, so
+# the devDependencies `npm ci` installs are load-bearing rather than incidental.
+#
+# `npm run build` runs too, and is not decoration: `tsx` strips types without
+# checking them, so nothing in the test command would notice a type error, and
+# the only other place `tsc` runs is inside demo/sdk-sample-ts's image build in
+# `sdk-e2e`. A type error would otherwise reach master through whichever of
+# those two jobs is not looking.
+#
+# Trigger policy (K5/D41): every PR. Measured on an Apple M4 (10 cores, 16 GB,
+# Node 22.23.1) with node_modules already installed: `npm test` 11.8s over 42
+# tests, `npm run build` 1.2s. The job's own cost on a runner is dominated by
+# `npm ci` (the root workspace install), which the `web` job already pays on
+# every PR — nowhere near the ~6-minute line, so this joins the every-PR set.
+name: sdk-js
+
+on:
+  pull_request:
+    branches: [master]
+
+concurrency:
+  group: sdk-js-${{ github.head_ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  sdk-js:
+    name: sdk-js
+    runs-on: ubuntu-latest
+    # Same reason as every other job here: without it a wedged step holds the
+    # PR for the 360-minute GitHub default. Green is ~1m including `npm ci`.
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+
+      - uses: actions/setup-node@v7.0.0
+        with:
+          # Same major as `web` and `stack`: one Node line across the repo's
+          # JavaScript jobs. obstack-js's own floor is `engines.node >= 20`.
+          node-version: '24'
+          cache: 'npm'
+
+      # The whole workspace, from the committed lockfile — obstack-js is a
+      # workspace member, so its dependencies come from the root install like
+      # apps/web's do.
+      - run: npm ci
+
+      - run: npm test --workspace packages/obstack-js
+
+      - run: npm run build --workspace packages/obstack-js

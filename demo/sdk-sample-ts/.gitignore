@@ -1,0 +1,11 @@
+node_modules/
+dist/
+
+# The obstack-js tarball is packed out of packages/obstack-js on every run
+# (D79), so it is a build product, never a committed artifact.
+obstack-js-*.tgz
+
+# No committed lockfile: the tarball above changes on every pack, and a
+# lockfile pinning its integrity hash would be stale the moment the SDK is
+# rebuilt. The direct dependencies are exact-pinned in package.json instead.
+package-lock.json

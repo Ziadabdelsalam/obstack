@@ -1,0 +1,66 @@
+# S2.4 D80 — `sdk-py`: the obstack-py unit suite on every pull request.
+#
+# Two SDK unit jobs rather than one (`sdk-js` is the other): the toolchains are
+# independent and so are their failure domains, so a red check names the
+# language at fault before anyone opens a log. `sdk-py` and `sdk-js` are
+# K3-stable names from this first run; `web`, `go`, `kind` and `stack` are
+# untouched.
+#
+# The steps below are packages/obstack-py/README.md's "Development" block
+# verbatim (S2.1 L3): same venv, same single install line, same `pytest
+# packages/obstack-py`. A contributor who follows the README runs what CI runs,
+# and a change that breaks one breaks the other.
+#
+# What this job does NOT cover, deliberately: the wheel build. `-e` is an
+# editable install, so nothing here exercises the PEP 517 path a customer takes
+# — `sdk-e2e` does, because demo/sdk-sample-py's Dockerfile installs
+# `./packages/obstack-py[fastapi]` for real.
+#
+# Trigger policy (K5/D41): every PR. Measured on an Apple M4 (10 cores, 16 GB,
+# Python 3.14.6) with a warm pip cache, the whole venv + install + 30-test run
+# takes 18.0s; with the pip cache emptied first (PIP_CACHE_DIR to an empty
+# directory, every wheel downloaded) it takes 34.8s, of which pytest itself is
+# 4.1s. Even trebled by a cold CI runner that is far under the ~6-minute line,
+# so this joins the every-PR set rather than a label trigger.
+name: sdk-py
+
+on:
+  pull_request:
+    branches: [master]
+
+concurrency:
+  group: sdk-py-${{ github.head_ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  sdk-py:
+    name: sdk-py
+    runs-on: ubuntu-latest
+    # Bounds the job the way web/go/kind/stack bound theirs: without it a wedged
+    # step holds the PR for the 360-minute GitHub default. Green is ~30s.
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+
+      - uses: actions/setup-python@v7.0.0
+        with:
+          # The version the suite is measured on, and the line the sample's
+          # image runs (demo/sdk-sample-py/Dockerfile is python:3.14.7-slim).
+          # pyproject.toml's floor is 3.10 — untested here on purpose: a matrix
+          # would claim coverage of versions no evidence has been produced on.
+          python-version: '3.14'
+          cache: 'pip'
+          cache-dependency-path: packages/obstack-py/requirements-dev.txt
+
+      # packages/obstack-py/README.md, "Development", unchanged. The venv is
+      # redundant on a throwaway runner and kept anyway — the point of running
+      # the documented command is that it is the documented command.
+      - name: Unit suite (packages/obstack-py/README.md "Development")
+        run: |
+          python -m venv .venv && source .venv/bin/activate
+          pip install -e './packages/obstack-py[fastapi]' -r ./packages/obstack-py/requirements-dev.txt
+          pytest packages/obstack-py

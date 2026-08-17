@@ -1,0 +1,5 @@
+# What running this package's own test suite leaves behind. Kept local to the
+# package rather than added to the repo root's ignores, which describe the
+# JavaScript side of the tree.
+__pycache__/
+.pytest_cache/

@@ -1,0 +1,27 @@
+{
+  "name": "sdk-sample-ts",
+  "version": "0.1.0",
+  "private": true,
+  "description": "The obstack-js sample — two lines of setup produce the four-layer trace",
+  "license": "UNLICENSED",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/main.js"
+  },
+  "//": "Not a workspace member (D76): demo/ stays outside the product build, exactly like demo/agent-app. That is also why the versions below are exact rather than ranges — a sample app is an app, and an app that resolves a different provider version tomorrow stops being evidence of anything.",
+  "//dependencies": "obstack-js comes from the tarball `npm pack packages/obstack-js` produces (D79) — the packaged artifact, so `files`/`exports`/types are exercised the way a customer would hit them rather than short-circuited by a workspace symlink; see README. openai 7.4.0: the real client the SDK's instrumentation patches, inside the supported >=4.85 <8 range. ai 6.0.256: the Vercel AI SDK version obstack-js's translation processor is pinned against — 7 emits no OpenTelemetry span at all, which is why this is exact and never `latest`. @ai-sdk/openai 3.0.97: the `ai`-6 line of the OpenAI provider (same @ai-sdk/provider 3.0.15 as ai 6.0.256), used only to point `generateText` at this app's own fake endpoint.",
+  "dependencies": {
+    "@ai-sdk/openai": "3.0.97",
+    "ai": "6.0.256",
+    "obstack-js": "file:obstack-js-0.1.0.tgz",
+    "openai": "7.4.0"
+  },
+  "//devDependencies": "The compiler and the Node types, at the versions the rest of the repo already resolves. No test framework: this sample IS the test — its evidence is the trace it lands in ClickHouse.",
+  "devDependencies": {
+    "@types/node": "20.19.43",
+    "typescript": "5.9.3"
+  }
+}

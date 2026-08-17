@@ -1,0 +1,18 @@
+{
+  "//": "CommonJS output, because CJS is what obstack-js's patching is verified against (D77(b)): the openai client has to be `require`d after init() for the instrumentation to see it.",
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022"],
+    "module": "commonjs",
+    "moduleResolution": "node10",
+    "types": ["node"],
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "skipLibCheck": true,
+    "outDir": "dist",
+    "rootDir": "src"
+  },
+  "include": ["src/**/*.ts"]
+}

@@ -1,0 +1,26 @@
+# What the test suite runs against, pinned exactly. pyproject.toml states the
+# ranges a customer installs under; this file states the one combination the
+# evidence was produced on, so a green suite names a version pair rather than
+# "whatever resolved today".
+#
+# The 1.44.0 / 0.65b0 pair is one OpenTelemetry Python release: the SDK and the
+# instrumentation packages are versioned separately but ship together. Same pair
+# as demo/agent-app/requirements.txt, so the SDK and the plain-OTel demo are
+# proven against identical OTel behaviour.
+opentelemetry-sdk==1.44.0
+opentelemetry-exporter-otlp-proto-http==1.44.0
+opentelemetry-instrumentation==0.65b0
+opentelemetry-instrumentation-fastapi==0.65b0
+opentelemetry-instrumentation-logging==0.65b0
+
+# The two provider clients the instrumentation tests drive for real: every
+# assertion is made against a span produced by the actual client library talking
+# to a local fake, never by calling the wrapper directly.
+openai==3.1.0
+anthropic==0.122.0
+
+# FastAPI is what the [fastapi] extra instruments; installed so the api-layer
+# path is exercised rather than assumed.
+fastapi==0.141.1
+
+pytest==9.1.1

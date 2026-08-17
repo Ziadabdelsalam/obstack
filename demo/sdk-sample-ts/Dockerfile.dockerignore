@@ -1,0 +1,13 @@
+# BuildKit reads this file — named after the Dockerfile beside it — instead of
+# the context root's .dockerignore. The context is the whole repository, so
+# without it every node_modules tree and the entire .git history would be
+# uploaded to the daemon to build a sample app.
+#
+# Everything is excluded, then the two directories the build actually reads are
+# added back, minus their local build products (the image builds its own).
+*
+!packages/obstack-js
+!demo/sdk-sample-ts
+**/node_modules
+**/dist
+**/*.tgz

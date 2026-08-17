@@ -1,0 +1,4 @@
+# What running this sample leaves behind. Kept local to the sample rather than
+# added to the repo root's ignores, which describe the JavaScript side of the
+# tree.
+__pycache__/
