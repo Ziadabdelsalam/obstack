@@ -1,0 +1,66 @@
+{
+  "name": "obstack-js",
+  "version": "0.1.0",
+  "description": "obstack SDK for Node.js — OTel setup, LLM auto-instrumentation and agent/tool spans in two lines",
+  "license": "UNLICENSED",
+  "private": false,
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "test": "tsx --test \"src/**/*.test.ts\"",
+    "typecheck": "tsc -p tsconfig.json",
+    "prepack": "npm run build"
+  },
+  "//dependencies": "Every runtime dep is load-bearing for the two-line setup (S2.1 L1 wants the reason stated, so it is stated here rather than in a commit message that nobody reads again). api: the tracer/context calls in traceAgent/traceTool and both instrumentations. sdk-node: the NodeSDK init() assembles (D78). sdk-trace: BatchSpanProcessor plus the SpanProcessor/ReadableSpan types the Vercel-AI translation is written against — this package rather than sdk-trace-base because sdk-node's own config type is declared against it. sdk-logs: BatchLogRecordProcessor for the log pipeline (D84 — registration only, no logging bridge). exporter-trace-otlp-proto / exporter-logs-otlp-proto: the OTLP proto-over-HTTP exporters D78 names, constructed with no args so all config stays standard OTEL_* env. instrumentation: InstrumentationBase and the require-in-the-middle module definitions the openai/anthropic patches are built on. instrumentation-http: a HARD dep on purpose (D77(c)) — it is what makes the api layer of the four-layer trace appear without the app writing a line of OTel.",
+  "dependencies": {
+    "@opentelemetry/api": "^1.9.1",
+    "@opentelemetry/exporter-logs-otlp-proto": "^0.221.0",
+    "@opentelemetry/exporter-trace-otlp-proto": "^0.221.0",
+    "@opentelemetry/instrumentation": "^0.221.0",
+    "@opentelemetry/instrumentation-http": "^0.221.0",
+    "@opentelemetry/sdk-logs": "^0.221.0",
+    "@opentelemetry/sdk-node": "^0.221.0",
+    "@opentelemetry/sdk-trace": "^2.10.0"
+  },
+  "//peerDependencies": "The instrumented libraries are never dependencies (D77): obstack-js patches them if the app has them and does nothing at all if it does not. Optional peers say that in package metadata instead of only in prose. Every bound below is a measurement, not a guess — see README's 'What is actually covered'. openai >=4.85 <8: `openai/resources/chat/completions/completions.js` is the module whose Completions.prototype the client really uses, checked on 4.85.4 / 5.23.2 / 6.49.0 / 7.4.0. The floor is 4.85 rather than 4 because that module does not exist below it (openai kept chat completions in a flat `resources/chat/completions.js` through 4.84.1) — measured, the same call on 4.84.1 produces no span at all and no error, so a wider range would advertise coverage that silently is not there. @anthropic-ai/sdk >=0.50 <1: `resources/messages/messages.js` exists from 0.50 (0.30.1 has no such path), checked on 0.50.4 / 0.70.1 / 0.100.1 / 0.117.1. ai >=5 <7: 5.0.237 and 6.0.256 emit the ai.generateText.doGenerate OTel span this SDK translates, 7.0.66 emits no OTel span at all (it moved to a node:diagnostics_channel integration registry). See src/vercel-ai.ts.",
+  "peerDependencies": {
+    "@anthropic-ai/sdk": ">=0.50 <1",
+    "ai": ">=5 <7",
+    "openai": ">=4.85 <8"
+  },
+  "peerDependenciesMeta": {
+    "@anthropic-ai/sdk": {
+      "optional": true
+    },
+    "ai": {
+      "optional": true
+    },
+    "openai": {
+      "optional": true
+    }
+  },
+  "//devDependencies": "tsx/typescript/@types/node are the repo's existing runner and compiler, at apps/web's ranges so the lockfile dedupes onto the versions already there rather than resolving new ones. The three provider libraries are installed here because the unit suite drives the REAL clients against a local fake — an instrumentation test that never loads the library it patches proves nothing (S2.0 L1). context-async-hooks is test-only: the unit harness builds a bare TracerProvider, and without a context manager a span started inside another has no parent, so the nesting the four-layer trace depends on could not be asserted. Real applications get it from NodeSDK, which is why it is not a runtime dependency. It is already in the lockfile as a transitive dependency of sdk-node, so naming it here adds no resolution.",
+  "devDependencies": {
+    "@anthropic-ai/sdk": "^0.117.1",
+    "@opentelemetry/context-async-hooks": "^2.10.0",
+    "@types/node": "^20",
+    "ai": "^6.0.256",
+    "openai": "^7.4.0",
+    "tsx": "^4.23.12",
+    "typescript": "^5"
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "//": "The shipped artifact: CJS plus .d.ts (D77(b)/D78 — CJS patching is what this SDK claims, so CJS is what it ships). Tests and test fixtures are excluded so the tarball carries no test-only imports of optional peers. No source maps: `files` ships dist only, so a map would point at a `src/` that is not in the tarball — a dangling reference is worse than none.",
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "declaration": true,
+    "outDir": "dist",
+    "rootDir": "src"
+  },
+  "include": ["src/**/*.ts"],
+  "exclude": ["src/**/*.test.ts", "src/**/*.fixture.ts", "src/testing/**"]
+}
