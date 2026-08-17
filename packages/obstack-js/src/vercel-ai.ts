@@ -41,6 +41,21 @@ import { swallowed } from "./fail-open";
  * Both are plain fields on the SDK's Span, and both are set here rather than at
  * creation because the span is `ai`'s, not ours — there is no earlier hook.
  *
+ * And the fourth thing, which is why this is a translation rather than a copy
+ * (D92): the upstream content attributes are DELETED. `gen_ai.prompt` and
+ * `gen_ai.completion` are lifted into dedicated columns by ingest and removed
+ * from the attributes Map (D8-AMENDMENT), but ingest strips exactly those two
+ * names and never guesses at foreign ones — for a bring-your-own-OTel producer
+ * the Map copy is the customer's only copy, and an ingest-side blacklist would
+ * destroy data obstack does not own. So the perimeter is here: obstack's own
+ * SDKs must not ship prompt or completion content into the Map under ANY key.
+ * Leaving `ai.prompt.messages` behind would have put the whole conversation in
+ * the Map next to a column that exists precisely to keep it out.
+ *
+ * The strip runs on EVERY span carrying `ai.operationId`, not only the one
+ * translated: the outer `ai.generateText` span gets no `gen_ai.*` attributes and
+ * still classifies `other`, but it carries the full input under `ai.prompt`.
+ *
  * `ai` 7 is out of scope and out of the supported peer range: it stopped
  * emitting OTel spans altogether in favour of a `node:diagnostics_channel`
  * integration registry, so there is nothing on the wire for this to translate.
@@ -50,8 +65,42 @@ import { swallowed } from "./fail-open";
 const AI_OPERATION_ID = "ai.operationId";
 const AI_PROVIDER_CALL = "ai.generateText.doGenerate";
 const AI_MODEL_PROVIDER = "ai.model.provider";
+const AI_PROMPT = "ai.prompt";
 const AI_PROMPT_MESSAGES = "ai.prompt.messages";
 const AI_RESPONSE_TEXT = "ai.response.text";
+
+/**
+ * Every upstream attribute that can carry the user's input or the model's
+ * output. Deleted from any `ai` span, after the mapping above has read what it
+ * needs from them.
+ *
+ * Measured against the pinned `ai` 6.0.256: of the 15 distinct `ai.*` attributes
+ * a `generateText` call emits across its two spans, exactly three are
+ * content-bearing — `ai.prompt` (outer), `ai.prompt.messages` (provider call)
+ * and `ai.response.text` (both). The other twelve are metadata (`ai.model.*`,
+ * `ai.operationId`, `ai.request.headers.*`, `ai.response.finishReason`/`id`/
+ * `model`/`timestamp`, `ai.settings.*`, `ai.usage.*`) and are kept —
+ * `vercel-ai.test.ts` records that enumeration and goes red on an `ai.*`
+ * attribute it has not classified.
+ *
+ * The list is wider than those three on purpose. Tool calls and structured
+ * output travel the same pipeline and put arguments, results and generated
+ * objects in the Map; this fixture exercises neither, so those keys are unproven
+ * rather than absent. Deleting a key that is not there costs nothing, and the
+ * failure it prevents is a customer's tool arguments landing in a column-less
+ * Map forever.
+ */
+const AI_CONTENT_ATTRIBUTES = [
+  AI_PROMPT,
+  AI_PROMPT_MESSAGES,
+  "ai.prompt.tools",
+  "ai.prompt.toolChoice",
+  AI_RESPONSE_TEXT,
+  "ai.response.object",
+  "ai.response.toolCalls",
+  "ai.toolCall.args",
+  "ai.toolCall.result",
+] as const;
 
 /** The fields of a Span that are readonly on ReadableSpan but plain properties
  *  on the SDK's implementation — which is what actually arrives in onEnd. */
@@ -83,23 +132,31 @@ export class VercelAiTranslationProcessor implements SpanProcessor {
 
 function translate(span: ReadableSpan): void {
   const attributes = span.attributes;
-  if (attributes[AI_OPERATION_ID] !== AI_PROVIDER_CALL) return;
+  // Any span the Vercel AI SDK made. The mapping below applies to the provider
+  // call alone; the content strip at the end applies to all of them.
+  if (attributes[AI_OPERATION_ID] === undefined) return;
 
   const mutable = span as unknown as MutableSpan;
 
-  const provider = attributes[AI_MODEL_PROVIDER];
-  if (typeof provider === "string") mutable.attributes[GEN_AI_SYSTEM] = bareProvider(provider);
+  if (attributes[AI_OPERATION_ID] === AI_PROVIDER_CALL) {
+    const provider = attributes[AI_MODEL_PROVIDER];
+    if (typeof provider === "string") mutable.attributes[GEN_AI_SYSTEM] = bareProvider(provider);
 
-  const messages = attributes[AI_PROMPT_MESSAGES];
-  if (typeof messages === "string") mutable.attributes[GEN_AI_PROMPT] = messages;
+    const messages = attributes[AI_PROMPT_MESSAGES];
+    if (typeof messages === "string") mutable.attributes[GEN_AI_PROMPT] = messages;
 
-  const text = attributes[AI_RESPONSE_TEXT];
-  if (typeof text === "string") mutable.attributes[GEN_AI_COMPLETION] = text;
+    const text = attributes[AI_RESPONSE_TEXT];
+    if (typeof text === "string") mutable.attributes[GEN_AI_COMPLETION] = text;
 
-  const model = attributes[GEN_AI_RESPONSE_MODEL] ?? attributes[GEN_AI_REQUEST_MODEL];
-  if (typeof model === "string") mutable.name = llmSpanName(model);
+    const model = attributes[GEN_AI_RESPONSE_MODEL] ?? attributes[GEN_AI_REQUEST_MODEL];
+    if (typeof model === "string") mutable.name = llmSpanName(model);
 
-  mutable.kind = SpanKind.CLIENT;
+    mutable.kind = SpanKind.CLIENT;
+  }
+
+  // Last, and only here: the block above reads these very attributes, so
+  // deleting earlier would translate the content into nothing (D92).
+  for (const key of AI_CONTENT_ATTRIBUTES) delete mutable.attributes[key];
 }
 
 /** "openai.chat" -> "openai"; "anthropic" -> "anthropic" (D82). */

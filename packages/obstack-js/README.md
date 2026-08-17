@@ -139,7 +139,13 @@ starts at 4.85 rather than at 4.
 
 **Vercel AI SDK.** No patching is involved: `ai` emits its own OpenTelemetry
 spans, and `init()` registers a span processor that rewrites the provider-call
-span (`ai.generateText.doGenerate`) into the attribute names obstack reads.
+span (`ai.generateText.doGenerate`) into the attribute names obstack reads. That
+processor also **deletes `ai`'s own content attributes** — `ai.prompt`,
+`ai.prompt.messages`, `ai.response.text` and the tool/structured-output keys
+beside them — from every `ai` span once it has read what it needs. See "Reading
+prompts and completions back" below for why: the content belongs in the dedicated
+columns, and a translation that left the originals in place would be a copy.
+Metadata (`ai.usage.*`, model ids, settings, `ai.operationId`) is untouched.
 `ai` 7 removed OTel span emission in favour of a `node:diagnostics_channel`
 integration registry, so there is nothing left for that processor to translate —
 hence the `<7` bound. Enable telemetry per call:
@@ -164,6 +170,14 @@ The SDK sets `gen_ai.prompt` and `gen_ai.completion` as span attributes on the
 wire. obstack's ingest moves both into dedicated columns and **removes them from
 the attributes map**, so anything reading obstack's data takes them from the
 `prompt` and `completion` columns and never from `attributes['gen_ai.prompt']`.
+
+Ingest strips exactly those two names and never guesses at others — for a
+service that brings its own OpenTelemetry, the map copy may be the only copy it
+has, and obstack does not delete data it does not own. Keeping content out of the
+map is therefore this SDK's job at the point of emission: obstack-js ships prompt
+and completion content under those two keys and **no other**, which is why the
+Vercel-AI translation deletes `ai`'s originals rather than leaving them beside
+the values it derived from them.
 
 Content capture is **on, in full, and has no off switch** in this release: the
 prompt and the completion are the thing obstack exists to show you. Both are
