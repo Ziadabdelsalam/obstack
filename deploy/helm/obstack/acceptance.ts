@@ -26,6 +26,7 @@ import { randomBytes } from "node:crypto";
 import type { Trace } from "@/lib/types";
 import {
   awaitWholeTrace,
+  DEMO_WORKSPACE,
   REQUIRED_LAYERS,
   TraceIncompleteError,
 } from "../../compose/trace-checks";
@@ -136,7 +137,7 @@ function d37Problems(traceId: string, trace: Trace): string[] {
 async function assertTrace(traceId: string): Promise<void> {
   let whole: Trace;
   try {
-    whole = await awaitWholeTrace(traceId, ARRIVAL_TIMEOUT_MS);
+    whole = await awaitWholeTrace(DEMO_WORKSPACE, traceId, ARRIVAL_TIMEOUT_MS);
   } catch (err) {
     if (err instanceof TraceIncompleteError) {
       for (const p of err.problems) console.error(`acceptance:   - ${p}`);
@@ -243,8 +244,12 @@ async function genaiFixture(): Promise<void> {
   }
 
   // Read back with the same parameterized readonly client the app uses (D11 —
-  // values bound through query_params, never interpolated).
-  const { queryRows, workspaceId } = await import("@/server/clickhouse");
+  // values bound through query_params, never interpolated), scoped to the one
+  // workspace the collector's `ok_dev_local` key maps to (D96/D113). The scope
+  // binds `workspace_id` itself, so the SQL below names the placeholder and
+  // the params below never carry it.
+  const { forWorkspace } = await import("@/server/clickhouse");
+  const ch = forWorkspace(DEMO_WORKSPACE);
   const FIXTURE_ROW_SQL = `
 SELECT span_id, body, prompt, completion, mapKeys(attributes) AS attribute_keys
 FROM obstack.logs
@@ -260,10 +265,7 @@ WHERE workspace_id = {workspace_id:String} AND trace_id = {trace_id:String}`;
   const deadline = Date.now() + FIXTURE_TIMEOUT_MS;
   let rows: FixtureRow[] = [];
   for (;;) {
-    rows = await queryRows<FixtureRow>(FIXTURE_ROW_SQL, {
-      workspace_id: workspaceId,
-      trace_id: traceId,
-    });
+    rows = await ch.queryRows<FixtureRow>(FIXTURE_ROW_SQL, { trace_id: traceId });
     if (rows.length > 0) break;
     if (Date.now() > deadline) {
       fail(

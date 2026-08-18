@@ -9,6 +9,17 @@
 # file_storage rider), and lands the D38(e) event-form GenAI fixture through
 # the collector.
 #
+# S3.1 adds steps after it, not jobs: Postgres arrived in this chart
+# (D95/D112), so the same release is asked whether the pg-migrate Job's DDL
+# is actually in its database. Same L3 rule — the step is the chart README's
+# own line, byte for byte. The second S3.1 step (D122) asks the other Postgres
+# question, the one nothing in better-auth re-checks: does the CAPTURED auth
+# DDL still match the config it was generated from. `stack` keeps its name
+# (K3); the signup path arrives in the separate `e2e` job, not here. Those
+# steps add a Postgres image pull, a compose start and one tsx run on top of
+# the 4m06s below — that number was measured BEFORE them, so the next real
+# runner run is what re-tests the ~6-minute line the rule below turns on.
+#
 # Trigger policy (K5/D41 decision RULE): measure the full job's wall-clock,
 # then pick a branch. Measured end to end on a real PR run — checkout, npm
 # ci, image builds, kind cluster, pulls + side-load, helm install, all
@@ -70,6 +81,60 @@ jobs:
       - name: Stack acceptance (deploy/helm/obstack/acceptance.sh)
         run: bash deploy/helm/obstack/acceptance.sh
 
+      # S3.1: the Postgres boot path, in this job rather than a new one (K3 —
+      # `stack` is the stack's assertion and keeps its name). One line, and
+      # it is the same line the chart README tells a human to run after an
+      # install (README.md, "Postgres in this chart" — S2.1 L3, no CI-only
+      # sequence): the pg-migrate Job's own store, asked directly whether the
+      # DDL is there. ON_ERROR_STOP turns a missing relation into a non-zero
+      # exit; zero rows is a pass, since a fresh install has no workspaces
+      # until somebody signs up.
+      #
+      # It asserts the RESULT, not the Job object, on purpose: the
+      # install-rendered Job carries ttlSecondsAfterFinished and may be
+      # collected before this step runs, while the upgrade-rendered one is a
+      # hook that deletes itself on success — the database is the only thing
+      # both paths leave behind. Nor does it race that Job: the release
+      # acceptance.sh installed cannot go green until the ingest pods verify
+      # the Postgres set (OBSTACK_PG_MIGRATE_ON_BOOT=false), which cannot
+      # happen before pg-migrate applied it. This step is what names the
+      # tables the product actually needs.
+      - name: Postgres schema (deploy/helm/obstack/README.md, "Postgres in this chart")
+        run: |
+          kubectl exec deploy/obstack-postgres -- psql -U obstack -d obstack -v ON_ERROR_STOP=1 \
+            -c 'SELECT 1 FROM workspaces LIMIT 1' -c 'SELECT 1 FROM saved_views LIMIT 1'
+
+      # S3.1 D122: better-auth's own tables are CAPTURED, never migrated by the
+      # library (D95/D117) — services/ingest/pgmigrations/0003_auth.sql is the
+      # verbatim output of the generate path run against `authConfig()`
+      # (apps/web/src/server/auth.ts). Nothing re-checks that pair, so a plugin
+      # or a field changed in the config without a re-capture desyncs the app
+      # from the migration the ingest binary applies, silently and only in
+      # production shapes. The step regenerates the DDL from the config the app
+      # runs and diffs it against the file; any difference fails it, naming both
+      # sides and the re-capture recipe.
+      #
+      # The generator emits only what its target database is MISSING, so it
+      # needs an empty one. That is compose's Postgres — the same K1 mechanism
+      # go.yml/web.yml use for ClickHouse, one definition of the dev Postgres
+      # (D112(b)) — with a scratch database created and dropped inside the
+      # script. The kind cluster is deliberately untouched: this writes nothing
+      # to a database the product reads.
+      - name: Start Postgres (deploy/compose)
+        run: docker compose -f deploy/compose/docker-compose.yml up -d --wait --wait-timeout 120 postgres
+
+      # The secret is inline and disposable: `authConfig()` requires one and the
+      # schema does not depend on its value, so it is a CI-local literal — not a
+      # secret, and not a service env (D112(b) keeps BETTER_AUTH_* out of the
+      # compose services and the chart; this is neither). BETTER_AUTH_URL is set
+      # nowhere — not here, not anywhere in the repo — and that is D119, not an
+      # omission.
+      - name: Captured-DDL drift guard (deploy/compose/ddl-drift-check.mts)
+        run: |
+          BETTER_AUTH_SECRET=ddl-drift-check-dummy-secret-not-a-real-one \
+            npx tsx --tsconfig apps/web/tsconfig.json --conditions react-server \
+            deploy/compose/ddl-drift-check.mts
+
       - name: Diagnose on failure
         if: failure()
         run: |
@@ -79,3 +144,10 @@ jobs:
           kubectl logs ds/obstack-collector --tail=80 || true
           kubectl logs deploy/obstack-ingest --tail=40 || true
           kubectl logs deploy/obstack-demo -c demo-agent --tail=40 || true
+          kubectl logs deploy/obstack-postgres --tail=40 || true
+          kubectl logs -l app.kubernetes.io/component=pg-migrate --tail=40 --all-containers || true
+          docker compose -f deploy/compose/docker-compose.yml logs --tail 40 postgres || true
+
+      - name: Stop Postgres (deploy/compose)
+        if: always()
+        run: docker compose -f deploy/compose/docker-compose.yml down -v

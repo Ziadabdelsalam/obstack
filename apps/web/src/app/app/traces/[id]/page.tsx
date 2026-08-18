@@ -1,6 +1,6 @@
 import { notFound } from "next/navigation";
 import { connection } from "next/server";
-import { dataMode, getTrace, referenceNowMs } from "@/server/data";
+import { dataForSession, dataMode, referenceNowMs } from "@/server/data";
 import { TraceExplorer } from "@/components/trace/TraceExplorer";
 
 export default async function TracePage({
@@ -15,7 +15,11 @@ export default async function TracePage({
   // reference: "only necessary when dynamic rendering is required and common
   // Request-time APIs are not used". Mock mode stays static-as-today.
   if (dataMode === "live") await connection();
-  const trace = await getTrace(id);
+  // The lookup is scoped to the signed-in session's workspace (D113), so a
+  // trace id from another workspace resolves to nothing and this page 404s —
+  // the same answer as an id that never existed.
+  const data = await dataForSession();
+  const trace = await data.getTrace(id);
   if (!trace) notFound();
   // the healthy-run comparison is a mock-corpus lookup, so live traces get no
   // compare link — a diff against a run that never happened (F8)

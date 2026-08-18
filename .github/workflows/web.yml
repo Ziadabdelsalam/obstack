@@ -44,7 +44,14 @@ jobs:
       # UNKNOWN_DATABASE — measured on this job's first enforced run, not
       # assumed — and the alternative (this job hand-applying DDL) would be a
       # second definition of the migration path, which K1 refuses.
-      - name: Start ClickHouse + ingest (deploy/compose)
+      #
+      # Postgres is not named here because it does not need to be: `ingest`
+      # depends on it with `condition: service_healthy`, so compose starts it
+      # first and holds ingest back until it answers, and the same boot applies
+      # the second embedded set (services/ingest/pgmigrations/*.sql, in filename
+      # order) to it. A returning `--wait` therefore means a healthy, migrated
+      # Postgres — which is what the test step below dials.
+      - name: Start ClickHouse + ingest (deploy/compose; Postgres rides ingest's depends_on)
         run: docker compose -f deploy/compose/docker-compose.yml up -d --wait --wait-timeout 120 clickhouse ingest
 
       - uses: actions/setup-node@v7.0.0
@@ -60,12 +67,14 @@ jobs:
 
       - run: npm ci
 
-      # D36 skip trap, mirroring go.yml's: the integration tests skip
-      # themselves when no ClickHouse answers, so a green run proves nothing
-      # unless an unexpected skip fails the job. The env is the readonly web
-      # user against the compose ClickHouse above — deploy/compose/README.md's
+      # D36 skip trap, mirroring go.yml's: the ClickHouse integration tests
+      # skip themselves when no ClickHouse answers, and the Postgres ones when
+      # the DSN below is unset (a Postgres that does not answer FAILS them, it
+      # never skips them), so a green run proves nothing unless an unexpected
+      # skip fails the job. The env is the readonly web user against the
+      # compose ClickHouse above — deploy/compose/README.md's
       # live-mode block, reused rather than copied into a second config
-      # artifact.
+      # artifact — plus the Postgres DSN the *.integration.test.ts files dial.
       #
       # node:test's reporter differs by version/TTY (tap piped on some
       # versions, spec on others), so the trap fails CLOSED: the runner's own
@@ -76,6 +85,23 @@ jobs:
           CLICKHOUSE_URL: http://127.0.0.1:8123
           CLICKHOUSE_USER: obstack_web
           CLICKHOUSE_PASSWORD: obstack_web_dev
+          # apps/web/src/server/*.integration.test.ts skip themselves on exactly
+          # one condition — this variable being unset — so setting it here is
+          # what makes them run, and the trap below is what keeps them running.
+          # A dead address does NOT get them a skip: they fail loudly naming
+          # what they dialled.
+          #
+          # No Postgres service container, deliberately (D130): the compose
+          # Postgres started above is already here, already migrated by ingest's
+          # boot migrator from the checked-in services/ingest/pgmigrations —
+          # the same K1 argument the ClickHouse comment above makes, and the
+          # only way this job avoids owning a second definition of that schema.
+          # A service container would also publish 5432 against compose's own
+          # publish of it (measured: `Bind for 127.0.0.1:5432 failed: port is
+          # already allocated`), and service containers start before step 1, so
+          # the collision would kill the compose step rather than any test.
+          # Dev credentials, one definition, the same DSN string go.yml uses.
+          OBSTACK_TEST_POSTGRES_DSN: postgres://obstack:obstack_postgres_dev@127.0.0.1:5432/obstack
         run: |
           set +e
           npm test 2>&1 | tee test-output.log
@@ -130,6 +156,8 @@ jobs:
 
       - run: npm run build
 
-      - name: Stop ClickHouse (deploy/compose)
+      # `down -v` takes the whole project, Postgres and its named volume
+      # included — nothing this job wrote survives into another run.
+      - name: Stop the compose stack (deploy/compose)
         if: always()
         run: docker compose -f deploy/compose/docker-compose.yml down -v

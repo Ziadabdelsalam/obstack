@@ -1,10 +1,12 @@
 apiVersion: v2
 name: obstack
 description: >-
-  The obstack stack on Kubernetes — CI-grade ClickHouse, the ingest
-  Deployment plus its migrate Job, the obstack-collector DaemonSet, and the
-  demo app. M2 scope only (D35); M4 extends this chart in place rather than
-  replacing it — see README.md's scope boundary.
+  The obstack stack on Kubernetes — CI-grade ClickHouse and Postgres, the
+  ingest Deployment plus its two migrate Jobs, the obstack-collector
+  DaemonSet, and the demo app. M2 scope, extended in place by S3.1's Postgres
+  (D35 — a second chart is drift); M4 extends this same chart again rather
+  than replacing it — see README.md's scope boundary.
 type: application
-version: 0.1.0
+# 0.2.0: S3.1 added the Postgres workload and its pg-migrate Job.
+version: 0.2.0
 appVersion: "0.1.0"

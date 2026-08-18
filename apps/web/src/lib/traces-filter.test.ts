@@ -2,10 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { DEFAULT_TRACE_RANGE_MS, TRACE_PAGE_SIZE } from "@/server/data";
 import { HOSTILE_URL_VALUES, type HostileUrlValue } from "@/lib/hostile-url-values";
-import { PAGE_PARAM } from "./saved-views";
 import {
   DEFAULT_TRACE_RANGE,
   EMPTY_TRACES_FILTERS,
+  PAGE_PARAM,
   TRACE_RANGE_HOURS,
   TRACE_STATUSES,
   parseTracesUrl,
@@ -256,7 +256,11 @@ test("a page number that cannot be an exact offset is not a page (D66's class)",
   assert.equal(parseTracesUrl({ [PAGE_PARAM]: "2.9" }).page, 2);
 });
 
-test("the page parameter is the store's PAGE_PARAM, never a second literal (D53)", () => {
+test("the page parameter is this surface's PAGE_PARAM, never a second literal (D53)", () => {
+  // The literal moved here when the browser store was deleted (D30/D97): this
+  // is the only surface with a page, and `@/server/saved-views` strips by this
+  // export rather than by a second copy of the word.
+  assert.equal(PAGE_PARAM, "page");
   assert.equal(tracesSearchString({ ...EMPTY_TRACES_FILTERS, page: 3 }), `${PAGE_PARAM}=3`);
   assert.equal(parseTracesUrl({ [PAGE_PARAM]: "3" }).page, 3);
   // Page 1 is the absence of the parameter, so the first page is a clean link.

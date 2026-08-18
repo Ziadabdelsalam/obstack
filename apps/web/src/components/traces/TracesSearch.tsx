@@ -185,8 +185,8 @@ export function TracesSearch({
             </option>
           ))}
         </select>
-        {/* Views come from `lib/saved-views` and nowhere else: one filter set,
-            replaced whole, back to the first page. */}
+        {/* Views come from the workspace's rows and nowhere else: one filter
+            set, replaced whole, back to the first page. */}
         <SavedViewsMenu
           surface="traces"
           filters={tracesViewFilters(edited)}

@@ -1,4 +1,4 @@
-import { TRACE_PAGE_SIZE, referenceNowMs, searchTraces } from "@/server/data";
+import { TRACE_PAGE_SIZE, dataForSession, referenceNowMs } from "@/server/data";
 import { TracesSearch } from "@/components/traces/TracesSearch";
 import { parseTracesUrl, toTraceFilter } from "@/lib/traces-filter";
 
@@ -14,6 +14,9 @@ import { parseTracesUrl, toTraceFilter } from "@/lib/traces-filter";
  * pre-D44 second, unfiltered, 200-capped read that used to supply M is gone —
  * it could only ever claim rows this page never rendered (D13/D21).
  *
+ * That read is scoped to the signed-in session's workspace (D113): this page
+ * never names a workspace, and there is no ambient one it could inherit.
+ *
  * The row ages come from one clock sampled here, per request (D50/D64) — the
  * bar is a client component and has no mode to ask.
  */
@@ -23,7 +26,8 @@ export default async function TracesPage({
   searchParams: Promise<{ [key: string]: string | string[] | undefined }>;
 }) {
   const filters = parseTracesUrl(await searchParams);
-  const { traces, total } = await searchTraces(toTraceFilter(filters));
+  const data = await dataForSession();
+  const { traces, total } = await data.searchTraces(toTraceFilter(filters));
 
   return (
     <TracesSearch

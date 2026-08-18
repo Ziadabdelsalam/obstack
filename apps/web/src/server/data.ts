@@ -1,5 +1,9 @@
 import "server-only";
 import type { Trace } from "@/lib/types";
+import { forWorkspace } from "@/server/clickhouse";
+// type-only: erased at runtime, so naming the session's shape here never loads
+// the auth stack (see `dataForSession`).
+import type { SessionContext } from "@/server/session";
 import { NOW } from "@/mock/generate";
 import { streamLogs } from "@/mock/logstream";
 import { statCards, timeseries } from "@/mock/metrics";
@@ -41,9 +45,6 @@ export { DEFAULT_LOG_RANGE_MS, LOG_SEARCH_CAP } from "@/server/queries/logs";
 // The logs URL vocabulary is NOT re-exported: it lives in `@/lib/logs-filter`
 // (D65), which the page and the bar import directly — a facade passthrough
 // would put a second import path on a client-safe module for no reason.
-
-/** The workspace every live query binds to — surfaced so pages can label it (F6). */
-export { workspaceId } from "@/server/clickhouse";
 
 export type DataMode = "live" | "mock";
 
@@ -157,20 +158,6 @@ export function mockSearchTraces(all: Trace[], filter: TraceFilter): TraceSearch
   return { traces: matched.slice(start, start + TRACE_PAGE_SIZE), total: matched.length };
 }
 
-export async function getTrace(id: string): Promise<Trace | undefined> {
-  return dataMode === "live" ? queryTrace(id) : getMockTrace(id);
-}
-
-/** The traces-list entry point (D44): one page plus the exact filtered total. */
-export async function searchTraces(filter: TraceFilter = {}): Promise<TraceSearchResult> {
-  return dataMode === "live" ? queryTraceSearch(filter) : mockSearchTraces(allTraces, filter);
-}
-
-export async function getOverview(range: OverviewRange = "6h"): Promise<Overview> {
-  if (dataMode === "live") return queryOverview(range);
-  return { points: timeseries(), stats: [...statCards] };
-}
-
 /**
  * Mock free text on the LOGS surface — the mock half of the `/app/logs` search
  * rule (live half: `queries/logs.ts`). Reach is the **body only** (D51(e)): a
@@ -217,7 +204,99 @@ export function mockSearchLogs(all: LogLine[], filter: LogFilter): LogSearchResu
   };
 }
 
-/** The `/app/logs` entry point: one capped window plus its pod options (D44/D48). */
-export async function searchLogs(filter: LogFilter = {}): Promise<LogSearchResult> {
-  return dataMode === "live" ? queryLogSearch(filter) : mockSearchLogs(streamLogs, filter);
+// ---- the workspace's reads (D96/D113) ---------------------------------------
+
+/**
+ * Every read the product makes, bound to ONE workspace. There is no unscoped
+ * variant: a caller holds this object or it has no reads at all, so a surface
+ * cannot forget to say which workspace it is asking about (D96 — an omitted
+ * tenancy predicate is a cross-tenant leak, not a wrong answer).
+ */
+export interface WorkspaceData {
+  /** the workspace the live reads bind; null in mock mode, which has no tenant */
+  workspaceId: string | null;
+  getTrace(id: string): Promise<Trace | undefined>;
+  /** the traces-list read (D44): one page plus the exact filtered total */
+  searchTraces(filter?: TraceFilter): Promise<TraceSearchResult>;
+  getOverview(range?: OverviewRange): Promise<Overview>;
+  /** the `/app/logs` read: one capped window plus its pod options (D44/D48) */
+  searchLogs(filter?: LogFilter): Promise<LogSearchResult>;
+}
+
+/**
+ * Mock mode's reads: the mock modules, no workspace, no store. It is a single
+ * value rather than a per-call object because mock mode has nothing to scope —
+ * the demo product is one dataset, and pretending it has a tenant would be its
+ * own small fiction (D13).
+ */
+const MOCK_DATA: WorkspaceData = {
+  workspaceId: null,
+  async getTrace(id) {
+    return getMockTrace(id);
+  },
+  async searchTraces(filter = {}) {
+    return mockSearchTraces(allTraces, filter);
+  },
+  async getOverview() {
+    return { points: timeseries(), stats: [...statCards] };
+  },
+  async searchLogs(filter = {}) {
+    return mockSearchLogs(streamLogs, filter);
+  },
+};
+
+/**
+ * The explicit entry (D113): the caller names the workspace, because it is a
+ * caller that already knows it — a harness or a test that seeded the rows, or
+ * the bench with its own fixture workspace. NO fallback and no env read: the
+ * argument is the only source, and `forWorkspace` refuses an empty one.
+ *
+ * Mock mode short-circuits here, before the ClickHouse scope is built, so the
+ * demo product still runs with no ClickHouse present at all.
+ */
+export function dataForWorkspace(workspaceId: string): WorkspaceData {
+  if (dataMode === "mock") return MOCK_DATA;
+  const ch = forWorkspace(workspaceId);
+  return {
+    workspaceId,
+    getTrace: (id) => queryTrace(ch, id),
+    searchTraces: (filter = {}) => queryTraceSearch(ch, filter),
+    getOverview: (range = "6h") => queryOverview(ch, range),
+    searchLogs: (filter = {}) => queryLogSearch(ch, filter),
+  };
+}
+
+/** A live-mode read was attempted with no signed-in session to scope it (D113). */
+export class NoSessionError extends Error {
+  constructor() {
+    super("no signed-in session: a live-mode read has no workspace to scope to");
+    this.name = "NoSessionError";
+  }
+}
+
+/**
+ * The half of `dataForSession` a test can drive without a request (the
+ * `resolveSessionContext` pattern). A missing session is a refusal, never a
+ * default workspace — the whole point of D96 is that there is no workspace to
+ * fall back to.
+ */
+export function dataForSessionContext(session: SessionContext | null): WorkspaceData {
+  if (!session) throw new NoSessionError();
+  return dataForWorkspace(session.workspaceId);
+}
+
+/**
+ * The product entry (D113): the signed-in session's active workspace, resolved
+ * once and handed to the single `forWorkspace` call `dataForWorkspace` makes.
+ *
+ * Mock mode short-circuits on the mode check before anything session-shaped is
+ * touched — including the IMPORT below, which is dynamic for exactly that
+ * reason (D114 byte-invariance: the demo product must run with no Postgres
+ * present at all, and importing this facade must not drag the auth stack in
+ * behind it).
+ */
+export async function dataForSession(): Promise<WorkspaceData> {
+  if (dataMode === "mock") return MOCK_DATA;
+  const { getSessionContext } = await import("@/server/session");
+  return dataForSessionContext(await getSessionContext());
 }

@@ -1,6 +1,6 @@
 import "server-only";
 import { fmtCost, fmtMs } from "@/lib/format";
-import { queryRows, workspaceId } from "@/server/clickhouse";
+import type { ScopedClickHouse } from "@/server/clickhouse";
 
 export type OverviewRange = "1h" | "6h" | "24h";
 
@@ -159,17 +159,19 @@ function toStats(row: StatsRow, range: OverviewRange): OverviewStat[] {
   ];
 }
 
-export async function queryOverview(range: OverviewRange): Promise<Overview> {
+/** The scope is the first parameter (D113): both reads bind the workspace it carries. */
+export async function queryOverview(
+  ch: ScopedClickHouse,
+  range: OverviewRange,
+): Promise<Overview> {
   const { hours, bucketMinutes } = RANGES[range];
   const [pointRows, statsRows] = await Promise.all([
-    queryRows<PointRow>(POINTS_SQL, {
-      workspace_id: workspaceId,
+    ch.queryRows<PointRow>(POINTS_SQL, {
       window_hours: hours,
       bucket_minutes: bucketMinutes,
     }),
     // the stats query compares the window with the one before it, so it reads twice as far back
-    queryRows<StatsRow>(STATS_SQL, {
-      workspace_id: workspaceId,
+    ch.queryRows<StatsRow>(STATS_SQL, {
       window_hours: hours * 2,
       hours,
     }),

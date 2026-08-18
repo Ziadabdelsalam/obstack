@@ -9,7 +9,7 @@ import {
   logRangeMs,
 } from "@/lib/logs-filter";
 import type { Severity } from "@/lib/types";
-import { queryRows, workspaceId } from "@/server/clickhouse";
+import type { ScopedClickHouse } from "@/server/clickhouse";
 import { splitSearchTerms } from "./traces";
 
 /**
@@ -230,13 +230,18 @@ export function capLogRows(fetched: LogLine[]): { logs: LogLine[]; truncated: bo
  * One `/app/logs` request: the capped window and its pod options, over one
  * reference clock sampled here and bound into both reads (D50) — two `now()`
  * evaluations could disagree and offer a pod the row window no longer covers.
+ *
+ * Both reads run through the ONE scope handed in (D113), so the window and its
+ * option list can no more disagree about the workspace than about the clock.
  */
-export async function queryLogSearch(filter: LogFilter): Promise<LogSearchResult> {
+export async function queryLogSearch(
+  ch: ScopedClickHouse,
+  filter: LogFilter,
+): Promise<LogSearchResult> {
   const terms = splitSearchTerms(filter.q ?? "");
   const nowMs = Date.now();
   const sinceMs = nowMs - (filter.rangeMs ?? DEFAULT_LOG_RANGE_MS);
   const params: Record<string, unknown> = {
-    workspace_id: workspaceId,
     since_ms: sinceMs,
     min_rank: SEVERITY_ORDER.indexOf(filter.minSeverity ?? DEFAULT_LOG_SEVERITY),
     pod: filter.pod ?? "",
@@ -247,11 +252,8 @@ export async function queryLogSearch(filter: LogFilter): Promise<LogSearchResult
     params[`q${i}`] = term;
   });
   const [rows, pods] = await Promise.all([
-    queryRows<LogSearchRow>(logRowsSql(terms.length), params),
-    queryRows<{ k8s_pod: string }>(POD_OPTIONS_SQL, {
-      workspace_id: workspaceId,
-      since_ms: sinceMs,
-    }),
+    ch.queryRows<LogSearchRow>(logRowsSql(terms.length), params),
+    ch.queryRows<{ k8s_pod: string }>(POD_OPTIONS_SQL, { since_ms: sinceMs }),
   ]);
   return {
     ...capLogRows(rows.map(toLogLine)),

@@ -30,6 +30,48 @@ services:
       start_period: 15s
     restart: unless-stopped
 
+  # The product's identity + saved-views store (D95/D112): workspaces, the
+  # captured better-auth tables, and saved_views. Telemetry stays in
+  # ClickHouse — these are two stores with two migration sets, and ingest is
+  # the one binary that owns both sets' DDL.
+  #
+  # Note what is deliberately NOT here: BETTER_AUTH_SECRET / BETTER_AUTH_URL
+  # (D112). Compose does not run the web app, and auth secrets belong to the
+  # process that actually signs cookies — `npm run dev`'s environment, see
+  # README.md. A variable set here would only advertise an effect it does not
+  # have.
+  postgres:
+    image: postgres:17.11
+    container_name: obstack-postgres
+    environment:
+      # Dev defaults (D112); override in the shell or a .env next to this
+      # file, exactly like the ClickHouse passwords above. POSTGRES_PASSWORD
+      # is read by the image's entrypoint at initdb time ONLY — changing it
+      # against an existing `postgres-data` volume does not rotate anything,
+      # it just breaks the DSN below. Start from `down -v` to change it.
+      POSTGRES_USER: obstack
+      POSTGRES_PASSWORD: ${OBSTACK_POSTGRES_PASSWORD:-obstack_postgres_dev}
+      POSTGRES_DB: obstack
+    # Loopback-only, same posture as ClickHouse's: in-compose callers reach
+    # the server as `postgres:5432`, and the web app runs on the host against
+    # 127.0.0.1:5432.
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      # -h 127.0.0.1 forces the TCP path on purpose. The image's entrypoint
+      # runs its initdb phase against a temporary server listening on the
+      # unix socket only, so a socket-based pg_isready reports ready while
+      # the database is still being created — and ingest, which connects over
+      # TCP, would then start against a server that is not there yet.
+      test: ["CMD", "pg_isready", "-h", "127.0.0.1", "-U", "obstack", "-d", "obstack"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
+    restart: unless-stopped
+
   ingest:
     build:
       context: ../../services/ingest
@@ -37,12 +79,19 @@ services:
     depends_on:
       clickhouse:
         condition: service_healthy
+      postgres:
+        condition: service_healthy
     environment:
       # Ingest owns the obstack database and its DDL, applied at boot from the
       # migrations embedded in the binary. One container is one migration runner,
       # which is the whole guarantee — do not scale this service. See the
       # README's "Exactly one migration runner per upgrade".
       CLICKHOUSE_DSN: clickhouse://obstack_ingest:${OBSTACK_CLICKHOUSE_INGEST_PASSWORD:-obstack_ingest_dev}@clickhouse:9000/obstack
+      # The second tracked migration set (services/ingest/pgmigrations/),
+      # applied at boot from the same binary — OBSTACK_PG_MIGRATE_ON_BOOT is
+      # unset and therefore true here, exactly like OBSTACK_MIGRATE_ON_BOOT.
+      # The one-runner rule covers both stores: do not scale this service.
+      OBSTACK_POSTGRES_DSN: postgres://obstack:${OBSTACK_POSTGRES_PASSWORD:-obstack_postgres_dev}@postgres:5432/obstack
       # Phase-1 keys (D4): `key:workspace_id`, comma-separated. Clients send
       # `Authorization: Bearer <key>`.
       OBSTACK_API_KEYS: ${OBSTACK_API_KEYS:-ok_dev_local:ws_demo}
@@ -228,4 +277,5 @@ services:
 
 volumes:
   clickhouse-data:
+  postgres-data:
   collector-storage:

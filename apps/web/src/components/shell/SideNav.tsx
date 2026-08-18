@@ -32,7 +32,6 @@ import {
   Command,
 } from "lucide-react";
 import { Wordmark } from "./Wordmark";
-import { SampleMark } from "@/components/ui/SampleMark";
 
 const sections: {
   label: string | null;
@@ -96,17 +95,20 @@ export function SideNav({ workspaceId }: { workspaceId: string | null }) {
         className="mx-3 mb-3 flex items-center justify-between rounded-md border border-line bg-raised px-2.5 py-1.5 text-left text-[12.5px] text-ink hover:border-line-strong"
       >
         <span className="flex flex-col leading-tight">
-          <span className="font-medium">
-            Loopwork
-            {workspaceId && (
-              <>
-                {" "}
-                {/* the org has no backing object until M3 auth lands */}
-                <SampleMark title="demo organisation — real organisations arrive with workspace auth" />
-              </>
-            )}
+          {/* Live mode names no organisation: signup gives an org the operator's
+              own name as a stand-in (there is no org-name field), so rendering
+              it here would put a person where an org belongs. The workspace
+              below is the real thing this shell reads. */}
+          <span className="font-medium">{workspaceId ? "Workspace" : "Loopwork"}</span>
+          {/* The workspace id, verbatim and alone in its element: this is the
+              line that tells an operator which tenant they are reading, and the
+              e2e drive reads the same text to learn it (D115). */}
+          <span
+            data-workspace-id={workspaceId ?? undefined}
+            className="font-mono text-[10px] text-faint"
+          >
+            {workspaceId ?? "loopwork-prod"}
           </span>
-          <span className="font-mono text-[10px] text-faint">{workspaceId ?? "loopwork-prod"}</span>
         </span>
         <ChevronsUpDown className="h-3.5 w-3.5 text-faint" />
       </button>

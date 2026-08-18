@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import test from "node:test";
 import { createClient } from "@clickhouse/client";
+import { forWorkspace } from "@/server/clickhouse";
 import { NEARBY_LOG_CAP } from "@/lib/nearby-logs";
 // type-only: erased at runtime, so it cannot run ahead of the env setup below
 import type { Span } from "@/lib/types";
@@ -59,15 +60,25 @@ async function clickhouseReachable(): Promise<boolean> {
 }
 
 /**
- * A workspace of this run's own, not the compose dev default `ws_demo`: this
- * file seeds rows it cannot delete (the ingest user has no mutation grant), and
- * a synthetic trace injected into `ws_demo` would show up in the demo UI and in
- * whatever the sprint's evidence runs count there. `@/server/clickhouse.ts`
- * reads OBSTACK_WORKSPACE_ID at module load, so it is set before `./traces` is
- * imported below.
+ * Two workspaces of this run's own, never the compose dev default `ws_demo`:
+ * this file seeds rows it cannot delete (the ingest user has no mutation
+ * grant), and a synthetic trace injected into `ws_demo` would show up in the
+ * demo UI and in whatever the sprint's evidence runs count there. Every read
+ * below names one of them explicitly through `forWorkspace` — there is no
+ * environment default left to inherit (D96/D113).
+ *
+ * `WORKSPACE_B` exists for the cross-tenant probe at the bottom: one tenant's
+ * rows in the same tables as the other's, which is the only fixture that can
+ * tell a scoped read from an unscoped one.
  */
 const WORKSPACE_ID = `ws_it_${randomBytes(4).toString("hex")}`;
-process.env.OBSTACK_WORKSPACE_ID = WORKSPACE_ID;
+const WORKSPACE_B = `ws_itb_${randomBytes(4).toString("hex")}`;
+
+// `@/server/data` resolves OBSTACK_DATA_MODE at module load (S2.4 L4: an
+// import-time-ordering API, stated as such), so the mode is set here — before
+// the dynamic import in the disjointness test below, and matching the live
+// read path those assertions are about.
+process.env.OBSTACK_DATA_MODE = "live";
 
 // BigInt literal syntax (`123n`) needs an ES2020 target; tsconfig.json pins
 // ES2017, so every constant here goes through the `BigInt(...)` call form
@@ -161,6 +172,7 @@ test("nearby-logs join (D37.4) against a seeded ClickHouse", async (t) => {
   }
 
   const { queryTrace } = await import("./traces");
+  const ch = forWorkspace(WORKSPACE_ID);
 
   const suffix = randomBytes(6).toString("hex");
   const traceId = `it_nearby_${suffix}`;
@@ -266,7 +278,7 @@ test("nearby-logs join (D37.4) against a seeded ClickHouse", async (t) => {
     ],
   });
 
-  const trace = await queryTrace(traceId);
+  const trace = await queryTrace(ch, traceId);
   assert.ok(trace, "queryTrace found no row for the seeded trace");
 
   const bodies = trace.logs.map((l) => l.body);
@@ -305,7 +317,7 @@ test("nearby-logs join (D37.4) against a seeded ClickHouse", async (t) => {
   });
 
   await t.test("falsification probe: a trace whose spans carry no pod joins nothing", async () => {
-    const noPodTrace = await queryTrace(noPodTraceId);
+    const noPodTrace = await queryTrace(ch, noPodTraceId);
     assert.ok(noPodTrace, "queryTrace found no row for the pod-less trace");
     assert.deepEqual(
       noPodTrace.logs.map((l) => l.body),
@@ -370,7 +382,7 @@ test("nearby-logs join (D37.4) against a seeded ClickHouse", async (t) => {
     });
     await seed.insert({ table: "logs", format: "JSONEachRow", values: [...fillers, inIntervalRow] });
 
-    const chattyTrace = await queryTrace(chattyId);
+    const chattyTrace = await queryTrace(ch, chattyId);
     assert.ok(chattyTrace, "queryTrace found no row for the chatty-pod trace");
     assert.ok(
       chattyTrace.logs.some((l) => l.body === inIntervalBody),
@@ -411,6 +423,7 @@ test("read-time coalesce (D42(d)) against a seeded ClickHouse", async (t) => {
   }
 
   const { queryTrace } = await import("./traces");
+  const ch = forWorkspace(WORKSPACE_ID);
 
   const suffix = randomBytes(6).toString("hex");
   const traceId = `it_coalesce_${suffix}`;
@@ -526,7 +539,7 @@ test("read-time coalesce (D42(d)) against a seeded ClickHouse", async (t) => {
     ],
   });
 
-  const trace = await queryTrace(traceId);
+  const trace = await queryTrace(ch, traceId);
   assert.ok(trace, "queryTrace found no row for the seeded trace");
   const llmSpan = trace.spans.find((s) => s.id === llmSpanId);
   assert.ok(llmSpan?.llm, "the LLM span did not carry an llm detail");
@@ -597,7 +610,7 @@ test("read-time coalesce (D42(d)) against a seeded ClickHouse", async (t) => {
       ],
     });
 
-    const tieTrace = await queryTrace(tieTraceId);
+    const tieTrace = await queryTrace(ch, tieTraceId);
     assert.ok(tieTrace, "queryTrace found no row for the tie trace");
     assert.equal(
       tieTrace.spans.find((s) => s.id === llmSpanId)?.llm?.prompt,
@@ -624,6 +637,7 @@ test("trace search (D44/D45) against a seeded ClickHouse", async (t) => {
   }
 
   const { queryTraceSearch, TRACE_PAGE_SIZE } = await import("./traces");
+  const ch = forWorkspace(WORKSPACE_ID);
   const { mockMatches } = await import("@/server/data");
 
   const suffix = randomBytes(6).toString("hex");
@@ -877,7 +891,7 @@ test("trace search (D44/D45) against a seeded ClickHouse", async (t) => {
   });
 
   await t.test("D44: the total is the exact filtered count over the page's own predicate, not the page length", async () => {
-    const page1 = await queryTraceSearch({ service: PAGE_SVC });
+    const page1 = await queryTraceSearch(ch, { service: PAGE_SVC });
     assert.equal(
       page1.total,
       pageCount,
@@ -892,7 +906,7 @@ test("trace search (D44/D45) against a seeded ClickHouse", async (t) => {
   });
 
   await t.test("D44: page 2 is a disjoint, ordered continuation reproducible from its parameters alone", async () => {
-    const page2 = await queryTraceSearch({ service: PAGE_SVC, page: 2 });
+    const page2 = await queryTraceSearch(ch, { service: PAGE_SVC, page: 2 });
     assert.deepEqual(
       page2.traces.map((tr) => tr.id),
       pageIds.slice(TRACE_PAGE_SIZE),
@@ -902,7 +916,7 @@ test("trace search (D44/D45) against a seeded ClickHouse", async (t) => {
   });
 
   await t.test("D44: the page order is start DESCENDING (newest first), not just tie-broken", async () => {
-    const ordered = await queryTraceSearch({ service: ORDER_SVC });
+    const ordered = await queryTraceSearch(ch, { service: ORDER_SVC });
     assert.deepEqual(
       ordered.traces.map((tr) => tr.id),
       [...orderIds].reverse(),
@@ -911,8 +925,8 @@ test("trace search (D44/D45) against a seeded ClickHouse", async (t) => {
   });
 
   await t.test("PRD §8: each filter narrows with a control row that would pass without it", async () => {
-    const ids = async (filter: Parameters<typeof queryTraceSearch>[0]) =>
-      (await queryTraceSearch(filter)).traces.map((tr) => tr.id).sort();
+    const ids = async (filter: Parameters<typeof queryTraceSearch>[1]) =>
+      (await queryTraceSearch(ch, filter)).traces.map((tr) => tr.id).sort();
     // baseline: everything carrying the probe token inside the 6h window
     assert.deepEqual(await ids({ q: FILT_TOKEN }), ["a", "b", "c", "d", "e", "g"].map(filtId), "baseline: f is time-excluded, everything else present");
     // service — control: g (present in the baseline, gone here)
@@ -930,12 +944,12 @@ test("trace search (D44/D45) against a seeded ClickHouse", async (t) => {
   });
 
   await t.test("D50: the 6h default time bound is real; rangeMs widens it (control: the 7h-old trace)", async () => {
-    const withDefault = await queryTraceSearch({ q: FILT_TOKEN });
+    const withDefault = await queryTraceSearch(ch, { q: FILT_TOKEN });
     assert.ok(
       !withDefault.traces.some((tr) => tr.id === filtId("f")),
       "a 7h-old trace leaked past the 6h default window",
     );
-    const widened = await queryTraceSearch({ q: FILT_TOKEN, rangeMs: 8 * HOUR_MS });
+    const widened = await queryTraceSearch(ch, { q: FILT_TOKEN, rangeMs: 8 * HOUR_MS });
     assert.ok(
       widened.traces.some((tr) => tr.id === filtId("f")),
       "rangeMs did not widen the window",
@@ -949,12 +963,12 @@ test("trace search (D44/D45) against a seeded ClickHouse", async (t) => {
   // turns this red forever; it can never go hollow because the tokens exist
   // nowhere else (not in summaries, not in the other leg).
   await t.test("standing guard (S2.2 L1): a spans-leg-only term and a logs-leg-only term both resolve", async () => {
-    const bySpan = await queryTraceSearch({ q: tokPrompt });
+    const bySpan = await queryTraceSearch(ch, { q: tokPrompt });
     assert.ok(
       bySpan.traces.some((tr) => tr.id === SPANLEG),
       "a term living only in a span prompt did not resolve — the spans semi-join leg is gone",
     );
-    const byLog = await queryTraceSearch({ q: tokBody });
+    const byLog = await queryTraceSearch(ch, { q: tokBody });
     assert.ok(
       byLog.traces.some((tr) => tr.id === LOGLEG),
       "a term living only in a log body did not resolve — the logs semi-join leg is gone",
@@ -971,19 +985,19 @@ test("trace search (D44/D45) against a seeded ClickHouse", async (t) => {
   // predicate is a fast path over that leg, not separate reach. In mock mode
   // `rootName` IS a separate field, and data.test.ts guards it there.)
   await t.test("D45 summary-field reach: model, service and trace id resolve with no semi-join to help", async () => {
-    const byModel = await queryTraceSearch({ q: MODEL_PROBE });
+    const byModel = await queryTraceSearch(ch, { q: MODEL_PROBE });
     assert.deepEqual(
       byModel.traces.map((tr) => tr.id),
       [filtId("e")],
       "a model name resolved nowhere — `arrayExists(m -> …, models)` is gone and model search is dead (spans.gen_ai_* is in no leg)",
     );
-    const byService = await queryTraceSearch({ q: OTHER_SVC });
+    const byService = await queryTraceSearch(ch, { q: OTHER_SVC });
     assert.deepEqual(
       byService.traces.map((tr) => tr.id),
       [filtId("g")],
       "a service name resolved nowhere — `arrayExists(s -> …, services)` is gone (spans.service is in no leg)",
     );
-    const byTraceId = await queryTraceSearch({ q: filtId("a") });
+    const byTraceId = await queryTraceSearch(ch, { q: filtId("a") });
     assert.deepEqual(
       byTraceId.traces.map((tr) => tr.id),
       [filtId("a")],
@@ -1004,19 +1018,19 @@ test("trace search (D44/D45) against a seeded ClickHouse", async (t) => {
   // Mock's toLowerCase side of the pair is asserted in the parity table below
   // and in data.test.ts.
   await t.test("D56 Unicode case folding: a query case-differing on a non-ASCII letter still matches, on every leg", async () => {
-    const bySummary = await queryTraceSearch({ q: tokAccentModelQuery });
+    const bySummary = await queryTraceSearch(ch, { q: tokAccentModelQuery });
     assert.deepEqual(
       bySummary.traces.map((tr) => tr.id),
       [UNILEG],
       "modèle did not find MODÈLE — the summary leg's models predicate is folding ASCII (positionCaseInsensitive) instead of Unicode (positionCaseInsensitiveUTF8)",
     );
-    const bySpan = await queryTraceSearch({ q: tokCafeQuery });
+    const bySpan = await queryTraceSearch(ch, { q: tokCafeQuery });
     assert.deepEqual(
       bySpan.traces.map((tr) => tr.id),
       [SPANLEG],
       "café did not find CAFÉ — a live predicate is folding ASCII (positionCaseInsensitive) instead of Unicode (positionCaseInsensitiveUTF8)",
     );
-    const byLog = await queryTraceSearch({ q: tokAccentBodyQuery });
+    const byLog = await queryTraceSearch(ch, { q: tokAccentBodyQuery });
     assert.deepEqual(
       byLog.traces.map((tr) => tr.id),
       [UNILEG],
@@ -1025,12 +1039,12 @@ test("trace search (D44/D45) against a seeded ClickHouse", async (t) => {
   });
 
   await t.test("D42 carrier rows are IN the prompts reach (D45): bodyless carrier content finds its trace", async () => {
-    const byCarrierPrompt = await queryTraceSearch({ q: tokCarrierP });
+    const byCarrierPrompt = await queryTraceSearch(ch, { q: tokCarrierP });
     assert.ok(
       byCarrierPrompt.traces.some((tr) => tr.id === LOGLEG),
       "carrier prompt content did not resolve — the trace is unfindable by its own visible prompt (D13)",
     );
-    const byCarrierCompletion = await queryTraceSearch({ q: tokCarrierC });
+    const byCarrierCompletion = await queryTraceSearch(ch, { q: tokCarrierC });
     assert.ok(
       byCarrierCompletion.traces.some((tr) => tr.id === LOGLEG),
       "carrier completion content did not resolve",
@@ -1048,13 +1062,13 @@ test("trace search (D44/D45) against a seeded ClickHouse", async (t) => {
   // subtest red; the standing guard above is its live-mechanism partner
   // (the SAME token on a trace-CARRYING row does resolve).
   await t.test("trace-less log rows are unreachable from the traces list, even with an empty-id summary present", async () => {
-    const r = await queryTraceSearch({ q: tokTraceless });
+    const r = await queryTraceSearch(ch, { q: tokTraceless });
     assert.equal(r.total, 0, "a trace-less log row surfaced a trace in the traces list");
     assert.deepEqual(r.traces, []);
     // The falsifier only bites if the empty-id summary really exists: prove it
     // is there and reachable by its own root name, so this probe can never go
     // hollow through the fixture silently disappearing.
-    const orphan = await queryTraceSearch({ q: "orphan-no-trace-id" });
+    const orphan = await queryTraceSearch(ch, { q: "orphan-no-trace-id" });
     assert.deepEqual(
       orphan.traces.map((tr) => tr.id),
       [""],
@@ -1164,12 +1178,99 @@ test("trace search (D44/D45) against a seeded ClickHouse", async (t) => {
       [`${tokSpanName} ${tokAbsent}`, false, false],
     ];
     for (const [q, expectSpanleg, expectLogleg] of cases) {
-      const live = await queryTraceSearch({ q });
+      const live = await queryTraceSearch(ch, { q });
       const liveIds = live.traces.map((tr) => tr.id);
       assert.equal(liveIds.includes(SPANLEG), expectSpanleg, `live verdict for ${JSON.stringify(q)} on the span-leg trace`);
       assert.equal(liveIds.includes(LOGLEG), expectLogleg, `live verdict for ${JSON.stringify(q)} on the log-leg trace`);
       assert.equal(mockMatches(spanlegFixture, q), expectSpanleg, `mock verdict for ${JSON.stringify(q)} on the span-leg fixture`);
       assert.equal(mockMatches(loglegFixture, q), expectLogleg, `mock verdict for ${JSON.stringify(q)} on the log-leg fixture`);
     }
+  });
+});
+
+// T4 (D96/D113): the leak class this sprint introduces, proven against a real
+// server rather than asserted. Two workspaces hold rows that satisfy the SAME
+// query in the SAME tables — the only fixture shape that can tell a scoped read
+// from an unscoped one — and every read below enters through `dataForWorkspace`,
+// the explicit entry a harness or a test uses (the product's `dataForSession`
+// funnels into the same `forWorkspace` call).
+//
+// Each absence carries its control: the row the other tenant cannot see IS
+// visible from its own workspace, so a lost fixture turns this red instead of
+// leaving it green by construction (S2.2 L1).
+test("cross-tenant disjointness (D96) against a seeded ClickHouse", async (t) => {
+  if (!(await clickhouseReachable())) {
+    t.skip(
+      `no ClickHouse at ${CLICKHOUSE_URL}; start deploy/compose (down -v first) to run this test`,
+    );
+    return;
+  }
+
+  const { dataForWorkspace } = await import("@/server/data");
+
+  const suffix = randomBytes(6).toString("hex");
+  const TOKEN = `zqtenant${suffix}`; // seeded in BOTH workspaces, nowhere else
+  const aTraceId = `it_wsa_${suffix}`;
+  const bTraceId = `it_wsb_${suffix}`;
+  const startNs = BigInt(Date.now()) * NS_PER_MS;
+  const start = chTimestamp(startNs);
+
+  const tenantSpan = (traceId: string) =>
+    spanRow({
+      trace_id: traceId,
+      span_id: "s1",
+      name: `POST /${TOKEN}`,
+      start_time: start,
+      duration_ns: NS_PER_SECOND.toString(),
+      k8s_namespace: "",
+      k8s_pod: "",
+    });
+
+  await seed.insert({
+    table: "spans",
+    format: "JSONEachRow",
+    values: [tenantSpan(aTraceId), { ...tenantSpan(bTraceId), workspace_id: WORKSPACE_B }],
+  });
+
+  const a = dataForWorkspace(WORKSPACE_ID);
+  const b = dataForWorkspace(WORKSPACE_B);
+
+  await t.test("a scope names the workspace it was handed, and only that one", () => {
+    assert.equal(a.workspaceId, WORKSPACE_ID);
+    assert.equal(b.workspaceId, WORKSPACE_B);
+  });
+
+  await t.test("workspace A requesting workspace B's trace id gets nothing, and vice versa", async () => {
+    assert.equal(
+      await a.getTrace(bTraceId),
+      undefined,
+      "workspace A resolved a trace that belongs to workspace B — a cross-tenant read",
+    );
+    assert.equal(
+      await b.getTrace(aTraceId),
+      undefined,
+      "workspace B resolved a trace that belongs to workspace A — a cross-tenant read",
+    );
+    // Controls: both rows exist and are reachable from their OWN workspace, so
+    // the two absences above are a scoping fact rather than a missing fixture.
+    assert.ok(await a.getTrace(aTraceId), "workspace A cannot see its own trace");
+    assert.ok(await b.getTrace(bTraceId), "workspace B cannot see its own trace");
+  });
+
+  await t.test("a search matching both tenants' rows returns only the asking tenant's, page and total alike", async () => {
+    const fromA = await a.searchTraces({ q: TOKEN });
+    assert.deepEqual(
+      fromA.traces.map((tr) => tr.id),
+      [aTraceId],
+      "workspace A's traces list included another workspace's trace",
+    );
+    // D44's total is computed by a second statement over the same predicate, so
+    // it is a second chance to leak: an unscoped count reports 2 here while the
+    // page still renders 1.
+    assert.equal(fromA.total, 1, "the filtered total counted another workspace's rows");
+
+    const fromB = await b.searchTraces({ q: TOKEN });
+    assert.deepEqual(fromB.traces.map((tr) => tr.id), [bTraceId]);
+    assert.equal(fromB.total, 1);
   });
 });

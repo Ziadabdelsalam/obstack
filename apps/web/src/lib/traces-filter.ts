@@ -8,21 +8,31 @@
  * a K1 one-definition problem, and a server component cannot call functions
  * exported from a `"use client"` module (they become client references), so the
  * contract lives here: a pure, client-safe module both sides import, next to
- * `live-routes.ts` and `saved-views.ts` on the same precedent.
+ * `live-routes.ts` on the same precedent.
  *
- * The page parameter is NOT defined here: it is `PAGE_PARAM`, imported from
- * `@/lib/saved-views`, because that module strips the page key when it persists
- * a view (D47(ii)/D53) and the literal is load-bearing where the delete happens.
+ * `PAGE_PARAM` lives here now. It used to belong to the browser saved-views
+ * store, which stripped the page key on the way to disk; that store is gone
+ * (D30/D97) and `/app/traces` is the only surface with a page at all, so the
+ * literal has one definition and it is this surface's vocabulary. The store
+ * that still strips by it — `@/server/saved-views` — imports it from here.
  *
  * Filter SEMANTICS are the search contract's (`server/search-contract.md`), not
  * this module's: everything here is naming, parsing and serialization.
  */
 
-import { PAGE_PARAM, type SavedViewFilters } from "@/lib/saved-views";
+import type { SavedViewFilters } from "@/server/saved-views";
 import type { TraceFilter } from "@/server/data";
 
 /** The surface these parameters belong to; the pager and the bar both link here. */
 export const TRACES_PATH = "/app/traces";
+
+/**
+ * The traces list's page parameter, by literal name. A view is a question, not a
+ * position in a result set (D47(ii)), so the saved-views store drops this KEY
+ * when it persists a filter set — hand-rolling the literal on either side would
+ * persist the page into the view and reopen the view on a stale page number.
+ */
+export const PAGE_PARAM = "page";
 
 /**
  * The time ranges the bar offers, in hours back from the reference clock (D50 —
@@ -207,8 +217,8 @@ export function toTraceFilter(filters: TracesFilters): TraceFilter {
 /**
  * The filter set as `SavedViewsMenu` takes it (D47(v)): the surface's URL
  * parameters, one string value per key. The page key rides along when the user
- * is past page 1 and `saveView` drops it by `PAGE_PARAM` — a view is a
- * question, not a position in a result set (D47(ii)).
+ * is past page 1 and the store drops it by `PAGE_PARAM` on the way to Postgres
+ * — a view is a question, not a position in a result set (D47(ii)).
  */
 export function tracesViewFilters(filters: TracesFilters): SavedViewFilters {
   return Object.fromEntries(new URLSearchParams(tracesSearchString(filters)));

@@ -1,8 +1,9 @@
-// Command ingest is the obstack telemetry ingest service. It owns the ClickHouse
-// schema — applied at boot from the embedded migrations, or by the `migrate`
-// subcommand where a deployment needs one runner rather than one per replica —
-// and serves the OTLP receivers alongside an admin endpoint carrying /healthz
-// and /metrics.
+// Command ingest is the obstack telemetry ingest service. It owns two schemas —
+// ClickHouse's telemetry tables and Postgres' workspaces and saved views, each
+// applied at boot from its own embedded migrations, or by the `migrate` and
+// `pg-migrate` subcommands where a deployment needs one runner rather than one
+// per replica — and serves the OTLP receivers alongside an admin endpoint
+// carrying /healthz and /metrics.
 package main
 
 import (
@@ -25,9 +26,11 @@ import (
 	"github.com/Ziadabdelsalam/observer-stack/services/ingest/internal/config"
 	"github.com/Ziadabdelsalam/observer-stack/services/ingest/internal/metrics"
 	"github.com/Ziadabdelsalam/observer-stack/services/ingest/internal/migrate"
+	"github.com/Ziadabdelsalam/observer-stack/services/ingest/internal/pgmigrate"
 	"github.com/Ziadabdelsalam/observer-stack/services/ingest/internal/receive"
 	"github.com/Ziadabdelsalam/observer-stack/services/ingest/internal/write"
 	"github.com/Ziadabdelsalam/observer-stack/services/ingest/migrations"
+	"github.com/Ziadabdelsalam/observer-stack/services/ingest/pgmigrations"
 )
 
 func main() {
@@ -43,12 +46,22 @@ func main() {
 		return
 	}
 
-	// `ingest migrate` is the one-shot a Helm pre-install/pre-upgrade Job or an
-	// initContainer runs: apply, log, exit. One runner by construction, which is
-	// the whole reason migrate needs no lock.
+	// `ingest migrate` and `ingest pg-migrate` are the one-shots a Helm
+	// pre-install/pre-upgrade Job or an initContainer runs: apply, log, exit. One
+	// runner by construction, which is the whole reason neither needs a lock.
+	// They are separate commands rather than one because the two stores fail
+	// separately, are granted separately, and a Job that only owns one of them
+	// should carry only that one's DSN.
 	if len(os.Args) > 1 && os.Args[1] == "migrate" {
 		if err := runMigrate(); err != nil {
 			slog.Error("migrate stopped", "error", err)
+			os.Exit(1)
+		}
+		return
+	}
+	if len(os.Args) > 1 && os.Args[1] == "pg-migrate" {
+		if err := runPGMigrate(); err != nil {
+			slog.Error("pg-migrate stopped", "error", err)
 			os.Exit(1)
 		}
 		return
@@ -60,7 +73,7 @@ func main() {
 	// the OBSTACK_API_KEYS that Job deliberately does not carry — sending the
 	// operator after a missing secret instead of a missing letter.
 	if len(os.Args) > 1 {
-		fmt.Fprintf(os.Stderr, "unknown command %q; valid commands: migrate, healthcheck\n", os.Args[1])
+		fmt.Fprintf(os.Stderr, "unknown command %q; valid commands: migrate, pg-migrate, healthcheck\n", os.Args[1])
 		os.Exit(2)
 	}
 
@@ -94,7 +107,56 @@ func runMigrate() error {
 	if err != nil {
 		return fmt.Errorf("schema migrations: %w", err)
 	}
-	logSchema(applied)
+	logSchema(storeClickHouse, applied)
+	return nil
+}
+
+// The Postgres half of the environment. It is read here rather than added to
+// config.Config because config.Config is what a process needs in order to serve
+// traffic, and ingest serves nothing out of Postgres — it owns that schema and
+// otherwise never opens the database. A field on Config would say the opposite,
+// and would put the DSN in front of a validator the `pg-migrate` one-shot
+// deliberately does not run.
+const (
+	envPostgresDSN     = "OBSTACK_POSTGRES_DSN"
+	envPGMigrateOnBoot = "OBSTACK_PG_MIGRATE_ON_BOOT"
+)
+
+func postgresDSN() (string, error) {
+	dsn := os.Getenv(envPostgresDSN)
+	if dsn == "" {
+		return "", fmt.Errorf("%s is required", envPostgresDSN)
+	}
+	return dsn, nil
+}
+
+// pgMigrateOnBoot is OBSTACK_MIGRATE_ON_BOOT's counterpart for the Postgres set,
+// and reads through the same helper on purpose: the two flags decide the same
+// thing about two stores, so a value one of them refuses must not be a value the
+// other coerces. Unset means true — compose and every single-node self-hoster,
+// where the serving container is the only migration runner there is.
+func pgMigrateOnBoot() (bool, error) {
+	return config.EnvBool(envPGMigrateOnBoot, true)
+}
+
+// runPGMigrate applies the Postgres schema and exits — the `ingest migrate`
+// shape, against the other store.
+func runPGMigrate() error {
+	dsn, err := postgresDSN()
+	if err != nil {
+		return err
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	ctx, cancel := context.WithTimeout(ctx, migrateTimeout)
+	defer cancel()
+
+	applied, err := pgmigrate.Run(ctx, dsn, pgmigrations.FS)
+	if err != nil {
+		return fmt.Errorf("postgres migrations: %w", err)
+	}
+	logSchema(storePostgres, applied)
 	return nil
 }
 
@@ -103,16 +165,30 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	pgDSN, err := postgresDSN()
+	if err != nil {
+		return err
+	}
+	pgOnBoot, err := pgMigrateOnBoot()
+	if err != nil {
+		return err
+	}
 	metrics.Init(cfg.WorkspaceIDs())
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	// The schema is settled before anything is served: a process that cannot own
-	// the schema has no business reporting healthy.
+	// Both schemas are settled before anything is served: a process that cannot
+	// own the schema has no business reporting healthy. Ingest reads nothing out
+	// of Postgres yet — the workspaces and saved views it creates there are the
+	// web app's — but it is the process the deployment already runs, and a
+	// schema nobody applies is a product surface that 500s instead.
 	migrateCtx, cancel := context.WithTimeout(ctx, migrateTimeout)
 	defer cancel()
 	if err := ensureSchema(migrateCtx, cfg, migrations.FS, migrate.Pending); err != nil {
+		return err
+	}
+	if err := ensurePGSchema(migrateCtx, pgDSN, pgOnBoot, pgmigrations.FS, pgmigrate.Pending); err != nil {
 		return err
 	}
 
@@ -174,12 +250,13 @@ func run() error {
 	return runErr
 }
 
-// pendingVersions is the schema check ensureSchema runs when it is not the one
-// applying. It is injected rather than called directly so the refusal path —
-// the single safety property this whole mode exists to provide — is unit
-// testable with no ClickHouse to point at. Every integration test in this
-// service skips when there is no database, and a guarantee that only holds when
-// someone remembered to start one is not a guarantee.
+// pendingVersions is the schema check ensureSchema and ensurePGSchema run when
+// they are not the ones applying — migrate.Pending and pgmigrate.Pending share
+// it because the two sets are the same class. It is injected rather than called
+// directly so the refusal path — the single safety property this whole mode
+// exists to provide — is unit testable with no database to point at. Every
+// integration test in this service skips when there is none, and a guarantee
+// that only holds when someone remembered to start one is not a guarantee.
 type pendingVersions func(context.Context, string, fs.FS) ([]string, error)
 
 // ensureSchema settles the schema question before the process serves anything.
@@ -196,7 +273,7 @@ func ensureSchema(ctx context.Context, cfg config.Config, fsys fs.FS, pending pe
 		if err != nil {
 			return fmt.Errorf("schema migrations: %w", err)
 		}
-		logSchema(applied)
+		logSchema(storeClickHouse, applied)
 		return nil
 	}
 
@@ -208,15 +285,48 @@ func ensureSchema(ctx context.Context, cfg config.Config, fsys fs.FS, pending pe
 		return fmt.Errorf("schema migrations %s unapplied and OBSTACK_MIGRATE_ON_BOOT is false; run `ingest migrate` first",
 			strings.Join(unapplied, ", "))
 	}
-	slog.Info("schema verified", "migrate_on_boot", false)
+	slog.Info("schema verified", "store", storeClickHouse, "migrate_on_boot", false)
 	return nil
 }
 
-func logSchema(applied []string) {
+// ensurePGSchema is ensureSchema against the other store, down to the refusal:
+// OBSTACK_PG_MIGRATE_ON_BOOT=false means the `ingest pg-migrate` Job applies,
+// not that this process serves against whatever it finds.
+func ensurePGSchema(ctx context.Context, dsn string, migrateOnBoot bool, fsys fs.FS, pending pendingVersions) error {
+	if migrateOnBoot {
+		applied, err := pgmigrate.Run(ctx, dsn, fsys)
+		if err != nil {
+			return fmt.Errorf("postgres migrations: %w", err)
+		}
+		logSchema(storePostgres, applied)
+		return nil
+	}
+
+	unapplied, err := pending(ctx, dsn, fsys)
+	if err != nil {
+		return fmt.Errorf("postgres schema check: %w", err)
+	}
+	if len(unapplied) > 0 {
+		return fmt.Errorf("postgres migrations %s unapplied and %s is false; run `ingest pg-migrate` first",
+			strings.Join(unapplied, ", "), envPGMigrateOnBoot)
+	}
+	slog.Info("schema verified", "store", storePostgres, "pg_migrate_on_boot", false)
+	return nil
+}
+
+// Two schemas mean two sets of otherwise identical log lines, so every one of
+// them carries the store it is about (D112). The message text is unchanged from
+// when there was only one store — the runbooks grep it.
+const (
+	storeClickHouse = "clickhouse"
+	storePostgres   = "postgres"
+)
+
+func logSchema(store string, applied []string) {
 	if len(applied) == 0 {
-		slog.Info("schema already up to date")
+		slog.Info("schema already up to date", "store", store)
 	} else {
-		slog.Info("schema migrations applied", "versions", applied)
+		slog.Info("schema migrations applied", "store", store, "versions", applied)
 	}
 }
 

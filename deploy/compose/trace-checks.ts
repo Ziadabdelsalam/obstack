@@ -17,6 +17,16 @@ import type { Trace } from "@/lib/types";
 /** The cross-layer claim the product is built on: one trace, every layer. */
 export const REQUIRED_LAYERS = ["api", "agent", "tool", "llm"] as const;
 
+/**
+ * The workspace the demo stack writes under, on both paths that assert through
+ * this module: compose maps `ok_dev_local:ws_demo` (docker-compose.yml's
+ * `OBSTACK_API_KEYS`) and the chart maps the same pair (values.yaml's
+ * `ingest.apiKeys`). The harnesses seed it, so the harnesses name it — there is
+ * no ambient workspace left to inherit (D96/D113), and one constant here is what
+ * keeps smoke, sdk-checks and the Helm acceptance from drifting onto three ids.
+ */
+export const DEMO_WORKSPACE = "ws_demo";
+
 /** Ingest batches at 1s and the demo's exporters flush at 1s; spans of one trace
  *  can still land across batches, so poll until the whole trace has arrived. */
 export const ARRIVAL_TIMEOUT_MS = 30_000;
@@ -98,17 +108,23 @@ export class TraceIncompleteError extends Error {
 /**
  * Poll the facade until `problemsWith` returns an empty list, then return the
  * whole trace. Throws `TraceIncompleteError` when the deadline passes first.
+ *
+ * The workspace is the caller's first argument, never an env read and never a
+ * default (D113): `dataForWorkspace` is the explicit entry, for exactly the
+ * callers that seeded the rows they are about to assert on.
  */
 export async function awaitWholeTrace(
+  workspaceId: string,
   traceId: string,
   timeoutMs: number = ARRIVAL_TIMEOUT_MS,
 ): Promise<Trace> {
-  const { getTrace, searchTraces } = await import("@/server/data");
+  const { dataForWorkspace } = await import("@/server/data");
+  const data = dataForWorkspace(workspaceId);
 
   const deadline = Date.now() + timeoutMs;
   for (;;) {
-    const trace = await getTrace(traceId);
-    const search = trace ? await searchTraces() : undefined;
+    const trace = await data.getTrace(traceId);
+    const search = trace ? await data.searchTraces() : undefined;
     const listed = search?.traces.find((t) => t.id === traceId);
     const problems = problemsWith(traceId, trace, listed);
     // D44's total is a second count over the page's own predicate, so a row on

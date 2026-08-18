@@ -57,7 +57,7 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 
-	migrateOnBoot, err := envBool("OBSTACK_MIGRATE_ON_BOOT", true)
+	migrateOnBoot, err := EnvBool("OBSTACK_MIGRATE_ON_BOOT", true)
 	if err != nil {
 		return Config{}, err
 	}
@@ -127,11 +127,15 @@ func envOr(name, fallback string) string {
 	return fallback
 }
 
-// envBool returns an error where envOr silently falls back, because a boolean
+// EnvBool returns an error where envOr silently falls back, because a boolean
 // that coerced `ture` to false would quietly change which process owns the
 // schema and the operator would learn about it from a broken query, not a log
 // line. Empty still means unset, as everywhere else here.
-func envBool(name string, fallback bool) (bool, error) {
+//
+// Exported because the Postgres boot flag lives in package main — its DSN is
+// deliberately not a Config field (see cmd/ingest/main.go) — and two copies of
+// "which value stops boot" is exactly the drift this function exists to refuse.
+func EnvBool(name string, fallback bool) (bool, error) {
 	// Trimmed before parsing, but no more forgiving than that: a YAML block
 	// scalar or a hand-edited .env trivially leaves a trailing space, and
 	// refusing to boot over one is a false positive. `ture` still fails — the

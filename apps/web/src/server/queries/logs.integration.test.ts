@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import test from "node:test";
 import { createClient } from "@clickhouse/client";
+import { forWorkspace } from "@/server/clickhouse";
 // The mock pod list this surface used to offer in BOTH modes (D51(d)). Imported
 // here, in a server-side test, purely so the "no mock pod ever reaches a live
 // option list" probe names the real list instead of a copied literal.
@@ -46,9 +47,20 @@ async function clickhouseReachable(): Promise<boolean> {
   }
 }
 
-/** A workspace of this run's own — the seeding user has no mutation grant, so nothing here can be cleaned up afterwards (traces.integration.test.ts precedent). */
+/**
+ * Two workspaces of this run's own — the seeding user has no mutation grant, so
+ * nothing here can be cleaned up afterwards (traces.integration.test.ts
+ * precedent). Every read names one of them explicitly through `forWorkspace`;
+ * there is no environment default left to inherit (D96/D113), and `WORKSPACE_B`
+ * is the second tenant the disjointness probe at the bottom needs.
+ */
 const WORKSPACE_ID = `ws_it_${randomBytes(4).toString("hex")}`;
-process.env.OBSTACK_WORKSPACE_ID = WORKSPACE_ID;
+const WORKSPACE_B = `ws_itb_${randomBytes(4).toString("hex")}`;
+
+// `@/server/data` resolves OBSTACK_DATA_MODE at module load (S2.4 L4: an
+// import-time-ordering API, stated as such), so the mode is set before the
+// dynamic imports inside the tests below.
+process.env.OBSTACK_DATA_MODE = "live";
 
 const NS_PER_SECOND = BigInt(1_000_000_000);
 const NS_PER_MS = BigInt(1_000_000);
@@ -97,6 +109,7 @@ test("logs search (D48/D51) against a seeded ClickHouse", async (t) => {
   }
 
   const { LOG_SEARCH_CAP, queryLogSearch } = await import("./logs");
+  const ch = forWorkspace(WORKSPACE_ID);
   const { mockLogMatches } = await import("@/server/data");
 
   const suffix = randomBytes(6).toString("hex");
@@ -188,8 +201,8 @@ test("logs search (D48/D51) against a seeded ClickHouse", async (t) => {
     ],
   });
 
-  const bodies = async (filter: Parameters<typeof queryLogSearch>[0]) =>
-    (await queryLogSearch(filter)).logs.map((l) => l.body);
+  const bodies = async (filter: Parameters<typeof queryLogSearch>[1]) =>
+    (await queryLogSearch(ch, filter)).logs.map((l) => l.body);
 
   await t.test("baseline: the window renders newest-first, carriers and out-of-window rows absent", async () => {
     assert.deepEqual(await bodies({ q: TOKEN }), [
@@ -250,7 +263,7 @@ test("logs search (D48/D51) against a seeded ClickHouse", async (t) => {
     // number-only rank it ranks `info` and vanishes from the error+ set above;
     // the label it renders with comes from the same expression, so this also
     // pins "filtered as error" to "displayed as error".
-    const errors = (await queryLogSearch({ q: TOKEN, minSeverity: "error" })).logs;
+    const errors = (await queryLogSearch(ch, { q: TOKEN, minSeverity: "error" })).logs;
     assert.deepEqual(
       errors.map((l) => [l.body, l.severity]),
       [
@@ -258,7 +271,7 @@ test("logs search (D48/D51) against a seeded ClickHouse", async (t) => {
         [bodyG, "error"],
       ],
     );
-    const debugRow = (await queryLogSearch({ q: TOKEN })).logs.find((l) => l.body === bodyK);
+    const debugRow = (await queryLogSearch(ch, { q: TOKEN })).logs.find((l) => l.body === bodyK);
     assert.equal(debugRow?.severity, "debug");
   });
 
@@ -296,7 +309,7 @@ test("logs search (D48/D51) against a seeded ClickHouse", async (t) => {
   });
 
   await t.test("a content carrier does not render, is not counted, and its pod is not offered", async () => {
-    const carrierPodOnly = await queryLogSearch({ pod: CARRIER_POD });
+    const carrierPodOnly = await queryLogSearch(ch, { pod: CARRIER_POD });
     assert.deepEqual(carrierPodOnly.logs, [], "a bodyless content carrier rendered as a blank row");
     assert.equal(carrierPodOnly.logs.length, 0, "the carrier row moved the count");
     assert.ok(
@@ -321,7 +334,7 @@ test("logs search (D48/D51) against a seeded ClickHouse", async (t) => {
   });
 
   await t.test("pod options come from the data, in the window, and never from the mock list", async () => {
-    const { pods } = await queryLogSearch({});
+    const { pods } = await queryLogSearch(ch, {});
     assert.deepEqual(pods, [CAP_POD, EXACT_POD, PODNAME_POD, POD, OTHER_POD].sort());
     assert.ok(!pods.includes(""), "the pod-less rows' empty pod was offered as an option");
     // The option list is bound by the WINDOW, not just by the carrier rule:
@@ -330,7 +343,7 @@ test("logs search (D48/D51) against a seeded ClickHouse", async (t) => {
     // without it, no fixture distinguishes the two reads' windows.
     assert.ok(!pods.includes(OLD_POD), "a pod with no row inside the window was offered");
     assert.ok(
-      (await queryLogSearch({ rangeMs: 8 * HOUR_MS })).pods.includes(OLD_POD),
+      (await queryLogSearch(ch, { rangeMs: 8 * HOUR_MS })).pods.includes(OLD_POD),
       "widening the range did not widen the pod option list",
     );
     const leaked = pods.filter((p) => podOptions.includes(p));
@@ -342,14 +355,14 @@ test("logs search (D48/D51) against a seeded ClickHouse", async (t) => {
   });
 
   await t.test("the cap is a fact: cap+1 fetch, one slice, truncation only when proven", async () => {
-    const capped = await queryLogSearch({ pod: CAP_POD });
+    const capped = await queryLogSearch(ch, { pod: CAP_POD });
     assert.equal(capped.logs.length, LOG_SEARCH_CAP);
     assert.equal(
       capped.truncated,
       true,
       `${LOG_SEARCH_CAP + 1} matching rows did not report truncation — the query is not fetching one past the cap`,
     );
-    const exact = await queryLogSearch({ pod: EXACT_POD });
+    const exact = await queryLogSearch(ch, { pod: EXACT_POD });
     assert.equal(exact.logs.length, LOG_SEARCH_CAP);
     assert.equal(
       exact.truncated,
@@ -359,7 +372,7 @@ test("logs search (D48/D51) against a seeded ClickHouse", async (t) => {
   });
 
   await t.test("no match is an empty result, and the clock is the request's own (D13/D48)", async () => {
-    const empty = await queryLogSearch({ q: `zqnothing${suffix}` });
+    const empty = await queryLogSearch(ch, { q: `zqnothing${suffix}` });
     assert.deepEqual(empty.logs, []);
     assert.equal(empty.truncated, false);
     assert.ok(
@@ -389,5 +402,61 @@ test("logs search (D48/D51) against a seeded ClickHouse", async (t) => {
       assert.equal(mockLogMatches(line(bodyA), q), expectA, `mock verdict for ${JSON.stringify(q)} on row A`);
       assert.equal(mockLogMatches(line(bodyH), q), expectH, `mock verdict for ${JSON.stringify(q)} on row H`);
     }
+  });
+});
+
+// T4 (D96/D113): the `/app/logs` half of the cross-tenant probe. This surface
+// reads `obstack.logs` directly and answers TWO statements per request — the
+// row window and the pod option list — so it can leak in two places, and the
+// option list is the one no row-level assertion would catch: a pod name is
+// another tenant's infrastructure.
+test("cross-tenant disjointness (D96) against a seeded ClickHouse", async (t) => {
+  if (!(await clickhouseReachable())) {
+    t.skip(
+      `no ClickHouse at ${CLICKHOUSE_URL}; start deploy/compose (down -v first) to run this test`,
+    );
+    return;
+  }
+
+  const { dataForWorkspace } = await import("@/server/data");
+
+  const suffix = randomBytes(6).toString("hex");
+  const TOKEN = `zqtenant${suffix}`; // seeded in BOTH workspaces, nowhere else
+  const aBody = `tenant a line ${TOKEN}`;
+  const bBody = `tenant b line ${TOKEN}`;
+  const aPod = `it-wsa-pod-${suffix}`;
+  const bPod = `it-wsb-pod-${suffix}`;
+  const at0 = chTimestamp(BigInt(Date.now()) * NS_PER_MS);
+
+  await seed.insert({
+    table: "logs",
+    format: "JSONEachRow",
+    values: [
+      logRow({ timestamp: at0, body: aBody, k8s_pod: aPod }),
+      { ...logRow({ timestamp: at0, body: bBody, k8s_pod: bPod }), workspace_id: WORKSPACE_B },
+    ],
+  });
+
+  const a = dataForWorkspace(WORKSPACE_ID);
+  const b = dataForWorkspace(WORKSPACE_B);
+
+  await t.test("a window that matches both tenants' rows renders only the asking tenant's", async () => {
+    const fromA = await a.searchLogs({ q: TOKEN });
+    assert.deepEqual(
+      fromA.logs.map((l) => l.body),
+      [aBody],
+      "workspace A's log window included another workspace's line",
+    );
+    const fromB = await b.searchLogs({ q: TOKEN });
+    assert.deepEqual(fromB.logs.map((l) => l.body), [bBody]);
+  });
+
+  await t.test("the pod option list is scoped too — one tenant is never offered another's pods", async () => {
+    const podsA = (await a.searchLogs({})).pods;
+    const podsB = (await b.searchLogs({})).pods;
+    assert.ok(podsA.includes(aPod), "workspace A is not offered its own pod — the fixture is missing");
+    assert.ok(podsB.includes(bPod), "workspace B is not offered its own pod — the fixture is missing");
+    assert.ok(!podsA.includes(bPod), "workspace A was offered a pod that only exists in workspace B");
+    assert.ok(!podsB.includes(aPod), "workspace B was offered a pod that only exists in workspace A");
   });
 });
