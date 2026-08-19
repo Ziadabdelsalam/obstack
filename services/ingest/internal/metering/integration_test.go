@@ -348,9 +348,10 @@ func TestConcurrentFlushersAddRatherThanSet(t *testing.T) {
 	}
 }
 
-// A workspace deleted mid-flight takes its own counts with it and nothing else:
-// the rejected snapshot is discarded rather than retried forever, so the next
-// flush — everyone else's usage — still lands.
+// A workspace deleted mid-flight costs the snapshot it was in — the flush is one
+// transaction, so ws_alice's counts in that same snapshot go with it — and
+// nothing after it: the rejected snapshot is discarded rather than retried
+// forever, so the next flush, everyone else's usage, still lands.
 func TestFlushSurvivesADeletedWorkspace(t *testing.T) {
 	ctx := requirePostgres(t)
 	dsn := migratedSchema(ctx, t)

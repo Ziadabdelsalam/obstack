@@ -327,7 +327,10 @@ func TestFlushRowsAreOrderedDeterministically(t *testing.T) {
 
 // A count with no key has no committable home — api_key_health.key_id is a
 // foreign key — so it is skipped rather than allowed to take a whole flush down.
-// The workspace's usage still meters.
+// The workspace's usage still meters. A count with no workspace is skipped from
+// the ledger for the same reason: usage_ledger.workspace_id is a foreign key
+// too, and one uncommittable bucket would cost the snapshot every other
+// workspace's usage.
 func TestCountsWithoutAKeyDoNotEnterHealth(t *testing.T) {
 	m, flush, clock := newTestMeter(t)
 
@@ -343,6 +346,9 @@ func TestCountsWithoutAKeyDoNotEnterHealth(t *testing.T) {
 	}
 	if got := b.ledger[ledgerKey{workspaceID: "ws_alice", periodStart: hour(clock)}]; got.spans != 4 {
 		t.Errorf("workspace usage = %+v, want the 4 spans metered regardless of the key", got)
+	}
+	if len(b.ledger) != 1 {
+		t.Errorf("the ledger carries a bucket with no workspace: %+v", b.ledger)
 	}
 }
 
