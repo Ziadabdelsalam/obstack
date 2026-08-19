@@ -4,11 +4,19 @@ import { connection } from "next/server";
 import {
   SettingsSuite,
   type LiveBilling,
+  type LiveIngest,
   type LiveSettings,
 } from "@/components/settings/SettingsSuite";
 import { listApiKeys } from "@/server/api-keys";
 import { CHECKOUT_RETURN_PARAM, reconcileCheckout } from "@/server/billing";
 import { dataMode } from "@/server/data";
+import {
+  BASE_PRICES_AS_OF,
+  BASE_PRICES_COUNT,
+  OVERRIDE_MAX,
+  getIngestHealth,
+  listPricingOverrides,
+} from "@/server/ingest-health";
 import { getOrgName, inviteLinkPath, listOrgMembers, listPendingInvites } from "@/server/invites";
 import { queryRows } from "@/server/postgres";
 import { getSessionContext } from "@/server/session";
@@ -95,13 +103,15 @@ export default async function SettingsPage({
   const checkout = await applyCheckoutReturn(params[CHECKOUT_RETURN_PARAM], session.workspaceId);
 
   const requestHeaders = await headers();
-  const [orgName, members, invites, keys, usage, plans] = await Promise.all([
+  const [orgName, members, invites, keys, usage, plans, health, overrides] = await Promise.all([
     getOrgName(session.orgId, queryRows),
     listOrgMembers(session.orgId, queryRows),
     listPendingInvites(session.orgId, requestHeaders),
     listApiKeys(session.workspaceId, queryRows),
     getUsage(session.workspaceId, queryRows),
     listPlans(queryRows),
+    getIngestHealth(session.workspaceId, queryRows),
+    listPricingOverrides(session.workspaceId, queryRows),
   ]);
 
   // A member row pointing at an organization that does not exist is the same
@@ -134,6 +144,38 @@ export default async function SettingsPage({
     checkout,
   };
 
+  // The Data & ingest tab, read HERE like every other tab's rows (D182): a tab
+  // is a view of this page's props and not a surface that fetches itself, so
+  // opening it costs no roundtrip and its writes hand back the same rows this
+  // read produces. The two totals it shows are the store's sums of the same
+  // rows listed under them — nothing on this page adds a column up twice.
+  const ingest: LiveIngest = {
+    keys: health.keys.map((key) => ({
+      keyId: key.keyId,
+      name: key.name,
+      prefix: key.prefix,
+      revoked: key.revoked,
+      accepted: key.accepted,
+      errors: key.droppedDecode + key.droppedUnsupported,
+      sampled: key.droppedQuota,
+      lastEvent: key.lastEventAt ? asMinute(key.lastEventAt) : null,
+    })),
+    accepted: health.accepted,
+    receiveErrors: health.receiveErrors,
+    droppedQuota: health.droppedQuota,
+    asOf: health.asOf ? asMinute(health.asOf) : null,
+    overrides: overrides.map((override) => ({
+      id: override.id,
+      match: override.match,
+      inputPerMTok: override.inputPerMTok,
+      outputPerMTok: override.outputPerMTok,
+      updated: asDay(override.updatedAt),
+    })),
+    overrideMax: OVERRIDE_MAX,
+    pricesAsOf: BASE_PRICES_AS_OF,
+    pricedModels: BASE_PRICES_COUNT,
+  };
+
   const live: LiveSettings = {
     orgName,
     workspaceId: session.workspaceId,
@@ -152,6 +194,7 @@ export default async function SettingsPage({
       revoked: key.revokedAt ? asDay(key.revokedAt) : null,
     })),
     billing,
+    ingest,
     // The code from the URL is mapped to fixed copy and never rendered (D121).
     errorMessage: settingsErrorMessage(params.error),
   };

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useTransition } from "react";
+import { useState, useTransition } from "react";
 import { Check, Copy, Plus, X } from "lucide-react";
 import { apiKeys, ingest, members, modelPrices, usage } from "@/mock/workspace";
 import type { Member } from "@/mock/workspace";
@@ -12,7 +12,6 @@ import {
   deleteOverride,
   inviteTeammate,
   issueKey,
-  loadIngestHealth,
   revokeKey,
   saveOverride,
 } from "@/app/app/settings/actions";
@@ -32,11 +31,12 @@ import { startCheckout } from "@/app/app/settings/billing-actions";
  * shown-once banner are shared by both halves, so there is one definition of
  * what this page looks like.
  *
- * Four of the five live tabs are fed by the page's props. Data & ingest is not:
- * it loads itself when it is opened (`loadIngestHealth`), because its rows are
- * the only ones on this page nobody looking at General, Members or Billing
- * needs — and its writes answer with the new list rather than a redirect, so a
- * refused override keeps the form the operator typed into.
+ * All five live tabs are fed by the page's props (D182): a tab is a view of what
+ * the server already read, and none of them fetches anything when it is opened.
+ * The two override writes are the only calls this file makes that answer with a
+ * value instead of a redirect — they revalidate, so the new list arrives as new
+ * props, and the value they return is the refusal, so a refused override keeps
+ * the form the operator typed into.
  */
 
 const tabs = ["General", "Members", "API keys", "Billing & usage", "Data & ingest", "Audit log", "Compliance"] as const;
@@ -133,6 +133,7 @@ export interface LiveSettings {
   invites: LiveInvite[];
   keys: LiveKey[];
   billing: LiveBilling;
+  ingest: LiveIngest;
   /** `?error=` resolved to fixed copy by `settings/errors.ts` — never the code. */
   errorMessage: string | null;
 }
@@ -896,23 +897,23 @@ export interface LiveIngest {
 }
 
 /**
- * What an override write answers with: the list as it now stands, and a reason
- * if it refused. Both, always — a refusal still returns the current list, so a
- * failed submit never blanks the table under the form.
+ * What an override write answers with: a refusal, or nothing. A success
+ * revalidates instead, so the list under the form arrives as new props from the
+ * page's own read — the tab never holds a second copy of it. The sentence comes
+ * from `settings/errors.ts`, the one vocabulary of this surface (D182).
  */
-export interface IngestFormResult {
-  ingest: LiveIngest;
+export interface OverrideResult {
   error: string | null;
 }
 
 /**
  * The one thing the tab says for itself. Every other sentence it shows comes
- * from the server; this one is what is left when the server said nothing at
- * all, and it claims nothing about the ingestion — a settings page that could
- * not read a row knows nothing about whether spans are arriving.
+ * from the server; this one is what is left when a write never came back at
+ * all, and it claims nothing about the ingestion — a settings page that lost a
+ * roundtrip knows nothing about whether spans are arriving.
  */
 const INGEST_UNREACHABLE =
-  "Couldn't read these rows just now. Nothing about your ingestion changed — reload to try again.";
+  "Couldn't reach the server just now. Nothing changed — reload and try again.";
 
 /** A number with its label, the shape the health summary repeats three times. */
 function Stat({ label, value, warn }: { label: string; value: number; warn?: boolean }) {
@@ -933,55 +934,38 @@ function Stat({ label, value, warn }: { label: string; value: number; warn?: boo
  * The real ingest surface: what each key has carried, what was refused, what
  * was sampled away, and the prices this workspace overrides.
  *
- * It loads itself. The health rows and the override list are the only data on
- * this page that no other tab needs, and a Server Function called from
- * `useEffect` is the documented way for a client component to fetch them
- * (`next/dist/docs/01-app/01-getting-started/07-mutating-data.md` — Invoking
- * Server Functions). The same call answers every write, so an override that is
- * created, edited or deleted lands in one roundtrip and the list under the form
- * is always the list Postgres holds.
+ * Prop-fed like every sibling (D182). Reads are the page's — opening this tab
+ * fetches nothing — and the two writes revalidate, so the list under the form is
+ * whatever the page's next read returned and this component keeps no copy of it
+ * to fall out of date. What it does keep is the refusal, because that is the one
+ * thing a re-render cannot carry back.
  *
  * Every number here carries an "as of" and never a rate: the counts come from
  * the metering flush (D166) and are therefore seconds behind, and the sampling
  * rate itself is a constant in the ingest binary (D165) that this tab describes
  * in words rather than restating as a number that could drift from it.
  */
-function LiveIngestTab() {
-  const [ingest, setIngest] = useState<LiveIngest | null>(null);
+function LiveIngestTab({ live }: { live: LiveSettings }) {
+  const ingest = live.ingest;
   const [error, setError] = useState<string | null>(null);
   const [pending, run] = useTransition();
 
-  // The load and every write share one runner and one error slot: the tab has
-  // one piece of state and one way to replace it, so a write cannot leave the
-  // screen showing a list that predates it — and a call that never came back
-  // says so instead of leaving the last list looking current.
-  const call = (work: () => Promise<IngestFormResult>) =>
+  // Both writes share one runner and one error slot: a refusal replaces the last
+  // one, a success clears it, and a call that never came back says so rather
+  // than leaving the screen looking like nothing was attempted.
+  // `accepted` runs only when the server took the write — the override form
+  // clears itself there and nowhere else (see its onSubmit).
+  const call = (work: () => Promise<OverrideResult>, accepted?: () => void) =>
     run(async () => {
       try {
         const result = await work();
-        setIngest(result.ingest);
         setError(result.error);
+        if (!result.error) accepted?.();
       } catch (failure) {
         console.error("[settings] ingest tab", failure);
         setError(INGEST_UNREACHABLE);
       }
     });
-
-  // Once, on open: this is a read of rows the flusher rewrites every few
-  // seconds, and a tab that re-fetched on every render would poll Postgres by
-  // accident. Refreshing is a tab switch away, and every write returns the
-  // current list anyway.
-  useEffect(() => {
-    call(loadIngestHealth);
-  }, []);
-
-  if (!ingest) {
-    return (
-      <Section title="ingest health">
-        <p className="py-1 text-[12.5px] text-faint">{error ?? "Reading health rows…"}</p>
-      </Section>
-    );
-  }
 
   return (
     <>
@@ -1094,11 +1078,25 @@ function LiveIngestTab() {
           )}
         </div>
 
-        {/* An uncontrolled form, submitted through the shared runner: the action
-            returns the new list rather than redirecting, so a refusal leaves
-            what was typed on screen beside the reason it was refused. */}
+        {/* Submitted through `onSubmit` and not `action`, and the difference is
+            the operator's typing: React requests a form reset on EVERY function
+            `action` before it runs it (`startHostTransition` → `requestFormReset`
+            in react-dom), so a refused submit would empty all three fields and
+            leave the reason beside a blank form — which would throw away exactly
+            what these actions answer with a value instead of a redirect to keep.
+            The reset is ours here, and only when the server took the write.
+            What that gives up is the no-JS submit path, and only for this form:
+            everything this tab READS is server-rendered and legible without it,
+            which is the trade the operator's typing is worth. */}
         <form
-          action={(form: FormData) => call(() => saveOverride(form))}
+          onSubmit={(event) => {
+            event.preventDefault();
+            const form = event.currentTarget;
+            call(
+              () => saveOverride(new FormData(form)),
+              () => form.reset(),
+            );
+          }}
           className="mt-3 flex flex-wrap gap-2"
         >
           <input
@@ -1370,7 +1368,7 @@ export function SettingsSuite({ live }: { live: LiveSettings | null }) {
       {tab === "Members" && (live ? <LiveMembersTab live={live} /> : <MembersTab />)}
       {tab === "API keys" && (live ? <LiveKeysTab live={live} /> : <KeysTab />)}
       {tab === "Billing & usage" && (live ? <LiveBillingTab live={live} /> : <BillingTab />)}
-      {tab === "Data & ingest" && (live ? <LiveIngestTab /> : <IngestTab />)}
+      {tab === "Data & ingest" && (live ? <LiveIngestTab live={live} /> : <IngestTab />)}
       {tab === "Audit log" && <AuditTab />}
       {tab === "Compliance" && <ComplianceTab />}
     </div>

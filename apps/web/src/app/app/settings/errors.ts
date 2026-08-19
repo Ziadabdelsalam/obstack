@@ -1,20 +1,38 @@
+import {
+  OVERRIDE_MATCH_MAX,
+  OVERRIDE_MAX,
+  PRICE_PER_MTOK_MAX,
+} from "@/server/ingest-health";
+
 /**
- * The closed vocabulary of `/app/settings?error=` (D121/D127/D129, same shape as
+ * The closed vocabulary of `/app/settings` (D121/D127/D129, same shape as
  * `signup/errors.ts` and `invite/[id]/errors.ts`). The action emits a CODE and
- * this module owns the words; the query value itself never reaches the page, so
- * the parameter cannot carry text of a link author's choosing onto a signed-in
- * operator's settings screen.
+ * this module owns the words; a caller's value never becomes a sentence, so
+ * nothing a link author writes reaches a signed-in operator's settings screen.
  *
- * ONE vocabulary for the whole surface, keys and invites together (D143's note):
- * settings is one page with one `?error=` parameter, and two vocabularies on it
- * would be two definitions of the same thing — a code from either family has to
- * resolve to a sentence, and `settings-failed` is the single generic both fall
- * back to.
+ * ONE vocabulary for the whole surface (D143's note, D182): settings is one page
+ * and every refusal on it resolves here — keys, invites and the price overrides
+ * together — with `settings-failed` as the single generic all three fall back
+ * to. Two vocabularies on one page would be two definitions of the same thing.
+ *
+ * The codes take two ROUTES to the reader and the vocabulary does not care
+ * which: an action that redirects puts the code in `?error=` and `page.tsx`
+ * resolves it, and the two override writes — which must not redirect, because a
+ * redirect would throw away the form the operator typed into — resolve it on the
+ * server and return the sentence itself. Same map, same fallback, same D121
+ * property either way.
  *
  * Every sentence names what the reader can do about it. The two the library
  * raises — already a member, already invited — are the ones an inviter actually
  * hits, and each says what already exists rather than "try again" about a retry
  * that would fail identically (D129).
+ *
+ * The three override sentences state the numbers the STORE enforces, read from
+ * `server/ingest-health.ts` rather than retyped here (D164(f) asks for the cap
+ * to be in the error): copy naming a limit the server does not keep is the same
+ * lie D129 exists to prevent. That import makes this a server-side module — the
+ * page and the actions resolve codes, the client component is handed finished
+ * sentences and never a code.
  */
 export const SETTINGS_ERRORS = {
   "key-name-invalid": "Give the key a name — 1 to 100 characters, so you can tell it apart later.",
@@ -24,6 +42,10 @@ export const SETTINGS_ERRORS = {
     "That email address isn't valid. Use a full address like teammate@example.com.",
   "invite-member-exists": "That person is already a member of this organization.",
   "invite-pending": "That address already has an open invite — copy the link from the list below.",
+  "override-match-invalid": `Use the start of a model name — letters, digits, . _ : / - and up to ${OVERRIDE_MATCH_MAX} characters, like gpt-4o or your fine-tune's name.`,
+  "override-price-invalid": `Each price is US dollars per million tokens: a number from 0 to ${PRICE_PER_MTOK_MAX.toLocaleString("en-US")}.`,
+  "override-limit": `This workspace already has ${OVERRIDE_MAX} price overrides, which is the most it can hold. Remove one to add another.`,
+  "override-not-found": "That override isn't one of this workspace's. The list below is the current one.",
   "settings-failed": "That didn't work. Please try again.",
 } as const;
 
@@ -61,15 +83,17 @@ export function settingsErrorMessage(raw: string | string[] | undefined): string
  * 1.7.1, `crud-invites.mjs:87`, `:127`, `:132`); the permission, member-not-found
  * and organization-not-found arms are deliberately generic, because none of them
  * describes anything an owner inviting into her own org can do differently. And
- * our own `UnknownApiKey` (`server/api-keys.ts`) — matched by `name`, like the
- * `APIError` check above it, so this module stays free of the server-only import
- * a client component could not follow.
+ * our own three — `UnknownApiKey` (`server/api-keys.ts`), `OverrideLimit` and
+ * `UnknownOverride` (`server/ingest-health.ts`) — matched by `name`, like the
+ * `APIError` check, so no error class is imported to be matched against.
  *
  * Total by construction: anything else is `settings-failed`.
  */
 export function settingsErrorCode(error: unknown): SettingsErrorCode {
   const named = error as { name?: string; body?: { code?: string } } | null;
   if (named?.name === "UnknownApiKey") return "key-not-found";
+  if (named?.name === "OverrideLimit") return "override-limit";
+  if (named?.name === "UnknownOverride") return "override-not-found";
   if (named?.name === "APIError") {
     switch (named.body?.code) {
       case "INVALID_EMAIL":

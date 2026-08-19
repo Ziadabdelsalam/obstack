@@ -15,8 +15,9 @@
 export async function register() {
   if (process.env.NEXT_RUNTIME !== "nodejs") return;
 
-  // Past the `@/server/billing` barrel on purpose: this is process wiring, not
-  // a caller of the billing rail — nothing here learns what a Polar object is.
-  const { startUsageReporter } = await import("@/server/billing/reporter");
+  // Through the barrel like every other caller (D184): the module boundary that
+  // owns every Polar call owns this entry too, so there is exactly one import
+  // path into it and nothing here learns what a Polar object is.
+  const { startUsageReporter } = await import("@/server/billing");
   startUsageReporter();
 }

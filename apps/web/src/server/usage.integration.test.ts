@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { after, test } from "node:test";
-import { getPool, queryRows } from "./postgres";
+import * as React from "react";
+import type { QueryResultRow } from "pg";
+import { getPool, queryRows, type QueryRows } from "./postgres";
 import { getUsage, listPlans } from "./usage";
 
 // run with: docker compose -f deploy/compose/docker-compose.yml up -d --wait postgres ingest
@@ -24,6 +26,9 @@ import { getUsage, listPlans } from "./usage";
 //   6. Another workspace's ledger rows never enter this workspace's sum.
 //   7. The seeded catalog IS the D163 catalog of record, read through the same
 //      path the billing surface reads it through.
+//   8. The `cache()` wrap (D183) really dedupes inside one request and really
+//      does not across two — the banner and the tab share ONE ledger sum, and
+//      the next request still sees new events.
 //
 // D130's skip class, deliberately NARROW: this file self-skips only when
 // `OBSTACK_TEST_POSTGRES_DSN` is UNSET. A DSN naming a dead port or an
@@ -104,6 +109,53 @@ async function withWorkspacePair(run: (a: string, b: string) => Promise<void>): 
     await run(a, b);
   } finally {
     await queryRows(`DELETE FROM workspaces WHERE id IN ($1, $2)`, [a, b]);
+  }
+}
+
+/**
+ * One request, as React means it.
+ *
+ * `cache` reads its per-request store off the async dispatcher the server
+ * runtime installs at `ReactSharedInternals.A`, and falls straight THROUGH to
+ * the wrapped function when there is none — measured, not remembered, at the
+ * pinned react 19.2.8: `node_modules/react/cjs/react.react-server.development.js`
+ * returns `fn.apply(null, arguments)` when `A` is null. Node's test runner is
+ * not a request, which is why every other test in this file calls the real
+ * statement every time and their read-after-write assertions still mean
+ * something.
+ *
+ * This installs the smallest dispatcher that satisfies the contract React reads:
+ * a per-scope map keyed by resource type, which is what an RSC render is handed
+ * per request. Nothing else about a request is simulated, because nothing else
+ * is what `cache` keys on.
+ */
+type AsyncDispatcher = {
+  getCacheForType: <T>(create: () => T) => T;
+  cacheSignal: () => AbortSignal | null;
+};
+
+const reactInternals = (
+  React as unknown as {
+    __SERVER_INTERNALS_DO_NOT_USE_OR_WARN_USERS_THEY_CANNOT_UPGRADE: {
+      A: AsyncDispatcher | null;
+    };
+  }
+).__SERVER_INTERNALS_DO_NOT_USE_OR_WARN_USERS_THEY_CANNOT_UPGRADE;
+
+async function inOneRequest<T>(run: () => Promise<T>): Promise<T> {
+  const scope = new Map<() => unknown, unknown>();
+  const outside = reactInternals.A;
+  reactInternals.A = {
+    getCacheForType: <T,>(create: () => T): T => {
+      if (!scope.has(create)) scope.set(create, create());
+      return scope.get(create) as T;
+    },
+    cacheSignal: () => null,
+  };
+  try {
+    return await run();
+  } finally {
+    reactInternals.A = outside;
   }
 }
 
@@ -255,5 +307,53 @@ test("one workspace's ledger never enters another's number", { skip }, async () 
     await queryRows(`INSERT INTO workspace_plans (workspace_id, plan_id) VALUES ($1, 'pro')`, [b]);
     assert.equal((await getUsage(a, queryRows)).planId, "free");
     assert.equal((await getUsage(b, queryRows)).planId, "pro");
+  });
+});
+
+test("D183: one request sums the ledger once; the next request sums it again", { skip }, async () => {
+  await withWorkspacePair(async (a, b) => {
+    await meter(a, 0, 2, 1);
+    await meter(b, 0, 9, 0);
+
+    // The injected read path, counted. It is the SAME function object on every
+    // call, which matters: `cache` keys on both arguments, so a caller that
+    // built a fresh wrapper per call would be a fresh key per call — the app
+    // hands `getUsage` the one `queryRows` from `postgres.ts` for exactly this
+    // reason.
+    let reads = 0;
+    const counted: QueryRows = <Row extends QueryResultRow>(sql: string, params?: unknown[]) => {
+      reads += 1;
+      return queryRows<Row>(sql, params);
+    };
+
+    const banner = await inOneRequest(async () => {
+      // The app layout reads it for the banner and the settings page reads it
+      // for the meter, in one render (D183/D171).
+      const forBanner = await getUsage(a, counted);
+      const forTab = await getUsage(a, counted);
+
+      // The one-definition proof at its strongest: not two numbers that happen
+      // to agree, ONE object. Unwrap `cache()` in usage.ts and this line and the
+      // count below both go red.
+      assert.equal(forTab, forBanner);
+      assert.equal(reads, 1);
+
+      // ...and the memo is per ARGUMENT, not a process-wide answer: another
+      // workspace in the same request is another statement.
+      assert.equal((await getUsage(b, counted)).eventsUsed, 9);
+      assert.equal(reads, 2);
+
+      return forBanner;
+    });
+    assert.equal(banner.eventsUsed, 3);
+
+    // Request-scoped, and this is the half that keeps the meter honest: events
+    // metered after that render are visible to the next one. A memo that
+    // outlived the request would show a customer a number from a page they
+    // loaded an hour ago.
+    await meter(a, 1, 5, 0);
+    const later = await inOneRequest(() => getUsage(a, counted));
+    assert.equal(later.eventsUsed, 8);
+    assert.equal(reads, 3);
   });
 });

@@ -1,4 +1,5 @@
 import "server-only";
+import { cache } from "react";
 import type { QueryRows } from "@/server/postgres";
 
 /**
@@ -58,19 +59,21 @@ export interface Plan {
  *  - the plan is `JOIN plans p ON p.id = COALESCE(wp.plan_id, 'free')`, so a
  *    workspace with no `workspace_plans` row is on free WITHOUT a row having to
  *    be written for it — no signup change, no backfill;
- *  - the window is `period_start >= date_trunc('month', now() AT TIME ZONE
- *    'UTC')` — the billing period is the calendar month, UTC;
+ *  - the window is the calendar month, UTC;
  *  - usage is `SUM(spans + logs)`, one span or one log record being one event
  *    (PRD §10).
  *
- * The comparison mixes a `timestamptz` column with a `timestamp` expression, so
- * Postgres anchors the right side in the SESSION's TimeZone. Ours is UTC —
- * postgres:17.11's default, unchanged by compose and unset by `pg` — which is
- * what makes the ruled expression mean UTC. The projection re-anchors explicitly
- * (`AT TIME ZONE 'UTC'`) because a naked `timestamp` crossing the wire would be
- * read back as a local-time `Date` and printed an offset away from the month it
- * names. Go's over-quota SELECT (D164) reads the same shape against the same
- * server, so both runtimes cut the month at the same instant.
+ * The month boundary is spelled `date_trunc('month', now() AT TIME ZONE 'UTC')
+ * AT TIME ZONE 'UTC'` in BOTH places it appears (D179), and the second `AT TIME
+ * ZONE` is the load-bearing one: `date_trunc` there returns a naked `timestamp`,
+ * and comparing a `timestamptz` column against a naked `timestamp` anchors it in
+ * the SESSION's TimeZone. Ours happens to be UTC today, which is exactly why the
+ * bug would be silent — a server started in another zone would cut the billing
+ * month hours off, an hour of usage would land in the wrong invoice, and nothing
+ * would say so. The re-anchor also fixes what the projection sends: a naked
+ * `timestamp` crossing the wire is read back as a local-time `Date` and printed
+ * an offset away from the month it names. Go's over-quota SELECT (D164) carries
+ * the identical expression, so both runtimes cut the month at the same instant.
  *
  * The LATERAL keeps this to ONE round trip and one row: without it the plan read
  * and the sum would be two statements, and two statements are two clocks — the
@@ -93,7 +96,7 @@ const USAGE_SQL = `
                   max(updated_at)   AS as_of
              FROM usage_ledger
             WHERE workspace_id = w.workspace_id
-              AND period_start >= date_trunc('month', now() AT TIME ZONE 'UTC')
+              AND period_start >= date_trunc('month', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'
          ) l ON true`;
 
 /** The catalog, cheapest first — five rows at most, and the ONE place plans are defined (D163). */
@@ -138,22 +141,34 @@ type PlanRow = {
  * exists to prevent. The one thing that CANNOT be answered is a catalog missing
  * its free row, and that throws, loudly: `COALESCE(…, 'free')` naming a plan
  * that does not exist is a broken migration, not a workspace's state.
+ *
+ * Wrapped in React's `cache` (D183), which is REQUEST-scoped memoisation and not
+ * a cache in the stale-data sense: two callers in one render — the app layout's
+ * banner and the settings page's meter — get one SUM over the ledger instead of
+ * two, and the next request reads the ledger again ("`React.cache` is scoped to
+ * the current request only", `next/dist/docs/01-app/01-getting-started/
+ * 06-fetching-data.md`). That is what makes "the banner number IS the tab
+ * number" a property of the code rather than of two queries agreeing: inside one
+ * request they are literally the same object. Both arguments are part of the
+ * key, so a second workspace or a different injected read path is a second call.
  */
-export async function getUsage(workspaceId: string, query: QueryRows): Promise<WorkspaceUsage> {
-  const [row] = await query<UsageRow>(USAGE_SQL, [workspaceId]);
-  if (!row) {
-    throw new Error("the plans catalog has no 'free' row — 0005_metering.sql seeds it (D163)");
-  }
-  return {
-    planId: row.plan_id,
-    planName: row.plan_name,
-    eventQuota: toCount(row.event_quota),
-    eventsUsed: toCount(row.events_used),
-    retentionDays: row.retention_days,
-    periodStart: row.period_start,
-    asOf: row.as_of,
-  };
-}
+export const getUsage = cache(
+  async (workspaceId: string, query: QueryRows): Promise<WorkspaceUsage> => {
+    const [row] = await query<UsageRow>(USAGE_SQL, [workspaceId]);
+    if (!row) {
+      throw new Error("the plans catalog has no 'free' row — 0005_metering.sql seeds it (D163)");
+    }
+    return {
+      planId: row.plan_id,
+      planName: row.plan_name,
+      eventQuota: toCount(row.event_quota),
+      eventsUsed: toCount(row.events_used),
+      retentionDays: row.retention_days,
+      periodStart: row.period_start,
+      asOf: row.as_of,
+    };
+  },
+);
 
 /**
  * Every plan we sell, read from the catalog rather than restated in TypeScript.
