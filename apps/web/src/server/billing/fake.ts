@@ -31,6 +31,9 @@ import {
  *  - `getCheckout` throws `UnknownCheckout` for an id it never issued, exactly
  *    as Polar answers 404 — so the return path's handling of a stale or hostile
  *    `?checkout=` parameter is exercised here and not discovered in sandbox.
+ *  - `getCheckout` answers NO subscription id, because the measured rail does
+ *    not (D194). The generous version of that field was the shape a drive could
+ *    assert and production could never satisfy.
  *
  * What it does NOT model: payment. A fake checkout succeeds at creation, which
  * is the ruled semantics — the thing under test is our reconciliation, and a
@@ -81,7 +84,11 @@ export const fakeBilling: BillingClient = {
       status: "succeeded",
       externalCustomerId: request.workspaceId,
       customerId: `cus_${request.workspaceId}`,
-      subscriptionId: fakeId("sub"),
+      // NO subscription id, measured on the real rail (D194): Polar's Checkout
+      // resource carries `customer_id` but `subscription_id: null` even once the
+      // subscription is active. A double that answered one here would let CI
+      // and the drive assert a value production can never yield (S2.3 L3) —
+      // the subscription id arrives on the webhook, and only there.
       planId: request.planId,
     });
     const separator = request.returnPath.includes("?") ? "&" : "?";

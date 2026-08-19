@@ -1827,13 +1827,18 @@ try {
     `SELECT plan_id, polar_customer_id, polar_subscription_id, updated_at FROM workspace_plans WHERE workspace_id = $1`,
     [alice.workspaceId],
   );
+  // The subscription id is asserted ABSENT on purpose (D194). Measured on the
+  // real rail: a Checkout carries `customer_id` but `subscription_id: null`
+  // even once the subscription is active, so poll-on-return can only write the
+  // customer — the subscription-identity backfill is the webhook's job, and a
+  // deployment whose webhook endpoint is unreachable never fills that column.
+  // Asserting a value here would be asserting one production cannot produce.
   check(
-    "the return path reconciled by READING the checkout back: Postgres holds alice's plan row, on pro, with the rail's ids",
+    "the return path reconciled by READING the checkout back: Postgres holds alice's plan row, on pro, " +
+      "carrying the rail's customer id and NO subscription id (D194)",
     planRow?.plan_id === "pro" &&
-      typeof planRow?.polar_customer_id === "string" &&
-      planRow.polar_customer_id.length > 0 &&
-      typeof planRow?.polar_subscription_id === "string" &&
-      planRow.polar_subscription_id.length > 0,
+      planRow?.polar_customer_id === `cus_${alice.workspaceId}` &&
+      planRow?.polar_subscription_id === null,
     JSON.stringify(planRow),
   );
   check(

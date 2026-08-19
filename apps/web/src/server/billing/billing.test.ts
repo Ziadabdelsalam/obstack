@@ -114,7 +114,23 @@ test("a fake checkout returns to OUR return path carrying its id", async () => {
   assert.equal(state.status, "succeeded");
   assert.equal(state.externalCustomerId, "ws_alpha", "one Polar customer per workspace (D110)");
   assert.equal(state.planId, "pro");
-  assert.ok(state.subscriptionId);
+  assert.ok(state.customerId, "the measured rail carries the customer id at checkout");
+});
+
+test("the fake answers NO subscription id at checkout, because the rail does not (D194)", async () => {
+  // The RED PROOF for the double's fidelity: measured on Polar, a Checkout
+  // carries `customer_id` but `subscription_id: null` even once the
+  // subscription is active — the id arrives on the webhook. A fake generous
+  // with it makes CI and the e2e drive assert a value production can never
+  // yield, which is the S2.3 L3 divergence class. If this ever goes green with
+  // an id, the drive's plan-row assertion is lying about production.
+  const created = await fakeBilling.createCheckout({
+    workspaceId: "ws_alpha",
+    planId: "pro",
+    returnPath: "/app/settings",
+  });
+  const state = await fakeBilling.getCheckout(created.checkoutId);
+  assert.equal(state.subscriptionId, undefined, "no subscription id at checkout, ever");
 });
 
 test("an id the rail never issued is UnknownCheckout, exactly as Polar 404s", async () => {
@@ -254,7 +270,11 @@ test("reconcileCheckout writes the plan row on a succeeded checkout (D168)", asy
   assert.equal(call.params[0], "ws_alpha", "the workspace is bound as $1 (D11/D148)");
   assert.equal(call.params[1], "pro");
   assert.equal(call.params[2], "cus_ws_alpha");
-  assert.ok(String(call.params[3]).startsWith("sub_"));
+  // NULL, and correctly so (D194): the return path writes what the checkout
+  // carries, and a checkout carries no subscription id. The webhook backfills
+  // that column — `coalesce` in the UPSERT is what lets it, later, without
+  // erasing the customer id this write established.
+  assert.equal(call.params[3], null);
   // Nothing a caller supplied may be interpolated into the statement.
   assert.ok(!call.sql.includes("ws_alpha"), "values are bound, never spliced");
 });

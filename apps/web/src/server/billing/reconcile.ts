@@ -26,6 +26,13 @@ import { UnknownCheckout, type BillingClient, type WebhookEvent } from "./types"
  * `coalesce` on both Polar ids so a later event carrying fewer of them cannot
  * erase what an earlier one established — a `subscription.canceled` moves the
  * plan back to free while the customer stays the customer they were (D169).
+ *
+ * `polar_subscription_id` is WEBHOOK-POPULATED of record (D194): a Checkout
+ * carries `customer_id` but no subscription id even once the subscription is
+ * active, so poll-on-return owns entitlement and the subscription-identity
+ * backfill arrives with the D169 handlers — which means a deployment whose
+ * webhook endpoint is unreachable never populates that column at all, and the
+ * S5 cancel/lifecycle surface is the consumer that would notice (S5-GATE).
  */
 const UPSERT_PLAN_SQL = `
   INSERT INTO workspace_plans (workspace_id, plan_id, polar_customer_id, polar_subscription_id)
