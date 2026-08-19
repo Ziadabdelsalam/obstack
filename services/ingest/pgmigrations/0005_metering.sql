@@ -86,14 +86,14 @@ CREATE INDEX IF NOT EXISTS api_key_health_workspace_id_idx ON api_key_health (wo
 -- workspace, so editing an override is an UPSERT and not a duplicate the
 -- resolver would have to break a tie between.
 --
--- The CHECK is what makes that identity mean one thing (D175). Both resolvers
--- lowercase the model name before they compare, so a stored `GPT-4o` is a row
--- that can never match anything — and, worse, one UNIQUE would happily let sit
--- beside `gpt-4o`, leaving two rates for one prefix and a tie nobody defined.
--- Lowercase is therefore the canonical form and the store is where it is
--- enforced: the web app lowercases on write, and this refuses the row if it ever
--- stops. The Go side's skip of a mixed-case override stays as defence, not as
--- the rule — a cache refresh cannot refuse the way boot can.
+-- The CHECK is what makes that identity mean one thing (D175). UNIQUE compares
+-- the stored bytes, so `GPT-4o` would happily sit beside `gpt-4o` — and the
+-- resolver lowercases every match before it compares, so those two rows are one
+-- prefix with two rates and a tie nobody defined. Lowercase is therefore the
+-- canonical form and the store is where it is enforced: the web app lowercases
+-- on write, and this refuses the row if it ever stops. The Go side normalises
+-- case rather than refusing it, which stays as defence against a hand-edited
+-- database, not as the rule — a cache refresh cannot refuse the way boot can.
 CREATE TABLE IF NOT EXISTS pricing_overrides (
     id             TEXT PRIMARY KEY,
     workspace_id   TEXT NOT NULL REFERENCES workspaces (id) ON DELETE CASCADE,

@@ -442,8 +442,9 @@ func TestTheMonthBoundaryIsUTCAndNotTheSessionsTimezone(t *testing.T) {
 }
 
 // D175: the canonical match is lowercase and the store is where that is
-// enforced, so a mixed-case row cannot exist to be silently skipped later. The
-// CHECK is asserted against the server that enforces it, on a schema the runner
+// enforced, so two spellings of one prefix cannot exist for the resolver to pick
+// between after it lowercases them both. The CHECK is asserted against the
+// server that enforces it, on a schema the runner
 // applied from scratch — the amended 0005, not whatever a long-lived database
 // already had.
 func TestPricingOverrideMatchesAreLowercaseAtTheStore(t *testing.T) {

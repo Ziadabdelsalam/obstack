@@ -315,8 +315,9 @@ func (s *Store) evictNegative() {
 // refreshState re-reads a workspace's state when its entry is missing or due,
 // and does nothing otherwise. A failed read is dropped rather than cached or
 // retried: the entry that is already there keeps serving until it expires, and
-// then the workspace reads back as the fail-open zero value. Quota is the one
-// thing this package is allowed to forget under an outage.
+// then the workspace reads back as the fail-open base state — not over quota, on
+// the embedded list. Quota is the one thing this package is allowed to forget
+// under an outage.
 func (s *Store) refreshState(ctx context.Context, workspaceID string) {
 	if s.stateIsFresh(workspaceID) {
 		return
