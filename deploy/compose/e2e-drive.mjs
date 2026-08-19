@@ -1827,18 +1827,22 @@ try {
     `SELECT plan_id, polar_customer_id, polar_subscription_id, updated_at FROM workspace_plans WHERE workspace_id = $1`,
     [alice.workspaceId],
   );
-  // The subscription id is asserted ABSENT on purpose (D194). Measured on the
-  // real rail: a Checkout carries `customer_id` but `subscription_id: null`
-  // even once the subscription is active, so poll-on-return can only write the
-  // customer — the subscription-identity backfill is the webhook's job, and a
-  // deployment whose webhook endpoint is unreachable never fills that column.
-  // Asserting a value here would be asserting one production cannot produce.
+  // Both ids are asserted PRESENT (D195). Reconciliation is now a CONVERGENCE:
+  // the checkout is only the trigger, and `syncPlanFromRail` writes exactly the
+  // rail's present subscription — "active pro ⇒ pro + ids". The subscription id
+  // no longer comes off the Checkout object (which carries `customer_id` but
+  // `subscription_id: null` even once active — the F5/D194 measurement); it
+  // comes off `getSubscriptionState`, which on the real rail reads the
+  // subscriptions list and on the fake carries the id set at checkout creation.
+  // So poll-on-return fills the column directly and no longer depends on a
+  // reachable webhook to backfill it (the resolution of the sandbox-run brief).
   check(
-    "the return path reconciled by READING the checkout back: Postgres holds alice's plan row, on pro, " +
-      "carrying the rail's customer id and NO subscription id (D194)",
+    "the return path converged on the rail's present subscription: Postgres holds alice's plan row, on pro, " +
+      "carrying the rail's customer id AND its subscription id (D195)",
     planRow?.plan_id === "pro" &&
       planRow?.polar_customer_id === `cus_${alice.workspaceId}` &&
-      planRow?.polar_subscription_id === null,
+      typeof planRow?.polar_subscription_id === "string" &&
+      planRow.polar_subscription_id.startsWith("sub_"),
     JSON.stringify(planRow),
   );
   check(
