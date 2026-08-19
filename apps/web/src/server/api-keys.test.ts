@@ -22,6 +22,7 @@ import {
   parseKeyName,
   revokeApiKey,
 } from "./api-keys";
+import { OverrideLimit, UnknownOverride } from "./ingest-health";
 import type { QueryRows } from "./postgres";
 
 // run with: npm test --workspace apps/web
@@ -336,13 +337,31 @@ const SETTINGS_ARMS: ReadonlyArray<[string, SettingsErrorCode]> = [
 /** The errors are REAL `APIError`s: the mapping keys off `name`, and only the class proves it. */
 const apiError = (code: string, message = "") => new APIError("BAD_REQUEST", { code, message });
 
-test("D133: every settings arm maps directly, from a real APIError", () => {
+/**
+ * The other three arms are OURS — the error classes this codebase throws, one
+ * from the keys store and two from the ingest-health store (D182 put all three
+ * refusals in the one settings vocabulary). Real instances for the same reason
+ * the `APIError` table builds real ones: `settingsErrorCode` matches on `name`
+ * so that `errors.ts` imports no error class, and only an object carrying the
+ * real `name` proves that match. The names themselves are pinned beside their
+ * classes (`ingest-health.test.ts`), so a rename is red in two places.
+ */
+const OWN_ARMS: ReadonlyArray<[Error, SettingsErrorCode]> = [
+  [new UnknownApiKey("key_0011223344556677"), "key-not-found"],
+  [new OverrideLimit(), "override-limit"],
+  [new UnknownOverride("ovr_x"), "override-not-found"],
+];
+
+test("D133: every settings arm maps directly, from a real instance", () => {
   assert.equal(SETTINGS_ARMS.length, 3, "an arm was added or removed without a direct assertion");
   for (const [code, expected] of SETTINGS_ARMS) {
     assert.equal(settingsErrorCode(apiError(code)), expected, `settings arm ${code}`);
   }
-  // the fourth arm is ours, not the library's, and it is a real instance
-  assert.equal(settingsErrorCode(new UnknownApiKey("key_0011223344556677")), "key-not-found");
+
+  assert.equal(OWN_ARMS.length, 3, "an arm was added or removed without a direct assertion");
+  for (const [error, expected] of OWN_ARMS) {
+    assert.equal(settingsErrorCode(error), expected, `settings arm ${error.name}`);
+  }
 });
 
 test("D133 totality: any code outside the arms lands on the generic member", () => {

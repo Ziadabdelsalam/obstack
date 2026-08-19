@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { after, test } from "node:test";
 import * as React from "react";
-import type { QueryResultRow } from "pg";
+import { Client, type QueryResultRow } from "pg";
 import { getPool, queryRows, type QueryRows } from "./postgres";
 import { getUsage, listPlans } from "./usage";
 
@@ -29,6 +29,9 @@ import { getUsage, listPlans } from "./usage";
 //   8. The `cache()` wrap (D183) really dedupes inside one request and really
 //      does not across two — the banner and the tab share ONE ledger sum, and
 //      the next request still sees new events.
+//   9. The month boundary is UTC on a server whose session is NOT (D179), read
+//      through a connection that really is an hour ahead — the twin of
+//      `services/ingest/internal/keystore/integration_test.go`'s.
 //
 // D130's skip class, deliberately NARROW: this file self-skips only when
 // `OBSTACK_TEST_POSTGRES_DSN` is UNSET. A DSN naming a dead port or an
@@ -156,6 +159,39 @@ async function inOneRequest<T>(run: () => Promise<T>): Promise<T> {
     return await run();
   } finally {
     reactInternals.A = outside;
+  }
+}
+
+/**
+ * A read path on a connection whose session TimeZone is NOT UTC.
+ *
+ * Its own `Client` and not the app's pool: `SET TIME ZONE` is a session setting,
+ * and setting it on a pooled connection would leave it set for whatever ran next
+ * on that connection. The zone is asserted back out of the server before the
+ * body runs, because a test whose whole premise is "the session is an hour
+ * ahead" must not be green on a session that quietly stayed UTC.
+ *
+ * `Etc/GMT-1` is UTC+1 — the POSIX signs are inverted — and it carries no DST,
+ * so the offset is the same offset all year and this test does not change its
+ * mind in October. Same zone, same reason, as the Go twin
+ * (`keystore/integration_test.go`).
+ */
+async function inSessionTimeZone(
+  zone: "Etc/GMT-1",
+  run: (query: QueryRows) => Promise<void>,
+): Promise<void> {
+  const client = new Client({ connectionString: DSN });
+  await client.connect();
+  try {
+    await client.query(`SET TIME ZONE '${zone}'`);
+    const shown = (await client.query<{ TimeZone: string }>(`SHOW TimeZone`)).rows[0];
+    assert.equal(shown?.TimeZone, zone, "the session did not take the timezone this test needs");
+
+    await run(<Row extends QueryResultRow>(sql: string, params?: unknown[]) =>
+      client.query<Row>(sql, params).then((result) => result.rows),
+    );
+  } finally {
+    await client.end();
   }
 }
 
@@ -307,6 +343,36 @@ test("one workspace's ledger never enters another's number", { skip }, async () 
     await queryRows(`INSERT INTO workspace_plans (workspace_id, plan_id) VALUES ($1, 'pro')`, [b]);
     assert.equal((await getUsage(a, queryRows)).planId, "free");
     assert.equal((await getUsage(b, queryRows)).planId, "pro");
+  });
+});
+
+test("D179: the month boundary is UTC, not the session's timezone", { skip }, async () => {
+  await withWorkspacePair(async (a) => {
+    // Last month's final hour, enormous, and this month's own small usage. The
+    // fixture is anchored to the UTC boundary itself — never to a JavaScript
+    // clock and never to the session under test — so "the hour before the month
+    // began" means the same instant to the seeder and to the reader.
+    await meter(a, -1, 5_000_000, 0);
+    await meter(a, 0, 7, 0);
+
+    await inSessionTimeZone("Etc/GMT-1", async (query) => {
+      // Content-aware (S3.1 L1): the excluded row is proven to exist, and to be
+      // large enough that including it could not be mistaken for anything else.
+      const [before] = await query<{ spans: string }>(
+        `SELECT spans FROM usage_ledger
+          WHERE workspace_id = $1 AND period_start < ${MONTH_START}`,
+        [a],
+      );
+      assert.deepEqual(before, { spans: "5000000" });
+
+      // `date_trunc(...)` alone yields a NAKED timestamp, and comparing a
+      // `timestamptz` column against one anchors it in the session's zone: an
+      // hour ahead of UTC the month would start an hour early and swallow the
+      // bucket above — a customer sampled this month for events that were
+      // already billed last month. Drop the trailing `AT TIME ZONE 'UTC'` from
+      // the window in `usage.ts` and this line reads 5,000,007.
+      assert.equal((await getUsage(a, query)).eventsUsed, 7);
+    });
   });
 });
 
