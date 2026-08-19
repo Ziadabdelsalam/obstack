@@ -39,6 +39,12 @@ const (
 	// ReasonUnsupported — the request carried a Content-Type the OTLP/HTTP
 	// endpoint does not speak, so its records were refused with a 415.
 	ReasonUnsupported = "unsupported"
+	// ReasonQuota — the workspace is over its plan's quota, so head sampling
+	// shed these records (D165). A drop here is degradation, not a refusal: the
+	// export was still answered 200 and the surviving tenth went through whole
+	// traces at a time. Counted per record, because a sampled-out trace is a
+	// known number of spans and log records rather than an unreadable payload.
+	ReasonQuota = "quota"
 	// ReasonMapping — a single record could not be turned into a row; the rest
 	// of the batch is kept.
 	ReasonMapping = "mapping"

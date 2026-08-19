@@ -20,13 +20,16 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/Ziadabdelsalam/observer-stack/services/ingest/internal/auth"
 	"github.com/Ziadabdelsalam/observer-stack/services/ingest/internal/config"
 	"github.com/Ziadabdelsalam/observer-stack/services/ingest/internal/keystore"
+	"github.com/Ziadabdelsalam/observer-stack/services/ingest/internal/metering"
 	"github.com/Ziadabdelsalam/observer-stack/services/ingest/internal/migrate"
 	"github.com/Ziadabdelsalam/observer-stack/services/ingest/internal/pgmigrate"
+	"github.com/Ziadabdelsalam/observer-stack/services/ingest/internal/pricing"
 	"github.com/Ziadabdelsalam/observer-stack/services/ingest/internal/receive"
 	"github.com/Ziadabdelsalam/observer-stack/services/ingest/internal/write"
 	"github.com/Ziadabdelsalam/observer-stack/services/ingest/migrations"
@@ -192,35 +195,67 @@ func run() error {
 		return err
 	}
 
+	connectCtx, cancelConnect := context.WithTimeout(ctx, 30*time.Second)
+	defer cancelConnect()
+
+	// One Postgres pool for the process (D164e). The key store resolves keys
+	// through it and the metering flusher writes counts through it, so the two
+	// contend for one connection budget an operator can size rather than for two
+	// nobody added up. It connects and pings here because there is no keyless
+	// mode to fall back to: with the env key map deleted, a process that cannot
+	// reach Postgres at boot would 401 every export it accepted. Once it is
+	// serving, a Postgres that goes away is survivable — see internal/keystore
+	// for what stays true and what degrades.
+	pool, err := openPostgres(connectCtx, pgDSN)
+	if err != nil {
+		return err
+	}
+	defer pool.Close()
+
+	keys := keystore.New(pool)
+
 	// The writer connects and pings before anything is bound: an ingest that
 	// cannot reach ClickHouse should fail to boot, not accept exports it will
 	// only drop (D23 makes those drops invisible to the client).
-	connectCtx, cancelConnect := context.WithTimeout(ctx, 30*time.Second)
-	defer cancelConnect()
-	writer, err := write.New(connectCtx, write.Config{DSN: cfg.ClickHouseDSN})
+	writer, err := write.New(connectCtx, write.Config{
+		DSN: cfg.ClickHouseDSN,
+		// The workspace's D108 overrides layered over the embedded list (D167).
+		// The cache's answer for a workspace it has never read is no overrides,
+		// which is the embedded list — fail-open, so an outage of ours prices
+		// telemetry at list price rather than not at all.
+		Prices: func(workspaceID string) *pricing.Table {
+			return pricing.Default.WithOverrides(keys.State(workspaceID).Overrides)
+		},
+	})
 	if err != nil {
 		return err
 	}
 
-	// The key store connects and pings for the same reason, and there is no
-	// keyless mode to fall back to: with the env map deleted, a process that
-	// cannot reach Postgres at boot would 401 every export it accepted. Once it
-	// is serving, a Postgres that goes away is survivable — the cache serves what
-	// it already resolved (see internal/keystore).
-	keys, err := keystore.Open(connectCtx, pgDSN)
-	if err != nil {
-		writer.Close()
-		return err
-	}
+	// The meter accumulates in memory and flushes on its own interval; the
+	// receive path only ever adds to a map (D166), so a Postgres that goes away
+	// costs the ledger rows, never an export.
+	meter := metering.New(pool)
+	meterCtx, stopMeter := context.WithCancel(context.Background())
+	meterStopped := make(chan struct{})
+	go func() {
+		defer close(meterStopped)
+		meter.Run(meterCtx)
+	}()
 
 	receiver := receive.New(receive.Config{
 		GRPCAddr: cfg.OTLPGRPCAddr,
 		HTTPAddr: cfg.OTLPHTTPAddr,
 		Auth:     auth.New(keys),
 		Consumer: writer,
+		// Both are non-blocking cache reads (D164c): the quota verdict decides
+		// whether this export is sampled, and neither may put Postgres in the
+		// hot path. Ingest reads our own ledger and never calls Polar (D110).
+		OverQuota: func(workspaceID string) bool { return keys.State(workspaceID).OverQuota },
+		Meter:     meter,
 	})
 	if err := receiver.Start(); err != nil {
-		keys.Close()
+		stopMeter()
+		<-meterStopped
 		writer.Close()
 		return err
 	}
@@ -249,18 +284,41 @@ func run() error {
 	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancelShutdown()
 	// Order matters: stop taking exports, then flush what is buffered, and only
-	// then drop /metrics — the last flush is worth watching.
+	// then drop /metrics — the last flush is worth watching. The meter stops
+	// after the receivers so the counts of the last exports in flight are in it,
+	// and before the pool it flushes through.
 	if err := receiver.Shutdown(shutdownCtx); err != nil {
 		slog.Error("otlp shutdown", "error", err)
 	}
 	if err := writer.Close(); err != nil {
 		slog.Error("writer close", "error", err)
 	}
-	keys.Close()
+	stopMeter()
+	<-meterStopped
 	if err := admin.Shutdown(shutdownCtx); err != nil && runErr == nil {
 		runErr = err
 	}
 	return runErr
+}
+
+// openPostgres builds the process's pool. The DSN is parsed before dialing so a
+// malformed one is reported as the configuration mistake it is, naming the
+// variable to go fix — the shape internal/pgmigrate already reports Postgres
+// problems in.
+func openPostgres(ctx context.Context, dsn string) (*pgxpool.Pool, error) {
+	cfg, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		return nil, fmt.Errorf("parse %s: %w", envPostgresDSN, err)
+	}
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
+	if err != nil {
+		return nil, fmt.Errorf("connect postgres: %w", err)
+	}
+	if err := pool.Ping(ctx); err != nil {
+		pool.Close()
+		return nil, fmt.Errorf("ping postgres: %w", err)
+	}
+	return pool, nil
 }
 
 // pendingVersions is the schema check ensureSchema and ensurePGSchema run when

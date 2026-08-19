@@ -193,6 +193,38 @@ func TestRunRefusesToServeWithoutPostgres(t *testing.T) {
 	}
 }
 
+// The process's one Postgres pool (D164e). A DSN nobody can parse is a
+// configuration mistake and has to be reported by the name an operator goes and
+// fixes, not as a dial error three frames deep. Hermetic: the DSN below never
+// parses, so no server has to be running for the refusal to hold.
+func TestOpenPostgresRefusesAMalformedDSN(t *testing.T) {
+	pool, err := openPostgres(t.Context(), "not-a-dsn")
+	if err == nil {
+		pool.Close()
+		t.Fatal("openPostgres accepted an unparseable DSN, want error")
+	}
+	if !strings.Contains(err.Error(), envPostgresDSN) {
+		t.Errorf("error = %v, want it to name %s", err, envPostgresDSN)
+	}
+}
+
+// And the other half: against a real server it connects and pings, which is
+// what makes an unreachable Postgres a boot failure rather than a process that
+// 401s every export it accepts.
+func TestOpenPostgresConnects(t *testing.T) {
+	ctx := requirePostgres(t)
+
+	pool, err := openPostgres(ctx, testPostgresDSN())
+	if err != nil {
+		t.Fatalf("openPostgres: %v", err)
+	}
+	defer pool.Close()
+
+	if err := pool.Ping(ctx); err != nil {
+		t.Fatalf("ping the pool openPostgres handed back: %v", err)
+	}
+}
+
 // The boot flag is a tri-state in practice — unset, set, or set to nonsense —
 // and only the last one is interesting: a value nobody can parse must stop boot
 // rather than pick an owner for the schema by accident.
