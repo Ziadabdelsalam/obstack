@@ -3,6 +3,7 @@ import { ArrowRight, Check, Minus, X } from "lucide-react";
 import { Wordmark } from "@/components/shell/Wordmark";
 import { HeroTrace } from "@/components/marketing/HeroTrace";
 import { ScreensShowcase } from "@/components/marketing/ScreensShowcase";
+import { WaitlistForm } from "@/components/marketing/WaitlistForm";
 import { layerColor } from "@/lib/layers";
 import { connectors } from "@/mock/connectors";
 
@@ -93,6 +94,13 @@ export default function Landing() {
             <span className="font-mono text-[12px] text-faint">
               OTel-native · one env var to try it
             </span>
+          </div>
+
+          <div id="waitlist" className="mt-8 max-w-md">
+            <p className="mb-2.5 font-mono text-[11px] uppercase tracking-[0.2em] text-faint">
+              cloud is in private preview
+            </p>
+            <WaitlistForm />
           </div>
         </div>
 
@@ -424,6 +432,9 @@ export default function Landing() {
               <p className="mt-1 text-[13.5px] text-mid">
                 The demo is live sample data — no signup, no setup.
               </p>
+              <div className="mt-4">
+                <WaitlistForm />
+              </div>
             </div>
             <Link
               href="/app"
