@@ -19,11 +19,13 @@ export const REQUIRED_LAYERS = ["api", "agent", "tool", "llm"] as const;
 
 /**
  * The workspace the demo stack writes under, on both paths that assert through
- * this module: compose maps `ok_dev_local:ws_demo` (docker-compose.yml's
- * `OBSTACK_API_KEYS`) and the chart maps the same pair (values.yaml's
- * `ingest.apiKeys`). The harnesses seed it, so the harnesses name it — there is
- * no ambient workspace left to inherit (D96/D113), and one constant here is what
- * keeps smoke, sdk-checks and the Helm acceptance from drifting onto three ids.
+ * this module: the `ok_dev_local` key both harnesses export under is a Postgres
+ * `api_keys` row pointing here, seeded by `services/ingest/pgmigrations/0004`
+ * and applied on either path (compose at ingest boot, the chart by its
+ * pg-migrate Job). The harnesses seed the data, so the harnesses name the
+ * workspace — there is no ambient workspace left to inherit (D96/D113), and one
+ * constant here is what keeps smoke, sdk-checks and the Helm acceptance from
+ * drifting onto three ids.
  */
 export const DEMO_WORKSPACE = "ws_demo";
 

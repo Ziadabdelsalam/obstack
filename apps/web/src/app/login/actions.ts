@@ -2,6 +2,7 @@
 
 import { redirect } from "next/navigation";
 import { getAuth } from "@/server/auth";
+import { dataMode } from "@/server/data";
 import { loginErrorCode, type LoginErrorCode } from "./errors";
 
 /** Same split as signup's: `errors.ts` names the failure, this surface logs the ones it could not name. */
@@ -15,6 +16,15 @@ function codeFor(error: unknown): LoginErrorCode {
 const back = (code: LoginErrorCode) => redirect(`/login?error=${code}`);
 
 export async function logIn(formData: FormData): Promise<void> {
+  // Signup's tripwire, exactly (D150): mock mode offers no form, so this
+  // returns without building the auth instance — the only line here that would
+  // read BETTER_AUTH_SECRET — and without an error code, because there is no
+  // form for one to land on.
+  if (dataMode === "mock") {
+    console.error("[login] posted in mock mode — this deployment keeps no accounts");
+    return;
+  }
+
   const email = String(formData.get("email") ?? "").trim();
   const password = String(formData.get("password") ?? "");
 

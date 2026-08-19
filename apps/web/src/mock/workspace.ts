@@ -19,13 +19,21 @@ export interface ApiKey {
   name: string;
   masked: string;
   created: string;
-  lastUsed: string;
-  scope: "ingest" | "read" | "full";
 }
 
+/**
+ * Format-true against the one real key class (D144): `ok_live_` + hex (D139),
+ * masked to the twelve characters the product actually stores — a key's tail is
+ * never held anywhere, so a mock that showed one would advertise a lookup the
+ * real settings surface cannot perform. There is exactly one class of key, so
+ * the read-only row that used to sit here is gone rather than restyled.
+ *
+ * The fields are the real row's fields (D159): no `lastUsed`, because keys hold
+ * no liveness column (D138 refused one — S3.3's health rows own that question),
+ * and no `scope`, because one class of key means there is no scope to pick.
+ */
 export const apiKeys: ApiKey[] = [
-  { name: "production ingest", masked: "ob_live_9f2e…c41a", created: "May 12, 2026", lastUsed: "1s ago", scope: "ingest" },
-  { name: "grafana read-only", masked: "ob_read_77b1…08fd", created: "Jun 3, 2026", lastUsed: "4h ago", scope: "read" },
+  { name: "production ingest", masked: "ok_live_9f2e…", created: "May 12, 2026" },
 ];
 
 export const usage = {

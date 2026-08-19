@@ -15,7 +15,7 @@ export const connectors: Connector[] = [
         title: "Set the exporter endpoint",
         body: "Works with any language's OTel SDK or an existing collector.",
         snippet:
-          'OTEL_EXPORTER_OTLP_ENDPOINT="https://ingest.obstack.dev"\nOTEL_EXPORTER_OTLP_HEADERS="x-obstack-key=ob_live_9f2e…"',
+          'OTEL_EXPORTER_OTLP_ENDPOINT="https://ingest.obstack.dev"\nOTEL_EXPORTER_OTLP_HEADERS="x-obstack-key=ok_live_9f2e…"',
       },
       {
         title: "Send anything",
@@ -35,7 +35,7 @@ export const connectors: Connector[] = [
       {
         title: "Install the collector",
         snippet:
-          "helm repo add obstack https://charts.obstack.dev\nhelm install obstack-collector obstack/collector \\\n  --set apiKey=ob_live_9f2e… --namespace obstack --create-namespace",
+          "helm repo add obstack https://charts.obstack.dev\nhelm install obstack-collector obstack/collector \\\n  --set apiKey=ok_live_9f2e… --namespace obstack --create-namespace",
       },
       {
         title: "That's it",
@@ -55,7 +55,7 @@ export const connectors: Connector[] = [
       {
         title: "Run the collector",
         snippet:
-          "docker run -d --name obstack-collector \\\n  -v /var/run/docker.sock:/var/run/docker.sock:ro \\\n  -e OBSTACK_API_KEY=ob_live_9f2e… \\\n  obstack/collector:latest",
+          "docker run -d --name obstack-collector \\\n  -v /var/run/docker.sock:/var/run/docker.sock:ro \\\n  -e OBSTACK_API_KEY=ok_live_9f2e… \\\n  obstack/collector:latest",
       },
       {
         title: "Logs flow automatically",
@@ -75,7 +75,7 @@ export const connectors: Connector[] = [
       {
         title: "Add the log drain",
         body: "In your Vercel project: Settings → Log Drains → Add. Paste your obstack drain URL:",
-        snippet: "https://ingest.obstack.dev/v1/vercel?key=ob_live_9f2e…",
+        snippet: "https://ingest.obstack.dev/v1/vercel?key=ok_live_9f2e…",
       },
       {
         title: "Function logs correlate automatically",
@@ -95,7 +95,7 @@ export const connectors: Connector[] = [
       {
         title: "Deploy the forwarder",
         snippet:
-          "aws cloudformation deploy \\\n  --template-url https://cf.obstack.dev/forwarder.yaml \\\n  --stack-name obstack-forwarder \\\n  --parameter-overrides ObstackKey=ob_live_9f2e…",
+          "aws cloudformation deploy \\\n  --template-url https://cf.obstack.dev/forwarder.yaml \\\n  --stack-name obstack-forwarder \\\n  --parameter-overrides ObstackKey=ok_live_9f2e…",
       },
       {
         title: "Choose log groups",

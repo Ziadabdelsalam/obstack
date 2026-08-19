@@ -73,11 +73,11 @@ exporters:
   otlp_http:
     endpoint: "${env:OBSTACK_INGEST_ENDPOINT:-http://ingest:4318}"
     headers:
-      # Phase-1 bearer key (D4/D39 rider): dev default matches the ingest
-      # container's own default key (`docker-compose.yml`'s
-      # OBSTACK_API_KEYS), acceptable per M1 precedent. Production supplies
-      # this via a values file or a mounted secret — never a committed
-      # literal.
+      # Bearer key (D4/D39 rider): the dev default is the `ok_dev_local`
+      # continuity row seeded into Postgres by the ingest migrations
+      # (services/ingest/pgmigrations/0004), acceptable per M1 precedent.
+      # Production supplies this via a values file or a mounted secret —
+      # never a committed literal.
       Authorization: "Bearer ${env:OBSTACK_COLLECTOR_API_KEY:-ok_dev_local}"
 
 extensions:

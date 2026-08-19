@@ -2,7 +2,7 @@
   "name": "obstack",
   "version": "0.1.0",
   "private": true,
-  "//test": "The glob covers .tsx too: `src/**/*.test.ts` silently never ran a .test.tsx file, so a component-side test looked green by not existing (D54(i)). What a .test.tsx can do is bounded by --conditions react-server, which the suite needs (server-only, and the react-server React build): under it React has no createContext, so importing next/link or lucide-react throws at module scope and no real component module in this app can be imported. These tests assert TSX-level contracts, not rendered DOM — there is no DOM harness in this repo (D54(iii)).",
+  "//test": "The glob covers .tsx too: `src/**/*.test.ts` silently never ran a .test.tsx file, so a component-side test looked green by not existing (D54(i)). What a .test.tsx can do is bounded by --conditions react-server, which the suite needs (server-only, and the react-server React build): under it React has no createContext, so importing next/link or lucide-react throws at module scope — a real component module may therefore be imported ONLY by a test that supplies the missing createContext itself and walks the returned element tree without rendering, which is safe only under this runner's per-file process isolation (the shim of record: src/app/signup/mock-mode.test.ts, D156). These tests assert TSX-level contracts, not rendered DOM — there is no DOM harness in this repo (D54(iii)).",
   "scripts": {
     "dev": "next dev",
     "build": "next build",

@@ -16,6 +16,13 @@ import {
   signupErrorMessage,
   type SignupErrorCode,
 } from "@/app/signup/errors";
+import {
+  INVITE_ERRORS,
+  inviteErrorCode,
+  inviteErrorMessage,
+  type InviteErrorCode,
+} from "@/app/invite/[id]/errors";
+import { inviteLinkPath, parseInvitationId } from "./invites";
 import { SignupError, provisionOrgAndWorkspace } from "./auth";
 import type { SqlClient } from "./postgres";
 
@@ -248,6 +255,26 @@ const MOUNTED_ENDPOINTS = [
 /** The only two doors D120 leaves open. */
 const ALLOWED = ["/get-session", "/sign-out"];
 
+/**
+ * D143's named STAY-CLOSED entries: the five invitation endpoints S3.2 actually
+ * uses. Naming them is the point. They are already inside the fifty the loop
+ * above refuses, so this list adds no coverage the matrix lacks — what it adds
+ * is a place where opening one of them for a browser has to be a deliberate
+ * edit to a list that says, in words, that it must not be.
+ *
+ * `server/invites.ts` reaches all five through `auth.api.*` in-process, filling
+ * `organizationId` from the session's owner pin rather than from a body. That is
+ * why the product can invite, cancel and accept while every one of these paths
+ * stays a 404 to the network.
+ */
+const INVITE_ENDPOINTS = [
+  "/organization/accept-invitation",
+  "/organization/cancel-invitation",
+  "/organization/get-invitation",
+  "/organization/invite-member",
+  "/organization/list-invitations",
+];
+
 /** The version the surface above was measured against (D117's exact pin). */
 const BETTER_AUTH_MEASURED_AT = "1.7.1";
 
@@ -299,6 +326,38 @@ test("D120: the org-plugin mutations are refused with a session attached and tou
       }),
     );
     await refusal(response);
+  }
+});
+
+test("D143: the five invitation endpoints are mounted, refused, and refused with an invite body", async () => {
+  assert.equal(INVITE_ENDPOINTS.length, 5, "D143 names exactly five invitation endpoints");
+  for (const path of INVITE_ENDPOINTS) {
+    assert.ok(
+      MOUNTED_ENDPOINTS.includes(path),
+      `${path} is not in the measured surface — re-measure before trusting this list`,
+    );
+    assert.ok(!ALLOWED.includes(path), `${path} became an allowed door — D143 opens ZERO`);
+
+    // The bodies each endpoint would actually need. `invitationId` is a real id
+    // SHAPE (32 alphanumerics, the measured 1.7.1 generator), so a guard removed
+    // from `route.ts` would let these reach a schema that accepts them rather
+    // than one that rejects them for being empty.
+    const body = JSON.stringify({
+      email: "invitee@obstack.invalid",
+      role: "member",
+      organizationId: "org_someone_else",
+      invitationId: "a".repeat(32),
+    });
+    await refusal(
+      await POST(
+        new Request(at(path), {
+          method: "POST",
+          headers: { ...SESSION, "content-type": "application/json" },
+          body,
+        }),
+      ),
+    );
+    await refusal(await GET(new Request(`${at(path)}?id=${"a".repeat(32)}`, { headers: SESSION })));
   }
 });
 
@@ -360,6 +419,9 @@ test("D121: every code maps to its own fixed copy", () => {
     "invalid-credentials",
     "login-failed",
   ]);
+  // D149's enum, and it is short for a measured reason asserted below: 1.7.1
+  // collapses expired / accepted / cancelled / never-existed into one answer.
+  assert.deepEqual(Object.keys(INVITE_ERRORS), ["not-found", "not-recipient", "invite-failed"]);
 
   // D129's two additions say what to change, and say a true number: 8 and 128
   // are better-auth 1.7.1's documented defaults and `authConfig()` overrides
@@ -375,14 +437,29 @@ test("D121: every code maps to its own fixed copy", () => {
   for (const [code, copy] of Object.entries(LOGIN_ERRORS)) {
     assert.equal(loginErrorMessage(code), copy);
   }
+  for (const [code, copy] of Object.entries(INVITE_ERRORS)) {
+    assert.equal(inviteErrorMessage(code), copy);
+  }
+
+  // D140/D13 on the one surface most tempted to promise something: the invite
+  // copy may not say a switcher is coming, because none is (S3.5 owns it).
+  for (const copy of Object.values(INVITE_ERRORS)) {
+    assert.doesNotMatch(copy, /soon|will be able|coming/i, `invite copy promises a feature: ${copy}`);
+  }
+  // ...and the one thing a recipient CAN act on is named: the wrong-address case
+  // says which account to sign in with rather than "try again".
+  assert.match(INVITE_ERRORS["not-recipient"], /email address/i);
 });
 
-test("D121: absent means no message; the two surfaces cannot render each other's copy", () => {
+test("D121: absent means no message; the surfaces cannot render each other's copy", () => {
   assert.equal(signupErrorMessage(undefined), null);
   assert.equal(loginErrorMessage(undefined), null);
+  assert.equal(inviteErrorMessage(undefined), null);
   // a login code on the signup page is just an unknown code, and vice versa
   assert.equal(signupErrorMessage("invalid-credentials"), SIGNUP_ERRORS["signup-failed"]);
   assert.equal(loginErrorMessage("exists"), LOGIN_ERRORS["login-failed"]);
+  assert.equal(inviteErrorMessage("exists"), INVITE_ERRORS["invite-failed"]);
+  assert.equal(signupErrorMessage("not-recipient"), SIGNUP_ERRORS["signup-failed"]);
 });
 
 test("D68 totality: no hostile ?error= value throws, escapes the vocabulary, or reaches the page", () => {
@@ -391,9 +468,12 @@ test("D68 totality: no hostile ?error= value throws, escapes the vocabulary, or 
     assert.ok(HOSTILE_URL_VALUES.includes(required), `the corpus lost ${JSON.stringify(required)}`);
   }
 
+  // The invite surface joins BY RULE, not by growing a corpus of its own
+  // (`lib/hostile-url-values.ts`): a new `?error=` vocabulary is a new row here.
   const surfaces = [
     { name: "signup", resolve: signupErrorMessage, copy: Object.values(SIGNUP_ERRORS) as string[] },
     { name: "login", resolve: loginErrorMessage, copy: Object.values(LOGIN_ERRORS) as string[] },
+    { name: "invite", resolve: inviteErrorMessage, copy: Object.values(INVITE_ERRORS) as string[] },
   ];
 
   for (const value of HOSTILE_URL_VALUES) {
@@ -556,4 +636,115 @@ test("D133 totality: any code outside the arms lands on the generic member", () 
     assert.equal(signupErrorCode(notApi), "signup-failed");
     assert.equal(loginErrorCode(notApi), "login-failed");
   }
+});
+
+// ---- D143/D149: the invite surface — id parse, error arms, link shape ----
+//
+// The library-code arms are pinned as STRINGS here because better-auth does not
+// export `ORGANIZATION_ERROR_CODES` (measured: `better-auth/plugins/organization`
+// exports exactly getOrgAdapter, hasPermission, organization, parseRoles). What
+// closes that gap is `invites.integration.test.ts`, which drives the real
+// endpoints into their real failures and asserts this mapping on the errors they
+// actually throw — the same two-independent-measurements shape the 52-endpoint
+// surface already has.
+
+/** Every code arm on the invite surface, with the vocabulary member it selects. */
+const INVITE_ARMS: ReadonlyArray<[string, InviteErrorCode]> = [
+  ["INVITATION_NOT_FOUND", "not-found"],
+  ["YOU_ARE_NOT_THE_RECIPIENT_OF_THE_INVITATION", "not-recipient"],
+];
+
+test("D149: every invite arm maps directly, from a real APIError", () => {
+  assert.equal(INVITE_ARMS.length, 2, "an arm was added or removed without a direct assertion");
+  for (const [code, expected] of INVITE_ARMS) {
+    assert.equal(inviteErrorCode(apiError(code)), expected, `invite arm ${code}`);
+  }
+
+  // The message arm: `getInvitation` raises the not-found situation through
+  // `APIError.fromStatus`, which carries NO code (measured, crud-invites.mjs:503)
+  // — so the message is the only thing identifying it, exactly as the signup
+  // surface's `[body.email]` prefix is.
+  assert.equal(
+    inviteErrorCode(new APIError("BAD_REQUEST", { message: "Invitation not found!" })),
+    "not-found",
+  );
+  // ...and the codeless UNAUTHORIZED from the same endpoint is NOT that arm: the
+  // page answers "no session" before it ever calls, so a generic here is right.
+  assert.equal(
+    inviteErrorCode(new APIError("UNAUTHORIZED", { message: "Not authenticated" })),
+    "invite-failed",
+  );
+});
+
+test("D149 totality: any code outside the arms lands on the generic member", () => {
+  const armed = new Set(INVITE_ARMS.map(([code]) => code));
+  const corpus = [
+    ...UNMAPPED_LIBRARY_CODES,
+    ...INVITE_ARMS.map(([code]) => code),
+    // real organization-plugin codes the accept path can raise and this surface
+    // deliberately does not name — nothing a recipient can act on
+    "ORGANIZATION_NOT_FOUND",
+    "ORGANIZATION_MEMBERSHIP_LIMIT_REACHED",
+    "INVITER_IS_NO_LONGER_A_MEMBER_OF_THE_ORGANIZATION",
+    // the guard D143 lists as an ESCALATION rather than a code: it cannot fire in
+    // this config, and if it ever does it must reach an operator through the
+    // action's log, not become quiet copy
+    "EMAIL_VERIFICATION_REQUIRED_BEFORE_ACCEPTING_OR_REJECTING_INVITATION",
+    "EMAIL_VERIFICATION_REQUIRED_FOR_INVITATION",
+    ...HOSTILE_URL_VALUES.filter((v): v is string => typeof v === "string"),
+  ];
+  assert.equal(corpus.length, 38, "the invite totality corpus changed size — re-check both lists");
+
+  for (const code of corpus) {
+    if (!armed.has(code)) assert.equal(inviteErrorCode(apiError(code)), "invite-failed", code);
+  }
+  for (const notApi of [
+    new Error("connection terminated unexpectedly"),
+    { name: "APIError" },
+    { body: { code: "INVITATION_NOT_FOUND" } },
+    "INVITATION_NOT_FOUND",
+    null,
+    undefined,
+  ]) {
+    assert.equal(inviteErrorCode(notApi), "invite-failed");
+  }
+});
+
+test("D68 totality: the invitation-id parse is total, and its answer is always an id or nothing", () => {
+  // A real 1.7.1 id shape: 32 characters from [a-zA-Z0-9]
+  // (@better-auth/core/dist/utils/id.mjs). The integration test asserts a REAL
+  // invitation's id against the same regex, so this fixture cannot drift from
+  // the library alone.
+  const REAL = "aB3xQ7zLmN0pR5tV9wY2cD4fG6hJ8kS1";
+  assert.equal(parseInvitationId(REAL), REAL);
+  assert.equal(inviteLinkPath(REAL), `/invite/${REAL}`);
+
+  for (const value of HOSTILE_URL_VALUES) {
+    const parsed = ((): string | null => {
+      try {
+        return parseInvitationId(value);
+      } catch (error) {
+        assert.fail(`parseInvitationId threw ${String(error)} — a URL parse must never throw (D68)`);
+      }
+    })();
+    // in-domain: null, or something that IS an id — never the caller's string
+    // carried forward, which is what keeps a 5000-char value or a `%00` out of
+    // both Postgres and any URL this app writes
+    if (parsed !== null) {
+      assert.match(parsed, /^[A-Za-z0-9]{1,64}$/, `escaped the id domain: ${JSON.stringify(parsed)}`);
+    }
+  }
+
+  // named refusals, so the loop above cannot go green by a parse that answers
+  // null to everything: these are the shapes that must NOT come back
+  for (const refused of ["", "__proto__", "x".repeat(65), "%00", "a/b", "a b", "a-b", "a.b"]) {
+    assert.equal(parseInvitationId(refused), null, `accepted ${JSON.stringify(refused)}`);
+  }
+  assert.equal(parseInvitationId(undefined), null);
+  // a repeated parameter hands over an array; the first member is judged, and a
+  // prototype name that IS alphanumeric is a valid id shape — safe, because an
+  // id is only ever bound as `$1` and never used for a property lookup
+  assert.equal(parseInvitationId([REAL, "second"]), REAL);
+  assert.equal(parseInvitationId("toString"), "toString");
+  assert.equal(parseInvitationId(["", "x"]), null);
 });

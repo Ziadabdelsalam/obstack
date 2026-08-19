@@ -7,7 +7,10 @@ import { getPool, queryRows, type SqlClient } from "@/server/postgres";
 
 /**
  * better-auth, email + password, no email verification (U4). The organization
- * plugin supplies the org tables; invites are S3.2, so nothing here issues one.
+ * plugin supplies the org tables and the invitation endpoints `server/invites.ts`
+ * calls in-process (D143) — none of which is mounted for a browser, and none of
+ * which needed an option added here: `sendInvitationEmail` is optional and stays
+ * unset, because S3.2's invites are copyable links rather than mail.
  *
  * The library never touches the schema: its DDL was captured through the
  * generate path into `services/ingest/pgmigrations/0003_auth.sql`, which the
@@ -56,8 +59,9 @@ export class SignupError extends Error {
 /**
  * A new org's slug is its id. `organization.slug` is UNIQUE, and a slug derived
  * from a name or an email local part would let one stranger's signup fail
- * because another stranger picked the same word first. There is no org-facing
- * URL or invite UI this sprint to spend a readable slug on.
+ * because another stranger picked the same word first. S3.2's invite links are
+ * `/invite/<invitation.id>` (D143), so there is still no org-facing URL to spend
+ * a readable slug on — the org's NAME is what the invite surfaces show.
  */
 const ORG_SQL = `INSERT INTO "organization" (id, name, slug, "createdAt") VALUES ($1, $2, $1, now())`;
 const MEMBER_SQL = `INSERT INTO "member" (id, "organizationId", "userId", role, "createdAt") VALUES ($1, $2, $3, 'owner', now())`;

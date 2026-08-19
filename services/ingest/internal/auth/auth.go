@@ -1,8 +1,9 @@
-// Package auth resolves the Phase-1 bearer keys (D4). A client sends
-// `Authorization: Bearer ok_dev_…` — settable through the standard
+// Package auth reads the bearer keys clients authenticate with (D4). A client
+// sends `Authorization: Bearer ok_…` — settable through the standard
 // OTEL_EXPORTER_OTLP_HEADERS — and the key names the workspace every record in
-// that request is written into. In M3 only the lookup moves from env to
-// Postgres; the wire format resolved here is the one clients keep.
+// that request is written into. The wire format is the one M1 shipped and is
+// unchanged; only the lookup moved, from an env map to Postgres
+// (internal/keystore).
 package auth
 
 import (
@@ -18,30 +19,41 @@ var ErrUnauthorized = errors.New("missing or unknown API key")
 
 const scheme = "bearer "
 
-// Authenticator maps bearer keys to workspace IDs. The zero value authorises
-// nothing.
-type Authenticator struct {
-	keys map[string]string
+// Resolver maps a bearer token — the exact string the client sent after the
+// scheme — to the workspace it writes into. internal/keystore is the
+// implementation the service runs; the seam is here so this package stays about
+// the header format and knows nothing about where keys are kept or cached.
+type Resolver interface {
+	Workspace(token string) (string, error)
 }
 
-// New copies the key set so later mutation of the caller's map cannot change
-// who is authorised.
-func New(keys map[string]string) Authenticator {
-	copied := make(map[string]string, len(keys))
-	for key, workspaceID := range keys {
-		copied[key] = workspaceID
-	}
-	return Authenticator{keys: copied}
+// Authenticator turns an Authorization header into a workspace. The zero value
+// authorises nothing.
+type Authenticator struct {
+	resolver Resolver
+}
+
+// New wires the Authenticator to the resolver that answers for it.
+func New(resolver Resolver) Authenticator {
+	return Authenticator{resolver: resolver}
 }
 
 // Workspace resolves the raw value of an Authorization header to the workspace
-// it writes into.
+// it writes into. The token is passed on exactly as sent, minus the scheme and
+// surrounding space: ingest does not validate its shape, because the shape is
+// the issuer's business and an attacker picks their own (D139).
 func (a Authenticator) Workspace(authorization string) (string, error) {
 	if len(authorization) <= len(scheme) || !strings.EqualFold(authorization[:len(scheme)], scheme) {
 		return "", ErrUnauthorized
 	}
-	workspaceID, ok := a.keys[strings.TrimSpace(authorization[len(scheme):])]
-	if !ok {
+	if a.resolver == nil {
+		return "", ErrUnauthorized
+	}
+	// Every resolver failure collapses to the one error here rather than being
+	// passed through: the transports answer 401 with whatever this returns, so a
+	// resolver that ever described why would describe it to the caller.
+	workspaceID, err := a.resolver.Workspace(strings.TrimSpace(authorization[len(scheme):]))
+	if err != nil {
 		return "", ErrUnauthorized
 	}
 	return workspaceID, nil

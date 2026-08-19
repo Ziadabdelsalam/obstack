@@ -30,6 +30,20 @@ jobs:
     steps:
       - uses: actions/checkout@v7.0.1
 
+      # D160, and the cheapest step in this job so it runs before anything boots.
+      # One key class exists and its prefix is `ok_live_` (D139); the two
+      # fabricated prefixes S3.2 deleted are spelled in the pattern below and
+      # nowhere else, because a demo that exhibits a credential shape the product
+      # cannot issue teaches a lie (D144/D159). `git grep` searches tracked files
+      # only, so node_modules needs no exclusion; `.planning` is excluded because
+      # the rulings themselves quote the dead literals.
+      - name: No fabricated key prefixes (D144/D159/D160)
+        run: |
+          if git grep -nE "ob_(live|read)_" -- ':!.planning'; then
+            echo "::error::the real key prefix is ok_live_ — see D144/D159 in the S3.2 plan"
+            exit 1
+          fi
+
       # K1, same mechanism as go.yml: ClickHouse comes up via the same compose
       # service local dev uses — one definition of the D11 users
       # (deploy/compose/clickhouse/users.d), never a second copy. This is what

@@ -63,8 +63,6 @@ spec:
           env:
             - name: CLICKHOUSE_DSN
               value: clickhouse://obstack_ingest:{{ .Values.clickhouse.ingestPassword }}@{{ .Release.Name }}-clickhouse:9000/obstack
-            - name: OBSTACK_API_KEYS
-              value: {{ .Values.ingest.apiKeys | quote }}
             - name: OBSTACK_MIGRATE_ON_BOOT
               value: "false"
             # The Postgres half of the same split, and required rather than
@@ -78,6 +76,12 @@ spec:
             # also what makes `helm install --wait` gate on the Postgres
             # schema: this Deployment cannot report Available until both
             # stores check out.
+            #
+            # It is also the serving path's key authority (D98): API keys are
+            # `api_keys` rows, read through a cached lookup, so there is no key
+            # value in this chart and no env variable here to set. The
+            # collector's `ok_dev_local` credential (values.yaml) authenticates
+            # against the continuity row the pg-migrate Job seeds.
             #
             # No `lookup` on the password, unlike the ClickHouse migrate Job's:
             # POSTGRES_PASSWORD is an initdb-time value, so there is no

@@ -74,12 +74,10 @@ function noPostgres(t: TestContext): boolean {
 }
 
 /**
- * The captured schema's tables, all of them (D128's count set). Whole-table
- * counts: this file is the only thing in the suite that writes a better-auth
- * table, so a delta here is this file's doing and nothing else's. The names are
+ * The captured schema's tables, all of them (D128's count set). The names are
  * file-local literals interpolated as IDENTIFIERS, which is the one thing a
- * parameter cannot be; every VALUE below is bound as `$1`, here and everywhere
- * else (D11).
+ * parameter cannot be; every VALUE below is bound as `$1`/`$2`, here and
+ * everywhere else (D11).
  */
 const AUTH_TABLES = [
   "user",
@@ -92,33 +90,65 @@ const AUTH_TABLES = [
 ];
 
 /**
- * All eight counts in ONE statement, so a snapshot is internally consistent.
+ * S3.2's sibling writer. `invites.integration.test.ts` signs strangers up and
+ * invites them, so it writes six of the seven tables below — and node runs test
+ * files in PARALLEL (measured), with both files taking their DSN from the same
+ * variable. Every row that file creates is reachable from a user whose email
+ * carries this literal, and it asserts that of its own fixtures, so the two
+ * spellings are one agreement rather than two hopes.
  *
- * The set is deliberately TWO-TIERED (D131), and neither tier is a
- * simplification waiting to be made:
+ * The agreement has a second half, and it is the one that keeps tier (i) below
+ * from going blind: nothing THIS file writes — not its fixtures and not the rows
+ * a leak would create out of `leakBody` — may carry the literal either, or the
+ * matrix would stop counting exactly the door that opened. That is asserted at
+ * the top of the matrix test rather than reasoned about here.
+ */
+const SIBLING_LITERAL = "inv-it-";
+const SIBLING_ROWS = `%${SIBLING_LITERAL}%`;
+
+/**
+ * How each table is counted, as its own predicate. The set is deliberately
+ * TIERED (D131), and no tier is a simplification waiting to be made:
  *
- * (i) the seven auth tables above are counted WHOLE — narrowing them to this
- * run's rows would let a leak that wrote somebody ELSE'S row read as green, and
- * this file is the suite's only writer of them, so a whole-table delta is this
- * file's doing and nothing else's;
+ * (i) the seven auth tables are counted WHOLE except for the sibling file's
+ * rows — narrowing them to this run's rows would let a leak that wrote somebody
+ * ELSE'S row read as green, so the exclusion is by the one named file that also
+ * writes them and by nothing else. Before S3.2 this file was the suite's only
+ * writer and the counts were plain; the `NOT LIKE`s are exactly the price of
+ * gaining a second one, and they are written as a JOIN-free subquery on `user`
+ * so the excluded set is "rows belonging to that file's strangers", not "rows
+ * that happen to spell something".
  *
  * (ii) `workspaces` is counted by this RUN's rows — widening it back to whole
  * re-imports a second writer, because `saved-views.integration.test.ts` writes
- * and deletes workspaces of its own, node runs test files in PARALLEL
- * (measured), and both files take their DSN from the same variable, so a
- * whole-table count there measures that file and not the endpoint under test
- * (measured: 2 spurious reds in 22 suite runs; 0 in 15 after scoping).
+ * and deletes workspaces of its own, and a whole-table count there measures that
+ * file and not the endpoint under test (measured: 2 spurious reds in 22 suite
+ * runs; 0 in 15 after scoping).
  *
- * What closes the hole the narrow tier could in theory leave is the composite,
- * not the clause on its own: no better-auth table references `workspaces` (D112
- * — soft `org_id`, no cross-set FK) and better-auth's SQL has never heard of the
+ * What closes the hole any narrowing could in theory leave is the composite, not
+ * the clause on its own: no better-auth table references `workspaces` (D112 —
+ * soft `org_id`, no cross-set FK) and better-auth's SQL has never heard of the
  * table, so a leak cannot reach a workspace without first moving one of the
- * seven counted whole — which is exactly what the falsification test at the
- * bottom of this file fires the matrix's own body to demonstrate, watching
- * `organization` and `member` move under a bypassed guard.
+ * seven — which is exactly what the falsification test at the bottom of this
+ * file fires the matrix's own body to demonstrate, watching `organization` and
+ * `member` move under a bypassed guard.
  */
+const SIBLING_USERS = `(SELECT id FROM "user" WHERE email LIKE $2)`;
+
+const AUTH_TABLE_COUNTS: Record<string, string> = {
+  user: `(SELECT count(*)::int FROM "user" WHERE email NOT LIKE $2)`,
+  session: `(SELECT count(*)::int FROM "session" WHERE "userId" NOT IN ${SIBLING_USERS})`,
+  account: `(SELECT count(*)::int FROM "account" WHERE "userId" NOT IN ${SIBLING_USERS})`,
+  verification: `(SELECT count(*)::int FROM "verification")`,
+  organization: `(SELECT count(*)::int FROM "organization" WHERE name NOT LIKE $2)`,
+  member: `(SELECT count(*)::int FROM "member" WHERE "userId" NOT IN ${SIBLING_USERS})`,
+  invitation: `(SELECT count(*)::int FROM "invitation"
+                 WHERE email NOT LIKE $2 AND "inviterId" NOT IN ${SIBLING_USERS})`,
+};
+
+/** All eight counts in ONE statement, so a snapshot is internally consistent. */
 const ROW_COUNTS_SQL = `SELECT
-  ${AUTH_TABLES.map((name) => `(SELECT count(*)::int FROM "${name}") AS "${name}"`).join(",\n  ")},
+  ${AUTH_TABLES.map((name) => `${AUTH_TABLE_COUNTS[name]} AS "${name}"`).join(",\n  ")},
   (SELECT count(*)::int
      FROM workspaces w
      JOIN "organization" o ON o.id = w.org_id
@@ -128,7 +158,7 @@ const ROW_COUNTS_SQL = `SELECT
 const RUN_ORGS = `%${RUN}%`;
 
 async function rowCounts(): Promise<Record<string, number>> {
-  const [row] = await queryRows<Record<string, number>>(ROW_COUNTS_SQL, [RUN_ORGS]);
+  const [row] = await queryRows<Record<string, number>>(ROW_COUNTS_SQL, [RUN_ORGS, SIBLING_ROWS]);
   return row;
 }
 
@@ -137,21 +167,19 @@ const createdOrgIds: string[] = [];
 
 /** A stranger who really signed up: the product's own signup path, against real rows. */
 async function signUpStranger(label: string): Promise<{
+  name: string;
   email: string;
   userId: string;
   orgId: string;
   workspaceId: string;
 }> {
+  const name = `Stranger ${label} ${RUN}`;
   const email = `f4-it-${RUN}-${label}@obstack.invalid`;
   createdEmails.push(email);
-  const { orgId, workspaceId } = await signUpWithWorkspace({
-    name: `Stranger ${label} ${RUN}`,
-    email,
-    password: PASSWORD,
-  });
+  const { orgId, workspaceId } = await signUpWithWorkspace({ name, email, password: PASSWORD });
   createdOrgIds.push(orgId);
   const [user] = await queryRows<{ id: string }>(`SELECT id FROM "user" WHERE email = $1`, [email]);
-  return { email, userId: user.id, orgId, workspaceId };
+  return { name, email, userId: user.id, orgId, workspaceId };
 }
 
 after(async () => {
@@ -456,6 +484,20 @@ test("D128: every refused endpoint answers 404 to a REAL session and moves no ro
   const stranger = await signUpStranger("matrix");
   const cookie = await realSessionCookie(stranger.email);
 
+  await t.test("this file's own rows are rows the counts still count", () => {
+    // The sibling exclusion's other half (S2.2 L1: an absence claim gets a
+    // probe). Every column tier (i) excludes on — `user.email`,
+    // `organization.name`, `invitation.email` — is written here from one of
+    // these two fixture spellings or from `leakBody`, so if none of them can
+    // carry the literal, no row a leak writes can hide behind it.
+    for (const spelling of [stranger.name, stranger.email]) {
+      assert.ok(
+        !spelling.includes(SIBLING_LITERAL),
+        `a fixture spelling carries the sibling literal and would go uncounted: ${spelling}`,
+      );
+    }
+  });
+
   await t.test("the session driving the matrix is real — the open door says so", async () => {
     const response = await GET(new Request(at("/get-session"), { headers: { cookie } }));
     assert.equal(response.status, 200);
@@ -481,12 +523,17 @@ test("D128: every refused endpoint answers 404 to a REAL session and moves no ro
   assert.equal(refused.length, 50);
 
   for (const path of refused) {
+    const leak = leakBody(path, stranger);
+    assert.ok(
+      !leak.includes(SIBLING_LITERAL),
+      `the leak body for ${path} carries the sibling literal — a row it wrote would go uncounted`,
+    );
     const before = await rowCounts();
     const response = await POST(
       new Request(at(path), {
         method: "POST",
         headers: { cookie, origin: ORIGIN, "content-type": "application/json" },
-        body: leakBody(path, stranger),
+        body: leak,
       }),
     );
     // read as text, not JSON: with the guard removed better-auth answers some of

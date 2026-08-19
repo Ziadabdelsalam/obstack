@@ -22,3 +22,13 @@ test("/app/logs is live-wired, exactly and not as a subtree", () => {
   assert.equal(isLiveWiredRoute("/app/logs"), true);
   assert.equal(isLiveWiredRoute("/app/logs/anything"), false);
 });
+
+// T5 (D106): `/app/settings` reads the session's org, members, invites and API
+// keys in live mode, so the route-wide badge must be gone — the four tabs that
+// are still demo content say so themselves with `SampleMark`. Same registration
+// assertion as the line above (S2.0 L1): drop the entry and this goes red, which
+// is exactly what `SampleDataBadge` would then do on the route.
+test("/app/settings is live-wired, exactly and not as a subtree", () => {
+  assert.equal(isLiveWiredRoute("/app/settings"), true);
+  assert.equal(isLiveWiredRoute("/app/settings/anything"), false);
+});

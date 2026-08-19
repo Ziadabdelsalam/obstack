@@ -58,7 +58,7 @@ export const securityEvents: SecurityEvent[] = [
     type: "key-anomaly",
     title: "API key used from new ASN",
     detail:
-      "ob_read_77b1… (grafana read-only) called from AS396982 (GCP us-central1) — previously only eu-west. Matches the new Grafana Cloud region; marked expected by nour.",
+      "ok_live_9f2e… (production ingest) called from AS396982 (GCP us-central1) — previously only eu-west. Matches the new Grafana Cloud region; marked expected by nour.",
     time: "Aug 7 · 22:10",
     status: "flagged",
   },

@@ -91,10 +91,12 @@ services:
       # applied at boot from the same binary — OBSTACK_PG_MIGRATE_ON_BOOT is
       # unset and therefore true here, exactly like OBSTACK_MIGRATE_ON_BOOT.
       # The one-runner rule covers both stores: do not scale this service.
+      #
+      # This DSN is also the serving path's key authority (D98): API keys are
+      # `api_keys` rows read through a cached lookup, so there is no key
+      # variable here to set. The dev credential clients send below,
+      # `ok_dev_local`, is the continuity row seeded by pgmigrations/0004.
       OBSTACK_POSTGRES_DSN: postgres://obstack:${OBSTACK_POSTGRES_PASSWORD:-obstack_postgres_dev}@postgres:5432/obstack
-      # Phase-1 keys (D4): `key:workspace_id`, comma-separated. Clients send
-      # `Authorization: Bearer <key>`.
-      OBSTACK_API_KEYS: ${OBSTACK_API_KEYS:-ok_dev_local:ws_demo}
     ports:
       - "127.0.0.1:4317:4317" # OTLP/gRPC
       - "127.0.0.1:4318:4318" # OTLP/HTTP
@@ -245,8 +247,9 @@ services:
         condition: service_healthy
     environment:
       OBSTACK_INGEST_ENDPOINT: http://ingest:4318
-      # Phase-1 key (D39 rider); dev default matches ingest's own default
-      # key above. Never a committed literal in production — see
+      # Dev key (D39 rider); the default is the `ok_dev_local` continuity row
+      # seeded by pgmigrations/0004, the same credential the demo and SDK
+      # samples send. Never a committed literal in production — see
       # deploy/collector/README.md.
       OBSTACK_COLLECTOR_API_KEY: ${OBSTACK_COLLECTOR_API_KEY:-ok_dev_local}
       # Both set by `deploy/collector/up.sh` once the containers they name

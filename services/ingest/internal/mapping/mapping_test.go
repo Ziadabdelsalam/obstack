@@ -156,8 +156,7 @@ func TestFinishReasonFromArray(t *testing.T) {
 }
 
 func TestUnpricedModelCostsZeroAndCounts(t *testing.T) {
-	counter := metrics.UnpricedModels.WithLabelValues("acme-llm-9")
-	before := testutil.ToFloat64(counter)
+	before := metrics.UnpricedModelCounts()["acme-llm-9"]
 
 	td, span := newSpan(t)
 	span.Attributes().PutStr("gen_ai.request.model", "acme-llm-9")
@@ -167,7 +166,7 @@ func TestUnpricedModelCostsZeroAndCounts(t *testing.T) {
 	if row.CostUSD != 0 {
 		t.Errorf("cost_usd = %v, want 0", row.CostUSD)
 	}
-	if delta := testutil.ToFloat64(counter) - before; delta != 1 {
+	if delta := metrics.UnpricedModelCounts()["acme-llm-9"] - before; delta != 1 {
 		t.Errorf("unpriced counter delta = %v, want 1", delta)
 	}
 }

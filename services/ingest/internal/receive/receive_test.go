@@ -19,6 +19,18 @@ const (
 	workspaceID = "ws_test"
 )
 
+// testResolver stands in for the keystore: what the receivers have to get right
+// is the header and the 401, not where a key is kept.
+type testResolver map[string]string
+
+func (r testResolver) Workspace(token string) (string, error) {
+	ws, ok := r[token]
+	if !ok {
+		return "", auth.ErrUnauthorized
+	}
+	return ws, nil
+}
+
 // recorder stands in for the batch writer T4 plugs in: it only has to remember
 // what it was handed, because per D23 a consumer cannot reject anything.
 type recorder struct {
@@ -83,7 +95,7 @@ func startServerWith(t *testing.T, consumer receive.Consumer) *receive.Server {
 	srv := receive.New(receive.Config{
 		GRPCAddr: "127.0.0.1:0",
 		HTTPAddr: "127.0.0.1:0",
-		Auth:     auth.New(map[string]string{testKey: workspaceID}),
+		Auth:     auth.New(testResolver{testKey: workspaceID}),
 		Consumer: consumer,
 	})
 	if err := srv.Start(); err != nil {

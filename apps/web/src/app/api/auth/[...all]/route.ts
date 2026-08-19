@@ -10,9 +10,18 @@ import { getAuth } from "@/server/auth";
  *
  * Everything refused here has a server action that owns the invariant the raw
  * endpoint would break — signup by the transaction that also makes the org and
- * the workspace (D117), sign-in by the login action, and the org mutations by
- * nothing at all, because this sprint has no invites or org UI. S3.2 widens
- * this set one named door at a time.
+ * the workspace (D117), sign-in by the login action, and the five invitation
+ * endpoints by `server/invites.ts`, which calls them in-process with the
+ * request's headers and fills `organizationId` from the session's owner pin
+ * rather than from a body (D143/D148).
+ *
+ * S3.2 therefore opens ZERO doors: this set is byte-identical to the one S3.1
+ * left, and `/organization/invite-member`, `/cancel-invitation`,
+ * `/accept-invitation`, `/get-invitation` and `/list-invitations` join the D120
+ * matrix as NAMED stay-closed entries — asserted 404 with a real session and a
+ * real pending invitation, and zero row deltas, in
+ * `server/invites.integration.test.ts`, against bodies the same file proves are
+ * live ammunition by firing them with the guard bypassed.
  */
 const ALLOWED_ENDPOINTS = new Set(["get-session", "sign-out"]);
 

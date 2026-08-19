@@ -90,20 +90,21 @@ func requireClickHouse(t *testing.T) context.Context {
 	return ctx
 }
 
-// The point of the subcommand's narrow loader: a migration Job must not have to
-// carry the ingest bearer keys. Asserted without a server because the failure
-// being ruled out is a config one — the DSN below never parses, so the only way
-// to reach that error is to have got past config without OBSTACK_API_KEYS set.
+// The point of the subcommand's narrow loader: a migration Job carries the DSN
+// of the store it migrates and nothing else. Asserted without a server because
+// the failure being ruled out is a config one — the DSN below never parses, so
+// the only way to reach that error is to have got past config with nothing else
+// set.
 func TestRunMigrateNeedsOnlyDSN(t *testing.T) {
-	t.Setenv("OBSTACK_API_KEYS", "")
+	t.Setenv("OBSTACK_POSTGRES_DSN", "")
 	t.Setenv("CLICKHOUSE_DSN", "not-a-dsn")
 
 	err := runMigrate()
 	if err == nil {
 		t.Fatal("runMigrate succeeded against an unparseable DSN, want error")
 	}
-	if strings.Contains(err.Error(), "OBSTACK_API_KEYS") {
-		t.Errorf("runMigrate demanded API keys: %v", err)
+	if strings.Contains(err.Error(), "OBSTACK_POSTGRES_DSN") {
+		t.Errorf("runMigrate demanded the other store's DSN: %v", err)
 	}
 	if !strings.Contains(err.Error(), "CLICKHOUSE_DSN") {
 		t.Errorf("runMigrate error = %v, want it to name CLICKHOUSE_DSN", err)
@@ -116,11 +117,11 @@ func TestRunMigrateNeedsOnlyDSN(t *testing.T) {
 }
 
 // The one-shot end to end: it applies, it exits without error, and it does so
-// with no API keys in its environment.
+// with nothing in its environment but the DSN of the store it owns.
 func TestRunMigrateAppliesSchema(t *testing.T) {
 	requireClickHouse(t)
 
-	t.Setenv("OBSTACK_API_KEYS", "")
+	t.Setenv("OBSTACK_POSTGRES_DSN", "")
 	t.Setenv("CLICKHOUSE_DSN", testDSN())
 
 	if err := runMigrate(); err != nil {
@@ -134,10 +135,9 @@ func TestRunMigrateAppliesSchema(t *testing.T) {
 }
 
 // The Postgres one-shot carries the same narrowness: its Job needs the Postgres
-// DSN and nothing else — not the bearer keys, and not the ClickHouse DSN whose
-// schema a different Job owns.
+// DSN and nothing else — not the ClickHouse DSN whose schema a different Job
+// owns.
 func TestRunPGMigrateNeedsOnlyItsOwnDSN(t *testing.T) {
-	t.Setenv("OBSTACK_API_KEYS", "")
 	t.Setenv("CLICKHOUSE_DSN", "")
 	t.Setenv("OBSTACK_POSTGRES_DSN", "not-a-dsn")
 
@@ -145,10 +145,8 @@ func TestRunPGMigrateNeedsOnlyItsOwnDSN(t *testing.T) {
 	if err == nil {
 		t.Fatal("runPGMigrate succeeded against an unparseable DSN, want error")
 	}
-	for _, unwanted := range []string{"OBSTACK_API_KEYS", "CLICKHOUSE_DSN"} {
-		if strings.Contains(err.Error(), unwanted) {
-			t.Errorf("runPGMigrate demanded %s: %v", unwanted, err)
-		}
+	if strings.Contains(err.Error(), "CLICKHOUSE_DSN") {
+		t.Errorf("runPGMigrate demanded CLICKHOUSE_DSN: %v", err)
 	}
 	if !strings.Contains(err.Error(), "OBSTACK_POSTGRES_DSN") {
 		t.Errorf("runPGMigrate error = %v, want it to name OBSTACK_POSTGRES_DSN", err)
@@ -165,7 +163,7 @@ func TestRunPGMigrateNeedsOnlyItsOwnDSN(t *testing.T) {
 func TestRunPGMigrateAppliesSchema(t *testing.T) {
 	requirePostgres(t)
 
-	t.Setenv("OBSTACK_API_KEYS", "")
+	t.Setenv("CLICKHOUSE_DSN", "")
 	t.Setenv("OBSTACK_POSTGRES_DSN", testPostgresDSN())
 
 	if err := runPGMigrate(); err != nil {
@@ -173,6 +171,25 @@ func TestRunPGMigrateAppliesSchema(t *testing.T) {
 	}
 	if err := runPGMigrate(); err != nil {
 		t.Fatalf("second runPGMigrate: %v", err)
+	}
+}
+
+// The boot posture the deleted env map leaves behind (D95(e)): there is no
+// Postgres-less serve any more, because that is where the keys are. A serving
+// process without OBSTACK_POSTGRES_DSN has to stop and name it, before it binds
+// a port or accepts one export it would have to 401. Hermetic — the refusal
+// happens in config, and a laptop with nothing running must still prove it.
+func TestRunRefusesToServeWithoutPostgres(t *testing.T) {
+	t.Setenv("CLICKHOUSE_DSN", "clickhouse://obstack_ingest:pw@127.0.0.1:9000/obstack")
+	t.Setenv("OBSTACK_MIGRATE_ON_BOOT", "")
+	t.Setenv("OBSTACK_POSTGRES_DSN", "")
+
+	err := run()
+	if err == nil {
+		t.Fatal("run served with no Postgres to resolve API keys against, want refusal")
+	}
+	if !strings.Contains(err.Error(), "OBSTACK_POSTGRES_DSN") {
+		t.Errorf("error = %v, want it to name the variable an operator has to set", err)
 	}
 }
 

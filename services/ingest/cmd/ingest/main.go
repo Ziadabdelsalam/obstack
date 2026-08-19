@@ -24,7 +24,7 @@ import (
 
 	"github.com/Ziadabdelsalam/observer-stack/services/ingest/internal/auth"
 	"github.com/Ziadabdelsalam/observer-stack/services/ingest/internal/config"
-	"github.com/Ziadabdelsalam/observer-stack/services/ingest/internal/metrics"
+	"github.com/Ziadabdelsalam/observer-stack/services/ingest/internal/keystore"
 	"github.com/Ziadabdelsalam/observer-stack/services/ingest/internal/migrate"
 	"github.com/Ziadabdelsalam/observer-stack/services/ingest/internal/pgmigrate"
 	"github.com/Ziadabdelsalam/observer-stack/services/ingest/internal/receive"
@@ -70,8 +70,8 @@ func main() {
 	// A typo must not boot a server. argv stops being developer-typed the moment
 	// it is a chart's values, and `ingest migrat` falling through to run() either
 	// binds the OTLP ports for a Job that was meant to exit, or fails demanding
-	// the OBSTACK_API_KEYS that Job deliberately does not carry — sending the
-	// operator after a missing secret instead of a missing letter.
+	// the ClickHouse DSN that a Postgres-only Job deliberately does not carry —
+	// sending the operator after a missing secret instead of a missing letter.
 	if len(os.Args) > 1 {
 		fmt.Fprintf(os.Stderr, "unknown command %q; valid commands: migrate, pg-migrate, healthcheck\n", os.Args[1])
 		os.Exit(2)
@@ -90,8 +90,8 @@ const migrateTimeout = 2 * time.Minute
 
 // runMigrate applies the schema and exits. It reads CLICKHOUSE_DSN directly
 // instead of calling config.Load: everything else Load validates belongs to
-// serving traffic, and requiring the API keys here would put them in the
-// environment of a process that never authenticates anything.
+// serving traffic, and a one-shot that applies DDL and exits should not be able
+// to fail on a listen address it never binds.
 func runMigrate() error {
 	dsn, err := config.LoadDSN()
 	if err != nil {
@@ -112,11 +112,11 @@ func runMigrate() error {
 }
 
 // The Postgres half of the environment. It is read here rather than added to
-// config.Config because config.Config is what a process needs in order to serve
-// traffic, and ingest serves nothing out of Postgres — it owns that schema and
-// otherwise never opens the database. A field on Config would say the opposite,
-// and would put the DSN in front of a validator the `pg-migrate` one-shot
-// deliberately does not run.
+// config.Config because it is needed by two commands with different jobs — the
+// `pg-migrate` one-shot, which applies the schema and exits, and the serving
+// process, which since M3 also reads its API keys from Postgres (D98) and
+// therefore cannot boot without it. Keeping it out of Config is what lets the
+// one-shot skip a validator built for serving traffic.
 const (
 	envPostgresDSN     = "OBSTACK_POSTGRES_DSN"
 	envPGMigrateOnBoot = "OBSTACK_PG_MIGRATE_ON_BOOT"
@@ -173,16 +173,16 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	metrics.Init(cfg.WorkspaceIDs())
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	// Both schemas are settled before anything is served: a process that cannot
-	// own the schema has no business reporting healthy. Ingest reads nothing out
-	// of Postgres yet — the workspaces and saved views it creates there are the
-	// web app's — but it is the process the deployment already runs, and a
-	// schema nobody applies is a product surface that 500s instead.
+	// own the schema has no business reporting healthy. Postgres is no longer
+	// only a schema this process owns on someone else's behalf — the api_keys
+	// rows it applies below are what every export authenticates against (D98),
+	// so a migration that never ran is now a 401 for every client rather than
+	// only a web surface that 500s.
 	migrateCtx, cancel := context.WithTimeout(ctx, migrateTimeout)
 	defer cancel()
 	if err := ensureSchema(migrateCtx, cfg, migrations.FS, migrate.Pending); err != nil {
@@ -202,13 +202,25 @@ func run() error {
 		return err
 	}
 
+	// The key store connects and pings for the same reason, and there is no
+	// keyless mode to fall back to: with the env map deleted, a process that
+	// cannot reach Postgres at boot would 401 every export it accepted. Once it
+	// is serving, a Postgres that goes away is survivable — the cache serves what
+	// it already resolved (see internal/keystore).
+	keys, err := keystore.Open(connectCtx, pgDSN)
+	if err != nil {
+		writer.Close()
+		return err
+	}
+
 	receiver := receive.New(receive.Config{
 		GRPCAddr: cfg.OTLPGRPCAddr,
 		HTTPAddr: cfg.OTLPHTTPAddr,
-		Auth:     auth.New(cfg.APIKeys),
+		Auth:     auth.New(keys),
 		Consumer: writer,
 	})
 	if err := receiver.Start(); err != nil {
+		keys.Close()
 		writer.Close()
 		return err
 	}
@@ -244,6 +256,7 @@ func run() error {
 	if err := writer.Close(); err != nil {
 		slog.Error("writer close", "error", err)
 	}
+	keys.Close()
 	if err := admin.Shutdown(shutdownCtx); err != nil && runErr == nil {
 		runErr = err
 	}
