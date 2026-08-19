@@ -775,7 +775,17 @@ console.log(
   `   metering   free quota lowered to ${EVIDENCE_FREE_QUOTA} · ${FILL_EVENTS} events sent · ` +
     `wait flush ${FLUSH_MS / 1000}s + state TTL ${STATE_TTL_MS / 1000}s · token ${QUOTA_TOKEN}`,
 );
-console.log(`   billing    fake (OBSTACK_BILLING_MODE unset — no Polar, no secret, D168)`);
+// The value, not a claim about it: the refusal below accepts an explicit `fake`
+// as well as no value at all, so this prints WHICH of the two this run had and
+// leaves "and therefore the fake rail, with no Polar and no secret" to the
+// refusal that actually enforces it (D168).
+console.log(
+  `   billing    OBSTACK_BILLING_MODE ${
+    process.env.OBSTACK_BILLING_MODE === undefined
+      ? "unset — the fake rail, which is the client's default"
+      : JSON.stringify(process.env.OBSTACK_BILLING_MODE)
+  } (the refusals below accept no other rail)`,
+);
 console.log(`   artifacts  ${OUT}`);
 
 step("refusals (this run measures only what it started)");
