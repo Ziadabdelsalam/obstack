@@ -22,10 +22,12 @@ import type { QueryRows } from "./postgres";
 // run with: npm test --workspace apps/web
 //
 // The Data & ingest tab's store, with no Postgres at all: the workspace binding
-// on every statement, the D164(f) cap living inside the INSERT rather than in a
-// check a second tab could race, and the two total parses the override form
-// hands untrusted strings to (D68). Whether the SQL runs is proven by the drive
-// against the compose stack (T10) — this file proves what the SQL SAYS.
+// on every statement, the D164(f) cap counted inside the INSERT and serialized
+// by the D197 workspace advisory lock the write takes FIRST, and the two total
+// parses the override form hands untrusted strings to (D68). Whether the SQL
+// runs — and whether the lock actually serializes — is proven by the drive
+// against the compose stack (qa-a4-ingest-health.test.ts); this file proves what
+// the statements SAY and in what order.
 
 type Statement = { sql: string; params?: unknown[] };
 
@@ -74,11 +76,20 @@ test("every statement is bound to the workspace it was handed", async () => {
   await upsertPricingOverride("ws_a", { match: "m", inputPerMTok: 1, outputPerMTok: 2 }, query);
   await deletePricingOverride("ws_a", "pov_0011223344556677", query);
 
-  assert.equal(seen.length, 4, "a statement was added without joining this loop");
+  // Five, not four: the override create is a read-modify-write, so it takes the
+  // workspace advisory lock (D197) before its INSERT — two statements on the one
+  // injected seam.
+  assert.equal(seen.length, 5, "a statement was added or dropped without joining this loop");
   for (const { sql, params } of seen) {
-    // Both halves, because either alone is passable: SQL that names the column
-    // but binds someone else's id, or a binding no predicate reads.
-    assert.match(sql, /workspace_id/, `a statement does not scope by workspace: ${sql}`);
+    // Both halves, because either alone is passable: SQL that names the workspace
+    // but binds someone else's id, or a binding no predicate reads. The advisory
+    // lock keys on the workspace through `hashtext($1)` rather than a
+    // `workspace_id` column, so it satisfies the binding the same way.
+    assert.match(
+      sql,
+      /workspace_id|pg_advisory_xact_lock\(hashtext\(\$1\)\)/,
+      `a statement does not scope by workspace: ${sql}`,
+    );
     assert.ok(params?.includes("ws_a"), `a statement never bound its workspace: ${sql}`);
   }
   // The health read is a read: the tab must not be able to write a health row.
@@ -151,7 +162,7 @@ test("an empty workspace has nothing to date", async () => {
 
 // ---- D164(f): the cap is the statement's, not a caller's ----
 
-test("the cap rides inside the INSERT and counts only the OTHER matches", async () => {
+test("the create locks the workspace FIRST, then counts the OTHER matches inside the INSERT", async () => {
   const { query, seen } = recordingQuery([overrideRow()]);
   await upsertPricingOverride(
     "ws_a",
@@ -159,9 +170,17 @@ test("the cap rides inside the INSERT and counts only the OTHER matches", async 
     query,
   );
 
-  const { sql, params } = seen[0];
-  // One statement: two — a SELECT count then an INSERT — is two moments, and two
-  // tabs at ninety-nine would both read ninety-nine and both write.
+  // The lock is FIRST, because the cap is a read-modify-write and a single
+  // INSERT is not one moment under concurrency (B4-1): two tabs at ninety-nine
+  // each count ninety-nine under their own READ COMMITTED snapshot and both
+  // write. `pg_advisory_xact_lock(hashtext(workspace_id))` taken before the
+  // count is what serializes them (D197) — the second waits, then counts the
+  // committed row and is refused.
+  assert.equal(seen.length, 2, "the create is lock-then-insert, nothing more");
+  assert.match(seen[0].sql, /pg_advisory_xact_lock\(hashtext\(\$1\)\)/, "the lock is taken first");
+  assert.equal(seen[0].params?.[0], "ws_a", "and keyed on this workspace");
+
+  const { sql, params } = seen[1];
   assert.match(sql, /INSERT INTO pricing_overrides/);
   assert.match(sql, /SELECT count\(\*\) FROM pricing_overrides/);
   assert.match(sql, /o\.match <> \$3::text\) < \$6::int/, "the cap counts rows OTHER than this match");
