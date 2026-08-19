@@ -8,7 +8,7 @@ import {
   type LiveSettings,
 } from "@/components/settings/SettingsSuite";
 import { listApiKeys } from "@/server/api-keys";
-import { CHECKOUT_RETURN_PARAM, reconcileCheckout } from "@/server/billing";
+import { CHECKOUT_RETURN_PARAM, reconcileCheckoutReturn } from "@/server/billing";
 import { dataMode } from "@/server/data";
 import {
   BASE_PRICES_AS_OF,
@@ -92,7 +92,12 @@ async function applyCheckoutReturn(
   let applied = false;
   if (typeof checkoutId === "string" && checkoutId !== "") {
     try {
-      applied = (await reconcileCheckout(checkoutId, workspaceId, queryRows)).applied;
+      // The return path owns its transaction inside the billing module now
+      // (D198): `reconcileCheckoutReturn` opens the `withTransaction` the
+      // advisory lock is scoped to, so this page cannot reach the
+      // rail-read→plan-write on a pooled connection where the lock is a no-op —
+      // there is no `queryRows` to pass and no way to pass one.
+      applied = (await reconcileCheckoutReturn(checkoutId, workspaceId)).applied;
     } catch (error) {
       console.error("[settings] checkout return", error);
     }

@@ -1,5 +1,5 @@
 import "server-only";
-import { lockWorkspace, type QueryRows } from "@/server/postgres";
+import { lockWorkspace, withTransaction, type QueryRows } from "@/server/postgres";
 import { getBilling } from "./client";
 import { PLAN_FREE, PLAN_PRO, UnknownCheckout, type BillingClient, type WebhookEvent } from "./types";
 
@@ -49,6 +49,22 @@ const UPSERT_PLAN_SQL = `
  */
 export type ReconcileResult = { applied: true; planId: string } | { applied: false };
 
+/**
+ * A `queryRows` proven to run INSIDE a transaction — the scope
+ * `pg_advisory_xact_lock` needs to actually hold across a read→write (D198). The
+ * brand is a phantom `unique symbol` no value carries, so it is unforgeable: the
+ * only way to obtain one is through a door in this module that opens a
+ * transaction on the way in. That is the structural half of the ruling —
+ * `syncPlanFromRail` and `reconcileCheckout` no longer typecheck when handed a
+ * plain pooled `queryRows` (through which the lock releases inside its own
+ * implicit transaction and serializes nothing), so NO call path can reach the
+ * rail-read→plan-write outside the lock, not merely the paths a caller
+ * remembered to wrap. The two doors are `reconcileCheckoutReturn` (the settings
+ * return, which opens the transaction here) and the webhook route's own
+ * `withTransaction` wrap, whose `applyWebhook` is where its query is asserted.
+ */
+export type TxQuery = QueryRows & { readonly __workspaceTx: unique symbol };
+
 /** The plan row, as convergence writes it. */
 export async function setWorkspacePlan(
   workspaceId: string,
@@ -74,13 +90,16 @@ export async function setWorkspacePlan(
  * The read→write is serialized on `lockWorkspace` so two concurrent syncs of
  * one workspace cannot interleave — the second to acquire the lock reads AFTER
  * the first committed, so the later present always wins and no stale grant
- * survives a revocation it raced. The lock is transaction-scoped, so this only
- * serializes when `query` is bound to a transaction (the webhook route runs it
- * inside `withTransaction`); the guard test proves it against real Postgres.
+ * survives a revocation it raced. `query` is a `TxQuery`, so the transaction the
+ * lock is scoped to is not a caller's promise but the type: the two doors are
+ * the only sources of one and both hold a transaction open across this
+ * read→write (D198), and a plain pooled `queryRows` — through which the lock
+ * would release inside its own implicit transaction and serialize nothing — does
+ * not typecheck here. The guard tests prove both doors against real Postgres.
  */
 export async function syncPlanFromRail(
   workspaceId: string,
-  query: QueryRows,
+  query: TxQuery,
   billing: BillingClient = getBilling(),
 ): Promise<string> {
   await lockWorkspace(query, workspaceId);
@@ -138,7 +157,7 @@ export async function syncPlanFromRail(
 export async function reconcileCheckout(
   checkoutId: string,
   workspaceId: string,
-  query: QueryRows,
+  query: TxQuery,
   billing: BillingClient = getBilling(),
 ): Promise<ReconcileResult> {
   // Quoted once, for every line below, and its line terminators escaped:
@@ -184,6 +203,27 @@ export async function reconcileCheckout(
 }
 
 /**
+ * The RETURN PATH's door (D198). The settings page reconciles a returning
+ * `?checkout=` here, and here is where the transaction the advisory lock is
+ * scoped to is OWNED — the page has no `TxQuery` to hand in and cannot forge
+ * one, so it calls this and this opens the transaction, which makes the return
+ * path locked by construction exactly as the webhook path is by its route's
+ * `withTransaction`. One transaction per reconcile: the `reconcileCheckout`
+ * binding proofs and the `syncPlanFromRail` inside them share this one
+ * connection and its lock, so no rail-read→plan-write on this path runs on a
+ * pooled connection where the lock would be a no-op (the F6 return-path defect).
+ */
+export async function reconcileCheckoutReturn(
+  checkoutId: string,
+  workspaceId: string,
+  billing: BillingClient = getBilling(),
+): Promise<ReconcileResult> {
+  return withTransaction((query) =>
+    reconcileCheckout(checkoutId, workspaceId, query as TxQuery, billing),
+  );
+}
+
+/**
  * `JSON.stringify` quotes and escapes `\n`/`\r`, but passes U+2028 LINE
  * SEPARATOR and U+2029 PARAGRAPH SEPARATOR through verbatim — both are
  * ECMAScript line terminators, so a JS log viewer, a JSON-lines splitter or a
@@ -207,8 +247,18 @@ function quoteId(checkoutId: string): string {
  * 10s timeout is not close.
  */
 export async function applyWebhook(event: WebhookEvent, query: QueryRows): Promise<void> {
+  // The webhook route is applyWebhook's only caller and runs it INSIDE its own
+  // `withTransaction` (route.ts), so `query` is already transactional and the
+  // workspace lock the convergence takes actually holds. That route-side
+  // transaction is the webhook path's door in the sense `reconcileCheckoutReturn`
+  // is the return path's; this is where its `query` is asserted to be the
+  // `TxQuery` the convergence requires (D198). The route never hands in a pooled
+  // client, so this assertion cannot launder one past the lock — and typing the
+  // parameter itself `TxQuery` is what the route's plain `withTransaction` query
+  // cannot satisfy, which is why the seam is here rather than in the signature.
+  const tx = query as TxQuery;
   if (event.consumed === "checkout") {
-    if (event.succeeded) await reconcileCheckout(event.checkoutId, event.workspaceId, query);
+    if (event.succeeded) await reconcileCheckout(event.checkoutId, event.workspaceId, tx);
     return;
   }
   if (event.consumed === "plan") {
@@ -216,6 +266,6 @@ export async function applyWebhook(event: WebhookEvent, query: QueryRows): Promi
     // re-delivered or reordered `active` must not re-grant a subscription the
     // present has since revoked, so we read the present rather than apply the
     // event (B2-2).
-    await syncPlanFromRail(event.workspaceId, query);
+    await syncPlanFromRail(event.workspaceId, tx);
   }
 }

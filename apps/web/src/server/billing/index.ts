@@ -13,7 +13,7 @@ import "server-only";
  * only import outside this directory is this one path.
  */
 export { billingMode, createBillingClient, getBilling } from "./client";
-export { applyWebhook, reconcileCheckout, setWorkspacePlan } from "./reconcile";
+export { applyWebhook, reconcileCheckout, reconcileCheckoutReturn, setWorkspacePlan } from "./reconcile";
 export type { ReconcileResult } from "./reconcile";
 export { startUsageReporter } from "./reporter";
 export { CHECKOUT_RETURN_PARAM, PLAN_FREE, PLAN_PRO, UnknownCheckout } from "./types";
