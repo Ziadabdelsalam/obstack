@@ -185,8 +185,8 @@ test("the invite-accept action trips the same way in mock mode (D152)", async ()
   assert.match(logged[0] ?? "", /\[invite\] accept posted in mock mode/);
 });
 
-test("every settings write trips the same way in mock mode (D152)", async () => {
-  // The fourth surface, and the widest: four mutations sharing ONE gate
+test("every settings action trips the same way in mock mode (D152)", async () => {
+  // The fourth surface, and the widest: seven functions sharing ONE gate
   // (`settingsSession`), so the property is asserted per action rather than on
   // the helper — a future action that forgets to open with it would leave this
   // list unchanged and green, which is exactly what D152 forbids.
@@ -211,6 +211,14 @@ test("every settings write trips the same way in mock mode (D152)", async () => 
     // property is one property (D152). Its guard would also be the difference
     // between refusing and reaching Polar with no workspace behind it.
     ["start checkout", billing.startCheckout],
+    // The Data & ingest tab's three, including its LOAD: a Server Function is
+    // reachable by direct POST whether or not it mutates anything, so the read
+    // carries the same gate and proves it here. Without it, a post in mock mode
+    // would reach `getSessionContext` and then the pool — the two things this
+    // deployment does not have.
+    ["load ingest health", actions.loadIngestHealth],
+    ["save price override", actions.saveOverride],
+    ["remove price override", actions.deleteOverride],
   ];
 
   for (const [where, action] of cases) {

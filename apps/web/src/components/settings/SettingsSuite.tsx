@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useEffect, useState, useTransition } from "react";
 import { Check, Copy, Plus, X } from "lucide-react";
 import { apiKeys, ingest, members, modelPrices, usage } from "@/mock/workspace";
 import type { Member } from "@/mock/workspace";
@@ -9,9 +9,12 @@ import { complianceItems } from "@/mock/security";
 import { SampleMark } from "@/components/ui/SampleMark";
 import {
   cancelInvitation,
+  deleteOverride,
   inviteTeammate,
   issueKey,
+  loadIngestHealth,
   revokeKey,
+  saveOverride,
 } from "@/app/app/settings/actions";
 import { startCheckout } from "@/app/app/settings/billing-actions";
 
@@ -21,12 +24,19 @@ import { startCheckout } from "@/app/app/settings/billing-actions";
  * page.tsx`); `null` is the demo product, which has no accounts and no Postgres
  * and keeps rendering exactly what it always did (D125).
  *
- * The split is per TAB, not per page (D106): General, Members, API keys and
- * Billing & usage read real rows in live mode, and the rest still render demo
- * content and say so with `SampleMark` — which is why `/app/settings` is
- * registered in `live-routes.ts` and no longer wears the route-wide sample
- * badge. The tab strip, the `Section` frame and the shown-once banner are shared
- * by both halves, so there is one definition of what this page looks like.
+ * The split is per TAB, not per page (D106): General, Members, API keys,
+ * Billing & usage and Data & ingest read real rows in live mode, and the two
+ * that are left still render demo content and say so with `SampleMark` — which
+ * is why `/app/settings` is registered in `live-routes.ts` and no longer wears
+ * the route-wide sample badge. The tab strip, the `Section` frame and the
+ * shown-once banner are shared by both halves, so there is one definition of
+ * what this page looks like.
+ *
+ * Four of the five live tabs are fed by the page's props. Data & ingest is not:
+ * it loads itself when it is opened (`loadIngestHealth`), because its rows are
+ * the only ones on this page nobody looking at General, Members or Billing
+ * needs — and its writes answer with the new list rather than a redirect, so a
+ * refused override keeps the form the operator typed into.
  */
 
 const tabs = ["General", "Members", "API keys", "Billing & usage", "Data & ingest", "Audit log", "Compliance"] as const;
@@ -37,10 +47,12 @@ type Tab = (typeof tabs)[number];
  * reason rides the badge's tooltip because it differs per tab (D106/D141). A tab
  * leaves this map when its data becomes real; nothing is half-wired. Billing &
  * usage left it here: the meter, the plan and the retention line are read from
- * Postgres now (D106).
+ * Postgres now (D106). Data & ingest left with it: per-key health, the error
+ * count and the price overrides are rows (D141), and the one number it does not
+ * have — the sampling rate — is stated qualitatively rather than restated in a
+ * second language (D165).
  */
 const SAMPLE_TABS: Partial<Record<Tab, string>> = {
-  "Data & ingest": "demo ingest health and prices — the real ones land with price overrides",
   "Audit log": "demo audit events — obstack records none yet",
   Compliance: "demo compliance posture — obstack tracks none yet",
 };
@@ -626,11 +638,18 @@ function KeysTab() {
  * payment tab is not an error, and telling them their upgrade failed when Polar
  * may still complete it would be a lie the webhook then contradicts (D169 — the
  * reconciler runs either way).
+ *
+ * "failed" claims nothing about the money. A checkout can reach this branch
+ * having actually been PAID — succeeded but missing its plan id is a refusal
+ * (`reconcile.ts`) — so "nothing was charged" would be a sentence we cannot
+ * know is true, said to someone who just paid. What we do know is what our own
+ * row says and that the webhook reconciles the same checkout independently.
  */
 const CHECKOUT_NOTICES = {
   applied: "Your plan is updated — the meter below is measured against it now.",
   pending: "That checkout isn't paid yet. If you complete it, this page updates on its own.",
-  failed: "We couldn't confirm that checkout. Nothing was charged and your plan is unchanged.",
+  failed:
+    "We couldn't confirm that checkout, so your plan is unchanged for now. If the payment went through, it applies as soon as Polar confirms it.",
 } as const;
 
 /**
@@ -826,6 +845,305 @@ function BillingTab() {
 
 /* ---------------- Data & ingest ---------------- */
 
+/**
+ * One key's health row (D100), as the tab lists it. `errors` is decode plus
+ * unsupported — receive-path errors — and `sampled` is the quota drops, kept a
+ * separate number on purpose: a sampled-out trace is the degradation the plan
+ * bought, and adding it to an error count would tell an operator their exporter
+ * is broken while it is working exactly as designed.
+ */
+export interface LiveKeyHealth {
+  keyId: string;
+  name: string;
+  prefix: string;
+  revoked: boolean;
+  accepted: number;
+  errors: number;
+  sampled: number;
+  /** Formatted on the server, like every other timestamp on this page. */
+  lastEvent: string | null;
+}
+
+/** One pricing override (D108), the D9 row shape with a workspace on it. */
+export interface LiveOverride {
+  id: string;
+  match: string;
+  inputPerMTok: number;
+  outputPerMTok: number;
+  updated: string;
+}
+
+/**
+ * The whole Data & ingest tab, from `server/ingest-health.ts`. The totals are
+ * the server's sums of the same rows listed beside them — the tab adds nothing
+ * up itself, so the summary and the list cannot disagree.
+ *
+ * `asOf` is the freshest health row's `updated_at` (D162) and is null when no
+ * key has ever carried an event: "no events yet" rather than a dated zero.
+ */
+export interface LiveIngest {
+  keys: LiveKeyHealth[];
+  accepted: number;
+  receiveErrors: number;
+  droppedQuota: number;
+  asOf: string | null;
+  overrides: LiveOverride[];
+  /** D164(f)'s cap, carried so the form states the number the server enforces. */
+  overrideMax: number;
+  /** The embedded price list's date and size (D29), read from the file ingest embeds. */
+  pricesAsOf: string;
+  pricedModels: number;
+}
+
+/**
+ * What an override write answers with: the list as it now stands, and a reason
+ * if it refused. Both, always — a refusal still returns the current list, so a
+ * failed submit never blanks the table under the form.
+ */
+export interface IngestFormResult {
+  ingest: LiveIngest;
+  error: string | null;
+}
+
+/**
+ * The one thing the tab says for itself. Every other sentence it shows comes
+ * from the server; this one is what is left when the server said nothing at
+ * all, and it claims nothing about the ingestion — a settings page that could
+ * not read a row knows nothing about whether spans are arriving.
+ */
+const INGEST_UNREACHABLE =
+  "Couldn't read these rows just now. Nothing about your ingestion changed — reload to try again.";
+
+/** A number with its label, the shape the health summary repeats three times. */
+function Stat({ label, value, warn }: { label: string; value: number; warn?: boolean }) {
+  return (
+    <div>
+      <p className="font-mono text-[10px] uppercase tracking-widest text-faint">{label}</p>
+      <p
+        className="mt-0.5 font-mono text-[20px]"
+        style={{ color: warn && value > 0 ? "var(--color-warn)" : "var(--color-ink)" }}
+      >
+        {value.toLocaleString()}
+      </p>
+    </div>
+  );
+}
+
+/**
+ * The real ingest surface: what each key has carried, what was refused, what
+ * was sampled away, and the prices this workspace overrides.
+ *
+ * It loads itself. The health rows and the override list are the only data on
+ * this page that no other tab needs, and a Server Function called from
+ * `useEffect` is the documented way for a client component to fetch them
+ * (`next/dist/docs/01-app/01-getting-started/07-mutating-data.md` — Invoking
+ * Server Functions). The same call answers every write, so an override that is
+ * created, edited or deleted lands in one roundtrip and the list under the form
+ * is always the list Postgres holds.
+ *
+ * Every number here carries an "as of" and never a rate: the counts come from
+ * the metering flush (D166) and are therefore seconds behind, and the sampling
+ * rate itself is a constant in the ingest binary (D165) that this tab describes
+ * in words rather than restating as a number that could drift from it.
+ */
+function LiveIngestTab() {
+  const [ingest, setIngest] = useState<LiveIngest | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [pending, run] = useTransition();
+
+  // The load and every write share one runner and one error slot: the tab has
+  // one piece of state and one way to replace it, so a write cannot leave the
+  // screen showing a list that predates it — and a call that never came back
+  // says so instead of leaving the last list looking current.
+  const call = (work: () => Promise<IngestFormResult>) =>
+    run(async () => {
+      try {
+        const result = await work();
+        setIngest(result.ingest);
+        setError(result.error);
+      } catch (failure) {
+        console.error("[settings] ingest tab", failure);
+        setError(INGEST_UNREACHABLE);
+      }
+    });
+
+  // Once, on open: this is a read of rows the flusher rewrites every few
+  // seconds, and a tab that re-fetched on every render would poll Postgres by
+  // accident. Refreshing is a tab switch away, and every write returns the
+  // current list anyway.
+  useEffect(() => {
+    call(loadIngestHealth);
+  }, []);
+
+  if (!ingest) {
+    return (
+      <Section title="ingest health">
+        <p className="py-1 text-[12.5px] text-faint">{error ?? "Reading health rows…"}</p>
+      </Section>
+    );
+  }
+
+  return (
+    <>
+      <Section title={`ingest health · ${ingest.keys.length} ${ingest.keys.length === 1 ? "key" : "keys"}`}>
+        <div className="grid grid-cols-3 gap-3">
+          <Stat label="events accepted" value={ingest.accepted} />
+          <Stat label="receive-path errors" value={ingest.receiveErrors} warn />
+          <Stat label="sampled out (quota)" value={ingest.droppedQuota} warn />
+        </div>
+        {/* The basis and the staleness in one sentence (D162): these are drops
+            counted where a request is decoded, so a failure further in — a
+            write that could not be enqueued — is not among them, and the whole
+            row set is as old as the last metering flush. */}
+        <p className="mt-2.5 font-mono text-[10.5px] leading-relaxed text-faint">
+          {ingest.asOf
+            ? `receive-path errors, as of ${ingest.asOf} — write-path failures are not counted here`
+            : "no events on any key yet — these counts start with the first accepted record"}
+        </p>
+
+        <div className="mt-3 rounded-md border border-line bg-raised">
+          {ingest.keys.length === 0 ? (
+            <p className="px-3 py-2 text-[12.5px] text-faint">
+              No keys yet — create one on the API keys tab and its health appears here.
+            </p>
+          ) : (
+            ingest.keys.map((key) => (
+              <div
+                key={key.keyId}
+                className="flex flex-wrap items-center gap-3 border-b border-line/60 px-3 py-2 last:border-0"
+              >
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-[12.5px] text-ink">
+                    {key.name}
+                    {key.revoked && (
+                      <span className="ml-1.5 font-mono text-[9.5px] tracking-wide text-faint">
+                        REVOKED
+                      </span>
+                    )}
+                  </span>
+                  <span className="block font-mono text-[10.5px] text-faint">{key.prefix}…</span>
+                </span>
+                <span className="font-mono text-[10.5px] text-faint">
+                  {key.lastEvent ? `last event ${key.lastEvent}` : "no events yet"}
+                </span>
+                <span className="w-[190px] text-right font-mono text-[11px] text-mid">
+                  {key.accepted.toLocaleString()} accepted · {key.errors.toLocaleString()} errors ·{" "}
+                  {key.sampled.toLocaleString()} sampled
+                </span>
+              </div>
+            ))
+          )}
+        </div>
+
+        {/* Qualitative on purpose (D165): the rate is one constant, in Go. */}
+        <p className="mt-2 font-mono text-[10.5px] leading-relaxed text-faint">
+          malformed data is dropped and counted — ingest never 500s back at your services. Over
+          quota it samples whole traces instead of cutting off: see Billing &amp; usage.
+        </p>
+      </Section>
+
+      <Section title="model pricing · cost attribution">
+        <p className="text-[12.5px] leading-relaxed text-mid">
+          Cost is computed at ingest from tokens × these rates and stored on the span, so a trace
+          keeps the price that was in force when it ran. An override matches a model-name PREFIX,
+          longest match first, and your overrides are read before the built-in list — a family
+          price you set here beats our per-version row for that family.
+        </p>
+
+        {error && (
+          <p role="alert" className="mt-2.5 text-[12.5px] leading-relaxed" style={{ color: "var(--color-err)" }}>
+            {error}
+          </p>
+        )}
+
+        <div className="mt-3 rounded-md border border-line bg-raised">
+          {ingest.overrides.length === 0 ? (
+            <p className="px-3 py-2 text-[12.5px] text-faint">
+              No overrides — every model is priced from the built-in list.
+            </p>
+          ) : (
+            ingest.overrides.map((override) => (
+              <div
+                key={override.id}
+                className="flex flex-wrap items-center gap-3 border-b border-line/60 px-3 py-2 last:border-0"
+              >
+                <span className="min-w-0 flex-1 truncate font-mono text-[11.5px] text-mid">
+                  {override.match}
+                </span>
+                <span className="font-mono text-[11.5px] text-mid">
+                  ${override.inputPerMTok} in · ${override.outputPerMTok} out / M
+                </span>
+                <span className="w-24 text-right font-mono text-[10px] text-faint">
+                  {override.updated}
+                </span>
+                <button
+                  type="button"
+                  disabled={pending}
+                  onClick={() => {
+                    const form = new FormData();
+                    form.set("overrideId", override.id);
+                    call(() => deleteOverride(form));
+                  }}
+                  className="font-mono text-[10.5px] text-faint hover:text-err disabled:opacity-60"
+                  style={{ color: "var(--color-faint)" }}
+                >
+                  remove
+                </button>
+              </div>
+            ))
+          )}
+        </div>
+
+        {/* An uncontrolled form, submitted through the shared runner: the action
+            returns the new list rather than redirecting, so a refusal leaves
+            what was typed on screen beside the reason it was refused. */}
+        <form
+          action={(form: FormData) => call(() => saveOverride(form))}
+          className="mt-3 flex flex-wrap gap-2"
+        >
+          <input
+            name="match"
+            required
+            aria-label="Model name prefix"
+            placeholder="model prefix, e.g. my-ft-classifier"
+            className="min-w-[200px] flex-1 rounded-md border border-line bg-raised px-3 py-1.5 font-mono text-[12px] text-ink placeholder:text-faint focus:border-line-strong focus:outline-none"
+          />
+          <input
+            name="inputPerMTok"
+            required
+            inputMode="decimal"
+            aria-label="Input price per million tokens"
+            placeholder="input $/M"
+            className="w-[110px] rounded-md border border-line bg-raised px-3 py-1.5 font-mono text-[12px] text-ink placeholder:text-faint focus:border-line-strong focus:outline-none"
+          />
+          <input
+            name="outputPerMTok"
+            required
+            inputMode="decimal"
+            aria-label="Output price per million tokens"
+            placeholder="output $/M"
+            className="w-[110px] rounded-md border border-line bg-raised px-3 py-1.5 font-mono text-[12px] text-ink placeholder:text-faint focus:border-line-strong focus:outline-none"
+          />
+          <button
+            type="submit"
+            disabled={pending}
+            className="flex items-center gap-1.5 rounded-md border border-line bg-raised px-3 py-1.5 text-[12.5px] text-mid hover:border-line-strong hover:text-ink disabled:opacity-60"
+          >
+            <Plus className="h-3.5 w-3.5" /> {pending ? "Saving…" : "Set price"}
+          </button>
+        </form>
+
+        <p className="mt-2.5 font-mono text-[10.5px] leading-relaxed text-faint">
+          {ingest.overrides.length} of {ingest.overrideMax} overrides used · everything else is
+          priced from the built-in list of {ingest.pricedModels} models, last checked{" "}
+          {ingest.pricesAsOf} · a new price applies to spans that arrive within 30 seconds, never
+          to spans already stored
+        </p>
+      </Section>
+    </>
+  );
+}
+
 function IngestTab() {
   return (
     <>
@@ -1007,7 +1325,12 @@ function ComplianceTab() {
 /* ---------------- Suite ---------------- */
 
 export function SettingsSuite({ live }: { live: LiveSettings | null }) {
-  const [tab, setTab] = useState<Tab>("General");
+  // A customer coming back from Polar lands on the tab that answers them. The
+  // return is reconciled on the server before this renders (D110's
+  // poll-on-return), and its notice, the new plan and the meter it is measured
+  // against all live in Billing & usage — opening on General would hide the
+  // outcome of a payment behind a click.
+  const [tab, setTab] = useState<Tab>(live?.billing.checkout ? "Billing & usage" : "General");
   return (
     <div className="mx-auto max-w-3xl px-5 py-6">
       <h1 className="font-display text-[19px] font-semibold text-ink">Settings</h1>
@@ -1047,7 +1370,7 @@ export function SettingsSuite({ live }: { live: LiveSettings | null }) {
       {tab === "Members" && (live ? <LiveMembersTab live={live} /> : <MembersTab />)}
       {tab === "API keys" && (live ? <LiveKeysTab live={live} /> : <KeysTab />)}
       {tab === "Billing & usage" && (live ? <LiveBillingTab live={live} /> : <BillingTab />)}
-      {tab === "Data & ingest" && <IngestTab />}
+      {tab === "Data & ingest" && (live ? <LiveIngestTab /> : <IngestTab />)}
       {tab === "Audit log" && <AuditTab />}
       {tab === "Compliance" && <ComplianceTab />}
     </div>
