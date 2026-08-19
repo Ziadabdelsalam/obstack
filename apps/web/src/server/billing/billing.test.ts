@@ -255,8 +255,22 @@ test("reconcileCheckout refuses another workspace's checkout and writes nothing 
   // This line is the security tripwire (D176/D190): the refusal is silent
   // everywhere else, so if it stops being logged nobody learns it happened.
   assert.equal(logged.length, 1, "one loud line, and one only");
-  assert.match(logged[0], /^\[billing\] checkout \S+ belongs to another workspace/);
+  assert.match(logged[0], /^\[billing\] checkout "\S+" belongs to another workspace/);
   assert.ok(!logged[0].includes("ws_stranger"), "the refusal names the checkout, not the owner");
+});
+
+test("a refusal line cannot be forged by the id it names", async () => {
+  // The id is whatever was in the address bar, so an unquoted newline in it
+  // would let a caller write their own "belongs to another workspace" line —
+  // or push the real one out of an operator's sight. Quoting is the fix.
+  const forged = "chk_x\n[billing] checkout chk_y is unknown to the rail";
+  const store = recorder();
+  const { logged } = await capturingErrors(() =>
+    reconcileCheckout(forged, "ws_alpha", store.query),
+  );
+
+  assert.equal(logged.length, 1);
+  assert.ok(!logged[0].includes("\n"), "one id, one line");
 });
 
 test("reconcileCheckout treats an id the rail never issued as nothing to do", async () => {
@@ -267,7 +281,7 @@ test("reconcileCheckout treats an id the rail never issued as nothing to do", as
   assert.deepEqual(result, { applied: false });
   assert.equal(store.calls.length, 0);
   assert.equal(logged.length, 1);
-  assert.match(logged[0], /\[billing\] checkout chk_hostile is unknown to the rail/);
+  assert.match(logged[0], /\[billing\] checkout "chk_hostile" is unknown to the rail/);
 });
 
 test("a succeeded checkout with no plan to write is refused loudly, not guessed at", async () => {
@@ -289,6 +303,12 @@ test("a succeeded checkout with no plan to write is refused loudly, not guessed 
   assert.equal(logged.length, 1);
   assert.match(logged[0], /succeeded with no plan id/);
 });
+
+// Recorded narrowing: three of `reconcileCheckout`'s five refusal branches are
+// proven above. The pending and expired ones are NOT reachable here — a fake
+// checkout succeeds at creation (D168), so reaching them needs a stand-in for
+// `getBilling()`, an injection seam D190 did not rule. Their loud lines are
+// therefore unguarded: deleting one goes green.
 
 test("applyWebhook is the same reconciliation the return path uses (one definition)", async () => {
   const created = await fakeBilling.createCheckout({

@@ -78,41 +78,44 @@ export async function setWorkspacePlan(
  *
  * Every one of the five ways this returns without writing logs its reason and
  * exactly its reason (D168's refuse-loudly posture, D190): the checkout id and
- * why, never the checkout body and never a credential.
+ * why, never the checkout body and never a credential. The id is QUOTED into
+ * those lines, because it is caller-supplied and an unquoted newline in it
+ * forges a log line — including a forged copy of the tripwire below.
  */
 export async function reconcileCheckout(
   checkoutId: string,
   workspaceId: string,
   query: QueryRows,
 ): Promise<ReconcileResult> {
+  // Quoted once, for every line below: see the note above about forged lines.
+  const id = JSON.stringify(checkoutId);
+
   let state;
   try {
     state = await getBilling().getCheckout(checkoutId);
   } catch (error) {
     if (error instanceof UnknownCheckout) {
-      console.error(`[billing] checkout ${checkoutId} is unknown to the rail — not reconciled`);
+      console.error(`[billing] checkout ${id} is unknown to the rail — not reconciled`);
       return { applied: false };
     }
     throw error;
   }
 
   if (state.status === "open") {
-    console.error(`[billing] checkout ${checkoutId} is still pending — not reconciled`);
+    console.error(`[billing] checkout ${id} is still pending — not reconciled`);
     return { applied: false };
   }
   if (state.status === "expired") {
-    console.error(`[billing] checkout ${checkoutId} expired — not reconciled`);
+    console.error(`[billing] checkout ${id} expired — not reconciled`);
     return { applied: false };
   }
 
   if (state.externalCustomerId && state.externalCustomerId !== workspaceId) {
-    console.error(
-      `[billing] checkout ${checkoutId} belongs to another workspace — not reconciled`,
-    );
+    console.error(`[billing] checkout ${id} belongs to another workspace — not reconciled`);
     return { applied: false };
   }
   if (!state.planId) {
-    console.error(`[billing] checkout ${checkoutId} succeeded with no plan id — not reconciled`);
+    console.error(`[billing] checkout ${id} succeeded with no plan id — not reconciled`);
     return { applied: false };
   }
 
