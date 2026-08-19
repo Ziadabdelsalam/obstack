@@ -1,7 +1,7 @@
 import "server-only";
 import type { QueryRows } from "@/server/postgres";
 import { getBilling } from "./client";
-import { UnknownCheckout, type WebhookEvent } from "./types";
+import { UnknownCheckout, type BillingClient, type WebhookEvent } from "./types";
 
 /**
  * The two writes billing is allowed to make, and the ONE definition of what a
@@ -81,18 +81,30 @@ export async function setWorkspacePlan(
  * why, never the checkout body and never a credential. The id is QUOTED into
  * those lines, because it is caller-supplied and an unquoted newline in it
  * forges a log line — including a forged copy of the tripwire below.
+ *
+ * "Loud" means always emitted, not always `error` (D193). An id the rail never
+ * issued, a foreign checkout and a plan-less success cannot happen through
+ * honest use, so they are errors; still-pending and expired are what the rail
+ * ordinarily answers when a customer closes the tab, and pre-committing an
+ * alert level to a routine outcome is how alerting becomes noise.
+ *
+ * `billing` is injected on the same D113 seam `query` is, and for the same
+ * reason: the fake's checkout succeeds at creation, so the pending and expired
+ * branches are only reachable — and therefore only PROVABLE — through a
+ * stand-in rail. Both callers take the default.
  */
 export async function reconcileCheckout(
   checkoutId: string,
   workspaceId: string,
   query: QueryRows,
+  billing: BillingClient = getBilling(),
 ): Promise<ReconcileResult> {
   // Quoted once, for every line below: see the note above about forged lines.
   const id = JSON.stringify(checkoutId);
 
   let state;
   try {
-    state = await getBilling().getCheckout(checkoutId);
+    state = await billing.getCheckout(checkoutId);
   } catch (error) {
     if (error instanceof UnknownCheckout) {
       console.error(`[billing] checkout ${id} is unknown to the rail — not reconciled`);
@@ -102,11 +114,11 @@ export async function reconcileCheckout(
   }
 
   if (state.status === "open") {
-    console.error(`[billing] checkout ${id} is still pending — not reconciled`);
+    console.warn(`[billing] checkout ${id} is still pending — not reconciled`);
     return { applied: false };
   }
   if (state.status === "expired") {
-    console.error(`[billing] checkout ${id} expired — not reconciled`);
+    console.warn(`[billing] checkout ${id} expired — not reconciled`);
     return { applied: false };
   }
 

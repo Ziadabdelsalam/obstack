@@ -4,7 +4,13 @@ import { fakeBilling, signFakeWebhook, FAKE_SIGNATURE_HEADER } from "./fake";
 import { normalizeWebhook } from "./webhook";
 import { applyWebhook, reconcileCheckout, type ReconcileResult } from "./reconcile";
 import { billingMode, createBillingClient } from "./client";
-import { CHECKOUT_RETURN_PARAM, UnknownCheckout, type WebhookEvent } from "./types";
+import {
+  CHECKOUT_RETURN_PARAM,
+  UnknownCheckout,
+  type BillingClient,
+  type CheckoutState,
+  type WebhookEvent,
+} from "./types";
 
 // run with: npm test --workspace apps/web
 //
@@ -31,19 +37,37 @@ function recorder() {
 }
 
 /**
- * The loud lines, as an operator would read them. Refusals carry their reason
- * in a log rather than a return value (D190), so the log IS the assertion — a
- * tripwire nobody can read is not a tripwire.
+ * The loud lines, as an operator would read them, kept apart by LEVEL: refusals
+ * carry their reason in a log rather than a return value (D190), so the log IS
+ * the assertion, and D193 grades which of them is an anomaly (`error`) and which
+ * is a routine customer outcome (`warn`). A tripwire nobody can read is not a
+ * tripwire, and one that fires on ordinary traffic is not one either.
  */
-async function capturingErrors<T>(body: () => Promise<T>): Promise<{ result: T; logged: string[] }> {
+async function capturingLogs<T>(
+  body: () => Promise<T>,
+): Promise<{ result: T; logged: string[]; warned: string[] }> {
   const logged: string[] = [];
-  const real = console.error;
+  const warned: string[] = [];
+  const realError = console.error;
+  const realWarn = console.warn;
   console.error = (...args: unknown[]) => void logged.push(args.map(String).join(" "));
+  console.warn = (...args: unknown[]) => void warned.push(args.map(String).join(" "));
   try {
-    return { result: await body(), logged };
+    return { result: await body(), logged, warned };
   } finally {
-    console.error = real;
+    console.error = realError;
+    console.warn = realWarn;
   }
+}
+
+/**
+ * A rail that answers one checkout state, injected on the D192 seam. The fake's
+ * checkout succeeds at creation (D168), so a stand-in is the only way the
+ * pending and expired branches are reachable — and an unreachable branch is one
+ * nothing proves. Every other method stays the fake's.
+ */
+function railAnswering(state: CheckoutState): BillingClient {
+  return { ...fakeBilling, getCheckout: async () => state };
 }
 
 test("the default mode is the fake, and it never needs a Polar secret (D168)", () => {
@@ -246,15 +270,17 @@ test("reconcileCheckout refuses another workspace's checkout and writes nothing 
   });
   const store = recorder();
 
-  const { result, logged } = await capturingErrors(() =>
+  const { result, logged, warned } = await capturingLogs(() =>
     reconcileCheckout(created.checkoutId, "ws_mine", store.query),
   );
 
   assert.deepEqual(result, { applied: false });
   assert.equal(store.calls.length, 0, "no statement ran at all");
   // This line is the security tripwire (D176/D190): the refusal is silent
-  // everywhere else, so if it stops being logged nobody learns it happened.
+  // everywhere else, so if it stops being logged nobody learns it happened. It
+  // stays at error level (D193) — it cannot happen through honest use.
   assert.equal(logged.length, 1, "one loud line, and one only");
+  assert.equal(warned.length, 0, "the tripwire is not a warning");
   assert.match(logged[0], /^\[billing\] checkout "\S+" belongs to another workspace/);
   assert.ok(!logged[0].includes("ws_stranger"), "the refusal names the checkout, not the owner");
 });
@@ -265,7 +291,7 @@ test("a refusal line cannot be forged by the id it names", async () => {
   // or push the real one out of an operator's sight. Quoting is the fix.
   const forged = "chk_x\n[billing] checkout chk_y is unknown to the rail";
   const store = recorder();
-  const { logged } = await capturingErrors(() =>
+  const { logged } = await capturingLogs(() =>
     reconcileCheckout(forged, "ws_alpha", store.query),
   );
 
@@ -275,12 +301,13 @@ test("a refusal line cannot be forged by the id it names", async () => {
 
 test("reconcileCheckout treats an id the rail never issued as nothing to do", async () => {
   const store = recorder();
-  const { result, logged } = await capturingErrors(() =>
+  const { result, logged, warned } = await capturingLogs(() =>
     reconcileCheckout("chk_hostile", "ws_alpha", store.query),
   );
   assert.deepEqual(result, { applied: false });
   assert.equal(store.calls.length, 0);
   assert.equal(logged.length, 1);
+  assert.equal(warned.length, 0, "an id the rail never issued is an anomaly (D193)");
   assert.match(logged[0], /\[billing\] checkout "chk_hostile" is unknown to the rail/);
 });
 
@@ -294,21 +321,54 @@ test("a succeeded checkout with no plan to write is refused loudly, not guessed 
   });
   const store = recorder();
 
-  const { result, logged } = await capturingErrors(() =>
+  const { result, logged, warned } = await capturingLogs(() =>
     reconcileCheckout(created.checkoutId, "ws_alpha", store.query),
   );
 
   assert.deepEqual(result, { applied: false });
   assert.equal(store.calls.length, 0, "no statement ran at all");
   assert.equal(logged.length, 1);
+  assert.equal(warned.length, 0, "a plan-less paid checkout is an anomaly (D193)");
   assert.match(logged[0], /succeeded with no plan id/);
 });
 
-// Recorded narrowing: three of `reconcileCheckout`'s five refusal branches are
-// proven above. The pending and expired ones are NOT reachable here — a fake
-// checkout succeeds at creation (D168), so reaching them needs a stand-in for
-// `getBilling()`, an injection seam D190 did not rule. Their loud lines are
-// therefore unguarded: deleting one goes green.
+test("a checkout still open is a warning, not an alert, and writes nothing (D193)", async () => {
+  // Closing the tab mid-payment is what customers do; a rail answering "open"
+  // is the rail working. Logging it at error level would pre-commit the S5
+  // alerting to routine traffic, so this one is a warn — but still ALWAYS
+  // emitted, which is what D190's "loud" means.
+  const store = recorder();
+  const pending = railAnswering({ status: "open", externalCustomerId: "ws_alpha" });
+  const forged = "chk_open\n[billing] checkout chk_y belongs to another workspace";
+
+  const { result, logged, warned } = await capturingLogs(() =>
+    reconcileCheckout(forged, "ws_alpha", store.query, pending),
+  );
+
+  assert.deepEqual(result, { applied: false });
+  assert.equal(store.calls.length, 0, "no statement ran at all");
+  assert.equal(logged.length, 0, "a pending checkout is nobody's incident");
+  assert.equal(warned.length, 1);
+  assert.match(warned[0], /^\[billing\] checkout ".*" is still pending — not reconciled$/);
+  assert.ok(!warned[0].includes("\n"), "one id, one line — the id is quoted here too");
+});
+
+test("an expired checkout is a warning, not an alert, and writes nothing (D193)", async () => {
+  const store = recorder();
+  const expired = railAnswering({ status: "expired", externalCustomerId: "ws_alpha" });
+  const forged = "chk_expired\n[billing] checkout chk_y is unknown to the rail";
+
+  const { result, logged, warned } = await capturingLogs(() =>
+    reconcileCheckout(forged, "ws_alpha", store.query, expired),
+  );
+
+  assert.deepEqual(result, { applied: false });
+  assert.equal(store.calls.length, 0, "no statement ran at all");
+  assert.equal(logged.length, 0, "an expired session is a customer outcome");
+  assert.equal(warned.length, 1);
+  assert.match(warned[0], /^\[billing\] checkout ".*" expired — not reconciled$/);
+  assert.ok(!warned[0].includes("\n"), "one id, one line — the id is quoted here too");
+});
 
 test("applyWebhook is the same reconciliation the return path uses (one definition)", async () => {
   const created = await fakeBilling.createCheckout({
@@ -373,7 +433,7 @@ test("the webhook route refuses in mock mode, where there is nothing to reconcil
   const route = await import("@/app/api/billing/webhook/route");
   const body = JSON.stringify({ type: "order.paid", data: {} });
 
-  const { result: response, logged } = await capturingErrors(() =>
+  const { result: response, logged } = await capturingLogs(() =>
     route.POST(
       new Request("https://obstack.dev/api/billing/webhook", {
         method: "POST",
