@@ -199,11 +199,18 @@ test("every settings write trips the same way in mock mode (D152)", async () => 
   // is called with an EMPTY FormData on purpose: the guard runs before any field
   // is read, so nothing below it can be what answered.
   const actions = await import("@/app/app/settings/actions");
+  const billing = await import("@/app/app/settings/billing-actions");
   const cases: [string, (form: FormData) => Promise<unknown>][] = [
     ["issue key", actions.issueKey],
     ["revoke key", actions.revokeKey],
     ["invite teammate", actions.inviteTeammate],
     ["cancel invitation", actions.cancelInvitation],
+    // The plan change lives in its own module — a `"use server"` file may
+    // export nothing but server actions, so it carries its own copy of the gate
+    // — and joins this list rather than getting a test of its own, because the
+    // property is one property (D152). Its guard would also be the difference
+    // between refusing and reaching Polar with no workspace behind it.
+    ["start checkout", billing.startCheckout],
   ];
 
   for (const [where, action] of cases) {

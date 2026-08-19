@@ -1,0 +1,55 @@
+import { applyWebhook, getBilling } from "@/server/billing";
+import { dataMode } from "@/server/data";
+import { queryRows } from "@/server/postgres";
+
+/**
+ * Polar's webhook endpoint — the ASYNC RECONCILER, never a UX dependency
+ * (D110). A plan change is confirmed to the customer by reading the checkout
+ * back on return; this route exists so the plan row is still right when the
+ * customer closed the tab, when the return never happened, and when a
+ * subscription later renews, lapses or is revoked with nobody watching.
+ *
+ * Local development needs no tunnel because of that split (MEASURED: Polar has
+ * no first-party forwarder, and D110 §2(iii) ruled ngrok-class tunnels out).
+ *
+ * The order of the four steps below is the whole security of this file:
+ *
+ *  1. the RAW body is read — no framework JSON parse happens before validation,
+ *     because a signature is over bytes and re-serialising them is how a valid
+ *     signature starts covering a different body;
+ *  2. it is validated (`validateEvent` in sandbox mode, an HMAC in fake mode);
+ *     a bad signature is a bare 403 with no body detail — an attacker learns
+ *     nothing about which part was wrong;
+ *  3. exactly D169's consumed set is applied, inline;
+ *  4. everything else valid gets a 200, because an unACKed delivery costs ten
+ *     retries and there is nothing to retry.
+ *
+ * A write that fails DOES answer 500: Polar's retries are the recovery, and
+ * swallowing it would leave a workspace on the wrong plan forever.
+ */
+export async function POST(request: Request): Promise<Response> {
+  // The prototype deployment keeps no accounts, no plans and no Postgres, so
+  // there is nothing here for a webhook to reconcile — the same honest refusal
+  // the mock-mode auth surfaces make (D150), with the tripwire log that says a
+  // post arrived somewhere no delivery should be pointed.
+  if (dataMode === "mock") {
+    console.error("[billing] webhook posted in mock mode — this deployment has no billing");
+    return new Response(null, { status: 404 });
+  }
+
+  const rawBody = await request.text();
+  let event;
+  try {
+    event = getBilling().verifyWebhook(rawBody, Object.fromEntries(request.headers));
+  } catch {
+    return new Response(null, { status: 403 });
+  }
+
+  try {
+    await applyWebhook(event, queryRows);
+  } catch (error) {
+    console.error(`[billing] webhook ${event.type} could not be applied`, error);
+    return new Response(null, { status: 500 });
+  }
+  return new Response(null, { status: 200 });
+}
