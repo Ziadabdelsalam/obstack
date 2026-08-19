@@ -22,6 +22,12 @@
 // of an unwritable ledger would trade a billing undercount for the process.
 // Health cells need no such cap — one per (workspace, key) pair that resolved a
 // real api_keys row, so nothing an unauthenticated caller sends can grow them.
+// A flush that dies on a foreign key discards the whole snapshot rather than the
+// offending rows, which is accepted for M3 (D180): no surface deletes a workspace
+// yet, so the case is unreachable, and the cost if it were reached is one flush
+// interval of undercount in the customer's favour — the per-row retry that would
+// save the rest is registered to the M4 inventory beside D119/D123/D153, gated on
+// the first deletion surface that makes it reachable.
 //
 // Staleness, stated once: usage lands within flushInterval, and a quota crossing
 // is therefore honored within flushInterval (5s) plus the keystore's TTL (30s).
@@ -198,12 +204,18 @@ func (m *Meter) RecordAccepted(workspaceID, keyID string, spans, logs int64) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	// The bucket boundary every replica lands on without agreeing on anything.
-	key := ledgerKey{workspaceID: workspaceID, periodStart: at.Truncate(time.Hour)}
-	cell := m.ledger[key]
-	cell.spans += max(spans, 0)
-	cell.logs += max(logs, 0)
-	m.ledger[key] = cell
+	// A blank workspace id is skipped for the same reason a blank key id is:
+	// usage_ledger.workspace_id is a foreign key, so such a bucket could never
+	// commit, and one uncommittable row takes the whole snapshot — every other
+	// workspace's usage in it — down with it.
+	if workspaceID != "" {
+		// The bucket boundary every replica lands on without agreeing on anything.
+		key := ledgerKey{workspaceID: workspaceID, periodStart: at.Truncate(time.Hour)}
+		cell := m.ledger[key]
+		cell.spans += max(spans, 0)
+		cell.logs += max(logs, 0)
+		m.ledger[key] = cell
+	}
 
 	m.updateHealth(workspaceID, keyID, func(c *healthCell) {
 		c.accepted += max(spans, 0) + max(logs, 0)
@@ -293,7 +305,9 @@ func (m *Meter) Flush(ctx context.Context) error {
 	// A foreign key violation is not a transient failure: the workspace or the
 	// key these counts belong to is gone, so no retry can ever commit them, and
 	// retaining them would wedge every later flush behind a transaction that
-	// cannot succeed.
+	// cannot succeed. The snapshot is one transaction, so the discard costs the
+	// counts of every workspace in it and not only the deleted one — one flush
+	// interval of usage, once, against a permanently wedged ledger.
 	if unretryable(err) {
 		droppedRows.Add(float64(len(b.ledger) + len(b.health)))
 		slog.Error("discarding metering counts whose workspace or key no longer exists",

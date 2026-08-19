@@ -16,7 +16,9 @@
 -- Spans and logs are counted separately because they are separately meaningful
 -- to an operator, and summed for quota: the D163 definition, stated once, is
 -- SUM(spans + logs) over period_start >= date_trunc('month', now() AT TIME ZONE
--- 'UTC') compared against the plan's event_quota.
+-- 'UTC') AT TIME ZONE 'UTC' compared against the plan's event_quota. The second
+-- AT TIME ZONE is not decoration (D179): without it the boundary is the month
+-- the server's session is in, which is the right answer only on a UTC host.
 --
 -- The UPSERT of record — the only shape any writer uses, correct under N
 -- replicas by construction because it adds and never sets:
@@ -67,8 +69,11 @@ CREATE TABLE IF NOT EXISTS api_key_health (
     updated_at          TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- The tab lists a workspace's keys with their health, and the workspace-state
--- refresh reads by workspace; neither has the key id in hand first.
+-- The Data & ingest tab lists a workspace's keys with their health, and the
+-- workspace's ingest-error count sums these rows — both read by workspace with
+-- no key id in hand first. The workspace-state refresh does not read this table
+-- at all: its two statements under lookupTimeout are the over-quota SELECT and
+-- the overrides SELECT (D164), so nothing on the authenticated path waits here.
 CREATE INDEX IF NOT EXISTS api_key_health_workspace_id_idx ON api_key_health (workspace_id);
 
 -- Per-workspace pricing overrides (D108) on the D9 row shape: a model-name match
@@ -80,10 +85,19 @@ CREATE INDEX IF NOT EXISTS api_key_health_workspace_id_idx ON api_key_health (wo
 -- UNIQUE (workspace_id, match) is the identity: one rate pair per match per
 -- workspace, so editing an override is an UPSERT and not a duplicate the
 -- resolver would have to break a tie between.
+--
+-- The CHECK is what makes that identity mean one thing (D175). Both resolvers
+-- lowercase the model name before they compare, so a stored `GPT-4o` is a row
+-- that can never match anything — and, worse, one UNIQUE would happily let sit
+-- beside `gpt-4o`, leaving two rates for one prefix and a tie nobody defined.
+-- Lowercase is therefore the canonical form and the store is where it is
+-- enforced: the web app lowercases on write, and this refuses the row if it ever
+-- stops. The Go side's skip of a mixed-case override stays as defence, not as
+-- the rule — a cache refresh cannot refuse the way boot can.
 CREATE TABLE IF NOT EXISTS pricing_overrides (
     id             TEXT PRIMARY KEY,
     workspace_id   TEXT NOT NULL REFERENCES workspaces (id) ON DELETE CASCADE,
-    match          TEXT NOT NULL,
+    match          TEXT NOT NULL CHECK (match = lower(match)),
     input_per_mtok  DOUBLE PRECISION NOT NULL,
     output_per_mtok DOUBLE PRECISION NOT NULL,
     updated_at     TIMESTAMPTZ NOT NULL DEFAULT now(),

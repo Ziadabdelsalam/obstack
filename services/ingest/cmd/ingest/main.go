@@ -218,14 +218,8 @@ func run() error {
 	// cannot reach ClickHouse should fail to boot, not accept exports it will
 	// only drop (D23 makes those drops invisible to the client).
 	writer, err := write.New(connectCtx, write.Config{
-		DSN: cfg.ClickHouseDSN,
-		// The workspace's D108 overrides layered over the embedded list (D167).
-		// The cache's answer for a workspace it has never read is no overrides,
-		// which is the embedded list — fail-open, so an outage of ours prices
-		// telemetry at list price rather than not at all.
-		Prices: func(workspaceID string) *pricing.Table {
-			return pricing.Default.WithOverrides(keys.State(workspaceID).Overrides)
-		},
+		DSN:    cfg.ClickHouseDSN,
+		Prices: pricesFor(keys),
 	})
 	if err != nil {
 		return err
@@ -299,6 +293,17 @@ func run() error {
 		runErr = err
 	}
 	return runErr
+}
+
+// pricesFor is the D167 seam between the cache and the write path: the table a
+// workspace's spans are costed with is whatever the keystore built on its last
+// refresh, handed over as it is. It builds nothing (D174) — the D108 overrides
+// were layered in once, thirty seconds' worth of exports ago, and doing it here
+// would put a sort on the path of every export instead. A workspace the cache
+// has never read prices off the embedded list, which is fail-open: an outage of
+// ours prices telemetry at list price rather than not at all.
+func pricesFor(keys *keystore.Store) func(workspaceID string) *pricing.Table {
+	return func(workspaceID string) *pricing.Table { return keys.State(workspaceID).Prices }
 }
 
 // openPostgres builds the process's pool. The DSN is parsed before dialing so a

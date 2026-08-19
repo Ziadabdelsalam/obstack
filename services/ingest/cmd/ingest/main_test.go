@@ -15,8 +15,10 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/Ziadabdelsalam/observer-stack/services/ingest/internal/config"
+	"github.com/Ziadabdelsalam/observer-stack/services/ingest/internal/keystore"
 	"github.com/Ziadabdelsalam/observer-stack/services/ingest/internal/migrate"
 	"github.com/Ziadabdelsalam/observer-stack/services/ingest/internal/pgmigrate"
+	"github.com/Ziadabdelsalam/observer-stack/services/ingest/internal/pricing"
 	"github.com/Ziadabdelsalam/observer-stack/services/ingest/migrations"
 	"github.com/Ziadabdelsalam/observer-stack/services/ingest/pgmigrations"
 )
@@ -205,6 +207,31 @@ func TestOpenPostgresRefusesAMalformedDSN(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), envPostgresDSN) {
 		t.Errorf("error = %v, want it to name %s", err, envPostgresDSN)
+	}
+}
+
+// The write path's price seam, at the site D174 corrected: it hands back the
+// table the keystore already built and builds none of its own. Hermetic — the
+// store is never asked to resolve a token, and State is a map read that touches
+// no pool — because what is being asserted is the wiring, not Postgres.
+func TestPricesForHandsBackTheKeystoresTable(t *testing.T) {
+	keys := keystore.New(nil)
+	prices := pricesFor(keys)
+
+	// Fail-open, and specifically not nil: a workspace the cache has never read
+	// prices off the embedded list, and a writer handed nil would panic costing
+	// its first span.
+	got := prices("ws_never_seen")
+	if got == nil {
+		t.Fatal("the price resolver returned nil for an unknown workspace")
+	}
+	if got != pricing.Default {
+		t.Errorf("prices(unknown workspace) = %p, want the embedded table %p", got, pricing.Default)
+	}
+	// Identity with the cache's own answer, twice: anything built here rather
+	// than looked up would be a fresh table per export.
+	if second := prices("ws_never_seen"); second != got || got != keys.State("ws_never_seen").Prices {
+		t.Error("the resolver built a table instead of returning the one the keystore holds")
 	}
 }
 

@@ -199,7 +199,7 @@ func TestNonLLMSpanIsNotPriced(t *testing.T) {
 // model the embedded list has never heard of gets a price rather than a gap.
 func TestWorkspaceOverridesPriceTheSpan(t *testing.T) {
 	before := metrics.UnpricedModelCounts()["acme-llm-9"]
-	prices := pricing.Default.WithOverrides([]pricing.Override{
+	prices := pricing.Default.WithOverrides([]pricing.Rate{
 		{Match: "acme-llm-9", InputPerMTok: 4, OutputPerMTok: 12},
 	})
 

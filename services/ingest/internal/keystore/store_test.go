@@ -49,10 +49,20 @@ func (f *fakeLookup) fn(_ context.Context, tokenHash string) (auth.Identity, boo
 // enough for what this file proves.
 func keyIDOf(workspaceID string) string { return "key_" + workspaceID }
 
+// stateRows is what the two statements return before they are a State: the
+// verdict and the override rows. The fake holds these rather than a finished
+// State so that it builds the table on every call, exactly as queryState does —
+// otherwise a test asserting that two reads share one table would be asserting
+// that a map returned the same struct twice.
+type stateRows struct {
+	overQuota bool
+	overrides []pricing.Rate
+}
+
 // fakeState is the other round trip: the two statements the workspace-state
 // refresh runs, with the same three knobs.
 type fakeState struct {
-	rows  map[string]State // workspace → state
+	rows  map[string]stateRows // workspace → what Postgres holds for it
 	calls int
 	err   error
 }
@@ -62,7 +72,8 @@ func (f *fakeState) fn(_ context.Context, workspaceID string) (State, error) {
 	if f.err != nil {
 		return State{}, f.err
 	}
-	return f.rows[workspaceID], nil
+	r := f.rows[workspaceID]
+	return State{OverQuota: r.overQuota, Prices: pricing.Default.WithOverrides(r.overrides)}, nil
 }
 
 func newTestStore(t *testing.T, rows map[string]string) (*Store, *fakeLookup, *fakeClock) {
@@ -71,7 +82,7 @@ func newTestStore(t *testing.T, rows map[string]string) (*Store, *fakeLookup, *f
 	return s, lookup, clock
 }
 
-func newStateStore(t *testing.T, rows map[string]string, states map[string]State) (*Store, *fakeLookup, *fakeState, *fakeClock) {
+func newStateStore(t *testing.T, rows map[string]string, states map[string]stateRows) (*Store, *fakeLookup, *fakeState, *fakeClock) {
 	t.Helper()
 
 	hashed := make(map[string]string, len(rows))
@@ -109,10 +120,10 @@ func mustRefuse(t *testing.T, s *Store, token string) {
 	}
 }
 
-// isBaseState is the fail-open answer spelled out: not over quota, no
-// overrides, so the embedded base price table applies. State holds a slice and
-// so is not comparable; what "the zero State" means is worth naming anyway.
-func isBaseState(s State) bool { return !s.OverQuota && s.Overrides == nil }
+// isBaseState is the fail-open answer spelled out: not over quota, and priced
+// off the embedded list itself — pricing.Default, not a table that happens to
+// hold the same rows, and never nil.
+func isBaseState(s State) bool { return !s.OverQuota && s.Prices == pricing.Default }
 
 // The D139 cross-language vectors, BOTH of them (D139 as amended). They are
 // pinned in both this suite and the web app's for one reason: two languages
@@ -300,10 +311,12 @@ func TestStoreSatisfiesTheAuthResolver(t *testing.T) {
 // (D164c): one refresh per TTL, on the same read that resolved the key, and
 // nothing at all on a cache hit.
 func TestWorkspaceStateRefreshesPiggybackOnTokenResolution(t *testing.T) {
-	overrides := []pricing.Rate{{Match: "gpt-4o-mini", InputPerMTok: 0.11, OutputPerMTok: 0.44}}
 	s, lookup, state, clock := newStateStore(t,
 		map[string]string{"ok_live_known": "ws_a"},
-		map[string]State{"ws_a": {OverQuota: true, Overrides: overrides}},
+		map[string]stateRows{"ws_a": {
+			overQuota: true,
+			overrides: []pricing.Rate{{Match: "gpt-4o-mini", InputPerMTok: 0.11, OutputPerMTok: 0.44}},
+		}},
 	)
 
 	mustResolve(t, s, "ok_live_known", "ws_a")
@@ -315,8 +328,10 @@ func TestWorkspaceStateRefreshesPiggybackOnTokenResolution(t *testing.T) {
 	if !got.OverQuota {
 		t.Error("State reports under quota; the refresh read over-quota out of Postgres")
 	}
-	if len(got.Overrides) != 1 || got.Overrides[0] != overrides[0] {
-		t.Errorf("State overrides = %+v, want %+v", got.Overrides, overrides)
+	// The override reached the table, which is the only thing the state carries
+	// it as: 1M input tokens at the workspace's 0.11, not the embedded list's.
+	if cost := got.Prices.Cost("gpt-4o-mini-2024-07-18", "", 1_000_000, 0); cost != 0.11 {
+		t.Errorf("Cost through the state's table = %v, want 0.11 — the override did not reach it", cost)
 	}
 
 	// Inside the TTL nothing is asked again — neither statement.
@@ -330,7 +345,7 @@ func TestWorkspaceStateRefreshesPiggybackOnTokenResolution(t *testing.T) {
 
 	// Past it, one token read carries one state refresh — the quota crossing is
 	// honored within the same window revocation is.
-	state.rows["ws_a"] = State{}
+	state.rows["ws_a"] = stateRows{}
 	clock.advance(keyCacheTTL)
 	mustResolve(t, s, "ok_live_known", "ws_a")
 	if lookup.calls != 2 || state.calls != 2 {
@@ -347,7 +362,7 @@ func TestWorkspaceStateRefreshesPiggybackOnTokenResolution(t *testing.T) {
 func TestStateNeverQueries(t *testing.T) {
 	s, _, state, _ := newStateStore(t,
 		map[string]string{"ok_live_known": "ws_a"},
-		map[string]State{"ws_a": {OverQuota: true}},
+		map[string]stateRows{"ws_a": {overQuota: true}},
 	)
 	mustResolve(t, s, "ok_live_known", "ws_a")
 
@@ -361,6 +376,46 @@ func TestStateNeverQueries(t *testing.T) {
 	}
 }
 
+// The must-fix D174 cleared, asserted the only way it can be: by pointer. The
+// layered table is built on the refresh that read the rows, so every export in
+// the next thirty seconds gets that same table — not an equal one. Red before
+// the fix, where the export path called WithOverrides per export and every read
+// allocated and sorted a fresh table.
+func TestThePriceTableIsBuiltOncePerRefresh(t *testing.T) {
+	s, _, state, clock := newStateStore(t,
+		map[string]string{"ok_live_known": "ws_a"},
+		map[string]stateRows{"ws_a": {
+			overrides: []pricing.Rate{{Match: "gpt-4o-mini", InputPerMTok: 0.11, OutputPerMTok: 0.44}},
+		}},
+	)
+	mustResolve(t, s, "ok_live_known", "ws_a")
+
+	built := s.State("ws_a").Prices
+	if built == pricing.Default {
+		t.Fatal("the workspace's override did not produce a table of its own; the rest of this test proves nothing")
+	}
+	for range 100 {
+		if got := s.State("ws_a").Prices; got != built {
+			t.Fatalf("State handed back a different *pricing.Table (%p, first %p) inside one TTL — the layering is running per read", got, built)
+		}
+	}
+
+	// Past the TTL the refresh builds again, because the rows may have changed:
+	// the table is cached with the state, on the state's lifetime, not forever.
+	clock.advance(keyCacheTTL + time.Second)
+	mustResolve(t, s, "ok_live_known", "ws_a")
+	if state.calls != 2 {
+		t.Fatalf("state calls = %d past the TTL, want 2", state.calls)
+	}
+	rebuilt := s.State("ws_a").Prices
+	if rebuilt == built {
+		t.Error("State returned the pre-expiry table after a refresh; an edited override would never reach the writer")
+	}
+	if cost := rebuilt.Cost("gpt-4o-mini-2024-07-18", "", 1_000_000, 0); cost != 0.11 {
+		t.Errorf("Cost through the rebuilt table = %v, want 0.11", cost)
+	}
+}
+
 // The asymmetry, in one test because it is one decision (D164d): under the same
 // Postgres outage, auth stays static — a key that resolved keeps resolving and
 // an unknown one is still refused — while quota and overrides go open. Our
@@ -369,9 +424,9 @@ func TestStateNeverQueries(t *testing.T) {
 func TestQuotaFailsOpenWhileAuthFailsStatic(t *testing.T) {
 	s, lookup, state, clock := newStateStore(t,
 		map[string]string{"ok_live_known": "ws_a"},
-		map[string]State{"ws_a": {
-			OverQuota: true,
-			Overrides: []pricing.Rate{{Match: "gpt-4o", InputPerMTok: 1, OutputPerMTok: 2}},
+		map[string]stateRows{"ws_a": {
+			overQuota: true,
+			overrides: []pricing.Rate{{Match: "gpt-4o", InputPerMTok: 1, OutputPerMTok: 2}},
 		}},
 	)
 	mustResolve(t, s, "ok_live_known", "ws_a")
@@ -387,25 +442,31 @@ func TestQuotaFailsOpenWhileAuthFailsStatic(t *testing.T) {
 	mustResolve(t, s, "ok_live_known", "ws_a")
 	mustRefuse(t, s, "ok_live_unknown")
 
-	// Fail-open: the expired state reads back as the zero value — not over
-	// quota, and no overrides, so the embedded base table prices the spans.
+	// Fail-open: the expired state reads back as the base answer — not over
+	// quota, and priced off the embedded list rather than the workspace's own
+	// rows, which nobody can read any more.
 	got := s.State("ws_a")
 	if got.OverQuota {
 		t.Error("State still reports over quota with Postgres down; an outage of ours would start sampling a customer's traces")
 	}
-	if got.Overrides != nil {
-		t.Errorf("State returned overrides %+v with Postgres down; base prices are the fail-open answer", got.Overrides)
+	if got.Prices != pricing.Default {
+		t.Errorf("State returned a layered table with Postgres down; the embedded list is the fail-open answer")
+	}
+	// Nil is not that answer: a writer handed nil here would panic pricing a
+	// span, which is the outage arriving by another door.
+	if got.Prices == nil {
+		t.Error("State returned a nil price table")
 	}
 
 	// And a workspace whose state was never read at all is the same answer:
 	// there is no cold-start case where quota degrades closed.
 	if cold := s.State("ws_never_fetched"); !isBaseState(cold) {
-		t.Errorf("State of an unseen workspace = %+v, want the zero State", cold)
+		t.Errorf("State of an unseen workspace = %+v, want the base state", cold)
 	}
 
 	// Postgres returning ends it, in the same one round trip.
 	lookup.err, state.err = nil, nil
-	state.rows["ws_a"] = State{OverQuota: true}
+	state.rows["ws_a"] = stateRows{overQuota: true}
 	clock.advance(keyCacheTTL + time.Second)
 	mustResolve(t, s, "ok_live_known", "ws_a")
 	if !s.State("ws_a").OverQuota {

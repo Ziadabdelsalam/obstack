@@ -53,7 +53,7 @@ func TestCostLongestPrefixWins(t *testing.T) {
 // price to apply to the whole family, versioned names included.
 func TestWithOverridesShadowsALongerBaseRow(t *testing.T) {
 	base := fixtureTable(t)
-	table := base.WithOverrides([]Override{{Match: "gpt-4o", InputPerMTok: 1, OutputPerMTok: 2}})
+	table := base.WithOverrides([]Rate{{Match: "gpt-4o", InputPerMTok: 1, OutputPerMTok: 2}})
 
 	got := table.Cost("gpt-4o-mini-2024-07-18", "", 1_000_000, 1_000_000)
 	if want := 1.0 + 2.0; !closeTo(got, want) {
@@ -68,7 +68,7 @@ func TestWithOverridesShadowsALongerBaseRow(t *testing.T) {
 
 // The other direction: an override more specific than the base row it shadows.
 func TestWithOverridesShadowsAShorterBaseRow(t *testing.T) {
-	table := fixtureTable(t).WithOverrides([]Override{
+	table := fixtureTable(t).WithOverrides([]Rate{
 		{Match: "gpt-4o-mini-2024-07-18", InputPerMTok: 0.05, OutputPerMTok: 0.1},
 	})
 
@@ -83,7 +83,7 @@ func TestWithOverridesShadowsAShorterBaseRow(t *testing.T) {
 }
 
 func TestWithOverridesLongestOverrideWins(t *testing.T) {
-	table := fixtureTable(t).WithOverrides([]Override{
+	table := fixtureTable(t).WithOverrides([]Rate{
 		// Deliberately shortest-first: the layering, not the caller's SELECT
 		// order, decides which one wins.
 		{Match: "gpt-4o", InputPerMTok: 1, OutputPerMTok: 1},
@@ -103,7 +103,7 @@ func TestWithOverridesLongestOverrideWins(t *testing.T) {
 // not cost an allocation per refresh.
 func TestWithOverridesFallsThroughToTheBase(t *testing.T) {
 	base := fixtureTable(t)
-	table := base.WithOverrides([]Override{{Match: "gpt-4o", InputPerMTok: 1, OutputPerMTok: 2}})
+	table := base.WithOverrides([]Rate{{Match: "gpt-4o", InputPerMTok: 1, OutputPerMTok: 2}})
 
 	if got, want := table.Cost("claude-sonnet-4-20250514", "", 1_000_000, 0), 3.0; !closeTo(got, want) {
 		t.Errorf("Cost(claude) = %v, want the base %v", got, want)
@@ -111,7 +111,7 @@ func TestWithOverridesFallsThroughToTheBase(t *testing.T) {
 	if table.AsOf != base.AsOf {
 		t.Errorf("layered AsOf = %q, want the base list's %q", table.AsOf, base.AsOf)
 	}
-	for _, overrides := range [][]Override{nil, {}} {
+	for _, overrides := range [][]Rate{nil, {}} {
 		if got := base.WithOverrides(overrides); got != base {
 			t.Errorf("WithOverrides(%v) built a new table, want the base one back", overrides)
 		}
@@ -120,9 +120,11 @@ func TestWithOverridesFallsThroughToTheBase(t *testing.T) {
 
 // Overrides come from Postgres on a fail-open path (D164): one unusable row must
 // cost that row, not the workspace's other prices. The rows T7 will not let a
-// user create are the rows a hand-edited database can still hold.
+// user create are the rows a hand-edited database can still hold — except the
+// mixed-case one, which the D175 CHECK now makes unreachable from the store; it
+// stays here because this function is the defence, not the constraint.
 func TestWithOverridesSkipsRowsThatCannotPrice(t *testing.T) {
-	table := fixtureTable(t).WithOverrides([]Override{
+	table := fixtureTable(t).WithOverrides([]Rate{
 		{Match: "   ", InputPerMTok: 9, OutputPerMTok: 9},
 		{Match: "gpt-4o", InputPerMTok: -1, OutputPerMTok: 1},
 		{Match: "CLAUDE-SONNET-4 ", InputPerMTok: 1, OutputPerMTok: 1},

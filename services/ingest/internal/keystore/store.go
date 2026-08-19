@@ -8,10 +8,13 @@
 // It holds two maps behind one mutex, on one TTL, with one staleness story
 // (D164): a token map from token hash to the auth.Identity it names, and a
 // workspace map from workspace to the state the write path needs — whether the
-// workspace is over its plan's quota, and the pricing overrides that layer over
-// the embedded table (D108). Workspace state is refreshed piggyback on a token
+// workspace is over its plan's quota, and the price table its D108 overrides
+// were already layered into. Workspace state is refreshed piggyback on a token
 // round trip, so it costs no extra trip of its own, and State reads it without
-// ever blocking: the consume path must never wait on Postgres.
+// ever blocking: the consume path must never wait on Postgres. The table is
+// built here, on that refresh, and never on the export path (D167/D174) — the
+// layering sorts, so building it per export would put a sort in the hot path to
+// produce the same table thirty seconds' worth of exports already share.
 //
 // Lookups are cached read-through, positive and negative alike, for
 // keyCacheTTL. A Postgres round trip per export would make the control plane a
@@ -98,12 +101,19 @@ const lookupSQL = `SELECT id, workspace_id FROM api_keys WHERE token_hash = $1 A
 // row means free, which is why the catalog joins through COALESCE rather than
 // requiring a row every signup would have to write. The web app's usage.ts states
 // the same sum; a second definition here in Go would be the S2.3 L3 divergence.
+//
+// The month boundary is UTC on both sides of the comparison (D179). The inner
+// `AT TIME ZONE 'UTC'` takes now() to a UTC wall clock and date_trunc finds that
+// month's first instant; the outer one reads that instant back as UTC rather than
+// as whatever TimeZone the session happens to carry. Without it the boundary is
+// the server's local month, which is right on a UTC host and silently wrong
+// everywhere else — and a wrong month boundary is a wrong bill.
 const overQuotaSQL = `
 SELECT COALESCE((
            SELECT sum(u.spans + u.logs)
            FROM usage_ledger u
            WHERE u.workspace_id = w.id
-             AND u.period_start >= date_trunc('month', now() AT TIME ZONE 'UTC')
+             AND u.period_start >= date_trunc('month', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'
        ), 0) >= p.event_quota
 FROM workspaces w
 LEFT JOIN workspace_plans wp ON wp.workspace_id = w.id
@@ -139,19 +149,23 @@ type Store struct {
 type lookupFunc func(ctx context.Context, tokenHash string) (auth.Identity, bool, error)
 
 // stateFunc reads the workspace state D164 caches: the over-quota verdict and
-// the workspace's pricing overrides, in two statements under one deadline.
+// the workspace's pricing overrides, in two statements under one deadline, and
+// hands back the price table those overrides were layered into.
 type stateFunc func(ctx context.Context, workspaceID string) (State, error)
 
 // State is what the write path needs to know about a workspace and cannot
-// afford to ask Postgres for. Its zero value is the fail-open answer: not over
-// quota, no overrides, so the embedded base price table applies.
+// afford to ask Postgres for.
 type State struct {
 	// OverQuota is the D163 verdict as of the last refresh. True switches
 	// ingestion to sampled (D165).
 	OverQuota bool
-	// Overrides are the workspace's pricing rows (D108), in the order Postgres
-	// returned them; precedence among them is the pricing package's business.
-	Overrides []pricing.Rate
+	// Prices is the table the workspace's spans are costed with: the embedded
+	// list with the workspace's D108 override rows already layered over it,
+	// built on the refresh that read them (D174). It is never nil on the way out
+	// of State — a workspace with no overrides, and every workspace while
+	// Postgres is away, gets pricing.Default itself, so the export path can use
+	// it without a nil check standing in for a pricing decision.
+	Prices *pricing.Table
 }
 
 // entry is one cached answer. An empty Identity.WorkspaceID is a negative entry
@@ -234,19 +248,24 @@ func (s *Store) Workspace(token string) (auth.Identity, error) {
 }
 
 // State is the non-blocking read the consume path takes per request: a map hit
-// under the same mutex, never a query. Missing or expired reads back as the zero
-// State — fail-open, per the package doc — so a Postgres outage cannot start
-// sampling a paying customer's traces away.
+// under the same mutex, never a query, and never a table build. Missing or
+// expired reads back as baseState — fail-open, per the package doc — so a
+// Postgres outage cannot start sampling a paying customer's traces away, and
+// cannot leave the writer without a price list either.
 func (s *Store) State(workspaceID string) State {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	e, ok := s.state[workspaceID]
 	if !ok || !s.now().Before(e.expiresAt) {
-		return State{}
+		return baseState()
 	}
 	return e.state
 }
+
+// baseState is the fail-open answer spelled out in one place: not over quota, on
+// the embedded list.
+func baseState() State { return State{Prices: pricing.Default} }
 
 func (s *Store) cached(hash string) (entry, bool) {
 	s.mu.Lock()
@@ -299,7 +318,7 @@ func (s *Store) evictNegative() {
 // then the workspace reads back as the fail-open zero value. Quota is the one
 // thing this package is allowed to forget under an outage.
 func (s *Store) refreshState(ctx context.Context, workspaceID string) {
-	if s.fetchState == nil || s.stateIsFresh(workspaceID) {
+	if s.stateIsFresh(workspaceID) {
 		return
 	}
 
@@ -335,9 +354,12 @@ func (s *Store) queryIdentity(ctx context.Context, tokenHash string) (auth.Ident
 
 // queryState is the two statements D164 allows on this path, in the order that
 // matters: the quota verdict first, because it is the one that changes what the
-// service does with the next request.
+// service does with the next request. The rows the second one returns are layered
+// into a table here and not kept — the built table and the rows it was built from
+// would be two representations of one fact, and only one of them can be the one
+// the writer prices with (D174).
 func (s *Store) queryState(ctx context.Context, workspaceID string) (State, error) {
-	var state State
+	state := baseState()
 
 	err := s.pool.QueryRow(ctx, overQuotaSQL, workspaceID).Scan(&state.OverQuota)
 	// No row means no such workspace — nothing to be over the quota of.
@@ -350,16 +372,20 @@ func (s *Store) queryState(ctx context.Context, workspaceID string) (State, erro
 		return State{}, fmt.Errorf("pricing overrides lookup: %w", err)
 	}
 	defer rows.Close()
+	var overrides []pricing.Rate
 	for rows.Next() {
 		var override pricing.Rate
 		if err := rows.Scan(&override.Match, &override.InputPerMTok, &override.OutputPerMTok); err != nil {
 			return State{}, fmt.Errorf("pricing overrides lookup: %w", err)
 		}
-		state.Overrides = append(state.Overrides, override)
+		overrides = append(overrides, override)
 	}
 	if err := rows.Err(); err != nil {
 		return State{}, fmt.Errorf("pricing overrides lookup: %w", err)
 	}
+
+	// A workspace with no rows gets pricing.Default back, not a copy of it.
+	state.Prices = pricing.Default.WithOverrides(overrides)
 	return state, nil
 }
 

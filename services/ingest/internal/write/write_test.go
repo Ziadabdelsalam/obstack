@@ -132,7 +132,7 @@ func TestConsumeTracesPricesWithTheWorkspaceTable(t *testing.T) {
 		if workspaceID != "ws_deal" {
 			return nil
 		}
-		return pricing.Default.WithOverrides([]pricing.Override{
+		return pricing.Default.WithOverrides([]pricing.Rate{
 			{Match: "acme-llm-9", InputPerMTok: 4, OutputPerMTok: 12},
 		})
 	}})}
