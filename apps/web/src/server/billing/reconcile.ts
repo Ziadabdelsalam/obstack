@@ -1,5 +1,5 @@
 import "server-only";
-import { lockWorkspace, withTransaction, type QueryRows } from "@/server/postgres";
+import { lockWorkspace, withTransaction, type QueryRows, type TxQuery } from "@/server/postgres";
 import { getBilling } from "./client";
 import { PLAN_FREE, PLAN_PRO, UnknownCheckout, type BillingClient, type WebhookEvent } from "./types";
 
@@ -48,22 +48,6 @@ const UPSERT_PLAN_SQL = `
  * where an operator can see it, rather than a union member no reader branches on.
  */
 export type ReconcileResult = { applied: true; planId: string } | { applied: false };
-
-/**
- * A `queryRows` proven to run INSIDE a transaction — the scope
- * `pg_advisory_xact_lock` needs to actually hold across a read→write (D198). The
- * brand is a phantom `unique symbol` no value carries, so it is unforgeable: the
- * only way to obtain one is through a door in this module that opens a
- * transaction on the way in. That is the structural half of the ruling —
- * `syncPlanFromRail` and `reconcileCheckout` no longer typecheck when handed a
- * plain pooled `queryRows` (through which the lock releases inside its own
- * implicit transaction and serializes nothing), so NO call path can reach the
- * rail-read→plan-write outside the lock, not merely the paths a caller
- * remembered to wrap. The two doors are `reconcileCheckoutReturn` (the settings
- * return, which opens the transaction here) and the webhook route's own
- * `withTransaction` wrap, whose `applyWebhook` is where its query is asserted.
- */
-export type TxQuery = QueryRows & { readonly __workspaceTx: unique symbol };
 
 /** The plan row, as convergence writes it. */
 export async function setWorkspacePlan(
@@ -219,7 +203,7 @@ export async function reconcileCheckoutReturn(
   billing: BillingClient = getBilling(),
 ): Promise<ReconcileResult> {
   return withTransaction((query) =>
-    reconcileCheckout(checkoutId, workspaceId, query as TxQuery, billing),
+    reconcileCheckout(checkoutId, workspaceId, query, billing),
   );
 }
 
@@ -246,19 +230,17 @@ function quoteId(checkoutId: string): string {
  * inline — one read and one statement do not need a queue (D169), and Polar's
  * 10s timeout is not close.
  */
-export async function applyWebhook(event: WebhookEvent, query: QueryRows): Promise<void> {
-  // The webhook route is applyWebhook's only caller and runs it INSIDE its own
-  // `withTransaction` (route.ts), so `query` is already transactional and the
-  // workspace lock the convergence takes actually holds. That route-side
-  // transaction is the webhook path's door in the sense `reconcileCheckoutReturn`
-  // is the return path's; this is where its `query` is asserted to be the
-  // `TxQuery` the convergence requires (D198). The route never hands in a pooled
-  // client, so this assertion cannot launder one past the lock — and typing the
-  // parameter itself `TxQuery` is what the route's plain `withTransaction` query
-  // cannot satisfy, which is why the seam is here rather than in the signature.
-  const tx = query as TxQuery;
+export async function applyWebhook(event: WebhookEvent, query: TxQuery): Promise<void> {
+  // `query` is a `TxQuery`, so the convergence's `pg_advisory_xact_lock` is held
+  // across its rail read and plan write (D198/D199). The webhook route is
+  // applyWebhook's only caller and runs it INSIDE its own `withTransaction`
+  // (route.ts) — the wrap IS the transaction, and the parameter type merely names
+  // that fact, so the route hands in the branded client it already holds rather
+  // than this function asserting one. A plain pooled `queryRows`, through which
+  // the lock would serialize nothing, does not typecheck here, so the webhook
+  // path's serialization no longer rests on caller convention (D199).
   if (event.consumed === "checkout") {
-    if (event.succeeded) await reconcileCheckout(event.checkoutId, event.workspaceId, tx);
+    if (event.succeeded) await reconcileCheckout(event.checkoutId, event.workspaceId, query);
     return;
   }
   if (event.consumed === "plan") {
@@ -266,6 +248,6 @@ export async function applyWebhook(event: WebhookEvent, query: QueryRows): Promi
     // re-delivered or reordered `active` must not re-grant a subscription the
     // present has since revoked, so we read the present rather than apply the
     // event (B2-2).
-    await syncPlanFromRail(event.workspaceId, tx);
+    await syncPlanFromRail(event.workspaceId, query);
   }
 }

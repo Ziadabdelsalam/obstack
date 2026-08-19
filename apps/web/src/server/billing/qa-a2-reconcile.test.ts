@@ -8,11 +8,10 @@ import {
   reconcileCheckout,
   reconcileCheckoutReturn,
   syncPlanFromRail,
-  type TxQuery,
 } from "./reconcile";
 import { normalizeWebhook } from "./webhook";
-import type { BillingClient, SubscriptionState } from "./types";
-import { getPool } from "@/server/postgres";
+import type { BillingClient, SubscriptionState, WebhookEvent } from "./types";
+import { getPool, queryRows, withTransaction, type QueryRows } from "@/server/postgres";
 
 // run with: npm test --workspace apps/web
 // DESTINATION: apps/web/src/server/billing/qa-a2-reconcile.test.ts
@@ -168,9 +167,9 @@ after(async () => {
   if (DSN) await getPool().end();
 });
 
-const q = (client: Pool | PoolClient): TxQuery =>
-  (async <Row extends QueryResultRow>(sql: string, params: unknown[] = []): Promise<Row[]> =>
-    (await client.query<Row>(sql, params)).rows) as TxQuery;
+const q = (client: Pool | PoolClient): QueryRows =>
+  async <Row extends QueryResultRow>(sql: string, params: unknown[] = []): Promise<Row[]> =>
+    (await client.query<Row>(sql, params)).rows;
 
 /** A rail whose subscription read is observable and, optionally, held open. */
 function railAnswering(
@@ -199,58 +198,53 @@ test(
     ]);
 
     try {
-      const clientA = await (pool as Pool).connect();
-      const clientB = await (pool as Pool).connect();
-      try {
-        // A acquires the lock, then blocks INSIDE its rail read holding it.
-        let aReading!: () => void;
-        const aEnteredRead = new Promise<void>((r) => (aReading = r));
-        let releaseA!: () => void;
-        const gateA = new Promise<void>((r) => (releaseA = r));
-        const railA = railAnswering(
-          { active: true, customerId: "cus_a", subscriptionId: "sub_a" },
-          { onRead: aReading, gate: gateA },
-        );
+      // A acquires the lock, then blocks INSIDE its rail read holding it.
+      let aReading!: () => void;
+      const aEnteredRead = new Promise<void>((r) => (aReading = r));
+      let releaseA!: () => void;
+      const gateA = new Promise<void>((r) => (releaseA = r));
+      const railA = railAnswering(
+        { active: true, customerId: "cus_a", subscriptionId: "sub_a" },
+        { onRead: aReading, gate: gateA },
+      );
 
-        // B's read is observable; if it fires while A holds the lock, the lock
-        // did not serialize. With the lock, B blocks in `lockWorkspace` until A
-        // commits, and only then reads — the LATER present (revoked ⇒ free).
-        let bRead = false;
-        const railB = railAnswering(
-          { active: false, customerId: null, subscriptionId: null },
-          { onRead: () => (bRead = true) },
-        );
+      // B's read is observable; if it fires while A holds the lock, the lock
+      // did not serialize. With the lock, B blocks in `lockWorkspace` until A
+      // commits, and only then reads — the LATER present (revoked ⇒ free).
+      let bRead = false;
+      const railB = railAnswering(
+        { active: false, customerId: null, subscriptionId: null },
+        { onRead: () => (bRead = true) },
+      );
 
-        await clientA.query("BEGIN");
-        const aDone = syncPlanFromRail(ws, q(clientA), railA).then(() => clientA.query("COMMIT"));
-        await aEnteredRead; // A now holds the advisory lock and is mid-read
+      // Each sync opens its own transaction through the PRODUCTION door
+      // `withTransaction` (the only source of the `TxQuery` syncPlanFromRail
+      // demands, D199), on its own pooled connection — the shape the webhook
+      // route gives it. A holds the advisory lock across its gated rail read.
+      const aDone = withTransaction((query) => syncPlanFromRail(ws, query, railA));
+      await aEnteredRead; // A now holds the advisory lock and is mid-read
 
-        await clientB.query("BEGIN");
-        const bDone = syncPlanFromRail(ws, q(clientB), railB).then(() => clientB.query("COMMIT"));
+      const bDone = withTransaction((query) => syncPlanFromRail(ws, query, railB));
 
-        // Give B ample time to reach its rail read if it were NOT blocked. The
-        // advisory lock A holds must keep it in `lockWorkspace` instead.
-        await new Promise((r) => setTimeout(r, 200));
-        assert.equal(
-          bRead,
-          false,
-          "B read the rail while A held the workspace lock — the read→write did not serialize",
-        );
+      // Give B ample time to reach its rail read if it were NOT blocked. The
+      // advisory lock A holds must keep it in `lockWorkspace` instead.
+      await new Promise((r) => setTimeout(r, 200));
+      assert.equal(
+        bRead,
+        false,
+        "B read the rail while A held the workspace lock — the read→write did not serialize",
+      );
 
-        releaseA();
-        await Promise.all([aDone, bDone]);
-        assert.equal(bRead, true, "B proceeds once A commits and releases the lock");
+      releaseA();
+      await Promise.all([aDone, bDone]);
+      assert.equal(bRead, true, "B proceeds once A commits and releases the lock");
 
-        // The later sync (B, revoked) wins: the row converges to free.
-        const [row] = await q(pool as Pool)<{ plan_id: string }>(
-          `SELECT plan_id FROM workspace_plans WHERE workspace_id = $1`,
-          [ws],
-        );
-        assert.equal(row.plan_id, "free", "the last committed present is what the row holds");
-      } finally {
-        clientA.release();
-        clientB.release();
-      }
+      // The later sync (B, revoked) wins: the row converges to free.
+      const [row] = await q(pool as Pool)<{ plan_id: string }>(
+        `SELECT plan_id FROM workspace_plans WHERE workspace_id = $1`,
+        [ws],
+      );
+      assert.equal(row.plan_id, "free", "the last committed present is what the row holds");
     } finally {
       await q(pool as Pool)(`DELETE FROM workspaces WHERE id = $1`, [ws]); // CASCADE drops the plan row
     }
@@ -265,9 +259,10 @@ test(
 // now lives structurally: `reconcileCheckoutReturn` opens the transaction, so
 // two concurrent returns of one workspace serialize with no caller discipline.
 // Red-provable by restoring the pooled-client path — reconcile through the pool
-// (`reconcileCheckout(id, ws, queryRows as TxQuery, rail)`) instead of this door
-// and B reads the rail while A holds the lock (the lock releases inside its own
-// implicit transaction), so the `bRead === false` assertion fails.
+// (`reconcileCheckout(id, ws, queryRows, rail)` with `queryRows` forced past the
+// brand) instead of through this door, and B reads the rail while A holds the
+// lock (the lock releases inside its own implicit transaction), so the
+// `bRead === false` assertion fails.
 // --------------------------------------------------------------------------
 
 /** A rail whose checkout is a succeeded, bound trigger and whose subscription read is observable. */
@@ -350,3 +345,24 @@ test(
     }
   },
 );
+
+// --------------------------------------------------------------------------
+// D199 — the compile-refusal proof for the three billing lock-dependent writes.
+// `TxQuery` is a phantom `unique symbol` brand, so a plain pooled `queryRows` is
+// not assignable where the advisory lock must actually hold, and every function
+// below refuses one at the TYPE level. This arrow is DEFINED and never invoked:
+// `next build` type-checks it (tsc over `**/*.ts`), so each `@ts-expect-error`
+// must fire or the build fails with an unused-directive error; `tsx` strips the
+// types at runtime and never calls the arrow, so nothing here touches a pool.
+// Deleting any one brand (retyping the parameter back to `QueryRows`) turns its
+// directive unused and reddens the build — the idiom is enforced, not documented.
+// --------------------------------------------------------------------------
+void (async (): Promise<void> => {
+  const event = {} as WebhookEvent;
+  // @ts-expect-error a plain pooled `queryRows` is not the branded `TxQuery`
+  await syncPlanFromRail(WS, queryRows);
+  // @ts-expect-error idem — reconcileCheckout's third arg demands `TxQuery`
+  await reconcileCheckout("chk", WS, queryRows);
+  // @ts-expect-error idem — applyWebhook's `query` demands `TxQuery`
+  await applyWebhook(event, queryRows);
+});

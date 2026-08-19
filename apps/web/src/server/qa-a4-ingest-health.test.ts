@@ -3,7 +3,7 @@ import { randomBytes } from "node:crypto";
 import { after, test } from "node:test";
 import { Pool, type PoolClient, type QueryResultRow } from "pg";
 import { OVERRIDE_MAX, OverrideLimit, upsertPricingOverride } from "./ingest-health";
-import type { QueryRows } from "./postgres";
+import { getPool, queryRows, withTransaction, type QueryRows } from "./postgres";
 
 // run with: docker compose -f deploy/compose/docker-compose.yml up -d --wait postgres ingest
 // then:     OBSTACK_TEST_POSTGRES_DSN=postgres://obstack:obstack_postgres_dev@127.0.0.1:5432/obstack \
@@ -51,8 +51,15 @@ const skip = DSN
 
 const pool = DSN ? new Pool({ connectionString: DSN, max: 24, application_name: "qa-a4" }) : undefined;
 
+// The concurrent creates drive the PRODUCTION door `withTransaction`, which
+// opens each transaction on the MODULE pool (`getPool`) — the only source of the
+// `TxQuery` `upsertPricingOverride` now demands (D199) — so this dials the same
+// test Postgres and the pool is closed alongside ours below.
+if (DSN) process.env.OBSTACK_POSTGRES_DSN = DSN;
+
 after(async () => {
   if (pool) await pool.end();
+  if (DSN) await getPool().end();
 });
 
 const q = (client: Pool | PoolClient): QueryRows =>
@@ -81,12 +88,13 @@ async function overrideCount(query: QueryRows, ws: string): Promise<number> {
 }
 
 /**
- * One create through the REAL product path: a transaction on its own connection,
- * the store's `upsertPricingOverride` inside it, COMMIT on success and ROLLBACK
- * on the cap — byte-for-byte what `saveOverride` does through `withTransaction`,
- * only on the test's pool. `arrive` reports that this create has BEGUN and `gate`
- * releases every create's upsert together (the start barrier). The cap refusal is
- * `OverrideLimit`, the store's own class, and every other failure propagates so a
+ * One create through the REAL product path: `withTransaction` opens a
+ * transaction on its own pooled connection and hands `upsertPricingOverride` the
+ * `TxQuery` the store's advisory lock demands (D199), COMMIT on success and
+ * ROLLBACK on the cap — byte-for-byte what `saveOverride` does. `arrive` reports
+ * that this create has BEGUN (the body runs after `withTransaction`'s BEGIN) and
+ * `gate` releases every create's upsert together (the start barrier). The cap
+ * refusal is `OverrideLimit`, the store's own class, and every other failure propagates so a
  * real error cannot masquerade as a loser.
  */
 async function createInTransaction(
@@ -95,22 +103,19 @@ async function createInTransaction(
   arrive: () => void,
   gate: Promise<void>,
 ): Promise<"won" | "capped"> {
-  const client = await (pool as Pool).connect();
   try {
-    await client.query("BEGIN");
-    arrive(); // this create has BEGUN — the barrier gates on this, not on the insert
-    await gate; // fire every create's upsert at once, so their snapshots overlap
-    try {
-      await upsertPricingOverride(ws, { match, inputPerMTok: 1, outputPerMTok: 2 }, q(client));
-      await client.query("COMMIT");
-      return "won";
-    } catch (error) {
-      await client.query("ROLLBACK");
-      if (error instanceof OverrideLimit) return "capped";
-      throw error;
-    }
-  } finally {
-    client.release();
+    await withTransaction(async (query) => {
+      arrive(); // this create has BEGUN — the barrier gates on this, not on the insert
+      await gate; // fire every create's upsert at once, so their snapshots overlap
+      await upsertPricingOverride(ws, { match, inputPerMTok: 1, outputPerMTok: 2 }, query);
+    });
+    return "won";
+  } catch (error) {
+    // `withTransaction` already ran ROLLBACK on the throw; the cap refusal is the
+    // store's own `OverrideLimit`, and every other failure propagates so a real
+    // error cannot masquerade as a loser.
+    if (error instanceof OverrideLimit) return "capped";
+    throw error;
   }
 }
 
@@ -138,14 +143,16 @@ test(
       }
       assert.equal(await overrideCount(query, ws), seed, "seed did not land");
 
-      // Sixteen genuinely concurrent creates — distinct matches, so every one is
-      // a CREATE the cap must weigh, on their own connections. The start barrier
-      // releases the instant all sixteen have BEGUN, so every upsert fires
-      // together and their READ COMMITTED snapshots overlap: this is many browser
-      // tabs clicking "Set price" at the same moment. Without the lock they race
-      // the single snapshot and the count climbs past the cap; with it they
-      // serialize and only one may fill the last slot.
-      const N = 16;
+      // Eight genuinely concurrent creates — distinct matches, so every one is a
+      // CREATE the cap must weigh, each on its own `withTransaction` connection
+      // (the module pool's default ceiling is 10, and every worker parks on the
+      // barrier holding its connection). The start barrier releases the instant
+      // all eight have BEGUN, so every upsert fires together and their READ
+      // COMMITTED snapshots overlap: this is many browser tabs clicking "Set
+      // price" at the same moment. Without the lock they race the single snapshot
+      // and the count climbs past the cap; with it they serialize and only one
+      // may fill the last slot.
+      const N = 8;
       let arrived = 0;
       let release!: () => void;
       const gate = new Promise<void>((r) => (release = r));
@@ -183,3 +190,17 @@ test(
     });
   },
 );
+
+// --------------------------------------------------------------------------
+// D199 — the compile-refusal proof for the override write. `upsertPricingOverride`
+// demands a `TxQuery`, the brand only `withTransaction` mints, so a plain pooled
+// `queryRows` (through which the cap's advisory lock would serialize nothing) is
+// not assignable and the cap cannot silently re-open on an unwrapped caller. This
+// arrow is DEFINED and never invoked: `next build` type-checks it (tsc over
+// `**/*.ts`), so the `@ts-expect-error` must fire or the build fails with an
+// unused-directive error; `tsx` strips the types and never calls it at runtime.
+// --------------------------------------------------------------------------
+void (async (): Promise<void> => {
+  // @ts-expect-error a plain pooled `queryRows` is not the branded `TxQuery`
+  await upsertPricingOverride("ws", { match: "m", inputPerMTok: 1, outputPerMTok: 2 }, queryRows);
+});

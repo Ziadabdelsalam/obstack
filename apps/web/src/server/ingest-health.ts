@@ -1,6 +1,6 @@
 import "server-only";
 import { randomBytes } from "node:crypto";
-import { lockWorkspace, type QueryRows } from "@/server/postgres";
+import { lockWorkspace, type QueryRows, type TxQuery } from "@/server/postgres";
 import priceList from "../../../../services/ingest/pricing/prices.json";
 
 /**
@@ -338,9 +338,13 @@ export async function listPricingOverrides(
  * the create counts and inserts under one advisory lock and two concurrent
  * creates at the boundary serialize — the loser reads the committed row and is
  * refused. The lock is transaction-scoped and serializes only when `query` is
- * bound to a transaction, so `saveOverride` runs this inside `withTransaction`;
- * the injected seam (D113) is unchanged, the lock is just another `$1`-bound
- * statement on it.
+ * bound to a transaction, which is why `query` is a `TxQuery` (D199): the type
+ * demands the transaction the lock needs, so a plain pooled `queryRows` — through
+ * which the lock would release inside its own implicit transaction and serialize
+ * nothing — does not typecheck here, and the cap can no longer silently re-open
+ * on a caller that forgot to wrap. `saveOverride` opens that transaction with
+ * `withTransaction`; the injected seam (D113) is unchanged, the lock is just
+ * another `$1`-bound statement on it.
  *
  * No rows back means the cap turned the INSERT into a no-op, which is the only
  * way that can happen: a conflicting row updates and returns.
@@ -348,7 +352,7 @@ export async function listPricingOverrides(
 export async function upsertPricingOverride(
   workspaceId: string,
   override: { match: string; inputPerMTok: number; outputPerMTok: number },
-  query: QueryRows,
+  query: TxQuery,
 ): Promise<PricingOverride> {
   await lockWorkspace(query, workspaceId);
   const [row] = await query<OverrideRow>(UPSERT_OVERRIDE_SQL, [

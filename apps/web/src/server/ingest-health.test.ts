@@ -40,7 +40,12 @@ function recordingQuery(rows: unknown[] = []) {
     seen.push({ sql, params });
     return rows as Row[];
   };
-  return { query, seen };
+  // The read functions take a `QueryRows`, the override write a `TxQuery` (D199).
+  // This recorder inspects the SQL a statement SAYS with no Postgres, so there is
+  // no transaction to mint the brand from — `as never` hands the same recorder to
+  // both seams (the `planWrites` idiom), and `qa-a4-ingest-health.test.ts` proves
+  // against real Postgres that the write actually runs inside a locked transaction.
+  return { query: query as never, seen };
 }
 
 /** A health row as Postgres RETURNs it: bigints as strings, timestamps as Dates. */
