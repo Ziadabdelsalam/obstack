@@ -2,7 +2,7 @@ import Link from "next/link";
 import { connection } from "next/server";
 import { ArrowUpRight } from "lucide-react";
 import { topFailing } from "@/mock/metrics";
-import { dataMode, getOverview, workspaceId } from "@/server/data";
+import { dataForSession, dataMode } from "@/server/data";
 import { LatencyChart, RequestsChart, TokensChart } from "@/components/dash/Charts";
 import { WatchWidgets } from "@/components/dash/WatchWidgets";
 import { OnboardingChecklist } from "@/components/dash/OnboardingChecklist";
@@ -94,7 +94,11 @@ export default async function OverviewPage() {
   // Live numbers must not be baked into a static prerender (D27a) — connection()
   // holds rendering until a real request. Mock mode stays static as before.
   if (live) await connection();
-  const { points, stats } = await getOverview();
+  // This page both reads and NAMES its workspace, so it holds the scope object:
+  // the label below is the workspace these numbers were queried under, not a
+  // second resolution that could disagree with them (D13/D21).
+  const data = await dataForSession();
+  const { points, stats } = await data.getOverview();
   return (
     <div className="px-5 py-4">
       <div className="mb-4 flex items-center justify-between">
@@ -103,7 +107,7 @@ export default async function OverviewPage() {
           <span className="pulse-dot inline-block h-1.5 w-1.5 rounded-full" style={{ background: "var(--color-ok)" }} />
           {live ? (
             <>
-              ingesting <SampleMark title={SAMPLE_TITLE} /> · {workspaceId} · last 6h
+              ingesting <SampleMark title={SAMPLE_TITLE} /> · {data.workspaceId} · last 6h
             </>
           ) : (
             <>ingesting · loopwork-prod · last 6h</>

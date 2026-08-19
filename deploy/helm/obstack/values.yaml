@@ -21,6 +21,25 @@ clickhouse:
   ingestPassword: obstack_ingest_dev
   webPassword: obstack_web_dev
 
+# The identity + saved-views store (D95/D112), the same class of resource as
+# ClickHouse above and for the same reasons: one replica, no PVC, a
+# release-scoped hostPath data dir, normal and release-managed. Telemetry
+# stays in ClickHouse; these are two stores with two migration sets, and the
+# ingest image is the one binary that owns both (templates/ingest/).
+#
+# Not here, deliberately (D112): BETTER_AUTH_SECRET / BETTER_AUTH_URL. This
+# chart has no `web` workload until M4, and auth secrets belong to the
+# process that signs cookies — a value here would configure nothing.
+postgres:
+  image: postgres:17.11
+  # Dev/CI default, matching deploy/compose/docker-compose.yml's own. Unlike
+  # the ClickHouse passwords above, this one is NOT live on upgrade, and the
+  # difference is the image's, not this chart's: POSTGRES_PASSWORD is read by
+  # the entrypoint at initdb time only, so changing it on a release whose data
+  # dir already exists rotates nothing and only breaks the migrate Job's DSN.
+  # See README.md, "Postgres in this chart".
+  password: obstack_postgres_dev
+
 ingest:
   # Built locally and loaded into kind (`kind load docker-image`) — no
   # registry in the path, the same mechanism S2.0's kind check uses for the

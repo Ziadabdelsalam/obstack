@@ -18,13 +18,15 @@ import {
   type LogRange,
   type LogsFilters,
 } from "@/lib/logs-filter";
-import type { SavedViewFilters } from "@/lib/saved-views";
 import { useFilterUrlSync } from "@/lib/use-filter-url-sync";
 import type { Severity } from "@/lib/types";
 // Type-only, so nothing from the server graph is emitted into the client
 // bundle: the D13 facade rule says this surface knows `@/server/data` and
 // nothing below it — never `@/server/queries/*`, never `@/mock/*` (D51(d)).
+// `@/server/saved-views` is a facade of the same standing for the other store:
+// the menu reaches it through server actions, and this file only names a type.
 import type { LogLine } from "@/server/data";
+import type { SavedViewFilters } from "@/server/saved-views";
 
 /**
  * The severity floors the bar offers: every rank except the strongest, because

@@ -20,6 +20,7 @@ import type { Trace } from "@/lib/types";
 import {
   ARRIVAL_TIMEOUT_MS,
   awaitWholeTrace,
+  DEMO_WORKSPACE,
   REQUIRED_LAYERS,
   TraceIncompleteError,
 } from "./trace-checks";
@@ -34,6 +35,8 @@ async function main(): Promise<void> {
   if (!traceId) fail("usage: smoke.ts <trace_id>");
 
   // The facade resolves its mode at import time (D13), so the env comes first.
+  // The workspace is NOT among them: it is an argument now (D96/D113), and the
+  // stack this asserts against writes under the one `DEMO_WORKSPACE` names.
   process.env.OBSTACK_DATA_MODE = "live";
   process.env.CLICKHOUSE_URL ??= "http://127.0.0.1:8123";
   process.env.CLICKHOUSE_USER ??= "obstack_web";
@@ -41,7 +44,7 @@ async function main(): Promise<void> {
 
   let whole: Trace;
   try {
-    whole = await awaitWholeTrace(traceId, ARRIVAL_TIMEOUT_MS);
+    whole = await awaitWholeTrace(DEMO_WORKSPACE, traceId, ARRIVAL_TIMEOUT_MS);
   } catch (err) {
     if (err instanceof TraceIncompleteError) {
       for (const p of err.problems) console.error(`smoke:   - ${p}`);

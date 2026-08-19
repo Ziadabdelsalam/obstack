@@ -2,23 +2,26 @@
 
 The real Helm chart M4 extends in place (D35) — not a throwaway kind
 manifest and not a first draft superseded later. Installs the obstack stack
-on Kubernetes: CI-grade ClickHouse, the ingest service (Deployment + its
-migrate `Job`), the `obstack-collector` DaemonSet running T1's config
-byte-for-byte, and a demo app pod carrying a second, uninstrumented
-container.
+on Kubernetes: CI-grade ClickHouse and Postgres, the ingest service
+(Deployment + its two migrate `Job`s), the `obstack-collector` DaemonSet
+running T1's config byte-for-byte, and a demo app pod carrying a second,
+uninstrumented container.
 
 ## Scope boundary (D35) — read this before extending the chart
 
-**In scope now (M2/S2.2):**
+**In scope now (M2/S2.2, extended in place by S3.1's Postgres):**
 
 - CI-grade ClickHouse, both D11 users (`obstack_ingest`, `obstack_web`), as
   normal, release-managed resources.
+- CI-grade Postgres (S3.1/D95), the same class of resource, holding the
+  product's identity and saved views — see "Postgres in this chart" below.
 - The ingest `Deployment` (`OBSTACK_MIGRATE_ON_BOOT=false`) plus a migrate
   `Job` — the split `deploy/compose/README.md:147-186` designed and this
   chart is the first real execution of. One template, two renderings: a
   normal Job on install, a `pre-upgrade` hook on upgrade — see "Why
   ClickHouse is a normal resource, and the migrate Job renders two ways"
-  below.
+  below. The Postgres migration set gets its own Job of exactly the same
+  shape (`templates/ingest/pg-migrate-job.yaml`).
 - The `obstack-collector` DaemonSet, running `deploy/collector/config.yaml`
   byte-for-byte, with the RBAC, hostPath mounts and env `config.yaml` names
   as its DaemonSet's job (`deploy/collector/README.md`, "What config.yaml
@@ -40,13 +43,15 @@ fill:**
   defaults, the same shape `docker-compose.yml` already uses — there is no
   chart-owned `Secret`.
 - A second chart. M4 extends this one in place; a parallel chart is drift.
-- Durable ClickHouse storage. The data dir is a per-node `hostPath`
-  (release-scoped, `/var/lib/obstack-clickhouse/<release>`) so the schema
-  survives pod replacement within a release's lifetime — enough for
-  CI/kind, where the cluster is thrown away afterwards. M4 replaces the
-  Deployment + hostPath with a StatefulSet and a PVC rather than inheriting
-  it silently. Three consequences of node-disk storage, stated here rather
-  than left for M4 to rediscover — a PVC would have none of them:
+- Durable storage for either database. Both data dirs are per-node
+  `hostPath`s (release-scoped, `/var/lib/obstack-clickhouse/<release>` and
+  `/var/lib/obstack-postgres/<release>`) so the schema survives pod
+  replacement within a release's lifetime — enough for CI/kind, where the
+  cluster is thrown away afterwards. M4 replaces both Deployments +
+  hostPaths with StatefulSets and PVCs rather than inheriting them
+  silently. Three consequences of node-disk storage, stated here rather
+  than left for M4 to rediscover — a PVC would have none of them (written
+  for ClickHouse, true of Postgres word for word):
   - **`helm uninstall` does not remove the data.** Every *cluster* resource
     goes; the node's `/var/lib/obstack-clickhouse/<release>` directory stays.
     A later `helm install` of the *same* release name on the same node
@@ -109,8 +114,9 @@ pod back until ClickHouse actually answers (playing the same role compose's
 `depends_on: condition: service_healthy` plays: keeping the Job's
 `backoffLimit` a signal about migrate *failing* and ingest's restart count a
 signal about *refusal*, neither about how long the ~250 MB ClickHouse cold
-pull took). The ingest pods therefore sit in `Init:0/1` with zero restarts
-while ClickHouse pulls; their verify-and-refuse boot check
+pull took). The ingest pods therefore sit in `Init:0/2` (S3.1 added the
+second wait — `wait-for-postgres`) with zero restarts while ClickHouse
+pulls; their verify-and-refuse boot check
 (`OBSTACK_MIGRATE_ON_BOOT=false`, `templates/ingest/deployment.yaml`) is
 untouched and still refuses loudly, with the exact documented error, if a
 pod reaches a ClickHouse the Job has not migrated yet. **A clean install may
@@ -153,11 +159,11 @@ upgrade").
 ### `--wait` and `--wait-for-jobs`, precisely
 
 - `helm install --wait` does **not** wait for a normal Job to complete, and
-  the install-rendered migrate Job is a normal Job — but the green is still
+  the install-rendered migrate Jobs are normal Jobs — but the green is still
   trustworthy: ingest's Deployment cannot report Available until its pods
-  verify the schema, which cannot happen before the migrate Job has applied
-  it. Add `--wait-for-jobs` if you also want Helm to block on the Job
-  object itself; it changes nothing about correctness.
+  verify **both** schemas, which cannot happen before each store's Job has
+  applied its set. Add `--wait-for-jobs` if you also want Helm to block on the
+  Job objects themselves; it changes nothing about correctness.
 - On `helm upgrade`, the migrate Job is a hook, and Helm **always** waits
   for hook Jobs to complete before touching any normal resource —
   `--wait-for-jobs` adds nothing there. If an upgrade seems to hang before
@@ -194,14 +200,97 @@ upgrade").
   sized off the slower measured pull, plus seconds of migrate), and nothing
   after the Job costs more than pod-start seconds. A warm node installs in
   ~18s.
-- On a cold install expect the ingest pods (and the migrate Job's pod) to
-  sit in `Init:0/1` with zero restarts while ClickHouse pulls — a restart on
-  an ingest pod now means a schema refusal or a defect, never pull speed.
+- On a cold install expect the ingest pods to sit in `Init:0/2` (both waits)
+  and each migrate Job's pod in `Init:0/1` (its own store's wait), all with
+  zero restarts while the images pull — a restart on an ingest pod now means
+  a schema refusal or a defect, never pull speed.
   Expect a short ClickHouse gap during any upgrade that rolls it
   (`Recreate`): already-running ingest pods crash-loop through it (init
   containers gate startup only), and a rolling upgrade's *new* pods hold in
   `Init` while the old ones serve. All of it converges on its own; none of
   it needs intervention.
+
+## Postgres in this chart
+
+S3.1 extended this chart in place (D35 — a second chart would be drift) with
+the product's other store. **Two stores, two migration sets, one binary:**
+ClickHouse holds telemetry, Postgres holds identity and saved views
+(`workspaces`, the captured better-auth tables, `saved_views` — D95/D112),
+and the ingest image owns the DDL for both. `/ingest migrate` applies
+`services/ingest/migrations/` from `CLICKHOUSE_DSN`; `/ingest pg-migrate`
+applies `services/ingest/pgmigrations/` from `OBSTACK_POSTGRES_DSN`. Neither
+set references the other's database — D112 bars cross-set references — so
+the two are peers, not a pipeline.
+
+`templates/postgres/deployment.yaml` is the same class of resource as
+ClickHouse's, for the same reasons and with the same caveats: one replica,
+`strategy: Recreate` (two postmasters must never open one data directory), a
+release-scoped `hostPath` data dir, normal and release-managed. Everything
+the scope boundary says about node-disk storage applies to it unchanged.
+
+`templates/ingest/pg-migrate-job.yaml` is the ClickHouse migrate Job's
+template shape line for line — normal revision-named Job on install, a
+`pre-upgrade` hook on upgrade, and a `wait-for-postgres` init container in
+front of the DDL that is **one define, two includes**
+(`obstack.waitForPostgres`, `templates/postgres/_helpers.tpl`, shared with the
+ingest Deployment, so the poll budget cannot drift between them — the same K1
+rule `obstack.waitForClickhouse` follows). Three differences are worth knowing
+before changing it:
+
+- **The two hooks are peers, and that is the ordering contract.** Both carry
+  `hook-weight: "0"`. There is no dependency between them to express, and a
+  lower weight on either would assert one that does not exist. The run order
+  is still fully determined — Helm sorts by weight, then kind, then name, and
+  runs hooks one at a time, so `<release>-migrate-<rev>` always precedes
+  `<release>-pg-migrate-<rev>` — but the guarantee that matters is the
+  phase's: **both** complete before Helm touches any normal resource.
+- **A pg-migrate failure aborts the upgrade after the ClickHouse set has
+  already applied.** That is not a half-state: both sets are idempotent and
+  independent, so the fixed upgrade re-runs the first hook as a no-op and
+  carries on. Nothing rolls back, and nothing needs to.
+- **The DSN's password comes straight from `.Values.postgres.password`, with
+  no live `lookup`.** The `obstack.migrate.clickhousePassword` helper exists
+  because a ClickHouse password change takes effect when the ClickHouse pod
+  restarts, which is *after* the hook phase. Postgres has no such divergence
+  to bridge, for a blunter reason: `POSTGRES_PASSWORD` is an **initdb-time**
+  value. On a release whose data dir already exists, changing
+  `postgres.password` rotates nothing — it only gives the migrate Job a
+  password the cluster never had. Rotating for real means starting from an
+  empty data dir (`kubectl exec <node> rm -rf
+  /var/lib/obstack-postgres/<release>`, or a fresh cluster).
+
+**The ingest Deployment is a Postgres client too, and it must be.** It carries
+`OBSTACK_POSTGRES_DSN` and `OBSTACK_PG_MIGRATE_ON_BOOT=false`, the exact
+mirror of its ClickHouse pair. Ingest reads nothing out of Postgres while
+serving in this milestone — its API-key lookup is still the env map, D98 moves
+it in S3.2 — but it is the process that owns the schema, so `ingest run`
+requires the DSN and refuses to boot without it, then verifies the set and
+refuses loudly if this revision's Job has not applied it. Two consequences:
+`helm install --wait` gates on **both** schemas, since these pods cannot
+report Available until each one checks out; and these pods wait behind a
+second init container (`obstack.waitForPostgres`), because a pod that now
+opens two databases at boot would otherwise crash-loop on the cold-start race
+the first one was added to eliminate.
+
+**What is deliberately absent.** No `BETTER_AUTH_SECRET`/`BETTER_AUTH_URL`
+anywhere in this chart (D112): there is no `web` workload here until M4, and
+auth secrets belong to the process that signs cookies.
+
+The DDL itself is asserted directly with this line, which is exactly what
+CI's `stack` job runs after the acceptance (S2.1 L3) — the release going
+green already implies it, and this is the one that says so by name:
+
+```bash
+kubectl exec deploy/obstack-postgres -- psql -U obstack -d obstack -v ON_ERROR_STOP=1 \
+  -c 'SELECT 1 FROM workspaces LIMIT 1' -c 'SELECT 1 FROM saved_views LIMIT 1'
+```
+
+Zero rows is a pass — a fresh install has no workspaces until somebody signs
+up. A missing relation is a `psql` error, and `ON_ERROR_STOP=1` makes it a
+non-zero exit. It asks the database rather than the Job object on purpose:
+the install-rendered Job is swept by `ttlSecondsAfterFinished` and the
+upgrade-rendered one deletes itself on success, so the database is the only
+thing both paths leave behind.
 
 ## The collector DaemonSet's contract
 
@@ -268,8 +357,8 @@ Isolated cluster name, never the shared compose stacks this repo also runs
 (check `docker ps` first):
 
 ```bash
-# build the two images this repo's source produces; ClickHouse and the
-# collector are pulled from their pinned public tags
+# build the two images this repo's source produces; ClickHouse, Postgres and
+# the collector are pulled from their pinned public tags
 docker build -t obstack-ingest:kind services/ingest
 docker build -t obstack-demo-agent:kind demo/agent-app
 
@@ -288,11 +377,18 @@ helm install obstack deploy/helm/obstack --timeout 900s --wait
 kubectl get pods,deploy,ds
 
 # the install-time migrate Job (name is revision-suffixed) applied the
-# schema; ingest only ever verified it — its pods held in Init:0/1 until
-# ClickHouse answered, and zero refusals here is the expected clean run
-# (see "the migrate Job renders two ways")
+# schema; ingest only ever verified it — its pods held in Init:0/2 until
+# ClickHouse and Postgres answered, and zero refusals here is the expected
+# clean run (see "the migrate Job renders two ways")
 kubectl logs job/obstack-migrate-1 -c migrate
 kubectl logs deploy/obstack-ingest | grep "schema verified"
+
+# the other store's Job, same shape, same revision suffix — and then the
+# claim itself, asked of Postgres rather than of the Job (see "Postgres in
+# this chart"; the second line is what CI's `stack` job runs)
+kubectl logs job/obstack-pg-migrate-1 -c pg-migrate
+kubectl exec deploy/obstack-postgres -- psql -U obstack -d obstack -v ON_ERROR_STOP=1 \
+  -c 'SELECT 1 FROM workspaces LIMIT 1' -c 'SELECT 1 FROM saved_views LIMIT 1'
 
 # no-op re-run — this time a `pre-upgrade` hook. It is deleted on success
 # (hook-succeeded), so read its log while the upgrade is still running, from

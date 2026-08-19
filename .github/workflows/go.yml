@@ -22,6 +22,35 @@ jobs:
     # Bounds a required check: without it a wedged step holds the PR for the
     # 360-minute GitHub default. Green is ~50s.
     timeout-minutes: 15
+
+    # Postgres is a service container where ClickHouse is not, and the
+    # difference is the mount: ClickHouse needs deploy/compose's users.d, which
+    # a service container starting before checkout cannot see, while Postgres
+    # needs nothing but environment. The fixing values are the ones
+    # internal/pgmigrate documents its `docker run` with, down to the exact
+    # image pin — image, role, password, database, port; the test's default DSN
+    # is exactly this container.
+    services:
+      postgres:
+        image: postgres:17.11
+        env:
+          POSTGRES_USER: obstack
+          POSTGRES_PASSWORD: obstack_postgres_dev
+          POSTGRES_DB: obstack
+        ports:
+          - 5432:5432
+        # -h 127.0.0.1 forces the TCP path, exactly as the compose service's
+        # healthcheck does and for the same reason: the image's entrypoint runs
+        # its initdb phase against a temporary server bound to the unix socket
+        # only, so a socket-based pg_isready reports ready while the database is
+        # still being created. The tests connect over TCP, and a connection
+        # refused there is a skip — which this job then fails on.
+        options: >-
+          --health-cmd "pg_isready -h 127.0.0.1 -U obstack -d obstack"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
     steps:
       - name: Checkout
         uses: actions/checkout@v7.0.1
@@ -54,11 +83,12 @@ jobs:
         run: go vet ./...
 
       # D36 skip trap: DSNs for the two D11 users (obstack_ingest write,
-      # obstack_web readonly=2) point at the compose ClickHouse above, so the
-      # writer, migrate, and `ingest migrate` integration tests run instead of
-      # skipping. The credentials are the dev defaults already declared in
-      # deploy/compose/docker-compose.yml, reused here rather than copied into
-      # a second config artifact.
+      # obstack_web readonly=2) point at the compose ClickHouse above, and the
+      # Postgres one at the service container, so the writer, both migrators,
+      # and both migrate subcommands' integration tests run instead of
+      # skipping. The ClickHouse credentials are the dev defaults already
+      # declared in deploy/compose/docker-compose.yml, reused here rather than
+      # copied into a second config artifact.
       #
       # K4: `go test -v` output is scanned for "--- SKIP"; any match fails the
       # job even if the tests themselves passed. No allowlist entries today —
@@ -76,6 +106,7 @@ jobs:
         env:
           OBSTACK_TEST_CLICKHOUSE_DSN: clickhouse://obstack_ingest:obstack_ingest_dev@127.0.0.1:9000/obstack
           OBSTACK_TEST_CLICKHOUSE_READONLY_DSN: clickhouse://obstack_web:obstack_web_dev@127.0.0.1:9000/obstack
+          OBSTACK_TEST_POSTGRES_DSN: postgres://obstack:obstack_postgres_dev@127.0.0.1:5432/obstack
         run: |
           set +e
           go test -v -count=1 ./... 2>&1 | tee test-output.log

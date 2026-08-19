@@ -8,8 +8,8 @@
  * That agreement is a K1 one-definition problem, and a server component cannot
  * call functions exported from a `"use client"` module (they become client
  * references), so the contract lives here: a pure, client-safe module both
- * sides import, next to `live-routes.ts` and `saved-views.ts` on the same
- * precedent. `traces-filter.ts` is the ratified shape this mirrors (D65).
+ * sides import, next to `live-routes.ts` on the same precedent.
+ * `traces-filter.ts` is the ratified shape this mirrors (D65).
  *
  * There is no page parameter: `/app/logs` is a capped window, not a paginated
  * list (D44's sub-ruling), so nothing here has a page key to strip.
@@ -21,7 +21,7 @@
  * — and two copies of it is exactly the drift this module exists to prevent.
  */
 
-import type { SavedViewFilters } from "@/lib/saved-views";
+import type { SavedViewFilters } from "@/server/saved-views";
 import type { Severity } from "@/lib/types";
 import type { LogFilter } from "@/server/data";
 

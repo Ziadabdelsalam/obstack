@@ -1,5 +1,5 @@
 import { parseLogsUrl, toLogFilter } from "@/lib/logs-filter";
-import { searchLogs } from "@/server/data";
+import { dataForSession } from "@/server/data";
 import { LogsExplorer } from "@/components/logs/LogsExplorer";
 
 /**
@@ -20,7 +20,10 @@ export default async function LogsPage({
   searchParams: Promise<{ [key: string]: string | string[] | undefined }>;
 }) {
   const filters = parseLogsUrl(await searchParams);
-  const result = await searchLogs(toLogFilter(filters));
+  // Scoped to the signed-in session's workspace (D113) — both this window and
+  // the pod options it offers.
+  const data = await dataForSession();
+  const result = await data.searchLogs(toLogFilter(filters));
 
   return (
     <LogsExplorer

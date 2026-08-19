@@ -35,15 +35,19 @@ const CLICKHOUSE_URL = process.env.CLICKHOUSE_URL ?? "http://127.0.0.1:8123";
 const INGEST_PASSWORD =
   process.env.OBSTACK_TEST_CLICKHOUSE_INGEST_PASSWORD ?? "obstack_ingest_dev";
 
-/** Fixed bench workspace: `measure` needs no state from `seed` beyond this name. */
+/**
+ * Fixed bench workspace: `measure` needs no state from `seed` beyond this name,
+ * and it is this harness's OWN workspace — the read path is scoped by the
+ * explicit `forWorkspace` argument below, never by an environment default
+ * (D96/D113).
+ */
 const WORKSPACE_ID = "ws_bench_d46";
 
 // The web read path resolves its client lazily on the first query — set env
-// before `./traces` is imported below (the integration test's pattern).
+// before the first `queryRows` runs (the integration test's pattern).
 process.env.CLICKHOUSE_URL = CLICKHOUSE_URL;
 process.env.CLICKHOUSE_USER = process.env.CLICKHOUSE_USER ?? "obstack_web";
 process.env.CLICKHOUSE_PASSWORD = process.env.CLICKHOUSE_PASSWORD ?? "obstack_web_dev";
-process.env.OBSTACK_WORKSPACE_ID = WORKSPACE_ID;
 
 const TRACES = 10_000;
 const LOGS_PER_TRACE = 10; // 100k logs rows total
@@ -151,13 +155,15 @@ const median = (xs: number[]): number => [...xs].sort((a, b) => a - b)[Math.floo
 
 async function doMeasure(): Promise<void> {
   const { queryTraceSearch } = await import("./traces");
+  const { forWorkspace } = await import("@/server/clickhouse");
+  const ch = forWorkspace(WORKSPACE_ID);
   const [spanCount, logCount] = await Promise.all([count("spans"), count("logs")]);
   console.log(`dataset: workspace ${WORKSPACE_ID}, ${spanCount} spans rows, ${logCount} logs rows`);
   console.log(
     `machine: ${os.cpus()[0].model} (${os.cpus().length} cores), ${Math.round(os.totalmem() / 1e9)} GB RAM, node ${process.version}; ` +
       "ClickHouse clickhouse/clickhouse-server:26.3.17.110 in Docker Desktop (deploy/compose)",
   );
-  const cases: { label: string; filter: Parameters<typeof queryTraceSearch>[0]; expectTotal: number }[] = [
+  const cases: { label: string; filter: Parameters<typeof queryTraceSearch>[1]; expectTotal: number }[] = [
     { label: "free text, log-body needle (1 match)", filter: { q: "d46needle" }, expectTotal: 1 },
     { label: "free text, span-prompt needle (1 match)", filter: { q: "d46promptneedle" }, expectTotal: 1 },
     { label: "free text, absent term (0 matches, full scan)", filter: { q: "d46absent" }, expectTotal: 0 },
@@ -176,7 +182,7 @@ async function doMeasure(): Promise<void> {
     let total = -1;
     for (let i = 0; i < 6; i++) {
       const t0 = performance.now();
-      const r = await queryTraceSearch(c.filter);
+      const r = await queryTraceSearch(ch, c.filter);
       runs.push(performance.now() - t0);
       total = r.total;
     }

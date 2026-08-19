@@ -1,0 +1,92 @@
+# CI-grade Postgres (D35/D95) — one replica, no PVC, the same class of
+# resource as templates/clickhouse/deployment.yaml and read alongside it: a
+# normal, release-managed resource, so `helm upgrade --set postgres.…`
+# applies here like any other value and `helm uninstall` removes it like any
+# other resource.
+#
+# The data dir is a per-node hostPath for the same reason ClickHouse's is: an
+# upgrade can legitimately replace this pod (an image bump), and the schema
+# the pg-migrate Job applied has to survive that replacement, or ingest boots
+# against a database its migration set no longer matches. It outlives pod
+# replacement and dies with the cluster — which is what "CI-grade" means
+# here; every consequence listed in README.md's scope boundary for the
+# ClickHouse hostPath (uninstall leaves the data, single node only, one
+# release per cluster) holds for this one identically. M4 replaces both with
+# StatefulSets and PVCs rather than inheriting the hostPath silently.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-postgres
+  labels:
+    {{- include "obstack.labels" . | nindent 4 }}
+    app.kubernetes.io/component: postgres
+spec:
+  replicas: 1
+  # Recreate, not RollingUpdate — same hard rule as ClickHouse's: two
+  # postmasters must never open one data directory, and a rolling update of a
+  # single-replica Deployment surges a second pod onto the same node, straight
+  # into the first one's postmaster.pid.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: obstack
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: postgres
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: obstack
+        app.kubernetes.io/instance: {{ .Release.Name }}
+        app.kubernetes.io/component: postgres
+    spec:
+      containers:
+        - name: postgres
+          image: {{ .Values.postgres.image }}
+          env:
+            # Read by the image's entrypoint at initdb time only — see
+            # values.yaml's note on postgres.password and README.md,
+            # "Postgres in this chart".
+            - name: POSTGRES_USER
+              value: obstack
+            - name: POSTGRES_PASSWORD
+              value: {{ .Values.postgres.password | quote }}
+            - name: POSTGRES_DB
+              value: obstack
+            # A subdirectory of the mount, which is upstream's own guidance
+            # for a mounted data volume: initdb needs to own and chmod 0700
+            # the directory it initialises, and the mount point itself is the
+            # kubelet's. The volume path below stays the image's default, so
+            # nothing else has to know about this.
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          ports:
+            - name: postgres
+              containerPort: 5432
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+          readinessProbe:
+            # pg_isready over TCP, not the unix socket: the entrypoint's
+            # initdb phase runs a temporary server on the socket alone, so a
+            # socket probe reports ready while the database is still being
+            # created (the same trap docker-compose.yml's healthcheck names).
+            exec:
+              command: ["pg_isready", "-h", "127.0.0.1", "-U", "obstack", "-d", "obstack"]
+            initialDelaySeconds: 5
+            periodSeconds: 3
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-h", "127.0.0.1", "-U", "obstack", "-d", "obstack"]
+            initialDelaySeconds: 20
+            periodSeconds: 10
+      volumes:
+        - name: data
+          # Release-scoped so a reinstall under another name never opens a
+          # predecessor's cluster. The kubelet creates it root:root; the
+          # image's entrypoint runs as root, chowns PGDATA and drops
+          # privileges to the postgres user — no securityContext needed, the
+          # same as ClickHouse's.
+          hostPath:
+            path: /var/lib/obstack-postgres/{{ .Release.Name }}
+            type: DirectoryOrCreate

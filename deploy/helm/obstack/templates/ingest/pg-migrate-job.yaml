@@ -1,0 +1,92 @@
+# The Postgres half of the same split migrate-job.yaml implements for
+# ClickHouse (D95: ingest owns a SECOND tracked migration set,
+# services/ingest/pgmigrations/, applied by `/ingest pg-migrate`). Same
+# template shape, same two renderings, same reasons — read that file's header
+# first; only what differs is spelled out here.
+#
+# WHY A SECOND JOB RATHER THAN A SECOND CONTAINER IN THE FIRST. Two stores,
+# two DSNs, two waits, two exit codes worth reading separately. A Job's
+# containers all run at once and the Job is only complete when all of them
+# are, so a two-container Job would fuse "ClickHouse DDL failed" and
+# "Postgres DDL failed" into one status and one restart policy.
+#
+# HOOK ORDERING, WHICH IS CONTRACT AND NOT PLUMBING. This hook carries the
+# SAME `hook-weight: "0"` as the ClickHouse migrate hook, deliberately. The
+# two migration sets are independent — neither one's SQL reads the other's
+# database, and D112 bars cross-set references on purpose — so there is no
+# dependency between them to express, and a lower weight on either would
+# assert an ordering that does not exist. What the equal weight does NOT
+# leave undefined is the run order: Helm sorts hooks by weight, then kind,
+# then name, and runs them one at a time, waiting for each — so
+# `<release>-migrate-<rev>` runs before `<release>-pg-migrate-<rev>`, every
+# time, on every cluster. The guarantee that matters is the phase's, not the
+# pair's: BOTH hooks complete before Helm touches a single normal resource,
+# so no upgraded ingest replica ever rolls against either un-migrated store.
+#
+# The one observable consequence of running them as peers: a pg-migrate
+# failure aborts the upgrade AFTER the ClickHouse set has already been
+# applied. That is not a half-state to unwind — both sets are idempotent and
+# independent, so the fixed upgrade re-runs the ClickHouse hook as a no-op
+# ("schema already up to date") and carries on. It is stated here because the
+# alternative reading — "the release rolled back" — is wrong.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ .Release.Name }}-pg-migrate-{{ .Release.Revision }}
+  labels:
+    {{- include "obstack.labels" . | nindent 4 }}
+    app.kubernetes.io/component: pg-migrate
+  {{- if not .Release.IsInstall }}
+  annotations:
+    "helm.sh/hook": pre-upgrade
+    "helm.sh/hook-weight": "0"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+  {{- end }}
+spec:
+  backoffLimit: 1
+  # The ClickHouse Job's budget, unchanged, and sized the same way: a node
+  # that has never run this chart pulls postgres before this can start. On
+  # INSTALL both Jobs are normal resources created in the same batch, so the
+  # two pulls and the two init waits overlap — the install budget does not
+  # double. On UPGRADE both are hooks and run one after the other, but both
+  # databases have been serving since install and each first probe returns
+  # immediately, so the README's 300s upgrade budget still holds.
+  activeDeadlineSeconds: 900
+  {{- if .Release.IsInstall }}
+  ttlSecondsAfterFinished: 600
+  {{- end }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: obstack
+        app.kubernetes.io/instance: {{ .Release.Name }}
+        app.kubernetes.io/component: pg-migrate
+    spec:
+      restartPolicy: Never
+      initContainers:
+        # The same role obstack.waitForClickhouse plays for the other Job, and
+        # the same one-define-two-includes rule (K1): this Job and the ingest
+        # Deployment, which verifies this set at boot, wait behind byte-identical
+        # containers — obstack.waitForPostgres, templates/postgres/_helpers.tpl.
+        {{- include "obstack.waitForPostgres" . | nindent 8 }}
+      containers:
+        - name: pg-migrate
+          image: {{ .Values.ingest.image }}
+          imagePullPolicy: {{ .Values.ingest.pullPolicy }}
+          command: ["/ingest", "pg-migrate"]
+          env:
+            # OBSTACK_POSTGRES_DSN only — not CLICKHOUSE_DSN, not
+            # OBSTACK_API_KEYS. A one-shot DDL runner for one store carries
+            # the credentials of that store and nothing else, the same rule
+            # the ClickHouse migrate Job follows.
+            #
+            # Straight from .Values.postgres.password with no live `lookup`,
+            # unlike obstack.migrate.clickhousePassword: that helper exists
+            # because a ClickHouse password change takes effect the moment
+            # the ClickHouse pod restarts, which is AFTER this phase. Postgres
+            # has no such divergence to bridge — POSTGRES_PASSWORD is an
+            # initdb-time value, so an existing cluster's password is
+            # whatever it was created with, and a rotated value would be
+            # wrong here whichever way it was read. See README.md.
+            - name: OBSTACK_POSTGRES_DSN
+              value: postgres://obstack:{{ .Values.postgres.password }}@{{ .Release.Name }}-postgres:5432/obstack

@@ -8,7 +8,7 @@ import {
   type SpanRow,
   type TraceSummaryRow,
 } from "@/server/adapters";
-import { queryRows, workspaceId } from "@/server/clickhouse";
+import type { ScopedClickHouse } from "@/server/clickhouse";
 
 /**
  * D44: the traces list is offset/limit paginated with an exact filtered total
@@ -324,23 +324,28 @@ LIMIT {fetch_limit:UInt32}`;
  * Trace detail: one summary lookup, then spans, solid logs and nearby logs by
  * (workspace_id, trace_id) — the nearby read is a peer of the solid one, not a
  * rewrite of it (D28).
+ *
+ * The scope is the first parameter, like every read in this layer (D113): the
+ * `workspace_id` these statements bind comes from `ch`, so no call site here
+ * can name a workspace and none can omit one.
  */
-export async function queryTrace(id: string): Promise<Trace | undefined> {
-  const [summary] = await queryRows<TraceSummaryRow>(SUMMARY_BY_ID_SQL, {
-    workspace_id: workspaceId,
+export async function queryTrace(
+  ch: ScopedClickHouse,
+  id: string,
+): Promise<Trace | undefined> {
+  const [summary] = await ch.queryRows<TraceSummaryRow>(SUMMARY_BY_ID_SQL, {
     trace_id: id,
   });
   if (!summary) return undefined;
 
   const params = {
-    workspace_id: workspaceId,
     trace_id: id,
     min_start_ns: summary.min_start_ns,
   };
   const [spanRows, logRows, nearbyFetched] = await Promise.all([
-    queryRows<SpanRow>(SPANS_SQL, params),
-    queryRows<LogRow>(LOGS_SQL, params),
-    queryRows<LogRow>(NEARBY_LOGS_SQL, {
+    ch.queryRows<SpanRow>(SPANS_SQL, params),
+    ch.queryRows<LogRow>(LOGS_SQL, params),
+    ch.queryRows<LogRow>(NEARBY_LOGS_SQL, {
       ...params,
       duration_ns: summary.duration_ns,
       window_ns: NEARBY_LOG_WINDOW_NS,
@@ -362,11 +367,13 @@ export async function queryTrace(id: string): Promise<Trace | undefined> {
  * here and bound into both queries; two separate `now()` evaluations could
  * disagree across them and break "the total is the page's own predicate".
  */
-export async function queryTraceSearch(filter: TraceFilter): Promise<TraceSearchResult> {
+export async function queryTraceSearch(
+  ch: ScopedClickHouse,
+  filter: TraceFilter,
+): Promise<TraceSearchResult> {
   const terms = splitSearchTerms(filter.q ?? "");
   const page = Math.max(1, Math.floor(filter.page ?? 1));
   const params: Record<string, unknown> = {
-    workspace_id: workspaceId,
     since_ms: Date.now() - (filter.rangeMs ?? DEFAULT_TRACE_RANGE_MS),
     min_ns: Math.round((filter.minMs ?? 0) * 1_000_000),
     min_cost: filter.minCostUsd ?? 0,
@@ -381,8 +388,8 @@ export async function queryTraceSearch(filter: TraceFilter): Promise<TraceSearch
     params[`q${i}`] = term;
   });
   const [rows, counts] = await Promise.all([
-    queryRows<TraceSummaryRow>(searchPageSql(terms.length), params),
-    queryRows<{ total: string }>(searchCountSql(terms.length), params),
+    ch.queryRows<TraceSummaryRow>(searchPageSql(terms.length), params),
+    ch.queryRows<{ total: string }>(searchCountSql(terms.length), params),
   ]);
   return { traces: rows.map(toTraceSummary), total: Number(counts[0]?.total ?? 0) };
 }

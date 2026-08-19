@@ -1,0 +1,1099 @@
+/**
+ * The `e2e` drive (S3.1 T8, D107) — two strangers, two workspaces, no crossing.
+ *
+ * This is the ratified U9 stranger protocol as an executable: two fresh browser
+ * profiles sign up through the real form, each lands in the org+workspace its
+ * own signup created (D117), each gets telemetry seeded for exactly the id the
+ * product rendered for it, and neither ever sees the other's rows. One drive,
+ * one definition (D111) — it replaces the S2.3 evidence pair, a shell harness
+ * and the CDP half it drove, both deleted in the commit that added this file;
+ * their still-live legs are carried below, and this grows one step per sprint.
+ *
+ *   node deploy/compose/e2e-drive.mjs
+ *
+ * Prerequisites: the compose stack up (`docker compose -f
+ * deploy/compose/docker-compose.yml up -d --wait --wait-timeout 240`), `npm ci`
+ * at the repo root, and Google Chrome. CI's `e2e` job runs this line verbatim,
+ * after the smoke floor (D136) — the whole sequence is in
+ * deploy/compose/README.md, "The e2e drive" (S2.1 L3).
+ *
+ * WHAT IT REFUSES, AND WHY (S2.3 L4, the exit-evidence lineage). It measures
+ * only processes it started itself: a leftover server answers for the build IT
+ * was started with, and a leftover browser carries somebody else's cookies —
+ * which, in a drive whose entire subject is whose data you can see, is not a
+ * detail. So it refuses loudly on a busy app port or a busy CDP port instead of
+ * cleaning up after a run that is not this one. Each actor gets its own
+ * throwaway `--user-data-dir`, because two strangers sharing a cookie jar are
+ * one stranger.
+ *
+ * It builds with the same environment it serves with. The app layout decides
+ * mode-dependent chrome at render time and a prerendered route bakes that at
+ * BUILD time, so a mock-mode build served live would ship unwired pages — the
+ * property every deployment has, stated here because this harness depends on it.
+ *
+ * THE ORIGIN IS `http://localhost:<port>`, never `127.0.0.1` (D119): the
+ * production build sets `__Secure-better-auth.session_token`, and localhost is
+ * the origin that contract is written against. `BETTER_AUTH_URL` is set
+ * NOWHERE — setting it to an http:// origin downgrades that cookie name, so the
+ * drive refuses to run with it in the environment rather than key on a name the
+ * product does not use in production.
+ *
+ * THE NEGATIVE PROBE IS ORDERED, NOT ID-DISTINCT. `exit-seed.mjs` is the ONE
+ * seeding definition (D115) and its ids are deliberately label-independent: both
+ * workspaces end up holding the SAME trace ids, so "A asks for B's id" can only
+ * be an honest 404 at a moment when the asker genuinely does not hold that id.
+ * So the probe runs before the second workspace is seeded — the id is live in
+ * ClickHouse under the other workspace, and the asker gets the same nothing an
+ * id that never existed would give — and it is then re-run as a POSITIVE
+ * CONTROL after seeding, where the very same URL renders. The pair is what
+ * makes the 404 a fact about tenancy rather than about a broken route.
+ *
+ * AND IT IS CONTENT-AWARE ONCE BOTH ARE POPULATED (D135). Each stranger's rows
+ * are seeded with their own content LABEL, woven into the words their surfaces
+ * render, so the steady-state claims read what a page says and not only how many
+ * rows it counted: each tenant's list, logs and trace detail carry their own
+ * label and zero of the other's, and the product's own search finds the other
+ * tenant's vocabulary nowhere while finding the asker's everywhere. This matters
+ * because both workspaces hold the same 220 ids: a merge can leave every total
+ * exactly where it was, and a guard that only counts shares that blind spot with
+ * the scoping tripwire it is supposed to catch failing.
+ *
+ * LEGS CARRIED FORWARD (L5) from the two deleted harnesses, whose covered logic
+ * still exists on the wired surfaces: page-1/page-2 totals and page-2
+ * disjointness, the three free-text reach legs (span prompt, log body, D42
+ * carrier), the D42 carrier's invisibility to /app/logs, the honest empty
+ * states, the SAMPLE-badge absence with its unwired-route positive control, the
+ * adversarial URL matrix (D66/D68/D73), URL adoption on both bars (D69) and the
+ * late-echo race (D72), and saved views surviving a reload — that last one now
+ * a workspace-scoped Postgres row (D30/D116), so it is asserted as a tenancy
+ * leg too. What died with its logic: the `obstack.saved-views` localStorage
+ * assertion, whose store S3.1 deleted outright.
+ */
+
+import { spawn, spawnSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { connect } from "node:net";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import {
+  CARRIER_TOKEN,
+  CARRIER_TRACE,
+  LOG_BODY_TOKEN,
+  LOG_TRACE,
+  PROMPT_TRACE,
+  SPAN_PROMPT_TOKEN,
+} from "./exit-seed.mjs";
+
+// ---------------------------------------------------------- fixing values
+// Every value this run is pinned to, printed at the top of the transcript so a
+// reader never has to guess what "green" was green against (S2.2 L3).
+const composeDir = dirname(fileURLToPath(import.meta.url));
+const repoRoot = resolve(composeDir, "../..");
+const APP_PORT = Number(process.env.APP_PORT ?? 3210);
+const BASE = `http://localhost:${APP_PORT}`;
+const CDP_PORTS = { alice: Number(process.env.CDP_PORT_A ?? 9333), bob: Number(process.env.CDP_PORT_B ?? 9334) };
+const CH = process.env.CLICKHOUSE_URL ?? "http://127.0.0.1:8123";
+const PG_DSN =
+  process.env.OBSTACK_POSTGRES_DSN ?? "postgres://obstack:obstack_postgres_dev@127.0.0.1:5432/obstack";
+const INGEST_HEALTHZ = process.env.INGEST_HEALTHZ ?? "http://127.0.0.1:8080/healthz";
+/** Required by `authConfig()`, plays no part in anything asserted here. */
+const BETTER_AUTH_SECRET = "e2e-drive-dummy-secret-not-a-real-one";
+/** The production cookie name at localhost with BETTER_AUTH_URL unset (D119). */
+const SESSION_COOKIE = "__Secure-better-auth.session_token";
+/** Injected latency for the D72 echo race — see the double-navigation leg. */
+const ECHO_LATENCY_MS = 900;
+/** An explicit CHROME is a decision, not a hint: falling through to another
+ * browser when the named one is missing would drive something the caller did
+ * not choose, and say nothing about it. */
+const CHROME_CANDIDATES = process.env.CHROME
+  ? [process.env.CHROME]
+  : [
+      "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+      "/usr/bin/google-chrome",
+      "/usr/bin/google-chrome-stable",
+      "/usr/bin/chromium-browser",
+      "/usr/bin/chromium",
+    ];
+
+const OUT = process.env.OUT_DIR ?? mkdtempSync(join(tmpdir(), "obstack-e2e-"));
+mkdirSync(OUT, { recursive: true });
+
+/** Signups need addresses nobody used before: the Postgres volume outlives runs. */
+const RUN = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+/**
+ * Each stranger's CONTENT LABEL (D135): the word `exit-seed.mjs` weaves into the
+ * text of every row it writes for them — root span names, log bodies, prompts.
+ * It is what lets a disjointness claim be about what a page SAYS and not only
+ * about how many rows it counted, which matters because counting is the
+ * tripwire's own idiom: an outer guard built from the same assumption as the
+ * thing it guards fails silently with it. `zz` is the fixture's convention for
+ * a token that appears nowhere else in the corpus or the app's chrome.
+ */
+const ACTORS = {
+  alice: { name: "Alice Stranger", email: `alice+${RUN}@e2e.invalid`, password: `alice-${RUN}-pw`, label: "zzalice" },
+  bob: { name: "Bob Stranger", email: `bob+${RUN}@e2e.invalid`, password: `bob-${RUN}-pw`, label: "zzbob" },
+};
+
+const appEnv = {
+  ...process.env,
+  OBSTACK_DATA_MODE: "live",
+  CLICKHOUSE_URL: CH,
+  CLICKHOUSE_USER: "obstack_web",
+  CLICKHOUSE_PASSWORD: "obstack_web_dev",
+  OBSTACK_POSTGRES_DSN: PG_DSN,
+  BETTER_AUTH_SECRET,
+};
+
+// ------------------------------------------------------------- reporting
+const startedAt = Date.now();
+let failures = 0;
+const transcript = [];
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+function step(title) {
+  console.log(`\n== ${title}`);
+  transcript.push({ step: title });
+}
+function check(claim, condition, detail) {
+  if (condition) {
+    console.log(`  ok   ${claim}`);
+  } else {
+    failures++;
+    console.log(`  FAIL ${claim}${detail === undefined ? "" : ` — ${detail}`}`);
+  }
+  transcript.push({ claim, ok: Boolean(condition), detail });
+}
+/** A precondition, not a claim: everything after it would assert about nothing. */
+function must(condition, message) {
+  if (!condition) throw new Error(message);
+}
+function refuse(message) {
+  console.error(`\ne2e-drive: FAIL — ${message}`);
+  process.exit(1);
+}
+
+// --------------------------------------------------------------- process
+/** Started detached so the whole group can be killed: `npx next start` runs the
+ * server as a CHILD, and killing only the launcher leaves it listening — the
+ * next run then binds nothing and asserts against the stale build. */
+function launch(command, args, { cwd, logPath }) {
+  // TRUNCATED, never appended: `OUT_DIR=...` is a documented override, so two
+  // runs can name the same directory, and the D132 assertion below splits the
+  // server log at a BYTE OFFSET taken during THIS run. Against an appended log
+  // that offset points into the previous run's bytes, and the previous run's
+  // allowlisted NoSessionError lines are then read as unallowed errors on an
+  // authenticated path — a red about a run that already finished (measured).
+  // Every other artifact here is written per run; the log is no different.
+  const fd = openSync(logPath, "w");
+  const child = spawn(command, args, { cwd, env: appEnv, detached: true, stdio: ["ignore", fd, fd] });
+  child.unref();
+  return child;
+}
+const launched = [];
+const sockets = [];
+function stopAll() {
+  for (const ws of sockets) {
+    try {
+      ws.close();
+    } catch {
+      /* already closed */
+    }
+  }
+  for (const child of launched) {
+    try {
+      process.kill(-child.pid, "SIGTERM");
+    } catch {
+      /* already gone */
+    }
+  }
+}
+
+function listening(port) {
+  return new Promise((done) => {
+    const socket = connect({ host: "127.0.0.1", port }, () => {
+      socket.destroy();
+      done(true);
+    });
+    socket.setTimeout(1500);
+    socket.on("timeout", () => {
+      socket.destroy();
+      done(false);
+    });
+    socket.on("error", () => done(false));
+  });
+}
+async function waitForHttp(url, timeoutMs = 90_000) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    try {
+      const res = await fetch(url, { redirect: "manual" });
+      if (res.status > 0) return true;
+    } catch {
+      /* not up yet */
+    }
+    if (Date.now() > deadline) return false;
+    await sleep(500);
+  }
+}
+
+// ------------------------------------------------------------ clickhouse
+/** The independent denominator (D71(b)): our own SQL, as the read-only web
+ * user, so no "N of M" the app prints is checked against a number the app
+ * produced. */
+async function chCount(sql) {
+  const res = await fetch(`${CH}/?user=obstack_web&password=obstack_web_dev`, { method: "POST", body: sql });
+  const text = await res.text();
+  if (!res.ok) throw new Error(`clickhouse: ${res.status} ${text}`);
+  return Number(text.trim());
+}
+async function denominators(workspace) {
+  return {
+    workspace,
+    total: await chCount(
+      `SELECT countDistinct(trace_id) FROM obstack.trace_summaries WHERE workspace_id='${workspace}'`,
+    ),
+    phantoms: await chCount(
+      `SELECT count() FROM obstack.trace_summaries WHERE workspace_id='${workspace}' AND trace_id=''`,
+    ),
+    // `services` and `error_count` are SimpleAggregateFunction columns, so plain
+    // combinators under the mandatory GROUP BY (D7's query rule).
+    serviceTotal: await chCount(
+      `SELECT count() FROM (SELECT trace_id FROM obstack.trace_summaries WHERE workspace_id='${workspace}' ` +
+        `GROUP BY workspace_id, trace_id HAVING has(groupUniqArrayArray(services), 'exit-agent'))`,
+    ),
+    errorTotal: await chCount(
+      `SELECT count() FROM (SELECT trace_id FROM obstack.trace_summaries WHERE workspace_id='${workspace}' ` +
+        `GROUP BY workspace_id, trace_id HAVING sum(error_count) > 0)`,
+    ),
+    dbPodErrorRows: await chCount(
+      `SELECT count() FROM obstack.logs WHERE workspace_id='${workspace}' AND k8s_pod='exit-db-0' ` +
+        `AND severity_number >= 17 AND body != ''`,
+    ),
+    renderableLogs: await chCount(
+      `SELECT count() FROM obstack.logs WHERE workspace_id='${workspace}' AND body != ''`,
+    ),
+  };
+}
+
+// ------------------------------------------------------------------- CDP
+/** One attached browser: its own process, its own profile, its own port. */
+async function openBrowser(label, cdpPort) {
+  const profile = join(OUT, `chrome-${label}`);
+  const chrome = launch(
+    CHROME,
+    [
+      "--headless=new",
+      `--remote-debugging-port=${cdpPort}`,
+      `--user-data-dir=${profile}`,
+      "--no-first-run",
+      "--no-default-browser-check",
+      // Neither flag changes what is rendered; both are what makes a headless
+      // Chrome start reliably on a CI runner, and one flag set beats two.
+      "--no-sandbox",
+      "--disable-dev-shm-usage",
+      "about:blank",
+    ],
+    { cwd: repoRoot, logPath: join(OUT, `chrome-${label}.log`) },
+  );
+  launched.push(chrome);
+  must(
+    await waitForHttp(`http://127.0.0.1:${cdpPort}/json/version`, 30_000),
+    `chrome for ${label} never answered on CDP port ${cdpPort} — see ${OUT}/chrome-${label}.log`,
+  );
+
+  const version = await (await fetch(`http://127.0.0.1:${cdpPort}/json/version`)).json();
+  const ws = new WebSocket(version.webSocketDebuggerUrl);
+  sockets.push(ws);
+  const inflight = new Map();
+  let id = 0;
+  await new Promise((r) => (ws.onopen = r));
+  ws.onmessage = (m) => {
+    const msg = JSON.parse(m.data);
+    if (msg.id && inflight.has(msg.id)) {
+      const { resolve: ok, reject } = inflight.get(msg.id);
+      inflight.delete(msg.id);
+      msg.error ? reject(new Error(JSON.stringify(msg.error))) : ok(msg.result);
+    }
+  };
+  const rawSend = (method, params = {}, sessionId) =>
+    new Promise((ok, reject) => {
+      const mid = ++id;
+      inflight.set(mid, { resolve: ok, reject });
+      ws.send(JSON.stringify({ id: mid, method, params, sessionId }));
+    });
+
+  const { targetId } = await rawSend("Target.createTarget", { url: "about:blank" });
+  const { sessionId } = await rawSend("Target.attachToTarget", { targetId, flatten: true });
+  const send = (method, params) => rawSend(method, params, sessionId);
+  await send("Page.enable", {});
+  await send("Network.enable", {});
+
+  const evaluate = async (expression) => {
+    const r = await send("Runtime.evaluate", { expression, awaitPromise: true, returnByValue: true });
+    if (r.exceptionDetails) throw new Error(`${label}: ${JSON.stringify(r.exceptionDetails)}`);
+    return r.result.value;
+  };
+  const waitFor = async (expression, timeoutMs = 15_000) => {
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      if (await evaluate(`Boolean(${expression})`)) return true;
+      if (Date.now() > deadline) return false;
+      await sleep(100);
+    }
+  };
+  const goto = async (path, until = `document.readyState === "complete"`) => {
+    await send("Page.navigate", { url: `${BASE}${path}` });
+    await sleep(200);
+    const arrived = await waitFor(`document.readyState === "complete" && (${until})`);
+    await sleep(350);
+    return arrived;
+  };
+  const cookies = async () => (await send("Network.getCookies", { urls: [BASE] })).cookies;
+
+  return { label, evaluate, waitFor, goto, send, cookies };
+}
+
+/** Everything an assertion needs, read out of the rendered page (exit-browser's
+ * reader, kept verbatim in behaviour and extended with the shell's workspace
+ * line — the text a stranger sees IS the machine-read value, D115/U9). */
+const STATE = `(() => {
+  const strip = (s) => (s || "").replace(/\\s+/g, " ").trim();
+  const controls = {};
+  for (const el of document.querySelectorAll("input, select")) {
+    const key = el.getAttribute("aria-label") || el.placeholder;
+    if (key) controls[strip(key)] = el.value;
+  }
+  const spans = [...document.querySelectorAll("span")].map((s) => strip(s.textContent));
+  const wsEl = document.querySelector("[data-workspace-id]");
+  return {
+    url: location.pathname + location.search,
+    header: spans.find((t) => /of \\d+ traces$/.test(t)) || spans.find((t) => /shown.*last /.test(t)) || null,
+    pager: spans.find((t) => /^page \\d+ of \\d+$/.test(t)) || null,
+    controls,
+    rows: document.querySelectorAll("tbody tr").length,
+    firstRow: strip(document.querySelector("tbody tr")?.textContent || "").slice(0, 60),
+    badge: document.body.textContent.includes("SAMPLE DATA"),
+    workspaceAttr: wsEl?.getAttribute("data-workspace-id") ?? null,
+    workspaceText: strip(wsEl?.textContent || "") || null,
+    text: strip(document.body.textContent || ""),
+  };
+})()`;
+
+/** Type into a control the way a user does — React listens for `input`. */
+const type = (key, value) => `(() => {
+  const el = [...document.querySelectorAll("input")]
+    .find((i) => (i.getAttribute("aria-label") || i.placeholder || "").startsWith(${JSON.stringify(key)}));
+  if (!el) return null;
+  const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+  setter.call(el, ${JSON.stringify(value)});
+  el.dispatchEvent(new Event("input", { bubbles: true }));
+  return el.value;
+})()`;
+
+/** The signup fields carry neither placeholder nor aria-label — they are named
+ * inputs behind real <label> elements, so they are addressed by their name. */
+const fill = (field, value) => `(() => {
+  const el = document.querySelector(${JSON.stringify(`input[name="${field}"]`)});
+  if (!el) return null;
+  const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+  setter.call(el, ${JSON.stringify(value)});
+  el.dispatchEvent(new Event("input", { bubbles: true }));
+  return el.value;
+})()`;
+
+const clickText = (text) => `(() => {
+  const el = [...document.querySelectorAll("button, a")]
+    .find((b) => (b.textContent || "").replace(/\\s+/g, " ").trim() === ${JSON.stringify(text)});
+  if (!el) return false;
+  el.click();
+  return true;
+})()`;
+
+const clickLabel = (label) => `(() => {
+  const el = document.querySelector(${JSON.stringify(`[aria-label="${label}"]`)});
+  if (!el) return false;
+  el.click();
+  return true;
+})()`;
+
+/** The saved-views menu's contents, once it has answered. */
+const MENU = `(() => {
+  const panel = [...document.querySelectorAll("div")]
+    .find((d) => d.className.includes("absolute") && d.textContent.includes("save current filters"));
+  const body = (panel || document.body).textContent.replace(/\\s+/g, " ").trim();
+  return {
+    open: Boolean(panel),
+    names: [...document.querySelectorAll("[aria-label^='Delete view ']")]
+      .map((b) => b.getAttribute("aria-label").replace("Delete view ", "")),
+    text: body.slice(0, 400),
+  };
+})()`;
+
+// ------------------------------------------------------- server-rendered
+/** The same GET the browser makes, carrying the actor's session cookie —
+ * server-rendered HTML is where a count of rows is a count of rows. React
+ * splits text nodes with `<!-- -->`; strip them so a human-readable string can
+ * be matched the way a human reads it. */
+async function pageFor(actor, path) {
+  const res = await fetch(`${BASE}${path}`, {
+    headers: { cookie: actor.cookieHeader },
+    redirect: "manual",
+  });
+  return { status: res.status, html: (await res.text()).replaceAll("<!-- -->", "") };
+}
+const rowsIn = (html) => (html.match(/href="\/app\/traces\/[a-z0-9]+"/g) ?? []).length;
+const idsIn = (html) => [...html.matchAll(/href="\/app\/traces\/([a-z0-9]+)"/g)].map((m) => m[1]);
+/** How many times a tenant's content label appears in what a page rendered. */
+const labelHits = (html, label) => html.split(label).length - 1;
+
+// ============================================================ the drive
+step("fixing values");
+console.log(`   app        ${BASE} (production build, OBSTACK_DATA_MODE=live)`);
+console.log(`   clickhouse ${CH} as obstack_web`);
+console.log(`   postgres   ${PG_DSN}`);
+console.log(`   cdp        alice ${CDP_PORTS.alice} · bob ${CDP_PORTS.bob}`);
+console.log(`   actors     ${ACTORS.alice.email} · ${ACTORS.bob.email}`);
+console.log(`   labels     alice ${ACTORS.alice.label} · bob ${ACTORS.bob.label} (seeded into their rows' words)`);
+console.log(`   artifacts  ${OUT}`);
+
+step("refusals (this run measures only what it started)");
+if (process.env.BETTER_AUTH_URL !== undefined) {
+  refuse(
+    `BETTER_AUTH_URL is set (${process.env.BETTER_AUTH_URL}) — D119 sets it nowhere, and an http:// value ` +
+      `downgrades the session cookie away from ${SESSION_COOKIE}, which this drive keys on. Unset it.`,
+  );
+}
+if (await listening(APP_PORT)) {
+  refuse(
+    `something already answers on ${BASE} — it serves a build this run did not make. ` +
+      `Stop it (kill $(lsof -ti tcp:${APP_PORT})) or set APP_PORT=...`,
+  );
+}
+for (const [label, port] of Object.entries(CDP_PORTS)) {
+  if (await listening(port)) {
+    refuse(
+      `a debuggable browser already answers on CDP port ${port} (${label}) — its profile and its cookies are ` +
+        `not this run's. Stop it or set CDP_PORT_A=/CDP_PORT_B=...`,
+    );
+  }
+}
+const CHROME = CHROME_CANDIDATES.find((p) => existsSync(p));
+if (!CHROME) refuse(`no Chrome found. Looked at:\n   ${CHROME_CANDIDATES.join("\n   ")}\n   Set CHROME=...`);
+if (!(await waitForHttp(`${CH}/ping`, 5_000))) refuse(`ClickHouse does not answer at ${CH} — is the compose stack up?`);
+// Ingest binds /healthz only after both migration sets are settled, so a healthy
+// ingest is the compose stack's own statement that the Postgres schema this
+// drive signs up against exists (K1: one schema path, the checked-in files).
+if (!(await waitForHttp(INGEST_HEALTHZ, 5_000))) {
+  refuse(
+    `ingest does not answer at ${INGEST_HEALTHZ} — bring the stack up with ` +
+      `docker compose -f deploy/compose/docker-compose.yml up -d --wait`,
+  );
+}
+console.log(`   app port free · both CDP ports free · chrome ${CHROME}`);
+console.log(`   clickhouse answers · ingest healthy (so both migration sets are applied)`);
+
+const appLog = join(OUT, "app.log");
+try {
+  step("building and serving the production build (same env for both)");
+  const build = spawnSync("npx", ["next", "build"], {
+    cwd: join(repoRoot, "apps/web"),
+    env: appEnv,
+    encoding: "utf8",
+  });
+  writeFileSync(join(OUT, "build.log"), `${build.stdout ?? ""}${build.stderr ?? ""}`);
+  must(build.status === 0, `next build failed — see ${OUT}/build.log`);
+  launched.push(
+    launch("npx", ["next", "start", "-p", String(APP_PORT)], {
+      cwd: join(repoRoot, "apps/web"),
+      logPath: appLog,
+    }),
+  );
+  must(await waitForHttp(`${BASE}/login`), `the app never answered at ${BASE} — see ${appLog}`);
+  console.log(`   ${BASE} serving (log: ${appLog})`);
+
+  // ------------------------------------------------------------ actor A
+  step("alice signs up — a stranger with no invitation and no workspace");
+  const alice = await openBrowser("alice", CDP_PORTS.alice);
+  alice.actor = ACTORS.alice;
+  const bob = await openBrowser("bob", CDP_PORTS.bob);
+  bob.actor = ACTORS.bob;
+
+  async function signUp(browser) {
+    const { name, email, password } = browser.actor;
+    must(await browser.goto("/signup", `!!document.querySelector("form")`), "the signup page never rendered");
+    must((await browser.evaluate(fill("name", name))) === name, "the signup form has no name field");
+    must((await browser.evaluate(fill("email", email))) === email, "the signup form has no email field");
+    must((await browser.evaluate(fill("password", password))) === password, "the signup form has no password field");
+    must(await browser.evaluate(clickText("Create workspace")), "the signup form has no submit button");
+    must(
+      await browser.waitFor(`location.pathname === "/app" && !!document.querySelector("[data-workspace-id]")`, 30_000),
+      `${browser.label}'s signup did not land in the app — see ${appLog}`,
+    );
+    const state = await browser.evaluate(STATE);
+    const jar = await browser.cookies();
+    browser.workspaceId = state.workspaceAttr;
+    browser.cookieHeader = jar.map((c) => `${c.name}=${c.value}`).join("; ");
+    return { state, jar };
+  }
+
+  const aliceSignup = await signUp(alice);
+  check(
+    "signup lands in the app on one cookie, the production session cookie (D119)",
+    aliceSignup.jar.length === 1 && aliceSignup.jar[0].name === SESSION_COOKIE,
+    aliceSignup.jar.map((c) => c.name).join(", ") || "no cookies",
+  );
+  check(
+    "the shell renders a real workspace id, and the machine reads the same text a stranger does",
+    Boolean(alice.workspaceId) && aliceSignup.state.workspaceText === alice.workspaceId,
+    `attr=${alice.workspaceId} text=${aliceSignup.state.workspaceText}`,
+  );
+  console.log(`   alice's workspace: ${alice.workspaceId}`);
+
+  const aliceEmpty = await alice.goto("/app/traces", `!!document.querySelector("main")`).then(() => alice.evaluate(STATE));
+  check(
+    "a workspace nobody has sent telemetry to is honestly empty, not seeded with anything",
+    aliceEmpty.header?.endsWith("0 of 0 traces") && aliceEmpty.text.includes("No traces match these filters"),
+    aliceEmpty.header,
+  );
+
+  // ------------------------------------------------------------- seeding
+  step("seeding alice's real workspace (the one seeding definition, D115)");
+  /** Each actor's rows carry their own content label — same shape, different
+   * words, one definition (D135). The artifact is named for the actor. */
+  function seed(browser) {
+    const { workspaceId } = browser;
+    const { label } = browser.actor;
+    const run = spawnSync(
+      "node",
+      [join(composeDir, "exit-seed.mjs"), "--workspace", workspaceId, "--label", label],
+      { cwd: repoRoot, env: { ...process.env, CLICKHOUSE_URL: CH }, encoding: "utf8" },
+    );
+    writeFileSync(join(OUT, `seed-${browser.label}.json`), `${run.stdout ?? ""}${run.stderr ?? ""}`);
+    must(run.status === 0, `exit-seed.mjs failed for ${workspaceId}: ${run.stderr}`);
+    console.log(`   ${run.stdout.trim().split("\n").join("\n   ")}`);
+  }
+  seed(alice);
+  const a = await denominators(alice.workspaceId);
+  console.log(
+    `   counted in clickhouse: traces=${a.total} phantom=${a.phantoms} service[exit-agent]=${a.serviceTotal} ` +
+      `error=${a.errorTotal} renderable_logs=${a.renderableLogs} db-pod error rows=${a.dbPodErrorRows}`,
+  );
+  check("the seed holds more traces than one page (the total is about data, not the cap)", a.total > 200, a.total);
+  check("no P13-class phantom summary exists in the seeded workspace (D71(b))", a.phantoms === 0, `${a.phantoms} found`);
+
+  // --------------------------------------------- alice's surfaces (L5)
+  step("alice's traces list: a real total, a real page 2, free text that reaches");
+  const page1 = await pageFor(alice, "/app/traces");
+  check("the header states the counted total", page1.html.includes(`200 of ${a.total} traces`), page1.status);
+  check("page 1 renders exactly one page of rows", rowsIn(page1.html) === 200, `${rowsIn(page1.html)} rows`);
+  check("no SAMPLE badge on /app/traces in live mode", !page1.html.includes("SAMPLE DATA"), "badge present");
+
+  const page2 = await pageFor(alice, "/app/traces?page=2");
+  check("a deep link to page 2 renders page 2 server-side", page2.html.includes("page 2 of 2"), "no pager");
+  check(
+    "page 2 carries the rest of the data, same total",
+    page2.html.includes(`${a.total - 200} of ${a.total} traces`),
+    page2.html.match(/[0-9]+ of [0-9]+ traces/)?.[0],
+  );
+  const shared = idsIn(page1.html).filter((id) => idsIn(page2.html).includes(id));
+  check("page 2 is disjoint from page 1", shared.length === 0, `${shared.length} shared ids`);
+
+  for (const [token, want, where] of [
+    [SPAN_PROMPT_TOKEN, PROMPT_TRACE, "a span prompt"],
+    [LOG_BODY_TOKEN, LOG_TRACE, "a log body"],
+    [CARRIER_TOKEN, CARRIER_TRACE, "a D42 carrier row"],
+  ]) {
+    const found = await pageFor(alice, `/app/traces?q=${token}`);
+    check(
+      `free text finds the trace whose token exists only in ${where}`,
+      rowsIn(found.html) === 1 && found.html.includes(want),
+      `${rowsIn(found.html)} row(s)`,
+    );
+  }
+  const nothing = await pageFor(alice, "/app/traces?q=zznosuchtokenanywhere");
+  check(
+    "a term that matches nothing is an empty result, not a fallback (D13)",
+    nothing.html.includes("No traces match these filters") && nothing.html.includes("0 of 0 traces"),
+    "not the empty state",
+  );
+
+  step("alice's /app/logs: filtered, truncated honestly, emptied to its real empty state");
+  const logs = await pageFor(alice, "/app/logs");
+  check(
+    "the header states what rendered and that more match (cap+1, D44)",
+    logs.html.includes("200 shown · more match · last 6h"),
+    logs.html.match(/[0-9]+ shown[^<]*/)?.[0],
+  );
+  check("no SAMPLE badge on /app/logs in live mode", !logs.html.includes("SAMPLE DATA"), "badge present");
+  check("the D42 carrier row does not render (empty body, D51(e))", !logs.html.includes(CARRIER_TOKEN), "carrier rendered");
+  const carrierSearch = await pageFor(alice, `/app/logs?q=${CARRIER_TOKEN}`);
+  check(
+    "and it is not matchable here either — the reach is the body only",
+    carrierSearch.html.includes("No log lines match"),
+    "carrier matched on /app/logs",
+  );
+  const bodySearch = await pageFor(alice, `/app/logs?q=${LOG_BODY_TOKEN}`);
+  check(
+    "a body search narrows to exactly its row, and the count says so",
+    bodySearch.html.includes("1 shown · last 6h"),
+    bodySearch.html.match(/[0-9]+ shown[^<]*/)?.[0],
+  );
+  const emptyLogs = await pageFor(alice, "/app/logs?pod=no-such-pod-anywhere");
+  check(
+    "an impossible filter renders the REAL empty state",
+    emptyLogs.html.includes("No log lines match") && emptyLogs.html.includes("0 shown"),
+    "not the empty state",
+  );
+  check("and nothing from the mock stream appears in it", !emptyLogs.html.includes("kafka-broker-2"), "mock pods present");
+
+  step("the SAMPLE badge still exists (positive control — an unwired route)");
+  const unwired = await pageFor(alice, "/app/costs");
+  check(
+    "an unwired route still carries the badge, so its absence above is a fact",
+    unwired.html.includes("SAMPLE DATA"),
+    "the badge is gone everywhere — the checks above prove nothing",
+  );
+
+  step("adversarial URL matrix (D66/D68/D73), every request carrying a real session");
+  // The APPLIED bound is read out of the HEADER, never from the words "last 6h"
+  // — every range dropdown renders that as an option whatever was applied.
+  const boundOf = (route, html) =>
+    (route === "/app/traces" ? html.match(/last 6h[^<]*of [0-9]+ traces/) : html.match(/[0-9]+ shown[^<]*last 6h/))?.[0];
+  let matrixN = 0;
+  let matrixFail = 0;
+  for (const route of ["/app/traces", "/app/logs"]) {
+    const control = await pageFor(alice, route);
+    check(
+      `the matrix can read ${route}'s applied bound at all (positive control)`,
+      Boolean(boundOf(route, control.html)),
+      "pattern matches nothing on a clean page",
+    );
+    const params =
+      route === "/app/traces"
+        ? ["q", "status", "service", "model", "minMs", "minCost", "maxCost", "range", "page"]
+        : ["q", "sev", "pod", "onTrace", "range"];
+    for (const param of params) {
+      for (const value of [
+        "toString",
+        "constructor",
+        "valueOf",
+        "hasOwnProperty",
+        "__proto__",
+        "1e21",
+        "99999999999999999999",
+        "-5",
+        "NaN",
+        "%00",
+        "junk-value",
+      ]) {
+        matrixN++;
+        const hostile = await pageFor(alice, `${route}?${param}=${value}`);
+        const bound = boundOf(route, hostile.html);
+        if (hostile.status !== 200 || !bound) {
+          console.log(`     ${route}?${param}=${value} -> HTTP ${hostile.status} bound=${bound ?? "MISSING"}`);
+          matrixFail++;
+        }
+      }
+    }
+  }
+  check(`${matrixN} hostile URLs answer 200 with the default 6h bound`, matrixFail === 0, `${matrixFail} non-conforming`);
+
+  step("alice's browser: pager, back, forward (carry-forward 2, D69)");
+  await alice.goto("/app/traces", `!!document.querySelector("tbody tr")`);
+  const t1 = await alice.evaluate(STATE);
+  check(
+    `page 1 renders 200 rows over the counted total ${a.total}`,
+    t1.header?.endsWith(`200 of ${a.total} traces`) && t1.rows === 200,
+    `${t1.header} | ${t1.rows} rows`,
+  );
+
+  await alice.goto(`/app/traces?service=exit-agent`, `!!document.querySelector("tbody tr")`);
+  const t2 = await alice.evaluate(STATE);
+  check("a deep link re-syncs the input", t2.controls["Service filter"] === "exit-agent", JSON.stringify(t2.controls));
+  check(
+    `and the total is the counted ${a.serviceTotal}, not the whole workspace`,
+    t2.header?.endsWith(`of ${a.serviceTotal} traces`),
+    t2.header,
+  );
+
+  // The history sequence D69 fixes runs over a FILTERED list: the pager is the
+  // only control that pushes a history entry — every other control replaces —
+  // so a typed filter would overwrite the pager's entry instead of stacking.
+  await alice.goto("/app/traces?range=24h", `!!document.querySelector("tbody tr")`);
+  const t3 = await alice.evaluate(STATE);
+  check("the range control holds the URL's value", t3.controls["Time range filter"] === "24h", JSON.stringify(t3.controls));
+
+  await alice.evaluate(clickText("next"));
+  await alice.waitFor(`location.search.includes("page=2")`);
+  await sleep(700);
+  const t4 = await alice.evaluate(STATE);
+  check("pager click lands page 2 in the URL", t4.url === "/app/traces?range=24h&page=2", t4.url);
+  check(
+    "header and URL agree on page 2",
+    t4.header?.endsWith(`${a.total - 200} of ${a.total} traces`) && t4.pager === "page 2 of 2",
+    `${t4.header} | ${t4.pager}`,
+  );
+  check("page 2 is disjoint from page 1 in the browser too", t4.firstRow !== t3.firstRow);
+
+  await alice.evaluate("history.back()");
+  await alice.waitFor(`location.search === "?range=24h"`);
+  await sleep(700);
+  const t5 = await alice.evaluate(STATE);
+  check("back restores page 1", t5.url === "/app/traces?range=24h" && t5.pager === "page 1 of 2", `${t5.url} | ${t5.pager}`);
+  check("with the page's own rows and total", t5.header?.endsWith(`200 of ${a.total} traces`), t5.header);
+  check("and every input still matching the URL", t5.controls["Time range filter"] === "24h", JSON.stringify(t5.controls));
+
+  await alice.evaluate("history.forward()");
+  await alice.waitFor(`location.search.includes("page=2")`);
+  await sleep(700);
+  const t6 = await alice.evaluate(STATE);
+  check(
+    "forward restores the filtered state, inputs included",
+    t6.url === "/app/traces?range=24h&page=2" &&
+      t6.pager === "page 2 of 2" &&
+      t6.controls["Time range filter"] === "24h",
+    `${t6.url} | ${t6.pager} | ${JSON.stringify(t6.controls)}`,
+  );
+
+  await alice.evaluate(type("Service filter", "exit-agent"));
+  await alice.waitFor(`location.search.includes("service=exit-agent")`);
+  await sleep(900);
+  const t7 = await alice.evaluate(STATE);
+  check("a typed filter reaches the URL and drops the page", t7.url === "/app/traces?service=exit-agent&range=24h", t7.url);
+  check("and the list narrows to the counted total", t7.header?.endsWith(`of ${a.serviceTotal} traces`), t7.header);
+
+  step("alice's browser: /app/logs deep links, history, and the late echo (D72)");
+  await alice.goto("/app/logs?sev=error&pod=exit-db-0", `!!document.querySelector("main")`);
+  const l1 = await alice.evaluate(STATE);
+  check(
+    "a deep link re-syncs both controls",
+    l1.controls["Minimum severity"] === "error" && l1.controls["Pod filter"] === "exit-db-0",
+    JSON.stringify(l1.controls),
+  );
+  check("the filtered view renders exactly the counted rows", l1.rows === a.dbPodErrorRows, `${l1.rows} rows`);
+
+  await alice.goto("/app/logs?q=checkpoint", `!!document.querySelector("main")`);
+  const l2 = await alice.evaluate(STATE);
+  check("the search box holds the URL's term", l2.controls["Search log bodies…"] === "checkpoint", JSON.stringify(l2.controls));
+
+  await alice.evaluate("history.back()");
+  await alice.waitFor(`location.search.includes("pod=exit-db-0")`);
+  await sleep(700);
+  const l3 = await alice.evaluate(STATE);
+  check(
+    "back returns to the previous filtered view with every control re-synced",
+    l3.url === "/app/logs?sev=error&pod=exit-db-0" &&
+      l3.controls["Search log bodies…"] === "" &&
+      l3.controls["Minimum severity"] === "error" &&
+      l3.controls["Pod filter"] === "exit-db-0",
+    `${l3.url} | ${JSON.stringify(l3.controls)}`,
+  );
+
+  await alice.evaluate("history.forward()");
+  await alice.waitFor(`location.search.includes("q=checkpoint")`);
+  await sleep(700);
+  const l4 = await alice.evaluate(STATE);
+  check(
+    "forward restores the search and clears the filters it moved away from",
+    l4.controls["Search log bodies…"] === "checkpoint" &&
+      l4.controls["Minimum severity"] === "debug" &&
+      l4.controls["Pod filter"] === "",
+    JSON.stringify(l4.controls),
+  );
+
+  // The echo race, with the network slowed so the window is real rather than
+  // lucky: type "ab", let the 250 ms debounce push it, then type the third
+  // character while that navigation is still in flight. The echo of "ab" lands
+  // afterwards; with a single remembered URL it read as somebody else's
+  // navigation and rewound the box (D72).
+  await alice.goto("/app/logs", `!!document.querySelector("main")`);
+  await alice.send("Network.emulateNetworkConditions", {
+    offline: false,
+    latency: ECHO_LATENCY_MS,
+    downloadThroughput: -1,
+    uploadThroughput: -1,
+  });
+  await alice.evaluate(type("Search log bodies", "ab"));
+  await sleep(400);
+  await alice.evaluate(type("Search log bodies", "abc"));
+  await sleep(ECHO_LATENCY_MS * 3 + 1500);
+  const l5 = await alice.evaluate(STATE);
+  check(
+    "typed text survives the first echo",
+    l5.controls["Search log bodies…"] === "abc",
+    `the box reads ${JSON.stringify(l5.controls["Search log bodies…"])} — a late echo rewound it`,
+  );
+  check("and the URL settles on the later edit", l5.url === "/app/logs?q=abc", l5.url);
+  await alice.send("Network.emulateNetworkConditions", {
+    offline: false,
+    latency: 0,
+    downloadThroughput: -1,
+    uploadThroughput: -1,
+  });
+
+  step("alice saves a view: created, reloaded, listed, applied (now a Postgres row)");
+  const VIEW = "e2e-drive-view";
+  await alice.goto("/app/traces?status=error&range=24h", `!!document.querySelector("main")`);
+  await alice.evaluate(clickText("saved views"));
+  await alice.waitFor(`document.body.textContent.includes("save current filters")`);
+  await alice.evaluate(type("Name for the current filters", VIEW));
+  await sleep(150);
+  check("the create form accepted a name", (await alice.evaluate(clickText("save current filters"))) === true);
+  await sleep(900);
+
+  await alice.goto("/app/traces", `!!document.querySelector("main")`);
+  await alice.evaluate(clickText("saved views"));
+  await alice.waitFor(`document.body.textContent.includes("save current filters")`);
+  await sleep(600);
+  const aliceMenu = await alice.evaluate(MENU);
+  check(
+    "after a reload onto a different URL, the view is still listed — it is a workspace row, not this browser's",
+    aliceMenu.names.includes(VIEW),
+    JSON.stringify(aliceMenu),
+  );
+
+  await alice.evaluate(clickText(VIEW));
+  await alice.waitFor(`location.search.includes("status=error")`);
+  await sleep(900);
+  const v1 = await alice.evaluate(STATE);
+  check("applying sets the URL", v1.url === "/app/traces?status=error&range=24h", v1.url);
+  check(
+    "applying sets the controls to the same thing",
+    v1.controls["Status filter"] === "error" && v1.controls["Time range filter"] === "24h",
+    JSON.stringify(v1.controls),
+  );
+  check("and the list is the filtered one", v1.header?.endsWith(`of ${a.errorTotal} traces`), v1.header);
+
+  // ------------------------------------------------------------ actor B
+  step("bob signs up in his own browser — a second stranger, a second workspace");
+  const bobSignup = await signUp(bob);
+  check(
+    "bob's signup also lands on exactly the one production session cookie",
+    bobSignup.jar.length === 1 && bobSignup.jar[0].name === SESSION_COOKIE,
+    bobSignup.jar.map((c) => c.name).join(", ") || "no cookies",
+  );
+  check(
+    "and in a workspace of his own — two signups, two tenants",
+    Boolean(bob.workspaceId) && bob.workspaceId !== alice.workspaceId,
+    `${alice.workspaceId} vs ${bob.workspaceId}`,
+  );
+  console.log(`   bob's workspace: ${bob.workspaceId}`);
+
+  step(`disjointness: bob sees nothing while clickhouse holds ${a.total} traces for alice`);
+  const bobTraces = await bob.goto("/app/traces", `!!document.querySelector("main")`).then(() => bob.evaluate(STATE));
+  check(
+    "bob's traces list is the honest empty state, not alice's data",
+    bobTraces.header?.endsWith("0 of 0 traces") && bobTraces.text.includes("No traces match these filters"),
+    bobTraces.header,
+  );
+  const bobLogs = await bob.goto("/app/logs", `!!document.querySelector("main")`).then(() => bob.evaluate(STATE));
+  check(
+    `bob's logs are empty too, though ${a.renderableLogs} renderable rows exist in the store`,
+    bobLogs.header?.startsWith("0 shown") && bobLogs.text.includes("No log lines match"),
+    bobLogs.header,
+  );
+  const bobSearch = await pageFor(bob, `/app/traces?q=${SPAN_PROMPT_TOKEN}`);
+  check(
+    "and a search for a token that exists in alice's workspace finds nothing in bob's",
+    rowsIn(bobSearch.html) === 0 && bobSearch.html.includes("0 of 0 traces"),
+    `${rowsIn(bobSearch.html)} row(s)`,
+  );
+
+  // On /app/traces, which is the surface alice's view was saved on — a menu on
+  // the other surface would be empty for a reason that has nothing to do with
+  // tenancy.
+  await bob.goto("/app/traces", `!!document.querySelector("main")`);
+  await bob.evaluate(clickText("saved views"));
+  await bob.waitFor(`document.body.textContent.includes("save current filters")`);
+  await sleep(600);
+  const bobMenu = await bob.evaluate(MENU);
+  check(
+    "bob's saved-views menu answers, and alice's view is not in it (workspace-scoped rows, D30/D116)",
+    bobMenu.names.length === 0 && bobMenu.text.includes("No saved views in this workspace yet"),
+    JSON.stringify(bobMenu),
+  );
+
+  step("the negative probe: bob asks for a trace id that is live in alice's workspace");
+  const probe = await pageFor(bob, `/app/traces/${PROMPT_TRACE}`);
+  check("the answer is 404 — the same nothing an id that never existed gives", probe.status === 404, probe.status);
+  const probeState = await bob
+    .goto(`/app/traces/${PROMPT_TRACE}`, `document.body.textContent.length > 0`)
+    .then(() => bob.evaluate(STATE));
+  check(
+    "and what bob's browser shows is the not-found surface, carrying none of alice's trace",
+    probeState.text.includes("could not be found") &&
+      !probeState.text.includes(SPAN_PROMPT_TOKEN) &&
+      !probeState.text.includes(ACTORS.alice.label) &&
+      !probeState.text.includes("chat.completion"),
+    probeState.text.slice(0, 160),
+  );
+
+  // ------------------------------------------------------ both seeded
+  step("seeding bob's workspace — same shape, same ids, different words");
+  seed(bob);
+  const b = await denominators(bob.workspaceId);
+  const both = await chCount(
+    `SELECT countDistinct(trace_id) FROM obstack.trace_summaries ` +
+      `WHERE workspace_id IN ('${alice.workspaceId}','${bob.workspaceId}')`,
+  );
+  const bothRows = await chCount(
+    `SELECT count() FROM obstack.trace_summaries ` +
+      `WHERE workspace_id IN ('${alice.workspaceId}','${bob.workspaceId}')`,
+  );
+  console.log(`   counted in clickhouse: alice=${a.total} bob=${b.total} distinct ids across both=${both} rows=${bothRows}`);
+  check(
+    "the store really does hold both datasets — same ids, twice, under two workspaces",
+    b.total === a.total && both === a.total && bothRows >= a.total * 2,
+    `alice=${a.total} bob=${b.total} distinct=${both} rows=${bothRows}`,
+  );
+
+  const bobNow = await pageFor(bob, "/app/traces");
+  check(
+    `bob's list is his own ${b.total}, not the ${bothRows} summary rows the store holds`,
+    bobNow.html.includes(`200 of ${b.total} traces`),
+    bobNow.html.match(/[0-9]+ of [0-9]+ traces/)?.[0],
+  );
+  const aliceNow = await pageFor(alice, "/app/traces");
+  check(
+    "and alice's total did not move when a second tenant appeared",
+    aliceNow.html.includes(`200 of ${a.total} traces`),
+    aliceNow.html.match(/[0-9]+ of [0-9]+ traces/)?.[0],
+  );
+  const aliceToken = await pageFor(alice, `/app/traces?q=${SPAN_PROMPT_TOKEN}`);
+  check(
+    "a free-text search still reaches exactly one trace, though the token now exists in both workspaces",
+    rowsIn(aliceToken.html) === 1,
+    `${rowsIn(aliceToken.html)} row(s)`,
+  );
+
+  // The steady state is the interesting one, and counting is the WRONG
+  // instrument for it: both workspaces hold 220 traces under the same ids, so a
+  // merge that put one tenant's rows in the other's workspace can leave every
+  // total exactly where it was. What cannot survive a merge is the WORDS — each
+  // stranger's rows carry their own content label (D135), so these read what the
+  // page says rather than how much of it there is. The guard and the tripwire it
+  // guards no longer share an assumption.
+  step("content-aware disjointness: each tenant's surfaces speak only their own words");
+  for (const [self, other] of [
+    [alice, bob],
+    [bob, alice],
+  ]) {
+    const mine = self.actor.label;
+    const theirs = other.actor.label;
+    const traces = await pageFor(self, "/app/traces");
+    check(
+      `${self.label}'s traces list is written in ${mine} and carries no ${theirs}`,
+      labelHits(traces.html, mine) >= 200 && labelHits(traces.html, theirs) === 0,
+      `${labelHits(traces.html, mine)}× ${mine}, ${labelHits(traces.html, theirs)}× ${theirs}`,
+    );
+    const logs = await pageFor(self, "/app/logs");
+    check(
+      `${self.label}'s log lines are written in ${mine} and carry no ${theirs}`,
+      labelHits(logs.html, mine) >= 200 && labelHits(logs.html, theirs) === 0,
+      `${labelHits(logs.html, mine)}× ${mine}, ${labelHits(logs.html, theirs)}× ${theirs}`,
+    );
+    // The product's own search, pointed at the other tenant's vocabulary. The
+    // positive control is the same search for the actor's OWN label, which must
+    // reach the whole workspace — so "nothing found" is a fact about tenancy and
+    // not about a term that matches nothing anywhere.
+    const forTheirs = await pageFor(self, `/app/traces?q=${theirs}`);
+    const forMine = await pageFor(self, `/app/traces?q=${mine}`);
+    check(
+      `searching ${self.label}'s workspace for ${theirs} finds nothing, while ${mine} finds all ${a.total}`,
+      rowsIn(forTheirs.html) === 0 &&
+        forTheirs.html.includes("0 of 0 traces") &&
+        forMine.html.includes(`200 of ${a.total} traces`),
+      `${theirs}: ${rowsIn(forTheirs.html)} row(s) | ${mine}: ${forMine.html.match(/[0-9]+ of [0-9]+ traces/)?.[0]}`,
+    );
+  }
+
+  step("the probe's positive control: the same URL renders once bob holds that trace himself");
+  const control = await pageFor(bob, `/app/traces/${PROMPT_TRACE}`);
+  check(
+    "so the 404 above was about tenancy, not about a route that never works",
+    control.status === 200 && control.html.includes("chat.completion"),
+    control.status,
+  );
+  check(
+    "and the trace it renders is bob's own — his words on the page, none of alice's",
+    labelHits(control.html, ACTORS.bob.label) > 0 && labelHits(control.html, ACTORS.alice.label) === 0,
+    `${labelHits(control.html, ACTORS.bob.label)}× ${ACTORS.bob.label}, ` +
+      `${labelHits(control.html, ACTORS.alice.label)}× ${ACTORS.alice.label}`,
+  );
+
+  // ------------------------------------------------- session, then none
+  step("alice signs out — the one cookie goes, and so does the shell");
+  await alice.goto("/app/traces", `!!document.querySelector("[data-workspace-id]")`);
+  must(await alice.evaluate(clickLabel("Account menu")), "the account menu is not in the top bar");
+  await alice.waitFor(`document.body.textContent.includes("Sign out")`);
+  const menuState = await alice.evaluate(STATE);
+  check(
+    "the account menu names the signed-in operator and the workspace being read",
+    menuState.text.includes(ACTORS.alice.email) && menuState.text.includes(`workspace ${alice.workspaceId}`),
+    ACTORS.alice.email,
+  );
+  // A browser sends Origin on this POST by itself; the same request from curl
+  // without one is refused 403 MISSING_OR_NULL_ORIGIN — which is precisely why
+  // sign-out is asserted from a browser and not with fetch.
+  must(await alice.evaluate(clickText("Sign out")), "the sign-out button is not in the account menu");
+  must(await alice.waitFor(`location.pathname === "/login"`, 20_000), "sign-out did not land on /login");
+  const jarAfter = await alice.cookies();
+  check("no session cookie survives the sign-out", jarAfter.length === 0, jarAfter.map((c) => c.name).join(", "));
+
+  step("the unauthenticated probe: every wired route refuses a browser with no session");
+  // The server log is split HERE (D132): everything above is authenticated work
+  // and must be error-free; the NoSessionError line below is the D114 tripwire
+  // firing behind a guard that wins the response, which is spec.
+  const logSplit = statSync(appLog).size;
+  for (const path of ["/app", "/app/traces", `/app/traces/${PROMPT_TRACE}`, "/app/logs"]) {
+    await alice.goto(path, `document.body.textContent.length > 0`);
+    const state = await alice.evaluate(STATE);
+    check(
+      `${path} with no session lands on /login and renders no telemetry`,
+      state.url.startsWith("/login") && !state.text.includes(SPAN_PROMPT_TOKEN) && state.workspaceAttr === null,
+      state.url,
+    );
+  }
+
+  step("the server log: clean everywhere, with exactly one named exception (D132)");
+  // Sliced as BYTES, because that is what the mark is: the log carries `⨯`, `✓`
+  // and ANSI escapes, so a byte offset used as a string index lands mid-line and
+  // hands the first segment a fragment of the second one's first error — a
+  // split that reports the allowlisted line as an unallowed one (measured).
+  const wholeLog = readFileSync(appLog);
+  const isError = (line) => /Error\b|⨯|unhandledRejection/.test(line);
+  const authenticated = wholeLog.subarray(0, logSplit).toString("utf8").split("\n").filter(isError);
+  const unauthenticated = wholeLog.subarray(logSplit).toString("utf8").split("\n").filter(isError);
+  check(
+    "no error line at all across every authenticated step",
+    authenticated.length === 0,
+    authenticated.slice(0, 3).join(" | "),
+  );
+  // The allowlist is exactly one error, by name, on these steps only: a
+  // different error class here — or this one on an authenticated path above —
+  // is still red (D132's rider, D60's precedent).
+  const notAllowed = unauthenticated.filter((line) => !line.includes("NoSessionError"));
+  check(
+    "the unauthenticated probe's only error is NoSessionError — the D114 tripwire, allowlisted by name",
+    unauthenticated.length > 0 && notAllowed.length === 0,
+    notAllowed.slice(0, 3).join(" | ") || "the tripwire logged nothing at all",
+  );
+} catch (error) {
+  // A precondition that did not hold, or a step that threw: the run is over and
+  // it is a FAILURE, not an exception nobody counted. Everything asserted up to
+  // here still prints, and the artifacts stay on disk.
+  failures++;
+  console.log(`  FAIL the drive aborted — ${error?.stack ?? error}`);
+} finally {
+  step("result");
+  stopAll();
+  writeFileSync(join(OUT, "transcript.json"), JSON.stringify(transcript, null, 2));
+  const seconds = Math.round((Date.now() - startedAt) / 1000);
+  const passed = transcript.filter((t) => t.ok === true).length;
+  console.log(`   ${passed} passed, ${failures} failed in ${seconds}s — artifacts in ${OUT}`);
+  console.log(`\ne2e drive: ${failures === 0 ? `PASS (${seconds}s)` : `FAIL (${failures})`}`);
+  // Explicit: the CDP sockets and the detached children would otherwise hold
+  // the loop open past the verdict.
+  process.exit(failures === 0 ? 0 : 1);
+}

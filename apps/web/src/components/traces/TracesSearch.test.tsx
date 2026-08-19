@@ -7,14 +7,10 @@ import { LayerDot } from "@/components/ui/LayerChip";
 import { layerColor } from "@/lib/layers";
 import { NOW } from "@/mock/generate";
 import type { Trace } from "@/lib/types";
-import {
-  PAGE_PARAM,
-  readSavedViews,
-  saveView,
-  SAVED_VIEWS_STORAGE_KEY,
-} from "@/lib/saved-views";
+import type { QueryResultRow } from "pg";
 import {
   EMPTY_TRACES_FILTERS,
+  PAGE_PARAM,
   TRACES_PATH,
   parseTracesUrl,
   toTraceFilter,
@@ -25,11 +21,13 @@ import {
 } from "@/lib/traces-filter";
 import {
   TRACE_PAGE_SIZE,
+  dataForSession,
   dataMode,
   mockSearchTraces,
-  searchTraces,
   type TraceFilter,
 } from "@/server/data";
+import { listSavedViews, saveSavedView, type SavedView } from "@/server/saved-views";
+import type { QueryRows } from "@/server/postgres";
 
 // run with: node --conditions=react-server --test "src/**/*.test.{ts,tsx}"
 //
@@ -206,82 +204,88 @@ for (const control of controls) {
 
 test("mock mode's default list is the list the page rendered before (F6/F7)", async () => {
   assert.equal(dataMode, "mock", "run the suite without OBSTACK_DATA_MODE=live");
+  // The page's own entry point since D126 deleted the facade call-throughs: in
+  // mock mode `dataForSession` short-circuits on the mode check and never
+  // reaches a session or Postgres (D114), which is what lets this run here.
+  const data = await dataForSession();
   // The URL's default parse asks for exactly what the pre-D44 page asked for.
-  const fromUrl = await searchTraces(toTraceFilter(parseTracesUrl({})));
-  const fromDefaults = await searchTraces();
+  const fromUrl = await data.searchTraces(toTraceFilter(parseTracesUrl({})));
+  const fromDefaults = await data.searchTraces();
   assert.ok(fromUrl.traces.length > 0);
   assert.deepEqual(ids(fromUrl), ids(fromDefaults));
   assert.equal(fromUrl.total, fromDefaults.total);
 });
 
 test("a live query with no matches is an empty result, not a fallback (D13)", async () => {
-  const empty = await searchTraces(toTraceFilter(parseTracesUrl({ q: "no-such-token-anywhere" })));
+  const data = await dataForSession();
+  const empty = await data.searchTraces(toTraceFilter(parseTracesUrl({ q: "no-such-token-anywhere" })));
   assert.deepEqual(empty.traces, []);
   assert.equal(empty.total, 0);
 });
 
-/** A `localStorage` stand-in the test can clear, as the store's own tests use. */
-function withStorage(run: (entries: Map<string, string>) => void): void {
-  const entries = new Map<string, string>();
-  const store: Storage = {
-    get length() {
-      return entries.size;
-    },
-    clear: () => entries.clear(),
-    getItem: (key) => entries.get(key) ?? null,
-    key: (index) => [...entries.keys()][index] ?? null,
-    removeItem: (key) => {
-      entries.delete(key);
-    },
-    setItem: (key, value) => {
-      entries.set(key, value);
-    },
+/**
+ * A `saved_views` stand-in: it holds the rows the store writes and answers the
+ * store's own SELECT, honouring the workspace and surface it binds. Enough to
+ * carry a filter set across the store and back at this seam — the store's SQL
+ * against a real Postgres is `server/saved-views.test.ts`'s subject, and no
+ * Postgres is needed here (`web`'s skip trap allows no skips).
+ */
+function tableBackedQuery() {
+  const rows: { workspaceId: string; surface: string; name: string; filters: string }[] = [];
+  const query: QueryRows = async <Row extends QueryResultRow>(
+    sql: string,
+    params: unknown[] = [],
+  ): Promise<Row[]> => {
+    const [workspaceId, surface] = params as string[];
+    if (sql.includes("INSERT INTO saved_views")) {
+      const [, , name, filters] = params as string[];
+      rows.push({ workspaceId, surface, name, filters });
+      return [];
+    }
+    return rows
+      .filter((r) => r.workspaceId === workspaceId && r.surface === surface)
+      .map((r) => ({ name: r.name, filters: JSON.parse(r.filters) })) as unknown as Row[];
   };
-  Object.defineProperty(globalThis, "localStorage", { configurable: true, value: store });
-  try {
-    run(entries);
-  } finally {
-    delete (globalThis as { localStorage?: Storage }).localStorage;
-  }
+  return query;
 }
 
-test("a view saved from the bar survives a reload, applies whole, and never carries the page", () => {
-  withStorage((entries) => {
-    const onPageThree = {
-      ...EMPTY_TRACES_FILTERS,
-      q: "pool",
-      status: "error" as const,
-      range: "24h" as const,
-      page: 3,
-    };
-    saveView("traces", "escalations", tracesViewFilters(onPageThree));
+test("a view saved from the bar comes back whole, applies whole, and never carries the page", async () => {
+  const query = tableBackedQuery();
+  const onPageThree: TracesFilters = {
+    ...EMPTY_TRACES_FILTERS,
+    q: "pool",
+    status: "error",
+    range: "24h",
+    page: 3,
+  };
+  await saveSavedView("ws_a", "traces", "escalations", tracesViewFilters(onPageThree), query);
 
-    // A reload is another read of the same storage — nothing is held in memory.
-    const [view, ...rest] = readSavedViews("traces");
-    assert.deepEqual(rest, []);
-    assert.equal(view.name, "escalations");
-    assert.equal(PAGE_PARAM in view.filters, false, "a view is a question, not a page (D47/D53)");
-    // Exactly the filters, so a page key under any OTHER name — a hand-rolled
-    // literal the store's strip cannot see — goes red here too (D53).
-    assert.deepEqual(Object.keys(view.filters).sort(), ["q", "range", "status"]);
+  // Reopening the menu is another read of the workspace's rows — nothing is
+  // held in memory between the two calls.
+  const [view, ...rest]: SavedView[] = await listSavedViews("ws_a", "traces", query);
+  assert.deepEqual(rest, []);
+  assert.equal(view.name, "escalations");
+  assert.equal(PAGE_PARAM in view.filters, false, "a view is a question, not a page (D47/D53)");
+  // Exactly the filters, so a page key under any OTHER name — a hand-rolled
+  // literal the store's strip cannot see — goes red here too (D53).
+  assert.deepEqual(Object.keys(view.filters).sort(), ["q", "range", "status"]);
 
-    // Applying REPLACES the bar's filter state: the service it does not carry
-    // ends up unset, and it opens at the first page.
-    const applied = parseTracesUrl(view.filters);
-    assert.deepEqual(applied, { ...EMPTY_TRACES_FILTERS, q: "pool", status: "error", range: "24h" });
-    assert.equal(applied.service, "");
-    assert.equal(applied.page, 1);
+  // Applying REPLACES the bar's filter state: the service it does not carry
+  // ends up unset, and it opens at the first page.
+  const applied = parseTracesUrl(view.filters);
+  assert.deepEqual(applied, { ...EMPTY_TRACES_FILTERS, q: "pool", status: "error", range: "24h" });
+  assert.equal(applied.service, "");
+  assert.equal(applied.page, 1);
 
-    // One state, not two: the applied view is a URL, and that URL is what the
-    // facade is asked for.
-    assert.equal(tracesHref(tracesSearchString(applied)), "/app/traces?q=pool&status=error&range=24h");
-    assert.equal(toTraceFilter(applied).q, "pool");
-    assert.equal(toTraceFilter(applied).rangeMs, 24 * 3_600_000);
+  // One state, not two: the applied view is a URL, and that URL is what the
+  // facade is asked for.
+  assert.equal(tracesHref(tracesSearchString(applied)), "/app/traces?q=pool&status=error&range=24h");
+  assert.equal(toTraceFilter(applied).q, "pool");
+  assert.equal(toTraceFilter(applied).rangeMs, 24 * 3_600_000);
 
-    // Probe: the assertions above observed persistence, not a constant.
-    entries.delete(SAVED_VIEWS_STORAGE_KEY);
-    assert.deepEqual(readSavedViews("traces"), []);
-  });
+  // Probe: the assertions above observed the store, not a constant — another
+  // workspace's menu shows nothing of this one's (D116).
+  assert.deepEqual(await listSavedViews("ws_b", "traces", query), []);
 });
 
 // ---------------------------------------------------------------------------
@@ -375,7 +379,7 @@ function sourceFiles(dir: string): string[] {
   });
 }
 
-test("nothing outside T2's store calls a hardcoded filter one of the user's views (D63)", () => {
+test("nothing outside the saved-views feature calls a hardcoded filter one of the user's views (D63)", () => {
   const self = path.resolve(fileURLToPath(import.meta.url));
   const files = sourceFiles(SRC_ROOT).filter((f) => f !== self);
   assert.ok(files.length > 50, `the sweep read ${files.length} sources — it is not looking at this app`);
@@ -391,10 +395,13 @@ test("nothing outside T2's store calls a hardcoded filter one of the user's view
 
   // Positive control: the matcher does find the phrase where the feature writes
   // it, so the emptiness below is an absence and not a dead regex (S2.0 L1).
-  assert.ok(hits.includes("lib/saved-views.ts"), `the sweep found no occurrence at all (hits: ${hits.join(", ")})`);
+  assert.ok(
+    hits.includes("components/saved-views/SavedViewsMenu.tsx"),
+    `the sweep found no occurrence at all (hits: ${hits.join(", ")})`,
+  );
   assert.deepEqual(
     hits.filter((f) => !f.includes("saved-views")),
     [],
-    "a view is one the user saved and can delete (T2's store); a hardcoded filter is a filter",
+    "a view is one the user saved and can delete; a hardcoded filter is a filter",
   );
 });

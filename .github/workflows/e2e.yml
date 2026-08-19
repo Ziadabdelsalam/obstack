@@ -1,0 +1,145 @@
+# S3.1 D107 — `e2e`: two strangers sign up and never see each other's telemetry.
+#
+# The sprint's exit assertion, run as a check. Three steps, each of them the
+# exact line `deploy/compose/README.md` tells a human to run (S2.1 L3): bring the
+# compose stack up, run the smoke floor, then run the drive. Nothing about the
+# run is defined here, so there is no CI-only variant of the evidence to drift
+# from the human one.
+#
+# THE SMOKE FLOOR IS PART OF THIS JOB (D136). `smoke.sh` is M1's signed exit
+# criterion — a trace emitted by a plain-OpenTelemetry app lands whole — and the
+# harness this drive replaced used to re-run it as its regression floor. Nothing
+# else in CI runs it, so it came with the succession rather than staying a
+# manual line nobody would run twice (L5: coverage that only a human remembers
+# is coverage that rots). `stack` was deliberately left alone (K5/D41) so no
+# signed job's trigger policy depends on this one.
+#
+# SEQUENCING, and why it is this way round. The stack is booted by its own step
+# rather than left to `smoke.sh`, which would also bring it up: a wedged boot is
+# then reported as a boot failure instead of as a smoke failure, and the bound
+# is explicit. Smoke runs BEFORE the drive because it is the floor — if the
+# ingest pipeline cannot land a trace, every tenancy claim after it is being made
+# about a store nothing can write to, and the floor should be the thing that goes
+# red. Neither destroys volumes, so the order is safe either way; it is chosen
+# for attribution. Two knock-on facts, both harmless and both deliberate: smoke
+# leaves the demo agent running under the `demo` profile, and it leaves real
+# ingested telemetry in `ws_demo` — a third tenant that neither stranger may see,
+# which the drive's per-workspace denominators are indifferent to.
+#
+# The drive itself is `deploy/compose/e2e-drive.mjs` — the promoted CDP harness,
+# which replaced the S2.3 evidence pair outright when it landed (D111: one drive,
+# one definition, no dual definition and no gap). It builds and serves the
+# production app itself, drives two throwaway Chrome profiles through the real
+# signup form, seeds each real workspace id it read off the rendered shell (the
+# same text a stranger sees), and asserts strict disjointness plus the
+# cross-tenant negative probe. It refuses loudly rather than clean up after
+# anything it did not start (S2.3 L4), so a wedged earlier run fails this job
+# instead of quietly borrowing that run's server.
+#
+# Chrome is the runner image's own `google-chrome` (the drive searches for it and
+# names every path it tried before refusing); nothing here installs a browser.
+#
+# `e2e` is a K3-stable name from its first run — it grows one step per later
+# sprint, and it is never renamed. `web`, `go`, `kind`, `stack` and `sdk-e2e` are
+# untouched.
+#
+# TRIGGER POLICY (K5/D41/D93) — wired to every PR PROVISIONALLY, pending the
+# advisor's call on the FIRST REAL-RUNNER numbers, which is the only machine
+# whose numbers decide this, and which now price the WHOLE composite: the boot,
+# the smoke floor and the drive are one job and one number (D136).
+#
+# Measured locally, Apple M4, from destroyed volumes with `apps/web/.next`
+# deleted so the Next build is cold: 13s boot + 17s smoke + 54s drive = 84s for
+# the three steps (a second run of the same sequence: 12s + 19s + 53s, the same
+# 84s). Earlier drive-only runs were 50s, 51s and 68s. Every one of
+# those excludes exactly what the runner pays most for — `npm ci`, the ingest and
+# demo image builds, and the pulls — so 84s is a FLOOR, not an estimate. S2.4's
+# `sdk-e2e` is the standing warning in the other direction: its local 6m01s and
+# its real 3m43s disagreed in the runner's FAVOUR. If the real run lands past
+# ~6 min, switch to a `ci:e2e` label + workflow_dispatch + always on push to
+# master, and drop `e2e` from the required set; never leave it
+# required-but-conditional.
+name: e2e
+
+on:
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+
+concurrency:
+  group: e2e-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    name: e2e
+    runs-on: ubuntu-latest
+    # Bounded for the reason every other job here is: the GitHub default is 360
+    # minutes, and a wedged compose `up` or a browser that never answers CDP
+    # would otherwise hold the PR for all of it. The drive has its own inner
+    # deadlines and fails long before this.
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+
+      - uses: actions/setup-node@v7.0.0
+        with:
+          # The drive builds and serves the real app, so this is the `web` line.
+          node-version: '24'
+          cache: 'npm'
+
+      - run: npm ci
+
+      # The default profile — ClickHouse, Postgres and ingest. `--wait` is what
+      # makes the next step's precondition true: ingest binds /healthz only
+      # after both migration sets are settled, so a healthy stack is the
+      # statement that the schema the signups land in exists (K1 — the
+      # checked-in migrations are the one schema path).
+      - name: Compose stack (deploy/compose/README.md, "The e2e drive")
+        run: docker compose -f deploy/compose/docker-compose.yml up -d --wait --wait-timeout 240
+
+      # M1's signed exit criterion as this job's regression floor (D136): the
+      # demo agent's trace lands whole — api, agent, tool and llm under one
+      # trace_id, with correlated logs — asserted through the app's own facade.
+      # Verbatim, the line deploy/compose/README.md has always given a human.
+      - name: Smoke floor (deploy/compose/smoke.sh)
+        run: bash deploy/compose/smoke.sh
+
+      - name: Two-stranger e2e drive (deploy/compose/e2e-drive.mjs)
+        # OUT_DIR is the drive's own documented override: it moves the build
+        # log, the server log, the seed output and the transcript somewhere the
+        # step below can read them, and changes nothing that is asserted. Set
+        # per step because `runner` is not a context a job-level `env` can see.
+        env:
+          OUT_DIR: ${{ runner.temp }}/e2e-out
+        run: node deploy/compose/e2e-drive.mjs
+
+      - name: Diagnose on failure
+        if: failure()
+        env:
+          OUT_DIR: ${{ runner.temp }}/e2e-out
+        # `--profile demo` so the demo agent the smoke floor started is visible
+        # here too: a red smoke step is most often that container's story.
+        run: |
+          docker compose -f deploy/compose/docker-compose.yml --profile demo ps -a || true
+          for svc in clickhouse postgres ingest demo; do
+            echo "::group::$svc"
+            docker compose -f deploy/compose/docker-compose.yml --profile demo logs --tail 60 "$svc" || true
+            echo "::endgroup::"
+          done
+          echo "::group::drive artifacts"
+          ls -la "$OUT_DIR" || true
+          tail -60 "$OUT_DIR/app.log" || true
+          tail -30 "$OUT_DIR/build.log" || true
+          echo "::endgroup::"
+
+      # `--profile '*'`, the line the README gives for emptying the project:
+      # `--profile demo` alone would leave the demo agent the smoke floor
+      # started, which `restart: unless-stopped` would then keep alive.
+      - name: Stop the stack
+        if: always()
+        run: docker compose -f deploy/compose/docker-compose.yml --profile '*' down -v

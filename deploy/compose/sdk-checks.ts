@@ -19,12 +19,12 @@
  * GenAI attributes; correlated logs are asserted where they are real, on the
  * Python sample, which gets them from the root-logger handler `init()` installs.
  *
- * `REQUIRED_LAYERS` is imported rather than restated: one definition of the
- * cross-layer claim across smoke, Helm acceptance and this harness. Nothing in
- * `trace-checks.ts` is edited — it is a signed evidence path (S2.4 scope fence).
+ * `REQUIRED_LAYERS` and `DEMO_WORKSPACE` are imported rather than restated: one
+ * definition of the cross-layer claim, and one of the workspace the demo stack
+ * writes under, across smoke, Helm acceptance and this harness.
  */
 import type { Trace } from "@/lib/types";
-import { REQUIRED_LAYERS } from "./trace-checks";
+import { DEMO_WORKSPACE, REQUIRED_LAYERS } from "./trace-checks";
 
 /** The samples' exporters batch at 1s (py) and 5s (js), and ingest batches on
  *  top of that, so one poll proves nothing about a trace that is still in
@@ -133,15 +133,19 @@ function problemsWith(sample: Sample, trace: Trace | undefined, listed: Trace | 
 
 /** Poll the facade for every sample until all of them are clean, or fail. */
 async function awaitSamples(samples: Sample[]): Promise<Map<string, Trace>> {
-  const { getTrace, searchTraces } = await import("@/server/data");
+  // The explicit entry (D113): both samples export under `ok_dev_local`, which
+  // compose maps to the one workspace `DEMO_WORKSPACE` names — there is no
+  // ambient workspace the facade could resolve on this harness's behalf.
+  const { dataForWorkspace } = await import("@/server/data");
+  const data = dataForWorkspace(DEMO_WORKSPACE);
 
   const deadline = Date.now() + ARRIVAL_TIMEOUT_MS;
   for (;;) {
     const resolved = new Map<string, Trace>();
     const problems: string[] = [];
     for (const sample of samples) {
-      const trace = await getTrace(sample.traceId);
-      const search = trace ? await searchTraces() : undefined;
+      const trace = await data.getTrace(sample.traceId);
+      const search = trace ? await data.searchTraces() : undefined;
       const listed = search?.traces.find((t) => t.id === sample.traceId);
       const sampleProblems = problemsWith(sample, trace, listed);
       if (sampleProblems.length === 0 && trace) resolved.set(sample.label, trace);
