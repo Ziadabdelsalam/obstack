@@ -80,11 +80,31 @@
  * what keeps it product-invisible now that Postgres is the one key authority
  * (D138 supersedes S3.1's "zero ws_demo rows" line).
  *
- * THE ISSUED KEY IS NEVER SENT ANYWHERE HERE (D115). The wire path — a token
- * from this UI carried on `Authorization: Bearer` into ingest — is S3.4's
- * pre-registered extension of this drive; this sprint's end-to-end wire evidence
- * is a recorded runbook line in the exit bundle, and adding a step for it here
- * would be the second definition that ruling exists to prevent.
+ * THE S3.3 STEP IS WHAT THAT WORKSPACE'S TELEMETRY COSTS. Metering has no
+ * surface that can be reached from a page: an event is metered because ingest
+ * accepted it, so the only honest way to make the meter move is to send events
+ * — with a real key, over the real OTLP wire, into the real service. So alice's
+ * own issued key carries four hundred events past a free plan whose quota the
+ * seeder lowered to three hundred (D172), and then the step reads what that did
+ * in three places that must agree: the Postgres ledger (the drive's own SQL),
+ * the shell's banner and the Billing & usage meter (one function, D171). Past
+ * the quota it sends the D165 pinned trace-id vectors and asserts each one whole
+ * — one survives with every span and its correlated log record, two are absent
+ * with none — because "a sampled-out trace drops WHOLE" is the property, and a
+ * count of surviving spans would be satisfied by a trace cut in half.
+ *
+ * This is not S3.4's wire step (D115), which is about ATTRIBUTION — that a
+ * token issued here lands its telemetry in its own workspace and no other — and
+ * still belongs to that sprint. What is asserted below is what the events did to
+ * the METER; the S3.2 exit bundle's runbook remains the attribution evidence of
+ * record until the drive grows that step too.
+ *
+ * THE BILLING RAIL HERE IS THE FAKE, ALWAYS (D168). It is not a stub: a checkout
+ * is created, the browser is redirected to OUR return path with a real id, the
+ * settings page reads it back and writes the plan row, so the whole return
+ * reconciliation the sandbox exercises is exercised here with no third party in
+ * it. `polar-sandbox` is for the evidence run and the drive refuses to run under
+ * it rather than quietly billing against someone's sandbox organisation.
  *
  * LEGS CARRIED FORWARD (L5) from the two deleted harnesses, whose covered logic
  * still exists on the wired surfaces: page-1/page-2 totals and page-2
@@ -109,6 +129,7 @@ import pg from "pg";
 import {
   CARRIER_TOKEN,
   CARRIER_TRACE,
+  EVIDENCE_FREE_QUOTA,
   LOG_BODY_TOKEN,
   LOG_TRACE,
   PROMPT_TRACE,
@@ -127,6 +148,10 @@ const CH = process.env.CLICKHOUSE_URL ?? "http://127.0.0.1:8123";
 const PG_DSN =
   process.env.OBSTACK_POSTGRES_DSN ?? "postgres://obstack:obstack_postgres_dev@127.0.0.1:5432/obstack";
 const INGEST_HEALTHZ = process.env.INGEST_HEALTHZ ?? "http://127.0.0.1:8080/healthz";
+/** OTLP/HTTP, the wire contract a customer's exporter speaks (D6). */
+const INGEST_OTLP = process.env.INGEST_OTLP ?? "http://127.0.0.1:4318";
+/** The admin port's Prometheus surface — where a drop is visible to an operator. */
+const INGEST_METRICS = process.env.INGEST_METRICS ?? "http://127.0.0.1:8080/metrics";
 /** Required by `authConfig()`, plays no part in anything asserted here. */
 const BETTER_AUTH_SECRET = "e2e-drive-dummy-secret-not-a-real-one";
 /** The production cookie name at localhost with BETTER_AUTH_URL unset (D119). */
@@ -164,6 +189,57 @@ const ACTORS = {
   alice: { name: "Alice Stranger", email: `alice+${RUN}@e2e.invalid`, password: `alice-${RUN}-pw`, label: "zzalice" },
   bob: { name: "Bob Stranger", email: `bob+${RUN}@e2e.invalid`, password: `bob-${RUN}-pw`, label: "zzbob" },
 };
+
+// ------------------------------------------------ the S3.3 metering values
+/**
+ * The two intervals the metering story's staleness is made of (D166), named
+ * here because the drive's ~35s wait is arithmetic over them and not a number
+ * somebody tuned until the test passed: a crossing is honoured within one
+ * metering flush (the ledger row appears) plus one workspace-state TTL (ingest
+ * re-reads it). Both are constants in Go — `internal/metering` and
+ * `internal/keystore` — and if either moves, this wait moves with it.
+ */
+const FLUSH_MS = 5_000;
+const STATE_TTL_MS = 30_000;
+
+/** Four hundred events over a three-hundred-event quota (D172), in eight exports. */
+const FILL_BATCHES = 8;
+const FILL_PER_BATCH = 50;
+const FILL_EVENTS = FILL_BATCHES * FILL_PER_BATCH;
+
+/** Spans per pinned-vector trace — more than one, because wholeness is the claim. */
+const VECTOR_SPANS = 3;
+
+/**
+ * The D165 verdict's pinned trace ids, and this is the VECTOR SET OF RECORD
+ * (D186(iii)): FNV-1a 64 over the sixteen raw trace-id bytes, kept iff the hash
+ * is a multiple of ten. The Go suite asserts these three by hash and through its
+ * own serving path (`receive_test.go`), and the drive re-derives the same hashes
+ * here — in a third language, from the hex alone — before sending them over the
+ * wire. That is the D139 pattern: a cross-language rule proven by independent
+ * recomputation rather than by one language agreeing with itself. Amending the
+ * verdict sweeps both suites in the same round.
+ */
+const PINNED_VECTORS = [
+  { traceId: "00000000000000000000000000000001", fnv1a: 9808873769958073010n, keep: true },
+  { traceId: "00000000000000000000000000000002", fnv1a: 9808872670446444799n, keep: false },
+  { traceId: "4bf92f3577b34da6a3ce929d0e0e4736", fnv1a: 12180425081350451581n, keep: false },
+];
+
+/** What the wire step should end up having cost the ledger, from what it sent. */
+const KEPT_VECTORS = PINNED_VECTORS.filter((v) => v.keep).length;
+const EXPECTED_ACCEPTED = FILL_EVENTS + KEPT_VECTORS * (VECTOR_SPANS + 1);
+const EXPECTED_QUOTA_DROPS = (PINNED_VECTORS.length - KEPT_VECTORS) * (VECTOR_SPANS + 1);
+
+/**
+ * The content this step's telemetry says, so its rows are found by their WORDS
+ * and not only by an id (D142) — the same discipline the seeded fixture keeps,
+ * applied to the events that arrive over the wire.
+ */
+const QUOTA_TOKEN = `zzmeter${RUN}`;
+
+/** The banner's own vocabulary — one string, so "raised" and "absent" are one claim. */
+const BANNER_MARK = "-tier events used";
 
 const appEnv = {
   ...process.env,
@@ -310,6 +386,98 @@ async function denominators(workspace) {
   };
 }
 
+// ----------------------------------------------------------- ingest wire
+/**
+ * OTLP/JSON over HTTP with a Bearer token — the published contract (D6), the
+ * same endpoint, encoding and header a customer's exporter uses. Metering is
+ * asserted through the front door or not at all: a row written into the ledger
+ * by any other means would prove something about the ledger and nothing about
+ * ingestion.
+ */
+async function otlp(signal, token, body) {
+  const res = await fetch(`${INGEST_OTLP}/v1/${signal}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+    body: typeof body === "string" ? body : JSON.stringify(body),
+  });
+  return { status: res.status, body: await res.text() };
+}
+
+/** OTLP timestamps as DIGITS: 1.7e21 nanoseconds is past what a JS number holds. */
+const unixNano = (ms) => `${ms}000000`;
+
+/** Unique within a run, which is all a span id has to be here. */
+let spanSeq = 0;
+const nextSpanId = () => (++spanSeq).toString(16).padStart(16, "0");
+
+const spanOf = (traceId, name) => {
+  const start = Date.now();
+  return {
+    traceId,
+    spanId: nextSpanId(),
+    name,
+    kind: 2,
+    startTimeUnixNano: unixNano(start),
+    endTimeUnixNano: unixNano(start + 5),
+    status: { code: 1 },
+  };
+};
+
+/** A log record CARRYING A TRACE ID, so its sampling verdict is the trace's (D165). */
+const recordOf = (traceId, body) => ({
+  traceId,
+  timeUnixNano: unixNano(Date.now()),
+  observedTimeUnixNano: unixNano(Date.now()),
+  severityNumber: 9,
+  severityText: "INFO",
+  body: { stringValue: body },
+});
+
+const SERVICE_ATTR = { key: "service.name", value: { stringValue: `${QUOTA_TOKEN}-svc` } };
+const tracesExport = (spans) => ({
+  resourceSpans: [{ resource: { attributes: [SERVICE_ATTR] }, scopeSpans: [{ spans }] }],
+});
+const logsExport = (records) => ({
+  resourceLogs: [{ resource: { attributes: [SERVICE_ATTR] }, scopeLogs: [{ logRecords: records }] }],
+});
+
+/**
+ * One Prometheus series' value, read off the exposition text by its labels
+ * rather than by the order the client library happens to print them in.
+ *
+ * An ABSENT series is zero and is returned as zero — deliberately, and it is
+ * what makes "nothing was dropped against bob" sayable: the per-workspace
+ * series appear on a workspace's first event and never at boot (`metrics.go`),
+ * so a workspace that shed nothing has no line at all.
+ */
+async function ingestMetric(name, labels) {
+  const text = await (await fetch(INGEST_METRICS)).text();
+  for (const line of text.split("\n")) {
+    if (!line.startsWith(`${name}{`)) continue;
+    const got = Object.fromEntries([...line.matchAll(/(\w+)="([^"]*)"/g)].map((m) => [m[1], m[2]]));
+    if (Object.entries(labels).every(([k, v]) => got[k] === v)) {
+      return Number(line.slice(line.lastIndexOf("}") + 1).trim());
+    }
+  }
+  return 0;
+}
+
+/**
+ * FNV-1a 64 over the raw bytes of a hex trace id — the D165 verdict function,
+ * written out here so the drive DERIVES what Go derives instead of copying its
+ * answer. BigInt because the hash is 64 bits and a JS number is not.
+ */
+const FNV64_OFFSET = 14695981039346656037n;
+const FNV64_PRIME = 1099511628211n;
+const MASK64 = (1n << 64n) - 1n;
+function fnv1a64(hex) {
+  let hash = FNV64_OFFSET;
+  for (let i = 0; i < hex.length; i += 2) {
+    hash = ((hash ^ BigInt(parseInt(hex.slice(i, i + 2), 16))) * FNV64_PRIME) & MASK64;
+  }
+  return hash;
+}
+
 // -------------------------------------------------------------- postgres
 /**
  * The identity store, read with our own SQL for the reason the ClickHouse
@@ -325,6 +493,25 @@ async function denominators(workspace) {
 const pgPool = new pg.Pool({ connectionString: PG_DSN, max: 2 });
 const pgRows = async (sql, params = []) => (await pgPool.query(sql, params)).rows;
 const pgOne = async (sql, params = []) => (await pgRows(sql, params))[0] ?? null;
+
+/**
+ * This month's metered events, summed by the DRIVE — its own statement, for the
+ * same reason the ClickHouse denominators are its own (D71(b)): "the banner and
+ * the tab print the ledger" cannot be checked against a number the product
+ * computed for itself. The month is cut the way both runtimes cut it (D179):
+ * `date_trunc` there yields a naked timestamp, so it is re-anchored to UTC
+ * rather than to whatever zone this connection's session happens to hold.
+ */
+const ledgerOf = async (workspace) => {
+  const row = await pgOne(
+    `SELECT coalesce(sum(spans + logs), 0) AS events, max(updated_at) AS as_of
+       FROM usage_ledger
+      WHERE workspace_id = $1
+        AND period_start >= date_trunc('month', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'`,
+    [workspace],
+  );
+  return { events: Number(row?.events ?? 0), asOf: row?.as_of ?? null };
+};
 
 // ------------------------------------------------------------------- CDP
 /** One attached browser: its own process, its own profile, its own port. */
@@ -505,6 +692,53 @@ const SETTINGS = `(() => {
   };
 })()`;
 
+/**
+ * The two places a usage number is printed, read out of ONE rendered page.
+ *
+ * The banner lives in the app layout and the meter lives inside `main`, so this
+ * finds the banner by the span that carries its wording and is NOT inside
+ * `main` — which is what makes "banner equals tab" a claim about two surfaces
+ * rather than about one string found twice. Both come from a single render of a
+ * single request, which is where D171's one-definition rule is provable at all:
+ * inside one request the layout's `getUsage` and the page's are literally the
+ * same call (it is `cache()`-wrapped), so a difference here would mean two
+ * definitions had grown, not that two queries disagreed.
+ *
+ * The whole BANNER is read, not that one span: the numbers and the sentence
+ * about what is happening to telemetry right now are siblings inside it, and a
+ * reader that stopped at the numbers could not tell a raised banner from one
+ * that says sampling is active.
+ */
+const BILLING = `(() => {
+  const strip = (s) => (s || "").replace(/\\s+/g, " ").trim();
+  const main = document.querySelector("main");
+  const marked = [...document.querySelectorAll("span")]
+    .find((s) => (s.textContent || "").includes(${JSON.stringify(BANNER_MARK)}) && !main?.contains(s));
+  return {
+    banner: strip(marked?.parentElement?.textContent || "") || null,
+    main: strip(main?.textContent || ""),
+  };
+})()`;
+
+/**
+ * `1,234 / 5,678` as two integers. The banner pins its grouping to en-US and
+ * the meter does not, so the separators are stripped rather than matched: what
+ * is being compared is the NUMBERS the two surfaces divide, and a run under a
+ * different default locale must fail for a real reason or not at all.
+ */
+const pairIn = (text) => {
+  const found = /([\d][\d.,\u00a0\u202f]*)\s*\/\s*([\d][\d.,\u00a0\u202f]*)/.exec(text ?? "");
+  return found ? [Number(found[1].replace(/\D/g, "")), Number(found[2].replace(/\D/g, ""))] : null;
+};
+
+/** The figure a labelled stat renders — the label is its only stable anchor. */
+const statAfter = (text, label) => {
+  const at = text.indexOf(label);
+  if (at === -1) return null;
+  const digits = /^[\d][\d.,\u00a0\u202f]*/.exec(text.slice(at + label.length).trim());
+  return digits ? Number(digits[0].replace(/\D/g, "")) : null;
+};
+
 /** The revoked stamp, matched as a DATE: the tab's standing copy says "a revoked
  * key stops being accepted within 30 seconds" whether or not anything is revoked,
  * so the word alone is not the claim (measured — it is on the page before the
@@ -536,6 +770,12 @@ console.log(`   postgres   ${PG_DSN}`);
 console.log(`   cdp        alice ${CDP_PORTS.alice} · bob ${CDP_PORTS.bob}`);
 console.log(`   actors     ${ACTORS.alice.email} · ${ACTORS.bob.email}`);
 console.log(`   labels     alice ${ACTORS.alice.label} · bob ${ACTORS.bob.label} (seeded into their rows' words)`);
+console.log(`   ingest     ${INGEST_OTLP} (OTLP/JSON) · ${INGEST_METRICS}`);
+console.log(
+  `   metering   free quota lowered to ${EVIDENCE_FREE_QUOTA} · ${FILL_EVENTS} events sent · ` +
+    `wait flush ${FLUSH_MS / 1000}s + state TTL ${STATE_TTL_MS / 1000}s · token ${QUOTA_TOKEN}`,
+);
+console.log(`   billing    fake (OBSTACK_BILLING_MODE unset — no Polar, no secret, D168)`);
 console.log(`   artifacts  ${OUT}`);
 
 step("refusals (this run measures only what it started)");
@@ -543,6 +783,13 @@ if (process.env.BETTER_AUTH_URL !== undefined) {
   refuse(
     `BETTER_AUTH_URL is set (${process.env.BETTER_AUTH_URL}) — D119 sets it nowhere, and an http:// value ` +
       `downgrades the session cookie away from ${SESSION_COOKIE}, which this drive keys on. Unset it.`,
+  );
+}
+if (process.env.OBSTACK_BILLING_MODE !== undefined && process.env.OBSTACK_BILLING_MODE !== "fake") {
+  refuse(
+    `OBSTACK_BILLING_MODE is ${JSON.stringify(process.env.OBSTACK_BILLING_MODE)} — this drive asserts against ` +
+      `the fake rail's semantics (a checkout succeeds at creation, D168), and running it against Polar's ` +
+      `sandbox would create real checkouts in someone's organisation on every run. Unset it.`,
   );
 }
 if (await listening(APP_PORT)) {
@@ -1319,6 +1566,295 @@ try {
     "his API keys tab is empty — alice's key is hers, shared org or not",
     bobKeysTab.text.includes("No keys yet") && !bobKeysTab.text.includes(prefix),
     bobKeysTab.text.slice(0, 160),
+  );
+
+  // -------------------------------------------- metering (the S3.3 step)
+  step(`the free plan's quota comes down to ${EVIDENCE_FREE_QUOTA} in this disposable Postgres (D172)`);
+  const quotaSeed = spawnSync("node", [join(composeDir, "exit-seed.mjs"), "--lower-free-quota"], {
+    cwd: repoRoot,
+    env: { ...process.env, OBSTACK_POSTGRES_DSN: PG_DSN },
+    encoding: "utf8",
+  });
+  writeFileSync(join(OUT, "seed-quota.json"), `${quotaSeed.stdout ?? ""}${quotaSeed.stderr ?? ""}`);
+  must(quotaSeed.status === 0, `exit-seed.mjs --lower-free-quota failed: ${quotaSeed.stderr}`);
+  console.log(`   ${quotaSeed.stdout.trim().split("\n").join("\n   ")}`);
+  const freeRow = await pgOne(`SELECT event_quota FROM plans WHERE id = $1`, ["free"]);
+  check(
+    `the plans catalog — the ONE definition both runtimes read (D163) — now states ${EVIDENCE_FREE_QUOTA}`,
+    Number(freeRow?.event_quota) === EVIDENCE_FREE_QUOTA,
+    `event_quota=${freeRow?.event_quota}`,
+  );
+
+  // The positive control for everything below: alice's 220 seeded traces went
+  // STRAIGHT INTO CLICKHOUSE and never through ingest, so her ledger is empty
+  // and her shell carries no banner. Without this line, "the banner is raised"
+  // could be a banner that is always there.
+  const quietLedger = await ledgerOf(alice.workspaceId);
+  const quietShell = await pageFor(alice, "/app/traces");
+  check(
+    "before a single metered event: no ledger row, and no banner in the shell (the control for 'raised')",
+    quietLedger.events === 0 && !quietShell.html.includes(BANNER_MARK),
+    `${quietLedger.events} metered event(s), banner ${quietShell.html.includes(BANNER_MARK)}`,
+  );
+
+  step(`alice's own key carries ${FILL_EVENTS} events over OTLP — the only way a meter moves`);
+  const fillTrace = (n) => `f1${n.toString(16).padStart(30, "0")}`;
+  for (let batch = 0; batch < FILL_BATCHES; batch++) {
+    const spans = [];
+    for (let i = 0; i < FILL_PER_BATCH; i++) {
+      const n = batch * FILL_PER_BATCH + i;
+      spans.push(spanOf(fillTrace(n), `${QUOTA_TOKEN}-fill-${n}`));
+    }
+    const sent = await otlp("traces", token, tracesExport(spans));
+    must(sent.status === 200, `ingest refused export ${batch}: HTTP ${sent.status} ${sent.body.slice(0, 200)}`);
+  }
+  const lastUnderQuotaSendAt = Date.now();
+  // One malformed body on the same key, past auth. The exit criterion asks for
+  // the workspace's ingest-ERROR count to be VISIBLE in the product, and a zero
+  // renders exactly like a number nobody writes — so the drive makes one.
+  const malformed = await otlp("traces", token, "{not an otlp payload");
+  check(
+    "a malformed payload on a valid key is one 4xx and a counted drop, never a 5xx (D6/D26)",
+    malformed.status === 400,
+    `HTTP ${malformed.status}`,
+  );
+
+  step(`the crossing propagates: flush ${FLUSH_MS / 1000}s writes the ledger, TTL ${STATE_TTL_MS / 1000}s reaches ingest (D166)`);
+  let ledger = await ledgerOf(alice.workspaceId);
+  const flushDeadline = Date.now() + 30_000;
+  while (ledger.events < FILL_EVENTS && Date.now() < flushDeadline) {
+    await sleep(500);
+    ledger = await ledgerOf(alice.workspaceId);
+  }
+  check(
+    `the metering flush wrote all ${FILL_EVENTS} accepted events into usage_ledger, past the ${EVIDENCE_FREE_QUOTA} quota`,
+    ledger.events === FILL_EVENTS,
+    `${ledger.events} event(s) after ${Math.round((Date.now() - lastUnderQuotaSendAt) / 1000)}s`,
+  );
+  // Measured from the last export, because that is when the workspace-state
+  // entry ingest is holding was last able to be built — it was built with a
+  // ledger that had not crossed yet, and it lives for one TTL.
+  await sleep(Math.max(0, lastUnderQuotaSendAt + STATE_TTL_MS + 3_000 - Date.now()));
+
+  step("over quota, the D165 pinned vectors: one trace survives WHOLE, two are absent WHOLE (D186(iii))");
+  for (const vector of PINNED_VECTORS) {
+    const hash = fnv1a64(vector.traceId);
+    check(
+      `${vector.traceId} → FNV-1a 64 ${vector.fnv1a}, therefore ${vector.keep ? "KEPT" : "DROPPED"} — re-derived here, not copied`,
+      hash === vector.fnv1a && (hash % 10n === 0n) === vector.keep,
+      `${hash}`,
+    );
+  }
+  const vectorSpans = [];
+  const vectorRecords = [];
+  for (const vector of PINNED_VECTORS) {
+    for (let i = 0; i < VECTOR_SPANS; i++) {
+      vectorSpans.push(spanOf(vector.traceId, `${QUOTA_TOKEN}-vector-span-${i}`));
+    }
+    vectorRecords.push(recordOf(vector.traceId, `${QUOTA_TOKEN} vector log line`));
+  }
+  // All three traces in ONE export of each signal: the shedding is per trace
+  // INSIDE a batch, which is the shape a real exporter sends and the shape a
+  // "drop the whole request" bug would pass a one-trace-per-request test with.
+  const vectorTraces = await otlp("traces", token, tracesExport(vectorSpans));
+  const vectorLogs = await otlp("logs", token, logsExport(vectorRecords));
+  check(
+    "an over-quota export is still answered 200 — sampling is degradation, not a refusal (D165)",
+    vectorTraces.status === 200 && vectorLogs.status === 200,
+    `traces ${vectorTraces.status} · logs ${vectorLogs.status}`,
+  );
+
+  const kept = PINNED_VECTORS.find((vector) => vector.keep);
+  const chSpansOf = (traceId, where = "") =>
+    chCount(`SELECT count() FROM obstack.spans WHERE trace_id='${traceId}'${where}`);
+  const chLogsOf = (traceId, where = "") =>
+    chCount(`SELECT count() FROM obstack.logs WHERE trace_id='${traceId}'${where}`);
+  // Presence FIRST and polled — the writer batches every second — because it is
+  // what makes the absences below a fact about sampling rather than about a
+  // batch that had not flushed yet. Content-aware (D142): the rows are found by
+  // the words this run's telemetry says, not only by an id.
+  const mine = ` AND workspace_id='${alice.workspaceId}' AND name LIKE '%${QUOTA_TOKEN}%'`;
+  const mineLogs = ` AND workspace_id='${alice.workspaceId}' AND body LIKE '%${QUOTA_TOKEN}%'`;
+  let keptSpans = 0;
+  let keptLogs = 0;
+  const arrival = Date.now() + 20_000;
+  while ((keptSpans < VECTOR_SPANS || keptLogs < 1) && Date.now() < arrival) {
+    await sleep(500);
+    keptSpans = await chSpansOf(kept.traceId, mine);
+    keptLogs = await chLogsOf(kept.traceId, mineLogs);
+  }
+  check(
+    `the surviving trace landed complete — all ${VECTOR_SPANS} of its spans and its correlated log record`,
+    keptSpans === VECTOR_SPANS && keptLogs === 1,
+    `${keptSpans} span(s), ${keptLogs} log record(s)`,
+  );
+  for (const vector of PINNED_VECTORS.filter((v) => !v.keep)) {
+    // Asked WITHOUT a workspace filter, which is stricter than it needs to be:
+    // a sampled-out trace has no row anywhere, so the query that would catch a
+    // half-dropped trace also catches one that landed in the wrong tenant.
+    const strandedSpans = await chSpansOf(vector.traceId);
+    const strandedLogs = await chLogsOf(vector.traceId);
+    check(
+      `and ${vector.traceId} is absent whole — no span and no log record of it, in any workspace`,
+      strandedSpans === 0 && strandedLogs === 0,
+      `${strandedSpans} span(s), ${strandedLogs} log record(s)`,
+    );
+  }
+
+  step("the drops are counted in both places a drop is visible (D162)");
+  const quotaDrops = await ingestMetric("obstack_ingest_dropped_total", {
+    workspace_id: alice.workspaceId,
+    reason: "quota",
+  });
+  const bobDrops = await ingestMetric("obstack_ingest_dropped_total", {
+    workspace_id: bob.workspaceId,
+    reason: "quota",
+  });
+  const decodeDrops = await ingestMetric("obstack_ingest_dropped_total", {
+    workspace_id: alice.workspaceId,
+    reason: "decode",
+  });
+  check(
+    `obstack_ingest_dropped_total{reason="quota"} counts the ${EXPECTED_QUOTA_DROPS} shed records against alice, and nothing against bob`,
+    quotaDrops === EXPECTED_QUOTA_DROPS && bobDrops === 0,
+    `alice=${quotaDrops} bob=${bobDrops}`,
+  );
+  check(
+    "and the malformed payload is counted under decode, not folded into the quota drops",
+    decodeDrops === 1,
+    `decode=${decodeDrops}`,
+  );
+
+  // One flush past the last export, so the health row and the ledger both hold
+  // everything this step sent before either is compared with a screen.
+  await sleep(FLUSH_MS + 2_000);
+  ledger = await ledgerOf(alice.workspaceId);
+  const health = await pgOne(
+    `SELECT accepted, dropped_decode, dropped_unsupported, dropped_quota, last_event_at
+       FROM api_key_health WHERE workspace_id = $1`,
+    [alice.workspaceId],
+  );
+  check(
+    `the ledger holds exactly what ingest accepted — ${FILL_EVENTS} under quota plus the surviving trace, and none of what it shed`,
+    ledger.events === EXPECTED_ACCEPTED && ledger.asOf !== null,
+    `${ledger.events} event(s), want ${EXPECTED_ACCEPTED}`,
+  );
+  check(
+    "and the per-key health row agrees with it, drop for drop (D100)",
+    Number(health?.accepted) === EXPECTED_ACCEPTED &&
+      Number(health?.dropped_quota) === EXPECTED_QUOTA_DROPS &&
+      Number(health?.dropped_decode) === 1 &&
+      health?.last_event_at !== null,
+    JSON.stringify(health),
+  );
+
+  step("one usage definition: the banner number IS the tab number, on one screen (D171)");
+  await openTab(alice, "Billing & usage", `document.querySelector("main")?.textContent.includes("usage this period")`);
+  const meter = await alice.evaluate(BILLING);
+  const bannerPair = pairIn(meter.banner);
+  const tabPair = pairIn(meter.main.split("events (spans + log records)")[1] ?? "");
+  check(
+    "the banner is raised, and it names the plan whose quota it divides by",
+    meter.banner !== null && meter.banner.includes("Free-tier events used"),
+    meter.banner ?? "no banner rendered",
+  );
+  check(
+    `banner == tab == the drive's own sum of usage_ledger: ${EXPECTED_ACCEPTED} of ${EVIDENCE_FREE_QUOTA}`,
+    bannerPair !== null &&
+      tabPair !== null &&
+      bannerPair[0] === tabPair[0] &&
+      bannerPair[1] === tabPair[1] &&
+      bannerPair[0] === ledger.events &&
+      bannerPair[0] === EXPECTED_ACCEPTED &&
+      bannerPair[1] === EVIDENCE_FREE_QUOTA,
+    `banner ${JSON.stringify(bannerPair)} · tab ${JSON.stringify(tabPair)} · ledger ${ledger.events}`,
+  );
+  check(
+    "the banner says what is happening to telemetry right now, in the D165 words",
+    Boolean(meter.banner?.includes("sampling active now")) &&
+      Boolean(meter.banner?.includes("a sampled-out trace drops whole")),
+    meter.banner ?? "no banner rendered",
+  );
+  check(
+    "and the tab says the same thing about the same number, and dates it (D162)",
+    meter.main.includes("over quota — ingestion is sampling now") &&
+      /as of \d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC/.test(meter.main),
+    meter.main.slice(0, 400),
+  );
+
+  step("the Data & ingest tab: what this workspace's key carried, refused and shed (D100/D141)");
+  await openTab(alice, "Data & ingest", `document.querySelector("main")?.textContent.includes("ingest health · ")`);
+  const ingestTab = await alice.evaluate(SETTINGS);
+  check(
+    `the three totals are the health row's own — ${EXPECTED_ACCEPTED} accepted · 1 receive-path error · ${EXPECTED_QUOTA_DROPS} sampled out`,
+    statAfter(ingestTab.text, "events accepted") === Number(health?.accepted) &&
+      statAfter(ingestTab.text, "receive-path errors") === Number(health?.dropped_decode) &&
+      statAfter(ingestTab.text, "sampled out (quota)") === Number(health?.dropped_quota),
+    `accepted=${statAfter(ingestTab.text, "events accepted")} errors=${statAfter(ingestTab.text, "receive-path errors")} ` +
+      `sampled=${statAfter(ingestTab.text, "sampled out (quota)")} vs row ${JSON.stringify(health)}`,
+  );
+  check(
+    "attributed to the key alice issued, with the basis and the staleness of the count stated (D162)",
+    ingestTab.text.includes(`${prefix}…`) &&
+      /receive-path errors, as of \d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC/.test(ingestTab.text) &&
+      ingestTab.text.includes("write-path failures are not counted here"),
+    ingestTab.text.slice(0, 240),
+  );
+
+  step("a plan change round-trips: checkout → return → reconcile → plan row → the tab says Pro (D168)");
+  await openTab(alice, "Billing & usage", `document.querySelector("main")?.textContent.includes("change plan")`);
+  must(await alice.evaluate(clickText("Upgrade to Pro")), "the Billing & usage tab offers no Pro upgrade");
+  must(
+    await alice.waitFor(
+      `location.search.includes("checkout=") && document.querySelector("main")?.textContent.includes("Your plan is updated")`,
+      30_000,
+    ),
+    "the checkout never came back to a reconciled settings page",
+  );
+  const returned = await alice.evaluate(BILLING);
+  const planRow = await pgOne(
+    `SELECT plan_id, polar_customer_id, polar_subscription_id FROM workspace_plans WHERE workspace_id = $1`,
+    [alice.workspaceId],
+  );
+  check(
+    "the return path reconciled by READING the checkout back: Postgres holds alice's plan row, on pro, with the rail's ids",
+    planRow?.plan_id === "pro" &&
+      typeof planRow?.polar_customer_id === "string" &&
+      planRow.polar_customer_id.length > 0 &&
+      typeof planRow?.polar_subscription_id === "string" &&
+      planRow.polar_subscription_id.length > 0,
+    JSON.stringify(planRow),
+  );
+  check(
+    "and the page the customer lands on says so, in the fixed copy the server chose (D121)",
+    returned.main.includes("Your plan is updated"),
+    returned.main.slice(0, 200),
+  );
+
+  // The plan is read on the NEXT render, and that is a measured property of
+  // this seam rather than a convenience: the layout resolves `getUsage` before
+  // the page below it reconciles the returning checkout, and D183's
+  // request-scoped cache then hands the page the same object the layout
+  // already got — so the render that announces the upgrade is still measured
+  // against the plan the customer had a second ago (returned to the manager as
+  // a seam finding). What the round trip has to prove is that the plan the
+  // catalog sells is the plan the product then shows, and that is here.
+  await openTab(alice, "Billing & usage", `document.querySelector("main")?.textContent.includes("usage this period")`);
+  const upgraded = await alice.evaluate(BILLING);
+  const proPair = pairIn(upgraded.main.split("events (spans + log records)")[1] ?? "");
+  const proPlan = await pgOne(`SELECT event_quota, retention_days FROM plans WHERE id = $1`, ["pro"]);
+  check(
+    "the tab now shows the plan it just bought — its name, its catalog quota, its retention, none of them restated in TypeScript (D163)",
+    proPair !== null &&
+      proPair[0] === ledger.events &&
+      proPair[1] === Number(proPlan?.event_quota) &&
+      upgraded.main.includes(`${proPlan?.retention_days} days · Pro`),
+    `${JSON.stringify(proPair)} vs catalog ${JSON.stringify(proPlan)}`,
+  );
+  check(
+    "and the banner goes with it — the same used number, now under a quota that does not warrant one",
+    upgraded.banner === null,
+    upgraded.banner,
   );
 
   step("alice revokes the key — the row is stamped, and the list says so about THAT key");

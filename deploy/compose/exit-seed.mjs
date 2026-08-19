@@ -1,5 +1,11 @@
 /**
- * The evidence dataset the `e2e` drive seeds (T5, extended by F8).
+ * The evidence dataset the `e2e` drive seeds (T5, extended by F8 and S3.3).
+ *
+ * TWO SEEDINGS LIVE HERE, one per store, and they are invoked separately
+ * because they answer different questions. `--workspace/--label` writes the
+ * ClickHouse telemetry fixture described below; `--lower-free-quota` writes the
+ * single Postgres row the S3.3 metering step needs (D172) and touches nothing
+ * else. See "the quota seeding" at the bottom of this file.
  *
  * Writes a DEDICATED workspace straight into ClickHouse through the ingest
  * user, so the run asserts against data whose exact shape is known here rather
@@ -36,13 +42,20 @@
  * same tokens, same ids whatever the label is; only the words differ.
  *
  *   node deploy/compose/exit-seed.mjs --workspace ws_1a2b3c --label zzalice
+ *   node deploy/compose/exit-seed.mjs --lower-free-quota
  */
+
+import pg from "pg";
 
 const CH = process.env.CLICKHOUSE_URL ?? "http://127.0.0.1:8123";
 const USER = process.env.CLICKHOUSE_INGEST_USER ?? "obstack_ingest";
 const PASSWORD = process.env.CLICKHOUSE_INGEST_PASSWORD ?? "obstack_ingest_dev";
+const PG_DSN =
+  process.env.OBSTACK_POSTGRES_DSN ?? "postgres://obstack:obstack_postgres_dev@127.0.0.1:5432/obstack";
 
-const USAGE = "usage: node deploy/compose/exit-seed.mjs --workspace <workspace_id> --label <label>";
+const USAGE =
+  "usage: node deploy/compose/exit-seed.mjs --workspace <workspace_id> --label <label>\n" +
+  "       node deploy/compose/exit-seed.mjs --lower-free-quota";
 
 /**
  * Refused rather than defaulted, both of them: a seeder that guessed would
@@ -274,6 +287,54 @@ async function count(sql) {
   return Number((await res.text()).trim());
 }
 
+// ------------------------------------------------------- the quota seeding
+/**
+ * The quota the S3.3 metering step meters against (D172).
+ *
+ * Fifty thousand events is what the free plan sells and what the landing page
+ * says; sending fifty thousand through the wire to watch a banner appear would
+ * make the drive minutes longer for nothing. So the PLAN is lowered instead of
+ * the mechanism being bent: no test-only plan row joins the shipped catalog, no
+ * environment variable teaches ingest a second way to decide "over quota", and
+ * the code path the drive then exercises — `plans` → the workspace-state cache →
+ * head sampling → the banner — is byte-identical to the one a real customer
+ * crosses at fifty thousand.
+ *
+ * Exported because the drive asserts against this number and must not restate
+ * it: the seeder writes it, the drive reads it, and there is one 300 in the
+ * repository rather than two that can drift (S2.3 L3).
+ */
+export const EVIDENCE_FREE_QUOTA = 300;
+
+/**
+ * Which store this writes to, stated plainly: the DISPOSABLE compose Postgres.
+ * It is an UPDATE with no undo — the seeder holds no previous value and would
+ * have nothing honest to restore — so a stack that has run the drive carries a
+ * 300-event free plan until `docker compose … down -v`. That is the same
+ * posture the ClickHouse half already has (no mutation grant, start clean), and
+ * it is why the drive's fixing values print the DSN it ran against.
+ */
+const LOWER_FREE_QUOTA_SQL = `UPDATE plans SET event_quota = $1 WHERE id = 'free'
+  RETURNING id, name, event_quota, retention_days`;
+
+async function lowerFreeQuota() {
+  const client = new pg.Client({ connectionString: PG_DSN });
+  await client.connect();
+  try {
+    const { rows } = await client.query(LOWER_FREE_QUOTA_SQL, [EVIDENCE_FREE_QUOTA]);
+    // No row is a broken schema, not a workspace's state: `plans` is seeded by
+    // 0005_metering.sql and both runtimes read their quota from it (D163), so a
+    // catalog without a free row means the migration this drive assumes has not
+    // run — and every assertion after this one would be about nothing.
+    if (rows.length !== 1) {
+      throw new Error("no 'free' row in plans — 0005_metering.sql seeds the catalog (D163)");
+    }
+    return rows[0];
+  } finally {
+    await client.end();
+  }
+}
+
 // Seeding runs only when this file is the program, and importing it for its
 // constants must never write: the ingest user has no mutation grant, so a
 // second insert cannot be undone without `down -v`, and duplicated rows would
@@ -283,7 +344,9 @@ async function count(sql) {
 const invokedDirectly = process.argv[1] !== undefined && import.meta.url === `file://${process.argv[1]}`;
 const readingConstants = process.env.SEED_MODULE !== undefined;
 
-if (invokedDirectly && !readingConstants) {
+if (invokedDirectly && !readingConstants && process.argv.includes("--lower-free-quota")) {
+  console.log(JSON.stringify({ plan: await lowerFreeQuota() }, null, 2));
+} else if (invokedDirectly && !readingConstants) {
   const workspace = requiredArg(process.argv, "--workspace");
   const label = requiredArg(process.argv, "--label");
   const { spans, logs } = dataset(label);
