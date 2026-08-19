@@ -10,6 +10,10 @@
 // extends. The request model is priced first and the response model is the
 // fallback (D9) — some SDKs report only the resolved model, some only the
 // requested alias.
+//
+// A workspace may hold its own rows (D108): WithOverrides layers them over the
+// embedded list. Those rows are read from Postgres once per cache refresh and
+// the layered table is built there, not per span.
 package pricing
 
 import (
@@ -107,6 +111,54 @@ func mustLoad(data []byte) *Table {
 		panic("pricing: " + err.Error())
 	}
 	return t
+}
+
+// Override is one workspace's own price for a model prefix (D108), as the
+// pricing_overrides row shape spells it. It is a rate, not a new kind of thing —
+// the workspace's row for a prefix — so it is the same type, named at the seam
+// the keystore reads it into.
+type Override = Rate
+
+// WithOverrides returns this table with a workspace's override rows layered over
+// it (D108). Callers build the result once per cache refresh and reuse it: the
+// layering sorts, and a sort per span would price telemetry at the cost of
+// throughput.
+//
+// Precedence is workspace-first. The longest matching override wins outright,
+// and only a model that no override is a prefix of falls through to the base
+// rows — so an override at a coarser prefix than a base row still shadows it. A
+// workspace that has negotiated a family price means it to beat our per-version
+// list price, not to lose to it.
+//
+// Rows that could not price anything — no match, a negative price, a second row
+// for a prefix already taken — are skipped rather than refused: overrides arrive
+// from Postgres on a fail-open path (D164), and one bad row must not cost the
+// workspace the rest of its prices. AsOf stays the embedded list's date (D29);
+// it answers when *our* numbers were last checked.
+func (t *Table) WithOverrides(overrides []Override) *Table {
+	rows := make([]Rate, 0, len(overrides))
+	seen := make(map[string]struct{}, len(overrides))
+	for _, o := range overrides {
+		o.Match = strings.ToLower(strings.TrimSpace(o.Match))
+		if o.Match == "" || o.InputPerMTok < 0 || o.OutputPerMTok < 0 {
+			continue
+		}
+		if _, dup := seen[o.Match]; dup {
+			continue
+		}
+		seen[o.Match] = struct{}{}
+		rows = append(rows, o)
+	}
+	if len(rows) == 0 {
+		return t
+	}
+
+	sort.SliceStable(rows, func(i, j int) bool {
+		return len(rows[i].Match) > len(rows[j].Match)
+	})
+	// The base rows are already longest-first and are never mutated: a layered
+	// table shares them, and Default keeps pricing every other workspace.
+	return &Table{AsOf: t.AsOf, rates: append(rows, t.rates...)}
 }
 
 // Lookup returns the row whose match is the longest prefix of model. An empty

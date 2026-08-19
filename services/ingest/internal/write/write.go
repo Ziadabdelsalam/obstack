@@ -23,6 +23,7 @@ import (
 	"go.opentelemetry.io/collector/pdata/ptrace"
 
 	"github.com/Ziadabdelsalam/observer-stack/services/ingest/internal/mapping"
+	"github.com/Ziadabdelsalam/observer-stack/services/ingest/internal/pricing"
 )
 
 // D5 flush bounds.
@@ -59,13 +60,21 @@ type Config struct {
 	// MaxRows and FlushInterval default to the D5 bounds.
 	MaxRows       int
 	FlushInterval time.Duration
+
+	// Prices resolves the price table a workspace's spans are costed with: the
+	// embedded list with that workspace's D108 overrides layered on, built once
+	// per cache refresh. Nil — and a nil table from a cache that has no answer
+	// yet, which is the fail-open state the workspace cache hands back (D164) —
+	// means the embedded list.
+	Prices func(workspaceID string) *pricing.Table
 }
 
 // Writer is the receive.Consumer that lands telemetry in ClickHouse.
 type Writer struct {
-	conn  driver.Conn
-	spans *batcher[mapping.SpanRow]
-	logs  *batcher[mapping.LogRow]
+	conn   driver.Conn
+	prices func(workspaceID string) *pricing.Table
+	spans  *batcher[mapping.SpanRow]
+	logs   *batcher[mapping.LogRow]
 }
 
 // New connects and starts the per-table batchers. It pings: a DSN that cannot
@@ -94,7 +103,7 @@ func New(ctx context.Context, cfg Config) (*Writer, error) {
 		interval = DefaultFlushInterval
 	}
 
-	w := &Writer{conn: conn}
+	w := &Writer{conn: conn, prices: pricesFor(cfg)}
 	w.spans = newBatcher("spans", maxRows, interval,
 		func(r mapping.SpanRow) string { return r.WorkspaceID }, w.insertSpans)
 	w.logs = newBatcher("logs", maxRows, interval,
@@ -102,11 +111,30 @@ func New(ctx context.Context, cfg Config) (*Writer, error) {
 	return w, nil
 }
 
+// pricesFor turns Config.Prices into the resolver the writer calls, with the
+// one place the "no answer means the embedded list" rule lives. Both nils are
+// the same fail-open answer (D164): our own cache outage must show a workspace
+// list prices, never no prices at all.
+func pricesFor(cfg Config) func(workspaceID string) *pricing.Table {
+	return func(workspaceID string) *pricing.Table {
+		if cfg.Prices != nil {
+			if table := cfg.Prices(workspaceID); table != nil {
+				return table
+			}
+		}
+		return pricing.Default
+	}
+}
+
 // ConsumeTraces maps and enqueues a decoded trace export. The request context is
 // not carried into the write: the response is already on its way out, and a
 // batch must not be cancelled by the client that happened to fill it.
+//
+// The price table is resolved here, once per export: it is a cache read, and the
+// workspace's overrides must be the ones in force when the export arrived rather
+// than whatever the refresh loop holds by the time the batch flushes.
 func (w *Writer) ConsumeTraces(_ context.Context, workspaceID string, td ptrace.Traces) {
-	w.spans.enqueue(mapping.SpanRows(workspaceID, td))
+	w.spans.enqueue(mapping.SpanRows(workspaceID, td, w.prices(workspaceID)))
 }
 
 // ConsumeLogs maps and enqueues a decoded log export.

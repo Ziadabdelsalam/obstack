@@ -12,6 +12,7 @@ import (
 
 	"github.com/Ziadabdelsalam/observer-stack/services/ingest/internal/mapping"
 	"github.com/Ziadabdelsalam/observer-stack/services/ingest/internal/metrics"
+	"github.com/Ziadabdelsalam/observer-stack/services/ingest/internal/pricing"
 )
 
 const workspaceID = "ws_test"
@@ -40,7 +41,12 @@ func newSpan(t *testing.T) (ptrace.Traces, ptrace.Span) {
 
 func onlyRow(t *testing.T, td ptrace.Traces) mapping.SpanRow {
 	t.Helper()
-	rows := mapping.SpanRows(workspaceID, td)
+	return onlyRowPriced(t, td, pricing.Default)
+}
+
+func onlyRowPriced(t *testing.T, td ptrace.Traces, prices *pricing.Table) mapping.SpanRow {
+	t.Helper()
+	rows := mapping.SpanRows(workspaceID, td, prices)
 	if len(rows) != 1 {
 		t.Fatalf("got %d rows, want 1", len(rows))
 	}
@@ -187,6 +193,36 @@ func TestNonLLMSpanIsNotPriced(t *testing.T) {
 	}
 }
 
+// D108/D167: the workspace's overrides reach cost_usd. Mapping prices with the
+// table it is handed, not with the embedded list — the whole point of an
+// override is that this workspace's spans cost what this workspace pays, and a
+// model the embedded list has never heard of gets a price rather than a gap.
+func TestWorkspaceOverridesPriceTheSpan(t *testing.T) {
+	before := metrics.UnpricedModelCounts()["acme-llm-9"]
+	prices := pricing.Default.WithOverrides([]pricing.Override{
+		{Match: "acme-llm-9", InputPerMTok: 4, OutputPerMTok: 12},
+	})
+
+	td, span := newSpan(t)
+	span.Attributes().PutStr("gen_ai.request.model", "acme-llm-9-turbo")
+	span.Attributes().PutInt("gen_ai.usage.input_tokens", 1000)
+	span.Attributes().PutInt("gen_ai.usage.output_tokens", 500)
+
+	row := onlyRowPriced(t, td, prices)
+	want := 1000*4.0/1e6 + 500*12.0/1e6
+	if math.Abs(row.CostUSD-want) > 1e-12 {
+		t.Errorf("cost_usd = %v, want %v — the workspace's override did not reach the row", row.CostUSD, want)
+	}
+	if delta := metrics.UnpricedModelCounts()["acme-llm-9"] - before; delta != 0 {
+		t.Errorf("unpriced counter delta = %v, want 0 — an overridden model is not a gap in the table", delta)
+	}
+
+	// The same span off the embedded list: no row for it, so no cost.
+	if got := onlyRowPriced(t, td, pricing.Default).CostUSD; got != 0 {
+		t.Errorf("cost_usd off the base table = %v, want 0", got)
+	}
+}
+
 func TestSpanColumnsFromResourceAndSpan(t *testing.T) {
 	td, span := newSpan(t)
 	res := td.ResourceSpans().At(0).Resource().Attributes()
@@ -265,7 +301,7 @@ func TestUnmappableSpansAreDroppedAndCounted(t *testing.T) {
 	good.SetName("keeper")
 	good.SetStartTimestamp(pcommon.NewTimestampFromTime(start))
 
-	rows := mapping.SpanRows(workspaceID, td)
+	rows := mapping.SpanRows(workspaceID, td, pricing.Default)
 	if len(rows) != 1 || rows[0].Name != "keeper" {
 		t.Fatalf("got %d rows, want the one mappable span", len(rows))
 	}
