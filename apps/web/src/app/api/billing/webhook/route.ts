@@ -1,6 +1,6 @@
 import { applyWebhook, getBilling } from "@/server/billing";
 import { dataMode } from "@/server/data";
-import { queryRows } from "@/server/postgres";
+import { withTransaction } from "@/server/postgres";
 
 /**
  * Polar's webhook endpoint — the ASYNC RECONCILER, never a UX dependency
@@ -53,8 +53,18 @@ export async function POST(request: Request): Promise<Response> {
     return new Response(null, { status: 403 });
   }
 
+  // The majority of a valid enum is `none` — an event we have no work for. It
+  // writes nothing, so it needs no transaction and no connection; it is just the
+  // ACK an unACKed delivery's ten retries would otherwise cost.
+  if (event.consumed === "none") return new Response(null, { status: 200 });
+
   try {
-    await applyWebhook(event, queryRows);
+    // Inside one transaction so the convergence `applyWebhook` runs holds its
+    // `pg_advisory_xact_lock` across the rail read and the plan write (D195): a
+    // re-delivered or reordered event that races another sync of the same
+    // workspace waits its turn and reads the present the winner left, rather
+    // than interleaving a stale grant over a revocation.
+    await withTransaction((query) => applyWebhook(event, query));
   } catch (error) {
     console.error(`[billing] webhook ${event.type} could not be applied`, error);
     return new Response(null, { status: 500 });

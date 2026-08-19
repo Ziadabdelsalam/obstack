@@ -52,21 +52,42 @@ export interface CreatedCheckout {
 }
 
 /**
- * A checkout as we read it back. Polar's five states collapse to three because
- * three is all the product does anything with: still going, paid, over.
+ * A checkout as we read it back — the TRIGGER and its binding proof, and no
+ * more (D195). Polar's five states collapse to three because three is all the
+ * reconciler does anything with: still going, paid, over. It carries no plan and
+ * no ids, because a finished checkout no longer writes a plan row from itself:
+ * it is the doorbell that makes `reconcileCheckout` re-read the subscription's
+ * present state through `getSubscriptionState` and converge to exactly that.
  *
  * `externalCustomerId` is the workspace the checkout was created for, and it is
  * on this interface for one reason: the checkout id arrives on the return path
  * as a URL parameter, so it is caller-supplied. Without the workspace to compare
- * it against, pasting someone else's succeeded checkout id would write THEIR
- * plan onto YOUR workspace — `reconcileCheckout` refuses exactly that (D148).
+ * it against, pasting someone else's succeeded checkout id would drive a sync
+ * of YOUR workspace off THEIR checkout — `reconcileCheckout` refuses exactly
+ * that before it reads any rail state (D148/D176).
  */
 export interface CheckoutState {
   status: "open" | "succeeded" | "expired";
   externalCustomerId?: string;
-  customerId?: string;
-  subscriptionId?: string;
-  planId?: string;
+}
+
+/**
+ * The customer's CURRENT subscription on the rail (D195/D168) — the one fact
+ * convergence writes a plan from. `active` is the whole verdict: a live
+ * subscription (Polar `active`/`trialing`, and `past_due` which keeps its
+ * entitlements per D169) means the workspace is on `pro` and the two ids are
+ * the ones to store; anything else — canceled, revoked, unpaid, or NO
+ * subscription at all — means `free` with both ids nulled.
+ *
+ * This is what makes a spent checkout id and a re-delivered `active` event both
+ * harmless: neither carries a plan, and re-reading THIS is what they trigger, so
+ * a bookmark or a retry that lands after a revocation reads the revoked present
+ * and converges to free rather than replaying a stale grant.
+ */
+export interface SubscriptionState {
+  active: boolean;
+  customerId: string | null;
+  subscriptionId: string | null;
 }
 
 /**
@@ -130,7 +151,7 @@ export type WebhookEvent =
   | { consumed: "none"; type: string };
 
 /**
- * The four calls, and the whole of what billing can do. `verifyWebhook` is
+ * The five calls, and the whole of what billing can do. `verifyWebhook` is
  * synchronous because both implementations verify in-process — the real one
  * through the SDK's `validateEvent`, the fake through an HMAC — and it THROWS on
  * a bad signature rather than returning a verdict, so a caller cannot forget to
@@ -140,6 +161,13 @@ export interface BillingClient {
   readonly mode: BillingMode;
   createCheckout(request: CheckoutRequest): Promise<CreatedCheckout>;
   getCheckout(checkoutId: string): Promise<CheckoutState>;
+  /**
+   * The customer's present subscription state, read by workspace id (D195).
+   * `syncPlanFromRail` converges the plan row to exactly this, so a trigger —
+   * a returning checkout or a lifecycle webhook — never carries the plan; it
+   * only makes this read happen.
+   */
+  getSubscriptionState(workspaceId: string): Promise<SubscriptionState>;
   ingestUsage(events: UsageEvent[]): Promise<UsageIngestResult>;
   verifyWebhook(rawBody: string, headers: Record<string, string>): WebhookEvent;
 }

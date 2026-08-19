@@ -52,3 +52,51 @@ export type QueryRows = typeof queryRows;
 export type SqlClient = {
   query(sql: string, params?: unknown[]): Promise<unknown>;
 };
+
+/**
+ * The one serialization idiom in the codebase (D195/D197): a workspace-keyed
+ * advisory lock a read-modify-write takes so two of them cannot interleave.
+ *
+ * `pg_advisory_xact_lock` is TRANSACTION-scoped — it releases on COMMIT/ROLLBACK
+ * and needs no unlock, which is the whole reason it is the primitive here: a
+ * session lock leaked by a crashed handler would wedge a workspace forever. It
+ * therefore only serializes when the `query` it runs on is bound to a
+ * transaction (see `withTransaction`); through the plain pool it locks and
+ * releases inside one implicit transaction and serializes nothing. `hashtext`
+ * folds the workspace id to the `bigint` the lock keys on, so every holder of
+ * the same workspace waits on the same key. Both billing convergence (F6) and
+ * the override cap (F9) take exactly this lock before their read→write.
+ */
+export async function lockWorkspace(query: QueryRows, workspaceId: string): Promise<void> {
+  await query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [workspaceId]);
+}
+
+/**
+ * Run `body` inside one transaction on a single checked-out connection, and
+ * hand it a `query` bound to that connection so every statement it issues —
+ * including a `lockWorkspace` — shares the transaction and its lock. COMMIT on
+ * success, ROLLBACK on any throw (the same posture `provisionOrgAndWorkspace`
+ * keeps). This is what lets an advisory lock actually serialize a read→write:
+ * the caller reads the rail and writes the plan row between BEGIN and COMMIT,
+ * so the lock is held across both.
+ */
+export async function withTransaction<T>(body: (query: QueryRows) => Promise<T>): Promise<T> {
+  const client = await getPool().connect();
+  try {
+    await client.query("BEGIN");
+    const query: QueryRows = async <Row extends QueryResultRow>(
+      sql: string,
+      params: unknown[] = [],
+    ): Promise<Row[]> => (await client.query<Row>(sql, params)).rows;
+    const result = await body(query);
+    await client.query("COMMIT");
+    return result;
+  } catch (error) {
+    // A ROLLBACK that itself fails means the connection is already gone; the
+    // statement that threw is the reportable one, so this catch is swallowed.
+    await client.query("ROLLBACK").catch(() => undefined);
+    throw error;
+  } finally {
+    client.release();
+  }
+}

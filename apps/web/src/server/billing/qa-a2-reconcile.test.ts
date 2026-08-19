@@ -1,8 +1,12 @@
 import assert from "node:assert/strict";
-import test from "node:test";
-import { fakeBilling } from "./fake";
-import { applyWebhook, reconcileCheckout } from "./reconcile";
+import { randomBytes } from "node:crypto";
+import { after, test } from "node:test";
+import { Pool, type PoolClient, type QueryResultRow } from "pg";
+import { fakeBilling, setFakeSubscription } from "./fake";
+import { applyWebhook, reconcileCheckout, syncPlanFromRail } from "./reconcile";
 import { normalizeWebhook } from "./webhook";
+import type { BillingClient, SubscriptionState } from "./types";
+import type { QueryRows } from "@/server/postgres";
 
 // run with: npm test --workspace apps/web
 // DESTINATION: apps/web/src/server/billing/qa-a2-reconcile.test.ts
@@ -80,7 +84,10 @@ test("B2-1: a revoked plan is not resurrected by replaying the old ?checkout= id
   assert.equal(first.applied, true, "precondition: the honest return applies");
   assert.deepEqual(writes.at(-1), { workspaceId: WS, planId: "pro" });
 
-  // 2. Polar revokes it. D169: revocation is the cutoff.
+  // 2. Polar revokes it. D169: revocation is the cutoff. The rail's present
+  // state moves to no-subscription, and the revoked webhook is the DOORBELL that
+  // makes us re-read it — the event carries no plan, it only says "look again".
+  setFakeSubscription(WS, null);
   await quiet(() => applyWebhook(subscriptionEvent("subscription.revoked"), query));
   assert.deepEqual(
     writes.at(-1),
@@ -130,3 +137,110 @@ test("B2-A2: a stranger's checkout id refuses, writes nothing, and says why at e
   assert.deepEqual(writes, [], "the refused workspace's plan row is never touched");
   assert.match(logged.join("\n"), /belongs to another workspace/);
 });
+
+// --------------------------------------------------------------------------
+// The advisory-lock serialization (D195.4), against REAL Postgres — the last
+// race convergence alone does not close: two syncs of one workspace whose rail
+// reads straddle a state change. `pg_advisory_xact_lock(hashtext(workspace_id))`
+// makes the read→write of one sync complete before the other's begins, so the
+// LATER present always wins. This needs a real lock, so it dials the compose
+// Postgres; unset DSN skips it (deploy/compose/README.md), like qa-a4.
+// --------------------------------------------------------------------------
+const DSN = process.env.OBSTACK_TEST_POSTGRES_DSN;
+const skip = DSN
+  ? undefined
+  : "OBSTACK_TEST_POSTGRES_DSN is unset — no Postgres to dial (deploy/compose/README.md)";
+const pool = DSN ? new Pool({ connectionString: DSN, max: 8, application_name: "qa-a2" }) : undefined;
+
+after(async () => {
+  if (pool) await pool.end();
+});
+
+const q = (client: Pool | PoolClient): QueryRows =>
+  async <Row extends QueryResultRow>(sql: string, params: unknown[] = []): Promise<Row[]> =>
+    (await client.query<Row>(sql, params)).rows;
+
+/** A rail whose subscription read is observable and, optionally, held open. */
+function railAnswering(
+  state: SubscriptionState,
+  hooks: { onRead?: () => void; gate?: Promise<void> } = {},
+): BillingClient {
+  return {
+    ...fakeBilling,
+    getSubscriptionState: async () => {
+      hooks.onRead?.();
+      if (hooks.gate) await hooks.gate;
+      return state;
+    },
+  };
+}
+
+test(
+  "the advisory lock serializes two concurrent syncs — the second reads after the first commits",
+  { skip },
+  async () => {
+    const tag = randomBytes(6).toString("hex");
+    const ws = `ws_a2s_${tag}`;
+    await q(pool as Pool)(`INSERT INTO workspaces (id, org_id) VALUES ($1, $2)`, [
+      ws,
+      `org_a2s_${tag}`,
+    ]);
+
+    try {
+      const clientA = await (pool as Pool).connect();
+      const clientB = await (pool as Pool).connect();
+      try {
+        // A acquires the lock, then blocks INSIDE its rail read holding it.
+        let aReading!: () => void;
+        const aEnteredRead = new Promise<void>((r) => (aReading = r));
+        let releaseA!: () => void;
+        const gateA = new Promise<void>((r) => (releaseA = r));
+        const railA = railAnswering(
+          { active: true, customerId: "cus_a", subscriptionId: "sub_a" },
+          { onRead: aReading, gate: gateA },
+        );
+
+        // B's read is observable; if it fires while A holds the lock, the lock
+        // did not serialize. With the lock, B blocks in `lockWorkspace` until A
+        // commits, and only then reads — the LATER present (revoked ⇒ free).
+        let bRead = false;
+        const railB = railAnswering(
+          { active: false, customerId: null, subscriptionId: null },
+          { onRead: () => (bRead = true) },
+        );
+
+        await clientA.query("BEGIN");
+        const aDone = syncPlanFromRail(ws, q(clientA), railA).then(() => clientA.query("COMMIT"));
+        await aEnteredRead; // A now holds the advisory lock and is mid-read
+
+        await clientB.query("BEGIN");
+        const bDone = syncPlanFromRail(ws, q(clientB), railB).then(() => clientB.query("COMMIT"));
+
+        // Give B ample time to reach its rail read if it were NOT blocked. The
+        // advisory lock A holds must keep it in `lockWorkspace` instead.
+        await new Promise((r) => setTimeout(r, 200));
+        assert.equal(
+          bRead,
+          false,
+          "B read the rail while A held the workspace lock — the read→write did not serialize",
+        );
+
+        releaseA();
+        await Promise.all([aDone, bDone]);
+        assert.equal(bRead, true, "B proceeds once A commits and releases the lock");
+
+        // The later sync (B, revoked) wins: the row converges to free.
+        const [row] = await q(pool as Pool)<{ plan_id: string }>(
+          `SELECT plan_id FROM workspace_plans WHERE workspace_id = $1`,
+          [ws],
+        );
+        assert.equal(row.plan_id, "free", "the last committed present is what the row holds");
+      } finally {
+        clientA.release();
+        clientB.release();
+      }
+    } finally {
+      await q(pool as Pool)(`DELETE FROM workspaces WHERE id = $1`, [ws]); // CASCADE drops the plan row
+    }
+  },
+);

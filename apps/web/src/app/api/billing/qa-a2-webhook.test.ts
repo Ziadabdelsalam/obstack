@@ -10,7 +10,7 @@ import test from "node:test";
 // `webhook-route.test.ts` imports only from `./fake` and dynamic-imports the
 // route (D156, per-file process isolation).
 import { applyWebhook } from "@/server/billing/reconcile";
-import { FAKE_SIGNATURE_HEADER, signFakeWebhook } from "@/server/billing/fake";
+import { FAKE_SIGNATURE_HEADER, signFakeWebhook, setFakeSubscription } from "@/server/billing/fake";
 import { normalizeWebhook } from "@/server/billing/webhook";
 
 // run with: npm test --workspace apps/web
@@ -66,12 +66,17 @@ const post = async (body: string, headers: Record<string, string>): Promise<Resp
  */
 test("B2-2: a replayed subscription.active does not undo the revocation that followed it", async () => {
   const { writes, query } = planWrites();
+  // Both deliveries are DOORBELLS now (D195): each says "re-read the rail", so
+  // the rail's present is the whole of what gets written. We move the rail the
+  // way Polar's own lifecycle would and ring the matching bell.
   const active = normalizeWebhook(JSON.parse(delivery("subscription.active")));
   const revoked = normalizeWebhook(JSON.parse(delivery("subscription.revoked")));
 
+  setFakeSubscription(WS, { active: true, customerId: `cus_${WS}`, subscriptionId: "sub_qa_a2" });
   await applyWebhook(active, query);
   assert.deepEqual(writes.at(-1), { workspaceId: WS, planId: "pro" }, "precondition: active ⇒ pro");
 
+  setFakeSubscription(WS, null); // Polar revoked it; the cutoff is now
   await applyWebhook(revoked, query);
   assert.deepEqual(
     writes.at(-1),
@@ -80,7 +85,9 @@ test("B2-2: a replayed subscription.active does not undo the revocation that fol
   );
 
   // The same delivery Polar already made, made again — a retry, or a captured
-  // body re-posted. It must not move a workspace that has since been revoked.
+  // body re-posted — WITHOUT moving the rail back. It must not resurrect a
+  // workspace that has since been revoked: the doorbell re-reads the present
+  // (still revoked) rather than applying the stale `active` payload.
   await applyWebhook(active, query);
 
   assert.deepEqual(
