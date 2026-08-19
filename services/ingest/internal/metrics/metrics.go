@@ -2,12 +2,18 @@
 // (D6, D9). They live in one place because every stage of the pipeline —
 // receive, mapping, write, pricing — reports drops through the same names, and
 // because the drop reasons need a fixed vocabulary: `reason` is a metric label,
-// so free-form strings would be an unbounded cardinality leak.
+// so free-form strings would be an unbounded cardinality leak. The one label
+// that cannot have a fixed vocabulary — the unpriced model name, which is
+// whatever the caller sent — is bounded by a cap instead (D29).
 package metrics
 
 import (
+	"fmt"
+	"sync"
+
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
+	dto "github.com/prometheus/client_model/go"
 )
 
 // Signals carried by the accepted counter.
@@ -48,6 +54,12 @@ const (
 	ReasonPanic = "panic"
 )
 
+// The per-workspace series of the two counters below appear on a workspace's
+// first event, not at boot: the set of workspaces lives in Postgres and is
+// resolved key by key as traffic arrives (D98/D151), so there is nothing for the
+// process to materialise at zero on the way up — a workspace's absence from
+// /metrics means it has sent nothing, and rate() over it is undefined until it
+// does.
 var (
 	// Accepted counts records that passed auth and decode and were handed to
 	// the writer.
@@ -62,27 +74,77 @@ var (
 		Help: "Telemetry records dropped before reaching ClickHouse.",
 	}, []string{"workspace_id", "reason"})
 
-	// UnpricedModels counts LLM spans whose model matched no row in the
-	// embedded pricing table, and which therefore carry cost_usd = 0 (D9).
-	UnpricedModels = promauto.NewCounterVec(prometheus.CounterOpts{
+	// unpricedModels counts LLM spans whose model matched no row in the
+	// embedded pricing table, and which therefore carry cost_usd = 0 (D9). It
+	// stays unexported so the D29 cap has exactly one door: `model` is a string
+	// the caller's SDK chose, so a second increment site would be the unbounded
+	// cardinality leak the cap exists to close. Increment through
+	// CountUnpricedModel, read through UnpricedModelCounts.
+	unpricedModels = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "obstack_ingest_unpriced_models_total",
-		Help: "LLM spans whose model matched no row in the embedded pricing table.",
+		Help: fmt.Sprintf("LLM spans whose model matched no row in the embedded pricing table "+
+			"(at most %d distinct models per process, the rest under model=%q).",
+			MaxUnpricedModelLabels, UnpricedModelOverflow),
 	}, []string{"model"})
 )
 
-// Init materialises the per-workspace series at zero for the workspaces this
-// process is configured for. Without it a counter is absent from /metrics until
-// its first event, which makes rate() over a freshly booted service undefined
-// and hides a pipeline that has simply never received anything.
-func Init(workspaceIDs []string) {
-	signals := []string{SignalTraces, SignalLogs}
-	reasons := []string{ReasonDecode, ReasonUnsupported, ReasonMapping, ReasonOverload, ReasonWrite, ReasonPanic}
-	for _, ws := range workspaceIDs {
-		for _, signal := range signals {
-			Accepted.WithLabelValues(ws, signal)
-		}
-		for _, reason := range reasons {
-			Dropped.WithLabelValues(ws, reason)
+// The D29 cap on obstack_ingest_unpriced_models_total{model}. The metric exists
+// to surface the models the price table is missing, so an allowlist would defeat
+// it: the bound is on how many distinct names one process will ever admit, not
+// on which ones. First come, first served — the first MaxUnpricedModelLabels
+// names keep their own series and every later name lands in one fixed bucket, so
+// "the table has a hole" stays visible while the series count stays flat under a
+// tenant sending model names we have never heard of.
+const (
+	// MaxUnpricedModelLabels is that cap, counted per process lifetime.
+	MaxUnpricedModelLabels = 100
+
+	// UnpricedModelOverflow is that fixed bucket. A caller who sends this exact
+	// literal as a model name is simply counted in it — bounded either way.
+	UnpricedModelOverflow = "_overflow"
+)
+
+var unpricedModelLabels = struct {
+	mu    sync.Mutex
+	names map[string]struct{}
+}{names: make(map[string]struct{}, MaxUnpricedModelLabels)}
+
+// CountUnpricedModel counts one span whose model matched no pricing row, under
+// its own label while the cap allows and under UnpricedModelOverflow after.
+func CountUnpricedModel(model string) {
+	unpricedModelLabels.mu.Lock()
+	if _, admitted := unpricedModelLabels.names[model]; !admitted {
+		if len(unpricedModelLabels.names) >= MaxUnpricedModelLabels {
+			model = UnpricedModelOverflow
+		} else {
+			unpricedModelLabels.names[model] = struct{}{}
 		}
 	}
+	unpricedModelLabels.mu.Unlock()
+	unpricedModels.WithLabelValues(model).Inc()
+}
+
+// UnpricedModelCounts snapshots the counter by model label. It collects rather
+// than looking labels up, because a vector lookup creates the series it reads:
+// the number of keys returned here is exactly the cardinality the cap bounds, so
+// reading must not be able to add to it.
+func UnpricedModelCounts() map[string]float64 {
+	ch := make(chan prometheus.Metric)
+	go func() {
+		unpricedModels.Collect(ch)
+		close(ch)
+	}()
+	counts := map[string]float64{}
+	for metric := range ch {
+		var m dto.Metric
+		if err := metric.Write(&m); err != nil {
+			continue
+		}
+		for _, label := range m.GetLabel() {
+			if label.GetName() == "model" {
+				counts[label.GetValue()] = m.GetCounter().GetValue()
+			}
+		}
+	}
+	return counts
 }

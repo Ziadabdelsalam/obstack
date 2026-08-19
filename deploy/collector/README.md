@@ -44,10 +44,14 @@ lists both `file_log` (`receiver/filelogreceiver`) and `k8s_attributes`
 Both configs read `OBSTACK_COLLECTOR_API_KEY` from the environment and send
 it as `Authorization: Bearer <key>` to ingest — the same wire format any
 OTLP client uses (D4). `config.compose.yaml` defaults it to `ok_dev_local`
-(M1 precedent — it matches `docker-compose.yml`'s own ingest default key, so
-the profile works out of the box for local dev). `config.yaml` has no
-default: production supplies the key through a Helm values file or a mounted
-secret. Neither file ever carries a literal key.
+(M1 precedent), which resolves because ingest's Postgres migrations seed it
+as a real key row (`services/ingest/pgmigrations/0004_api_keys.sql`) — so the
+profile works out of the box for local dev. Keys are Postgres rows now (D98),
+never an ingest environment variable, and only their SHA-256 is stored;
+`ok_dev_local` keeps working unchanged because that row is seeded for it.
+`config.yaml` has no default: production supplies a key issued in settings
+through a Helm values file or a mounted secret. Neither file ever carries a
+literal key.
 
 ## The filelog exclusion (D37.3) — the recommended customer pattern
 

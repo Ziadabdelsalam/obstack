@@ -53,13 +53,18 @@ export default function Landing() {
             <a href="#pricing" className="hover:text-ink">Pricing</a>
             <Link href="/changelog" className="hover:text-ink">Changelog</Link>
           </nav>
-          <Link
-            href="/app"
-            className="rounded-md px-3.5 py-1.5 text-[13px] font-medium text-bg transition-transform hover:scale-[1.03]"
-            style={{ background: "var(--color-ink)" }}
-          >
-            Open the demo
-          </Link>
+          <div className="flex items-center gap-4">
+            <Link href="/app" className="hidden text-[13px] text-mid hover:text-ink sm:block">
+              Open the demo
+            </Link>
+            <Link
+              href="/signup"
+              className="rounded-md px-3.5 py-1.5 text-[13px] font-medium text-bg transition-transform hover:scale-[1.03]"
+              style={{ background: "var(--color-ink)" }}
+            >
+              Create your workspace
+            </Link>
+          </div>
         </div>
       </header>
 
@@ -85,20 +90,39 @@ export default function Landing() {
           </p>
           <div className="mt-7 flex flex-wrap items-center gap-3">
             <Link
-              href="/app"
+              href="/signup"
               className="flex items-center gap-2 rounded-md px-4.5 py-2.5 text-[14px] font-medium text-bg transition-transform hover:scale-[1.03]"
               style={{ background: "var(--color-ink)" }}
             >
-              Open the live demo <ArrowRight className="h-4 w-4" />
+              Create your workspace <ArrowRight className="h-4 w-4" />
+            </Link>
+            <Link
+              href="/app"
+              className="rounded-md border border-line bg-raised px-4.5 py-2.5 text-[14px] font-medium text-ink hover:border-line-strong"
+            >
+              Open the live demo
             </Link>
             <span className="font-mono text-[12px] text-faint">
               OTel-native · one env var to try it
             </span>
           </div>
+          {/* The two calls to action are two different products, and the page
+              says which is which (D106/D140): signing up is obstack you run —
+              the whole thing, today — and the waitlist below is for the hosted
+              one, which we do not run for anyone yet. Present tense only. */}
+          <p className="mt-3.5 max-w-lg text-[13px] leading-relaxed text-mid">
+            Signing up creates your workspace on an obstack you run — the one you
+            started yourself. Issue an API key in settings, point your OpenTelemetry
+            exporter at it, and those traces land in that workspace.
+          </p>
 
           <div id="waitlist" className="mt-8 max-w-md">
-            <p className="mb-2.5 font-mono text-[11px] uppercase tracking-[0.2em] text-faint">
+            <p className="mb-1.5 font-mono text-[11px] uppercase tracking-[0.2em] text-faint">
               cloud is in private preview
+            </p>
+            <p className="mb-3 text-[13px] leading-relaxed text-mid">
+              We don&apos;t host obstack for you yet. Leave your email and we&apos;ll
+              write when we do.
             </p>
             <WaitlistForm />
           </div>
@@ -432,17 +456,29 @@ export default function Landing() {
               <p className="mt-1 text-[13.5px] text-mid">
                 The demo is live sample data — no signup, no setup.
               </p>
+              <p className="mt-1 text-[13.5px] text-mid">
+                Signing up creates your own workspace on an obstack you run. The
+                hosted one is in private preview:
+              </p>
               <div className="mt-4">
                 <WaitlistForm />
               </div>
             </div>
-            <Link
-              href="/app"
-              className="flex items-center gap-2 rounded-md px-4.5 py-2.5 text-[14px] font-medium text-bg transition-transform hover:scale-[1.03]"
-              style={{ background: "var(--color-ink)" }}
-            >
-              Open the live demo <ArrowRight className="h-4 w-4" />
-            </Link>
+            <div className="flex flex-wrap items-center gap-3">
+              <Link
+                href="/signup"
+                className="flex items-center gap-2 rounded-md px-4.5 py-2.5 text-[14px] font-medium text-bg transition-transform hover:scale-[1.03]"
+                style={{ background: "var(--color-ink)" }}
+              >
+                Create your workspace <ArrowRight className="h-4 w-4" />
+              </Link>
+              <Link
+                href="/app"
+                className="rounded-md border border-line bg-raised px-4.5 py-2.5 text-[14px] font-medium text-ink hover:border-line-strong"
+              >
+                Open the live demo
+              </Link>
+            </div>
           </div>
           <div className="mt-12 flex flex-wrap items-center justify-between gap-4 border-t border-line pt-6">
             <Wordmark />

@@ -13,10 +13,12 @@
 package pricing
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/Ziadabdelsalam/observer-stack/services/ingest/internal/metrics"
 	pricefile "github.com/Ziadabdelsalam/observer-stack/services/ingest/pricing"
@@ -33,9 +35,18 @@ type Rate struct {
 	OutputPerMTok float64 `json:"output_per_mtok"`
 }
 
+// file is the on-disk shape of a price list: the rows under a date saying when
+// the prices were last checked (D29). Prices go stale silently — a table with no
+// date cannot tell anyone how old the numbers behind a cost figure are.
+type file struct {
+	AsOf   string `json:"as_of"`
+	Prices []Rate `json:"prices"`
+}
+
 // Table is a price list ready for lookups: rows sorted longest-match-first, so
-// the first prefix hit is the longest one.
+// the first prefix hit is the longest one. AsOf is the file's date, YYYY-MM-DD.
 type Table struct {
+	AsOf  string
 	rates []Rate
 }
 
@@ -48,10 +59,20 @@ var Default = mustLoad(pricefile.JSON)
 // a duplicate or negative row silently mispricing every span is worse than a
 // refusal to start.
 func Load(data []byte) (*Table, error) {
-	var rates []Rate
-	if err := json.Unmarshal(data, &rates); err != nil {
+	// The pre-D29 file was a bare array. Anyone pasting one back gets told which
+	// shape is expected rather than a type error about a Go struct.
+	if trimmed := bytes.TrimLeft(data, " \t\r\n"); len(trimmed) > 0 && trimmed[0] == '[' {
+		return nil, fmt.Errorf("price list is a bare array: expected the {\"as_of\": \"YYYY-MM-DD\", \"prices\": [...]} envelope")
+	}
+
+	var f file
+	if err := json.Unmarshal(data, &f); err != nil {
 		return nil, fmt.Errorf("parse price list: %w", err)
 	}
+	if _, err := time.Parse(time.DateOnly, f.AsOf); err != nil {
+		return nil, fmt.Errorf("price list as_of %q is not a YYYY-MM-DD date", f.AsOf)
+	}
+	rates := f.Prices
 	if len(rates) == 0 {
 		return nil, fmt.Errorf("price list is empty")
 	}
@@ -77,7 +98,7 @@ func Load(data []byte) (*Table, error) {
 	sort.SliceStable(rates, func(i, j int) bool {
 		return len(rates[i].Match) > len(rates[j].Match)
 	})
-	return &Table{rates: rates}, nil
+	return &Table{AsOf: f.AsOf, rates: rates}, nil
 }
 
 func mustLoad(data []byte) *Table {
@@ -105,7 +126,9 @@ func (t *Table) Lookup(model string) (Rate, bool) {
 
 // Cost prices one LLM span in USD (D9). An unpriced model costs 0 and is
 // counted under obstack_ingest_unpriced_models_total{model} — a span whose cost
-// is missing must be visible as a gap in the table, not as a cheap call.
+// is missing must be visible as a gap in the table, not as a cheap call. That
+// counter's label is a caller-chosen string, so this is the one increment site
+// and it goes through the capped door (D29).
 func (t *Table) Cost(requestModel, responseModel string, inputTokens, outputTokens int64) float64 {
 	rate, ok := t.Lookup(requestModel)
 	if !ok {
@@ -115,7 +138,7 @@ func (t *Table) Cost(requestModel, responseModel string, inputTokens, outputToke
 		// Both empty means the span carried no model at all — nothing to price
 		// and nothing a new pricing row could fix, so it is not a gap.
 		if model := firstModel(requestModel, responseModel); model != "" {
-			metrics.UnpricedModels.WithLabelValues(model).Inc()
+			metrics.CountUnpricedModel(model)
 		}
 		return 0
 	}

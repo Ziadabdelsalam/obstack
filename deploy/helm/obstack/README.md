@@ -261,10 +261,14 @@ before changing it:
 
 **The ingest Deployment is a Postgres client too, and it must be.** It carries
 `OBSTACK_POSTGRES_DSN` and `OBSTACK_PG_MIGRATE_ON_BOOT=false`, the exact
-mirror of its ClickHouse pair. Ingest reads nothing out of Postgres while
-serving in this milestone — its API-key lookup is still the env map, D98 moves
-it in S3.2 — but it is the process that owns the schema, so `ingest run`
-requires the DSN and refuses to boot without it, then verifies the set and
+mirror of its ClickHouse pair. Ingest resolves every API key out of Postgres
+while serving — the `api_keys` rows are the one authority (D98), read through
+an in-memory cache with a 30s TTL, so a revoked key stops working within that
+window and a Postgres outage serves what the cache already resolved rather
+than 401ing live traffic; the dev `ok_dev_local`/`ws_demo` row is seeded by
+`pgmigrations/0004`, and the `OBSTACK_API_KEYS` env map is deleted, with no
+second lookup path. It is also the process that owns the schema, so `ingest
+run` requires the DSN and refuses to boot without it, then verifies the set and
 refuses loudly if this revision's Job has not applied it. Two consequences:
 `helm install --wait` gates on **both** schemas, since these pods cannot
 report Available until each one checks out; and these pods wait behind a

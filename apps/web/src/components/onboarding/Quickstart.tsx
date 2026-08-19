@@ -16,7 +16,7 @@ const tabs = [
 
 # app.py
 import obstack
-obstack.init(api_key="ob_live_9f2e…")  # that's it — OTel underneath
+obstack.init(api_key="ok_live_9f2e…")  # that's it — OTel underneath
 
 # LLM + agent calls are captured automatically
 from obstack import trace_agent
@@ -32,7 +32,7 @@ def handle_ticket(ticket):
 
 // instrumentation.ts
 import { init, traceAgent } from "obstack";
-init({ apiKey: "ob_live_9f2e…" }); // that's it — OTel underneath
+init({ apiKey: "ok_live_9f2e…" }); // that's it — OTel underneath
 
 // LLM + agent calls are captured automatically
 export const handleTicket = traceAgent("support-agent", async (ticket) => {
@@ -44,7 +44,7 @@ export const handleTicket = traceAgent("support-agent", async (ticket) => {
     label: "I already have OTel",
     code: `# no SDK, no code change — point your exporter at obstack
 OTEL_EXPORTER_OTLP_ENDPOINT="https://ingest.obstack.dev"
-OTEL_EXPORTER_OTLP_HEADERS="x-obstack-key=ob_live_9f2e…"`,
+OTEL_EXPORTER_OTLP_HEADERS="x-obstack-key=ok_live_9f2e…"`,
   },
 ];
 

@@ -67,6 +67,10 @@ function resolveMode(): DataMode {
  * In live mode an empty result is an empty result: surfaces render their empty
  * state and never fall back to mock data, because a silent fallback would hide
  * a broken pipeline.
+ *
+ * `OBSTACK_DATA_MODE` is a BUILD-time input; serve an artifact only in the mode
+ * it was built — a mock-built artifact prerenders the no-form auth pages and
+ * cannot sign anyone up (D157; enforcement is M4's, per S2.3 L6).
  */
 export const dataMode: DataMode = resolveMode();
 

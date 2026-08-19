@@ -58,6 +58,34 @@
  * exactly where it was, and a guard that only counts shares that blind spot with
  * the scoping tripwire it is supposed to catch failing.
  *
+ * THE S3.2 STEP IS WHAT A SIGNED-UP USER DOES NEXT. Once both strangers are
+ * settled, alice opens /app/settings and does the three things this sprint made
+ * real: she reads her own org's name off the General tab, issues an API key that
+ * is shown exactly once, and invites bob with a link she copies out of the page
+ * — the copy button IS the delivery mechanism, because no email is sent (D143's
+ * U4). Bob accepts it, and the interesting half of that acceptance is what does
+ * NOT happen: better-auth writes his session row's `activeOrganizationId` to
+ * alice's org (measured at 1.7.1), so the drive asserts that it DID — the
+ * re-home pressure is real — and then re-runs the same content-aware
+ * disjointness against his surfaces. One definition of that assertion, used
+ * twice, so "still his own" is the same claim as "his own" rather than a second,
+ * weaker version of it.
+ *
+ * AND IT READS POSTGRES FOR THE HALVES A PAGE CANNOT SHOW. The token's SHA-256,
+ * which is the whole of "shown once" being true rather than being a screen; the
+ * `revoked_at` stamp, because the API keys tab carries a STANDING sentence about
+ * revoked keys and a page containing the word therefore proves nothing about
+ * THIS key; the member rows acceptance added; and the 0004 continuity seed —
+ * exactly one `ws_demo` row with no member row pointing at its org, which is
+ * what keeps it product-invisible now that Postgres is the one key authority
+ * (D138 supersedes S3.1's "zero ws_demo rows" line).
+ *
+ * THE ISSUED KEY IS NEVER SENT ANYWHERE HERE (D115). The wire path — a token
+ * from this UI carried on `Authorization: Bearer` into ingest — is S3.4's
+ * pre-registered extension of this drive; this sprint's end-to-end wire evidence
+ * is a recorded runbook line in the exit bundle, and adding a step for it here
+ * would be the second definition that ruling exists to prevent.
+ *
  * LEGS CARRIED FORWARD (L5) from the two deleted harnesses, whose covered logic
  * still exists on the wired surfaces: page-1/page-2 totals and page-2
  * disjointness, the three free-text reach legs (span prompt, log body, D42
@@ -71,11 +99,13 @@
  */
 
 import { spawn, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { connect } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import pg from "pg";
 import {
   CARRIER_TOKEN,
   CARRIER_TRACE,
@@ -193,6 +223,10 @@ function launch(command, args, { cwd, logPath }) {
 const launched = [];
 const sockets = [];
 function stopAll() {
+  // The Postgres pool holds sockets exactly like the CDP ones do, and the
+  // verdict below is printed either way — so it is closed here rather than
+  // awaited, with the same "already gone is fine" posture.
+  pgPool.end().catch(() => undefined);
   for (const ws of sockets) {
     try {
       ws.close();
@@ -276,6 +310,22 @@ async function denominators(workspace) {
   };
 }
 
+// -------------------------------------------------------------- postgres
+/**
+ * The identity store, read with our own SQL for the reason the ClickHouse
+ * denominators are (D71(b)): a claim about which rows exist must not be checked
+ * against a number the app printed. Some of what this drive asserts is not
+ * renderable at all — a token's hash, a `revoked_at` stamp, a session column the
+ * product deliberately ignores — so those claims are made here or nowhere.
+ *
+ * There is no read-only Postgres role to borrow (the compose stack defines one
+ * user, and the app already holds it), so the discipline is the scope instead:
+ * every statement below is a SELECT.
+ */
+const pgPool = new pg.Pool({ connectionString: PG_DSN, max: 2 });
+const pgRows = async (sql, params = []) => (await pgPool.query(sql, params)).rows;
+const pgOne = async (sql, params = []) => (await pgRows(sql, params))[0] ?? null;
+
 // ------------------------------------------------------------------- CDP
 /** One attached browser: its own process, its own profile, its own port. */
 async function openBrowser(label, cdpPort) {
@@ -350,8 +400,14 @@ async function openBrowser(label, cdpPort) {
     return arrived;
   };
   const cookies = async () => (await send("Network.getCookies", { urls: [BASE] })).cookies;
+  /** A headless page gets the clipboard only when the browser is told to give it
+   * one — and the invite link is COPIED, so reading back what the button put
+   * there is the only way to assert the affordance rather than around it. Browser
+   * scope, not page scope, which is why it goes through `rawSend`. */
+  const grantClipboard = () =>
+    rawSend("Browser.grantPermissions", { origin: BASE, permissions: ["clipboardReadWrite"] });
 
-  return { label, evaluate, waitFor, goto, send, cookies };
+  return { label, evaluate, waitFor, goto, send, cookies, grantClipboard };
 }
 
 /** Everything an assertion needs, read out of the rendered page (exit-browser's
@@ -429,6 +485,31 @@ const MENU = `(() => {
     text: body.slice(0, 400),
   };
 })()`;
+
+/**
+ * The settings surface as its reader sees it. `main` IS the selected tab — the
+ * shell's chrome (the account menu, the workspace line) lives outside it, so a
+ * claim about what a tab says cannot be satisfied by the frame around it.
+ */
+const SETTINGS = `(() => {
+  const strip = (s) => (s || "").replace(/\\s+/g, " ").trim();
+  const main = document.querySelector("main");
+  return {
+    text: strip(main?.textContent || ""),
+    // Two <code> elements can be on this tab: the shown-once banner's token and
+    // the standing "Authorization: Bearer <token>" line under the list. The
+    // token is what tells them apart.
+    token: [...(main?.querySelectorAll("code") ?? [])]
+      .map((c) => strip(c.textContent))
+      .find((t) => t.startsWith("ok_live_")) ?? null,
+  };
+})()`;
+
+/** The revoked stamp, matched as a DATE: the tab's standing copy says "a revoked
+ * key stops being accepted within 30 seconds" whether or not anything is revoked,
+ * so the word alone is not the claim (measured — it is on the page before the
+ * click). */
+const REVOKED_IN_LIST = String.raw`/revoked \d{4}-\d{2}-\d{2}/.test(document.querySelector("main")?.textContent ?? "")`;
 
 // ------------------------------------------------------- server-rendered
 /** The same GET the browser makes, carrying the actor's session cookie —
@@ -975,21 +1056,25 @@ try {
   // page says rather than how much of it there is. The guard and the tripwire it
   // guards no longer share an assumption.
   step("content-aware disjointness: each tenant's surfaces speak only their own words");
-  for (const [self, other] of [
-    [alice, bob],
-    [bob, alice],
-  ]) {
+  /**
+   * One tenant's surfaces, read for their own words and the total absence of the
+   * other's. Declared rather than inlined because it is asserted TWICE: here, in
+   * the steady state, and again after bob has accepted alice's invitation — and
+   * "still his own" has to be the same claim as "his own" rather than a second,
+   * weaker phrasing of it (D107: one definition).
+   */
+  async function contentAwareDisjointness(self, other, when = "") {
     const mine = self.actor.label;
     const theirs = other.actor.label;
     const traces = await pageFor(self, "/app/traces");
     check(
-      `${self.label}'s traces list is written in ${mine} and carries no ${theirs}`,
+      `${self.label}'s traces list is written in ${mine} and carries no ${theirs}${when}`,
       labelHits(traces.html, mine) >= 200 && labelHits(traces.html, theirs) === 0,
       `${labelHits(traces.html, mine)}× ${mine}, ${labelHits(traces.html, theirs)}× ${theirs}`,
     );
     const logs = await pageFor(self, "/app/logs");
     check(
-      `${self.label}'s log lines are written in ${mine} and carry no ${theirs}`,
+      `${self.label}'s log lines are written in ${mine} and carry no ${theirs}${when}`,
       labelHits(logs.html, mine) >= 200 && labelHits(logs.html, theirs) === 0,
       `${labelHits(logs.html, mine)}× ${mine}, ${labelHits(logs.html, theirs)}× ${theirs}`,
     );
@@ -1000,13 +1085,15 @@ try {
     const forTheirs = await pageFor(self, `/app/traces?q=${theirs}`);
     const forMine = await pageFor(self, `/app/traces?q=${mine}`);
     check(
-      `searching ${self.label}'s workspace for ${theirs} finds nothing, while ${mine} finds all ${a.total}`,
+      `searching ${self.label}'s workspace for ${theirs} finds nothing, while ${mine} finds all ${a.total}${when}`,
       rowsIn(forTheirs.html) === 0 &&
         forTheirs.html.includes("0 of 0 traces") &&
         forMine.html.includes(`200 of ${a.total} traces`),
       `${theirs}: ${rowsIn(forTheirs.html)} row(s) | ${mine}: ${forMine.html.match(/[0-9]+ of [0-9]+ traces/)?.[0]}`,
     );
   }
+  await contentAwareDisjointness(alice, bob);
+  await contentAwareDisjointness(bob, alice);
 
   step("the probe's positive control: the same URL renders once bob holds that trace himself");
   const control = await pageFor(bob, `/app/traces/${PROMPT_TRACE}`);
@@ -1020,6 +1107,285 @@ try {
     labelHits(control.html, ACTORS.bob.label) > 0 && labelHits(control.html, ACTORS.alice.label) === 0,
     `${labelHits(control.html, ACTORS.bob.label)}× ${ACTORS.bob.label}, ` +
       `${labelHits(control.html, ACTORS.alice.label)}× ${ACTORS.alice.label}`,
+  );
+
+  // ------------------------------------------------- settings (the S3.2 step)
+  /**
+   * The settings surface, opened at a named tab. The tab strip is client state
+   * and starts at General after every navigation, so the tab a claim is about is
+   * SELECTED here rather than assumed — the per-tab split is the whole shape of
+   * this page (D106), and asserting against whichever tab happened to be showing
+   * would be asserting against the frame.
+   */
+  async function openTab(browser, tab, until) {
+    must(
+      await browser.goto("/app/settings", `!!document.querySelector("main h1")`),
+      `${browser.label}: /app/settings never rendered`,
+    );
+    must(await browser.evaluate(clickText(tab)), `${browser.label}: no "${tab}" tab in the settings strip`);
+    must(await browser.waitFor(until), `${browser.label}: the "${tab}" tab never rendered — ${until}`);
+  }
+
+  step("alice's settings: her own org, named, and one key shown once");
+  const aliceOrgId = (await pgOne(`SELECT org_id FROM workspaces WHERE id = $1`, [alice.workspaceId]))?.org_id;
+  must(aliceOrgId, `alice's workspace ${alice.workspaceId} has no row in workspaces`);
+  const aliceOrgName = (await pgOne(`SELECT name FROM "organization" WHERE id = $1`, [aliceOrgId]))?.name;
+  const bobOrgId = (await pgOne(`SELECT org_id FROM workspaces WHERE id = $1`, [bob.workspaceId]))?.org_id;
+  const bobOrgName = (await pgOne(`SELECT name FROM "organization" WHERE id = $1`, [bobOrgId]))?.name;
+
+  await openTab(alice, "General", `document.querySelector("main")?.textContent.includes("workspace id")`);
+  const general = await alice.evaluate(SETTINGS);
+  check(
+    "General names the org alice's own signup created, and the workspace the shell renders",
+    aliceOrgName === ACTORS.alice.name &&
+      general.text.includes(aliceOrgName) &&
+      general.text.includes(alice.workspaceId) &&
+      !general.text.includes(bobOrgName) &&
+      !general.text.includes("Loopwork"),
+    `${general.text.slice(0, 160)} | stored name ${aliceOrgName}`,
+  );
+
+  const KEY_NAME = `${ACTORS.alice.label}-ingest-key`;
+  await openTab(alice, "API keys", `document.querySelector("main")?.textContent.includes("No keys yet")`);
+  must((await alice.evaluate(type("Key name", KEY_NAME))) === KEY_NAME, "the API keys tab has no name field");
+  must(await alice.evaluate(clickText("Create key")), "the API keys tab has no create button");
+  must(
+    await alice.waitFor(`document.querySelector("main")?.textContent.includes("copy it now")`, 20_000),
+    "the shown-once banner never appeared",
+  );
+  const banner = await alice.evaluate(SETTINGS);
+  const token = banner.token ?? "";
+  const prefix = token.slice(0, 12);
+  check(
+    "the banner carries a whole ok_live_ token, and the page holds exactly one copy of it",
+    /^ok_live_[0-9a-f]{64}$/.test(token) && banner.text.split(token).length - 1 === 1,
+    token ? `${prefix}… (${token.length} chars, ${banner.text.split(token).length - 1}×)` : "no token in the banner",
+  );
+
+  must(await alice.evaluate(clickLabel("Dismiss")), "the banner has no dismiss control");
+  must(
+    await alice.waitFor(
+      `document.querySelector("main")?.textContent.includes(${JSON.stringify(`${prefix}…`)})`,
+      20_000,
+    ),
+    "the issued key never appeared in the list",
+  );
+  const listed = await alice.evaluate(SETTINGS);
+  check(
+    "dismissed, the list names the key by its 12-character prefix and the token is nowhere on the page",
+    listed.text.includes(`${prefix}…`) && listed.text.includes(KEY_NAME) && !listed.text.includes(token),
+    listed.text.slice(0, 200),
+  );
+
+  // The strongest half of "shown once" is not on any screen: a fresh server
+  // render cannot produce the token because nothing stored can, and the row
+  // holds the SHA-256 the drive computes for itself — the same contract ingest
+  // looks keys up by, in the other language (D139).
+  const settingsHtml = await pageFor(alice, "/app/settings");
+  const keyRow = await pgOne(`SELECT prefix, token_hash, revoked_at FROM api_keys WHERE workspace_id = $1`, [
+    alice.workspaceId,
+  ]);
+  check(
+    "shown once is a fact about the store: a fresh render has the prefix and not the token, and the row holds only its SHA-256",
+    !settingsHtml.html.includes(token) &&
+      settingsHtml.html.includes(prefix) &&
+      keyRow?.prefix === prefix &&
+      keyRow?.token_hash === createHash("sha256").update(token, "utf8").digest("hex") &&
+      keyRow?.revoked_at === null,
+    `${keyRow?.prefix} hash=${keyRow?.token_hash?.slice(0, 16)}… revoked=${keyRow?.revoked_at}`,
+  );
+
+  step("alice invites bob, and the link she copies is the invitation the store holds");
+  await openTab(alice, "Members", `document.querySelector("main")?.textContent.includes("invite a teammate")`);
+  const roster = await alice.evaluate(SETTINGS);
+  check(
+    "before the invite the roster is alice alone, with no open invitations",
+    roster.text.includes("members · 1") &&
+      roster.text.includes(ACTORS.alice.email) &&
+      !roster.text.includes(ACTORS.bob.email) &&
+      roster.text.includes("No open invitations."),
+    roster.text.slice(0, 200),
+  );
+
+  must(
+    (await alice.evaluate(type("Teammate's email", ACTORS.bob.email))) === ACTORS.bob.email,
+    "the invite form has no email field",
+  );
+  must(await alice.evaluate(clickText("Invite")), "the invite form has no submit button");
+  must(
+    await alice.waitFor(
+      `document.querySelector("main")?.textContent.includes(${JSON.stringify(ACTORS.bob.email)})`,
+      20_000,
+    ),
+    "the invitation never appeared in the pending list",
+  );
+
+  // Taken the way the inviter takes it. No email is sent this sprint (D143's
+  // U4), so the copy button IS the delivery mechanism, and reading the clipboard
+  // asserts the affordance instead of asserting around it.
+  await alice.grantClipboard();
+  must(await alice.evaluate(clickText("copy link")), "the pending invitation has no copy control");
+  const copied = await alice.evaluate(`navigator.clipboard.readText()`);
+  const invitation = await pgOne(`SELECT id, email, status FROM "invitation" WHERE "organizationId" = $1`, [
+    aliceOrgId,
+  ]);
+  check(
+    "the copied link is an absolute URL to the pending invitation row itself, addressed to bob",
+    copied === `${BASE}/invite/${invitation?.id}` &&
+      invitation?.email === ACTORS.bob.email &&
+      invitation?.status === "pending",
+    `${copied} | row ${invitation?.id} ${invitation?.email} ${invitation?.status}`,
+  );
+
+  step("bob accepts — a membership is ADDED, and nothing is moved (D140/D143)");
+  must(
+    await bob.goto(new URL(copied).pathname, `document.body.textContent.includes("Accept invitation")`),
+    `bob's invite link never rendered an accept surface — ${copied}`,
+  );
+  const card = await bob.evaluate(STATE);
+  check(
+    "the surface names the org he is joining and the address the link works for",
+    card.text.includes(`Join ${aliceOrgName}`) && card.text.includes(ACTORS.bob.email),
+    card.text.slice(0, 200),
+  );
+  must(await bob.evaluate(clickText("Accept invitation")), "the accept surface has no button");
+  must(
+    await bob.waitFor(`document.body.textContent.includes("viewing your own workspace")`, 20_000),
+    "acceptance never landed on the joined surface",
+  );
+
+  await openTab(alice, "Members", `document.querySelector("main")?.textContent.includes("members · 2")`);
+  const rosterAfter = await alice.evaluate(SETTINGS);
+  check(
+    "alice's roster now shows bob under the name and address his OWN signup created, and the invitation is spent",
+    rosterAfter.text.includes("members · 2") &&
+      rosterAfter.text.includes(ACTORS.bob.email) &&
+      rosterAfter.text.includes(ACTORS.bob.name) &&
+      rosterAfter.text.includes("No open invitations."),
+    rosterAfter.text.slice(0, 240),
+  );
+
+  const bobUserId = (await pgOne(`SELECT id FROM "user" WHERE email = $1`, [ACTORS.bob.email]))?.id;
+  const bobMemberships = await pgRows(
+    `SELECT "organizationId" AS org_id, role FROM "member" WHERE "userId" = $1`,
+    [bobUserId],
+  );
+  check(
+    "the write was additive: a member row in alice's org, and bob still owner of his own",
+    bobMemberships.length === 2 &&
+      bobMemberships.some((m) => m.org_id === aliceOrgId && m.role === "member") &&
+      bobMemberships.some((m) => m.org_id === bobOrgId && m.role === "owner"),
+    JSON.stringify(bobMemberships),
+  );
+  // This one is the TRIPWIRE'S OWN PRECONDITION, and it is asserted positively:
+  // better-auth moves the session row's activeOrganizationId to the inviting org
+  // (measured at 1.7.1, crud-invites.mjs:330). If that ever stopped happening,
+  // every "not re-homed" claim below would pass for a reason that has nothing to
+  // do with the owner pin holding.
+  const bobSession = await pgOne(
+    `SELECT "activeOrganizationId" AS active FROM "session" WHERE "userId" = $1 ORDER BY "createdAt" DESC LIMIT 1`,
+    [bobUserId],
+  );
+  check(
+    "and the library DID point his session row at alice's org — the column the resolution ignores (D143)",
+    bobSession?.active === aliceOrgId,
+    `session.activeOrganizationId=${bobSession?.active} alice's org=${aliceOrgId}`,
+  );
+
+  step("bob is not re-homed: the same content-aware disjointness, run again after acceptance");
+  const bobShell = await bob
+    .goto("/app", `!!document.querySelector("[data-workspace-id]")`)
+    .then(() => bob.evaluate(STATE));
+  check(
+    "the shell still renders bob's own workspace id, not the org he just joined",
+    bobShell.workspaceAttr === bob.workspaceId,
+    `${bobShell.workspaceAttr} vs ${bob.workspaceId}`,
+  );
+  await contentAwareDisjointness(bob, alice, " — after accepting alice's invitation");
+
+  await openTab(bob, "General", `document.querySelector("main")?.textContent.includes("workspace id")`);
+  const bobGeneral = await bob.evaluate(SETTINGS);
+  check(
+    "and his own settings name his own org and workspace, though he is now a member of alice's",
+    bobGeneral.text.includes(bobOrgName) &&
+      bobGeneral.text.includes(bob.workspaceId) &&
+      !bobGeneral.text.includes(aliceOrgName) &&
+      !bobGeneral.text.includes(alice.workspaceId),
+    bobGeneral.text.slice(0, 160),
+  );
+  await openTab(bob, "API keys", `document.querySelector("main")?.textContent.includes("api keys · ")`);
+  const bobKeysTab = await bob.evaluate(SETTINGS);
+  check(
+    "his API keys tab is empty — alice's key is hers, shared org or not",
+    bobKeysTab.text.includes("No keys yet") && !bobKeysTab.text.includes(prefix),
+    bobKeysTab.text.slice(0, 160),
+  );
+
+  step("alice revokes the key — the row is stamped, and the list says so about THAT key");
+  await openTab(
+    alice,
+    "API keys",
+    `document.querySelector("main")?.textContent.includes(${JSON.stringify(`${prefix}…`)})`,
+  );
+  must(await alice.evaluate(clickText("revoke")), "the listed key has no revoke control");
+  // Polled in the store rather than read off the copy, and this is the D142
+  // reason: the tab carries the standing sentence "a revoked key stops being
+  // accepted within 30 seconds" whether or not anything is revoked, so a page
+  // containing the word says nothing about this key (measured on T5's surface).
+  let revokedAt = null;
+  for (let attempt = 0; attempt < 40 && !revokedAt; attempt++) {
+    revokedAt = (
+      await pgOne(`SELECT revoked_at FROM api_keys WHERE workspace_id = $1`, [alice.workspaceId])
+    )?.revoked_at;
+    if (!revokedAt) await sleep(250);
+  }
+  check("the key's row carries a revoked_at stamp", Boolean(revokedAt), `revoked_at=${revokedAt}`);
+  await openTab(alice, "API keys", REVOKED_IN_LIST);
+  const revokedTab = await alice.evaluate(SETTINGS);
+  check(
+    "the list renders the revoked state against that prefix, with no revoke control left on it",
+    new RegExp(`${prefix}….{0,80}revoked \\d{4}-\\d{2}-\\d{2}`).test(revokedTab.text),
+    revokedTab.text.slice(0, 240),
+  );
+
+  step("the identity store, after two strangers, one key and one invitation (D138)");
+  const demoWorkspaces = await pgRows(`SELECT id, org_id FROM workspaces WHERE id = 'ws_demo' OR org_id = 'org_demo'`);
+  const demoMembers = await pgRows(`SELECT id FROM "member" WHERE "organizationId" = 'org_demo'`);
+  check(
+    "exactly one ws_demo row, on org_demo — 0004's continuity seed, which supersedes S3.1's zero-rows line (D138)",
+    demoWorkspaces.length === 1 &&
+      demoWorkspaces[0].id === "ws_demo" &&
+      demoWorkspaces[0].org_id === "org_demo",
+    JSON.stringify(demoWorkspaces),
+  );
+  check(
+    "and NO member row references org_demo — which is what keeps it product-invisible, by construction",
+    demoMembers.length === 0,
+    `${demoMembers.length} member row(s)`,
+  );
+  const strangerWorkspaces = await pgRows(`SELECT id FROM workspaces WHERE id = ANY($1)`, [
+    [alice.workspaceId, bob.workspaceId],
+  ]);
+  check(
+    "the two stranger workspaces stand beside it, one per signup",
+    strangerWorkspaces.length === 2,
+    JSON.stringify(strangerWorkspaces.map((w) => w.id)),
+  );
+  const devKey = await pgOne(`SELECT prefix, workspace_id, revoked_at FROM api_keys WHERE id = 'key_dev_local'`);
+  const aliceKeys = await pgRows(`SELECT prefix, revoked_at FROM api_keys WHERE workspace_id = $1`, [
+    alice.workspaceId,
+  ]);
+  const bobKeys = await pgRows(`SELECT id FROM api_keys WHERE workspace_id = $1`, [bob.workspaceId]);
+  check(
+    "api_keys holds the seeded dev row live on ws_demo, alice's one issued-and-revoked key, and nothing of bob's",
+    devKey?.workspace_id === "ws_demo" &&
+      devKey?.prefix === "ok_dev_local" &&
+      devKey?.revoked_at === null &&
+      aliceKeys.length === 1 &&
+      aliceKeys[0].prefix === prefix &&
+      aliceKeys[0].revoked_at !== null &&
+      bobKeys.length === 0,
+    `dev=${JSON.stringify(devKey)} alice=${JSON.stringify(aliceKeys)} bob=${bobKeys.length}`,
   );
 
   // ------------------------------------------------- session, then none
@@ -1046,7 +1412,7 @@ try {
   // and must be error-free; the NoSessionError line below is the D114 tripwire
   // firing behind a guard that wins the response, which is spec.
   const logSplit = statSync(appLog).size;
-  for (const path of ["/app", "/app/traces", `/app/traces/${PROMPT_TRACE}`, "/app/logs"]) {
+  for (const path of ["/app", "/app/traces", `/app/traces/${PROMPT_TRACE}`, "/app/logs", "/app/settings"]) {
     await alice.goto(path, `document.body.textContent.length > 0`);
     const state = await alice.evaluate(STATE);
     check(

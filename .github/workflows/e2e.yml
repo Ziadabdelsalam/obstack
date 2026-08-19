@@ -49,11 +49,14 @@
 # the smoke floor and the drive are one job and one number (D136).
 #
 # Measured locally, Apple M4, from destroyed volumes with `apps/web/.next`
-# deleted so the Next build is cold: 13s boot + 17s smoke + 54s drive = 84s for
-# the three steps (a second run of the same sequence: 12s + 19s + 53s, the same
-# 84s). Earlier drive-only runs were 50s, 51s and 68s. Every one of
-# those excludes exactly what the runner pays most for — `npm ci`, the ingest and
-# demo image builds, and the pulls — so 84s is a FLOOR, not an estimate. S2.4's
+# deleted so the Next build is cold. At S3.1, three steps: 13s boot + 17s smoke +
+# 54s drive = 84s (a second run of the same sequence: 12s + 19s + 53s, the same
+# 84s; earlier drive-only runs were 50s, 51s and 68s). At S3.2, after the drive
+# grew its settings/keys/invites step: 12s + 18s + 59s = 89s — the step costs
+# about five seconds, and a warm-`.next` run of the same sequence put the drive
+# at 55s. Every one of those excludes exactly what the runner pays most for —
+# `npm ci`, the ingest and demo image builds, and the pulls — so 89s is a FLOOR,
+# not an estimate. S2.4's
 # `sdk-e2e` is the standing warning in the other direction: its local 6m01s and
 # its real 3m43s disagreed in the runner's FAVOUR. If the real run lands past
 # ~6 min, switch to a `ci:e2e` label + workflow_dispatch + always on push to

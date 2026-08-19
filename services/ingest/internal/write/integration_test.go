@@ -290,8 +290,7 @@ func TestWriterLandsMappedFixture(t *testing.T) {
 
 	traceID := newTraceID(0x01)
 	base := time.Now().UTC().Add(-time.Minute)
-	unpricedCounter := metrics.UnpricedModels.WithLabelValues(unpricedModel)
-	beforeUnpriced := testutil.ToFloat64(unpricedCounter)
+	beforeUnpriced := metrics.UnpricedModelCounts()[unpricedModel]
 
 	w := newWriter(t)
 	w.ConsumeTraces(ctx, workspaceID, fixture(traceID, base))
@@ -422,7 +421,7 @@ func TestWriterLandsMappedFixture(t *testing.T) {
 	if unpricedCost != 0 {
 		t.Errorf("unpriced cost_usd = %v, want 0", unpricedCost)
 	}
-	if delta := testutil.ToFloat64(unpricedCounter) - beforeUnpriced; delta != 1 {
+	if delta := metrics.UnpricedModelCounts()[unpricedModel] - beforeUnpriced; delta != 1 {
 		t.Errorf("unpriced model counter delta = %v, want 1", delta)
 	}
 

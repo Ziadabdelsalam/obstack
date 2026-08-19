@@ -133,9 +133,10 @@ function problemsWith(sample: Sample, trace: Trace | undefined, listed: Trace | 
 
 /** Poll the facade for every sample until all of them are clean, or fail. */
 async function awaitSamples(samples: Sample[]): Promise<Map<string, Trace>> {
-  // The explicit entry (D113): both samples export under `ok_dev_local`, which
-  // compose maps to the one workspace `DEMO_WORKSPACE` names — there is no
-  // ambient workspace the facade could resolve on this harness's behalf.
+  // The explicit entry (D113): both samples export under `ok_dev_local`, the
+  // seeded key row that resolves to the one workspace `DEMO_WORKSPACE` names —
+  // there is no ambient workspace the facade could resolve on this harness's
+  // behalf.
   const { dataForWorkspace } = await import("@/server/data");
   const data = dataForWorkspace(DEMO_WORKSPACE);
 

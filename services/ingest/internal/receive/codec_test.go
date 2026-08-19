@@ -116,13 +116,26 @@ const (
 	codecWorkspaceID = "ws_codec"
 )
 
+// testResolver stands in for the keystore: this package's business is the
+// transport and the header, not where a key is kept or how long an answer is
+// cached.
+type testResolver map[string]string
+
+func (r testResolver) Workspace(token string) (string, error) {
+	workspaceID, ok := r[token]
+	if !ok {
+		return "", auth.ErrUnauthorized
+	}
+	return workspaceID, nil
+}
+
 // startCodecServer serves the trace service over the given codec, with the same
 // interceptor chain the real server uses, and returns a client for it.
 func startCodecServer(t *testing.T, consumer Consumer, codec grpcencoding.CodecV2) ptraceotlp.GRPCClient {
 	t.Helper()
 
 	s := &Server{cfg: Config{
-		Auth:     auth.New(map[string]string{codecTestKey: codecWorkspaceID}),
+		Auth:     auth.New(testResolver{codecTestKey: codecWorkspaceID}),
 		Consumer: consumer,
 	}}
 	srv := grpc.NewServer(

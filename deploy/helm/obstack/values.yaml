@@ -51,11 +51,16 @@ ingest:
   # schema, none of them applying it (deploy/compose/README.md's "Exactly
   # one migration runner per upgrade").
   replicaCount: 2
-  # D4 format: key:workspace_id[,…].
-  apiKeys: ok_dev_local:ws_demo
+  # No key value here: API keys are Postgres `api_keys` rows (D98), issued in
+  # the product and read by ingest through a cached lookup. There is nothing
+  # for this chart to configure.
 
 collector:
   image: otel/opentelemetry-collector-k8s:0.158.0
+  # A client credential, not a server setting: the collector sends it as
+  # `Authorization: Bearer <key>`. The default is the dev continuity row
+  # seeded by services/ingest/pgmigrations/0004, which the pg-migrate Job
+  # applies — override it with a key issued in settings for a real cluster.
   apiKey: ok_dev_local
   # Must name the demo pod's instrumented container below (D37.3) — the
   # collector's filelog exclusion is keyed on the container name.

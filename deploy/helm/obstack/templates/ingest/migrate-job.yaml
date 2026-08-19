@@ -85,9 +85,10 @@ spec:
           imagePullPolicy: {{ .Values.ingest.pullPolicy }}
           command: ["/ingest", "migrate"]
           env:
-            # CLICKHOUSE_DSN only — deliberately not OBSTACK_API_KEYS. A
-            # one-shot DDL runner has no business holding the ingest bearer
-            # keys just to satisfy a validator it never consults
+            # CLICKHOUSE_DSN only — deliberately not the Postgres DSN, and
+            # not the listen addresses either. A one-shot DDL runner for one
+            # store carries the credentials of that store and nothing else,
+            # rather than satisfying validators it never consults
             # (config.LoadDSN's own doc comment; deploy/compose/README.md).
             #
             # The password comes from the obstack.migrate.clickhousePassword

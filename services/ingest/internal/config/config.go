@@ -6,7 +6,6 @@ package config
 import (
 	"fmt"
 	"os"
-	"sort"
 	"strconv"
 	"strings"
 )
@@ -21,11 +20,6 @@ type Config struct {
 	// ClickHouseDSN addresses the write user, e.g.
 	// clickhouse://obstack_ingest:pw@clickhouse:9000/obstack.
 	ClickHouseDSN string
-
-	// APIKeys maps a bearer key to the workspace it writes into (D4). In
-	// Phase 1 this comes from env; in M3 only the lookup moves to Postgres,
-	// the wire format is unchanged.
-	APIKeys map[string]string
 
 	OTLPGRPCAddr string
 	OTLPHTTPAddr string
@@ -45,14 +39,14 @@ type Config struct {
 
 // Load reads and validates the environment. It fails rather than defaulting on
 // anything that would let the service boot into a useless state: a missing DSN
-// means no writes, and a missing key set means every request is a 401.
+// means no writes.
+//
+// There are no API keys here any more: the OBSTACK_API_KEYS variable is deleted
+// (D98). Keys are Postgres rows read through internal/keystore, which is the
+// only lookup path there is — an env map beside it would be a second answer to
+// the same question, and the two would eventually disagree.
 func Load() (Config, error) {
 	dsn, err := LoadDSN()
-	if err != nil {
-		return Config{}, err
-	}
-
-	keys, err := parseAPIKeys(os.Getenv("OBSTACK_API_KEYS"))
 	if err != nil {
 		return Config{}, err
 	}
@@ -64,7 +58,6 @@ func Load() (Config, error) {
 
 	return Config{
 		ClickHouseDSN: dsn,
-		APIKeys:       keys,
 		OTLPGRPCAddr:  envOr("OBSTACK_OTLP_GRPC_ADDR", ":4317"),
 		OTLPHTTPAddr:  envOr("OBSTACK_OTLP_HTTP_ADDR", ":4318"),
 		AdminAddr:     envOr("OBSTACK_ADMIN_ADDR", DefaultAdminAddr),
@@ -73,51 +66,16 @@ func Load() (Config, error) {
 }
 
 // LoadDSN reads the one variable a migrations-only process needs. The `migrate`
-// subcommand goes through here rather than Load because Load demands
-// OBSTACK_API_KEYS, and a Job that only runs DDL has no business being handed
-// the ingest bearer keys — mounting a secret to satisfy a validator that a
-// one-shot never consults spreads it for nothing.
+// subcommand goes through here rather than Load because everything else Load
+// validates — the listen addresses, the boot flag deciding who owns the schema —
+// belongs to serving traffic, and a Job that applies DDL and exits should not
+// fail on a validator it never consults.
 func LoadDSN() (string, error) {
 	dsn := os.Getenv("CLICKHOUSE_DSN")
 	if dsn == "" {
 		return "", fmt.Errorf("CLICKHOUSE_DSN is required")
 	}
 	return dsn, nil
-}
-
-// WorkspaceIDs returns the distinct workspaces this process accepts data for,
-// sorted. Used to pre-create the per-workspace metric series at boot.
-func (c Config) WorkspaceIDs() []string {
-	seen := make(map[string]struct{}, len(c.APIKeys))
-	for _, ws := range c.APIKeys {
-		seen[ws] = struct{}{}
-	}
-	ids := make([]string, 0, len(seen))
-	for ws := range seen {
-		ids = append(ids, ws)
-	}
-	sort.Strings(ids)
-	return ids
-}
-
-// parseAPIKeys reads the D4 format: `ok_dev_<rand>:<workspace_id>[,…]`.
-func parseAPIKeys(raw string) (map[string]string, error) {
-	keys := map[string]string{}
-	for _, pair := range strings.Split(raw, ",") {
-		pair = strings.TrimSpace(pair)
-		if pair == "" {
-			continue
-		}
-		key, workspace, ok := strings.Cut(pair, ":")
-		if !ok || key == "" || workspace == "" {
-			return nil, fmt.Errorf("OBSTACK_API_KEYS entry %q is not key:workspace_id", pair)
-		}
-		keys[key] = workspace
-	}
-	if len(keys) == 0 {
-		return nil, fmt.Errorf("OBSTACK_API_KEYS is required, as key:workspace_id[,…]")
-	}
-	return keys, nil
 }
 
 func envOr(name, fallback string) string {

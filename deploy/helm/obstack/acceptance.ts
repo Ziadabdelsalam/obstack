@@ -245,9 +245,10 @@ async function genaiFixture(): Promise<void> {
 
   // Read back with the same parameterized readonly client the app uses (D11 —
   // values bound through query_params, never interpolated), scoped to the one
-  // workspace the collector's `ok_dev_local` key maps to (D96/D113). The scope
-  // binds `workspace_id` itself, so the SQL below names the placeholder and
-  // the params below never carry it.
+  // workspace the collector's `ok_dev_local` key resolves to — the `api_keys`
+  // row the pg-migrate Job seeds (D96/D113). The scope binds `workspace_id`
+  // itself, so the SQL below names the placeholder and the params below never
+  // carry it.
   const { forWorkspace } = await import("@/server/clickhouse");
   const ch = forWorkspace(DEMO_WORKSPACE);
   const FIXTURE_ROW_SQL = `

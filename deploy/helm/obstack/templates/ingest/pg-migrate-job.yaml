@@ -75,10 +75,12 @@ spec:
           imagePullPolicy: {{ .Values.ingest.pullPolicy }}
           command: ["/ingest", "pg-migrate"]
           env:
-            # OBSTACK_POSTGRES_DSN only — not CLICKHOUSE_DSN, not
-            # OBSTACK_API_KEYS. A one-shot DDL runner for one store carries
-            # the credentials of that store and nothing else, the same rule
-            # the ClickHouse migrate Job follows.
+            # OBSTACK_POSTGRES_DSN only — not CLICKHOUSE_DSN. A one-shot DDL
+            # runner for one store carries the credentials of that store and
+            # nothing else, the same rule the ClickHouse migrate Job follows.
+            # This Job is also what seeds the `ok_dev_local` continuity key
+            # row (pgmigrations/0004), so the collector authenticates the
+            # moment this phase completes.
             #
             # Straight from .Values.postgres.password with no live `lookup`,
             # unlike obstack.migrate.clickhousePassword: that helper exists

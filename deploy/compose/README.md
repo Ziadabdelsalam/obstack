@@ -179,6 +179,15 @@ What it asserts, in order:
   other workspace gets the same nothing an id that never existed gives (404,
   none of the other tenant's content on the page), and once that stranger holds
   the id himself the same URL renders *his* trace, in his words;
+- **the settings surface** — one stranger reads her own org's real name off
+  General, issues a key that is shown exactly once (the list afterwards carries
+  its prefix and never the token, and Postgres holds only its hash), and invites
+  the other with a link **copied out of the page** and accepted as the store's
+  own invitation row. Accepting is additive, never a re-home: after the join the
+  disjointness claims are re-asserted whole, and the newcomer's own settings
+  still name his own org and workspace. The key is then revoked, its row stamped
+  and the list saying so about *that* prefix — read as a date, because the tab's
+  standing copy mentions revoked keys whether or not anything is revoked;
 - **sign-out and no session** — the one cookie goes, and every wired route
   answers a cookie-less browser with `/login` and no telemetry.
 
@@ -349,8 +358,9 @@ CLICKHOUSE_PASSWORD=obstack_web_dev
 ## Postgres — identity and saved views
 
 The stack's other store (D95/D112). ClickHouse holds telemetry; Postgres holds
-who you are and what you saved: `workspaces`, the captured better-auth tables,
-and `saved_views`. It runs in the **default** profile — a plain
+who you are, what you saved, and what may write: `workspaces`, the captured
+better-auth tables, `saved_views`, and `api_keys` ([API keys](#api-keys--postgres-rows-and-the-dev-key)
+below). It runs in the **default** profile — a plain
 `docker compose up -d` starts it, like ClickHouse — pinned to the exact patch
 `postgres:17.11`, with its data in the named volume `obstack_postgres-data`.
 
@@ -376,6 +386,37 @@ psql postgres://obstack:obstack_postgres_dev@127.0.0.1:5432/obstack
 in the Helm chart either (D112). Compose does not run the web app, so a secret
 set here would sign nothing; they belong to the `npm run dev` / `npm start`
 environment, documented with the web app.
+
+## API keys — Postgres rows, and the dev key
+
+An API key is what a client sends as `Authorization: Bearer <token>`, and it
+names the workspace every record in that request is written into. Keys are rows
+in Postgres `api_keys` (D98), issued in the product's settings surface; ingest
+resolves a token by looking up the SHA-256 of the exact string it received.
+There is no key variable to set on the ingest container — the ingest
+environment in `docker-compose.yml` carries the two DSNs and nothing else.
+
+Only the hash is stored, so a key is shown once at issue time and is not
+recoverable from the database afterwards. Ingest caches lookups for 30 seconds,
+positive and negative, which is also how long a revoked key can keep working.
+
+The dev key every harness and sample in this repo uses, `ok_dev_local`, is a
+row like any other: `services/ingest/pgmigrations/0004_api_keys.sql` seeds it
+against workspace `ws_demo` when the Postgres set is applied. It is a public
+credential by design — it is printed in this repository — so the demo, the two
+SDK samples and the collector all default to it and a clean `up -d --wait`
+authenticates with no setup. Override it per container with
+`OBSTACK_DEMO_API_KEY` / `OBSTACK_SDK_API_KEY` / `OBSTACK_COLLECTOR_API_KEY` to
+send under a key you issued instead.
+
+```bash
+psql postgres://obstack:obstack_postgres_dev@127.0.0.1:5432/obstack \
+  -c "SELECT id, workspace_id, prefix, revoked_at FROM api_keys"
+```
+
+Ingest's per-workspace metric series on `:8080/metrics` are created on the
+first event for that workspace, so a series that is missing means nothing has
+arrived under that key yet, not that the pipeline is broken.
 
 ## Schema
 
@@ -436,11 +477,12 @@ either way exactly one Job applies each set per revision.
 
 `/ingest migrate` is a one-shot: it applies what is missing, logs the versions,
 and exits 0, or exits non-zero and fails the release. It reads only
-`CLICKHOUSE_DSN` — deliberately not `OBSTACK_API_KEYS` — so the migration Job
-never has to mount the ingest bearer keys to satisfy a validator it does not use.
-`/ingest pg-migrate` is the same one-shot for the other set and reads only
-`OBSTACK_POSTGRES_DSN`, for the same reason: a runner carries the credentials of
-the one store it migrates and nothing else.
+`CLICKHOUSE_DSN` — deliberately not the Postgres DSN, and not the listen
+addresses — so the migration Job never has to carry configuration it does not
+use to satisfy a validator it never consults. `/ingest pg-migrate` is the same
+one-shot for the other set and reads only `OBSTACK_POSTGRES_DSN`, for the same
+reason: a runner carries the credentials of the one store it migrates and
+nothing else.
 
 That split is enforceable by privilege, not just by convention: the check those
 replicas run is strictly read-only, so the Deployment's `CLICKHOUSE_DSN` can name
@@ -462,9 +504,9 @@ with only the question of *who applies* moved out of the serving path.
 `OBSTACK_PG_MIGRATE_ON_BOOT` means exactly the same thing for the Postgres set,
 and `OBSTACK_POSTGRES_DSN` is required either way: `ingest run` refuses to boot
 without it, because a process that cannot settle the schema question has no
-business reporting healthy. Ingest reads nothing out of Postgres while serving
-in this milestone — the workspaces and saved views it creates there are the web
-app's — but it owns that schema exactly as it owns ClickHouse's.
+business reporting healthy — and, from M3 on, because Postgres is also where the
+API keys it authenticates every request against live (see
+[API keys](#api-keys--postgres-rows-and-the-dev-key)).
 
 ## Data
 

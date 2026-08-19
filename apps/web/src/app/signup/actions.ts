@@ -2,6 +2,7 @@
 
 import { redirect } from "next/navigation";
 import { signUpWithWorkspace } from "@/server/auth";
+import { dataMode } from "@/server/data";
 import { signupErrorCode, type SignupErrorCode } from "./errors";
 
 /**
@@ -23,6 +24,17 @@ function codeFor(error: unknown): SignupErrorCode {
 const back = (code: SignupErrorCode) => redirect(`/signup?error=${code}`);
 
 export async function signUp(formData: FormData): Promise<void> {
+  // A tripwire, not a path: mock mode renders no form (D150), so a post that
+  // gets here came from somewhere no visitor can be. It returns before the auth
+  // stack is touched — the prototype deployment has no secret and no Postgres,
+  // and reaching for either would be the failure this branch exists to prevent
+  // — and it emits no error code: the vocabulary answers a form, and in this
+  // mode there is none (D129 stays closed). The log line is the tripwire.
+  if (dataMode === "mock") {
+    console.error("[signup] posted in mock mode — this deployment creates no accounts");
+    return;
+  }
+
   const name = String(formData.get("name") ?? "").trim();
   const email = String(formData.get("email") ?? "").trim();
   const password = String(formData.get("password") ?? "");

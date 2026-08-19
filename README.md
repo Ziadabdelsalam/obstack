@@ -38,7 +38,9 @@ CLICKHOUSE_PASSWORD=obstack_web_dev \
 
 To persist those instead of exporting them every time, put them in `apps/web/.env.local`, not a root `.env.local` — Next reads env from the app directory it runs in, and since the monorepo move that's `apps/web`. A stale root `.env.local` is silently ignored, so live mode fails D13's fast check on a missing `CLICKHOUSE_URL` and looks like a broken restructure rather than a misplaced file.
 
-Point your own service at `http://localhost:4318` (OTLP/HTTP) or `:4317` (gRPC) with `OTEL_EXPORTER_OTLP_HEADERS=Authorization=Bearer%20ok_dev_local` and its traces show up the same way. Details, users, schema and the manual verification checklist: `deploy/compose/README.md`.
+`OBSTACK_DATA_MODE` is a BUILD-time input; serve an artifact only in the mode it was built — a mock-built artifact prerenders the no-form auth pages and cannot sign anyone up.
+
+Point your own service at `http://localhost:4318` (OTLP/HTTP) or `:4317` (gRPC) with `OTEL_EXPORTER_OTLP_HEADERS=Authorization=Bearer%20ok_dev_local` and its traces show up the same way. `ok_dev_local` is the local dev key: API keys are rows in Postgres, and the ingest migrations seed this one, so it works on a clean stack with nothing to configure. Details, keys, users, schema and the manual verification checklist: `deploy/compose/README.md`.
 
 ## The SDKs
 
