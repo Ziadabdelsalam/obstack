@@ -51,8 +51,12 @@ export function UsageBanner({ planName, eventsUsed, eventQuota, resets }: UsageB
       }}
     >
       <span className="font-mono text-[11px]" style={{ color: "var(--color-warn)" }}>
-        {pct}% of {planName}-tier events used · {eventsUsed.toLocaleString()} /{" "}
-        {eventQuota.toLocaleString()}
+        {/* Grouped in en-US explicitly, for the same reason the layout formats
+            the reset date there: this renders on the server before hydration and
+            in the visitor's browser after it, and a bare `toLocaleString()`
+            groups by whichever locale each runtime happens to hold. */}
+        {pct}% of {planName}-tier events used · {eventsUsed.toLocaleString("en-US")} /{" "}
+        {eventQuota.toLocaleString("en-US")}
       </span>
       {/* Over quota the copy states what is happening to telemetry RIGHT NOW,
           and states it the way ingestion actually behaves (D165): head sampling

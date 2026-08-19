@@ -41,7 +41,15 @@ export async function POST(request: Request): Promise<Response> {
   let event;
   try {
     event = getBilling().verifyWebhook(rawBody, Object.fromEntries(request.headers));
-  } catch {
+  } catch (error) {
+    // The refusal is silent to the SENDER and loud in our log: a deployment
+    // whose `POLAR_WEBHOOK_SECRET` is missing rejects every delivery in exactly
+    // the same 403 a forgery gets, and without this line the two are
+    // indistinguishable to whoever is asking why nothing reconciles. The
+    // message names the failure, never the body and never a secret.
+    console.error(
+      `[billing] webhook rejected: ${error instanceof Error ? error.message : "unverifiable"}`,
+    );
     return new Response(null, { status: 403 });
   }
 

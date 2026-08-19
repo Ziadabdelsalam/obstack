@@ -27,9 +27,20 @@ const post = async (body: string, headers: Record<string, string>): Promise<Resp
 test("a delivery whose signature does not hold gets a bare 403 (D169)", async () => {
   const body = JSON.stringify({ type: "order.paid", data: {} });
 
-  const forged = await post(body, { [FAKE_SIGNATURE_HEADER]: signFakeWebhook(body, "wrong") });
+  const logged: string[] = [];
+  const real = console.error;
+  console.error = (...args: unknown[]) => void logged.push(args.map(String).join(" "));
+  let forged: Response;
+  try {
+    forged = await post(body, { [FAKE_SIGNATURE_HEADER]: signFakeWebhook(body, "wrong") });
+  } finally {
+    console.error = real;
+  }
   assert.equal(forged.status, 403);
   assert.equal(await forged.text(), "", "no body detail — nothing to learn from the refusal");
+  // Silent to the sender, logged for us: a refusal nobody can see is how a
+  // missing `POLAR_WEBHOOK_SECRET` reads as an attacker for a week.
+  assert.match(logged[0] ?? "", /\[billing\] webhook rejected/);
 
   const unsigned = await post(body, {});
   assert.equal(unsigned.status, 403);
