@@ -30,6 +30,22 @@ function recorder() {
   return { calls, query: query as never };
 }
 
+/**
+ * The loud lines, as an operator would read them. Refusals carry their reason
+ * in a log rather than a return value (D190), so the log IS the assertion — a
+ * tripwire nobody can read is not a tripwire.
+ */
+async function capturingErrors<T>(body: () => Promise<T>): Promise<{ result: T; logged: string[] }> {
+  const logged: string[] = [];
+  const real = console.error;
+  console.error = (...args: unknown[]) => void logged.push(args.map(String).join(" "));
+  try {
+    return { result: await body(), logged };
+  } finally {
+    console.error = real;
+  }
+}
+
 test("the default mode is the fake, and it never needs a Polar secret (D168)", () => {
   assert.equal(billingMode(), "fake");
   assert.equal(createBillingClient("fake").mode, "fake");
@@ -230,26 +246,48 @@ test("reconcileCheckout refuses another workspace's checkout and writes nothing 
   });
   const store = recorder();
 
-  const logged: string[] = [];
-  const real = console.error;
-  console.error = (...args: unknown[]) => void logged.push(args.map(String).join(" "));
-  let result: ReconcileResult;
-  try {
-    result = await reconcileCheckout(created.checkoutId, "ws_mine", store.query);
-  } finally {
-    console.error = real;
-  }
+  const { result, logged } = await capturingErrors(() =>
+    reconcileCheckout(created.checkoutId, "ws_mine", store.query),
+  );
 
-  assert.deepEqual(result, { applied: false, reason: "refused" });
+  assert.deepEqual(result, { applied: false });
   assert.equal(store.calls.length, 0, "no statement ran at all");
-  assert.match(logged[0] ?? "", /belongs to another workspace/);
+  // This line is the security tripwire (D176/D190): the refusal is silent
+  // everywhere else, so if it stops being logged nobody learns it happened.
+  assert.equal(logged.length, 1, "one loud line, and one only");
+  assert.match(logged[0], /^\[billing\] checkout \S+ belongs to another workspace/);
+  assert.ok(!logged[0].includes("ws_stranger"), "the refusal names the checkout, not the owner");
 });
 
 test("reconcileCheckout treats an id the rail never issued as nothing to do", async () => {
   const store = recorder();
-  const result = await reconcileCheckout("chk_hostile", "ws_alpha", store.query);
-  assert.deepEqual(result, { applied: false, reason: "unknown" });
+  const { result, logged } = await capturingErrors(() =>
+    reconcileCheckout("chk_hostile", "ws_alpha", store.query),
+  );
+  assert.deepEqual(result, { applied: false });
   assert.equal(store.calls.length, 0);
+  assert.equal(logged.length, 1);
+  assert.match(logged[0], /\[billing\] checkout chk_hostile is unknown to the rail/);
+});
+
+test("a succeeded checkout with no plan to write is refused loudly, not guessed at", async () => {
+  // Guessing a plan here is how a free workspace becomes a paid row nobody
+  // sold, so the only safe answer is to write nothing and say so.
+  const created = await fakeBilling.createCheckout({
+    workspaceId: "ws_alpha",
+    planId: "",
+    returnPath: "/app/settings",
+  });
+  const store = recorder();
+
+  const { result, logged } = await capturingErrors(() =>
+    reconcileCheckout(created.checkoutId, "ws_alpha", store.query),
+  );
+
+  assert.deepEqual(result, { applied: false });
+  assert.equal(store.calls.length, 0, "no statement ran at all");
+  assert.equal(logged.length, 1);
+  assert.match(logged[0], /succeeded with no plan id/);
 });
 
 test("applyWebhook is the same reconciliation the return path uses (one definition)", async () => {
@@ -315,21 +353,15 @@ test("the webhook route refuses in mock mode, where there is nothing to reconcil
   const route = await import("@/app/api/billing/webhook/route");
   const body = JSON.stringify({ type: "order.paid", data: {} });
 
-  const logged: string[] = [];
-  const real = console.error;
-  console.error = (...args: unknown[]) => void logged.push(args.map(String).join(" "));
-  let response: Response;
-  try {
-    response = await route.POST(
+  const { result: response, logged } = await capturingErrors(() =>
+    route.POST(
       new Request("https://obstack.dev/api/billing/webhook", {
         method: "POST",
         body,
         headers: { [FAKE_SIGNATURE_HEADER]: signFakeWebhook(body) },
       }),
-    );
-  } finally {
-    console.error = real;
-  }
+    ),
+  );
 
   assert.equal(response.status, 404);
   assert.match(logged[0] ?? "", /\[billing\] webhook posted in mock mode/);

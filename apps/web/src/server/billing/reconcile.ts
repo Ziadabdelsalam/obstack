@@ -37,14 +37,13 @@ const UPSERT_PLAN_SQL = `
               updated_at = now()`;
 
 /**
- * What a reconciliation did. `applied` is the only thing a caller has to act
- * on; the reasons exist so that "nothing happened" is never mistaken for
- * "upgraded", which is the failure a boolean alone would hide on the return
- * path a customer is staring at.
+ * What a reconciliation did. `applied` is the whole answer a caller acts on —
+ * the return path turns it into one of two notices, the webhook ignores it —
+ * and WHY nothing was applied is a log line at the refusal (D190), where an
+ * operator reading a log can see it, rather than a union member no reader ever
+ * branches on.
  */
-export type ReconcileResult =
-  | { applied: true; planId: string }
-  | { applied: false; reason: "pending" | "expired" | "unknown" | "refused" };
+export type ReconcileResult = { applied: true; planId: string } | { applied: false };
 
 /** The plan row, as both callers write it. */
 export async function setWorkspacePlan(
@@ -64,17 +63,22 @@ export async function setWorkspacePlan(
  * parameter, so it is whatever someone put in the address bar. Two guards make
  * that safe, and both are refusals rather than errors:
  *
- *  - an id Polar does not know is `unknown`, not an exception a settings page
- *    turns into a 500 (the fake throws the same class Polar's 404 does, so this
- *    branch is exercised in tests);
- *  - a checkout belonging to a DIFFERENT workspace is `refused` and logged.
- *    Without that comparison, pasting a stranger's succeeded checkout id would
- *    write their plan onto your workspace — the checkout's own external
- *    customer is the owner pin (D148), and only Polar can set it.
+ *  - an id Polar does not know is nothing to do, not an exception a settings
+ *    page turns into a 500 (the fake throws the same class Polar's 404 does, so
+ *    this branch is exercised in tests);
+ *  - a checkout belonging to a DIFFERENT workspace is refused. Without that
+ *    comparison, pasting a stranger's succeeded checkout id would write their
+ *    plan onto your workspace — the checkout's own external customer is the
+ *    owner pin (D148), and only Polar can set it. That line is the security
+ *    tripwire, and a tripwire nobody can read is not one, so a test asserts it.
  *
  * A succeeded checkout with no plan id in its metadata is also refused: there
  * is no plan to write and guessing one is how a free workspace becomes a paid
  * row nobody sold.
+ *
+ * Every one of the five ways this returns without writing logs its reason and
+ * exactly its reason (D168's refuse-loudly posture, D190): the checkout id and
+ * why, never the checkout body and never a credential.
  */
 export async function reconcileCheckout(
   checkoutId: string,
@@ -85,22 +89,31 @@ export async function reconcileCheckout(
   try {
     state = await getBilling().getCheckout(checkoutId);
   } catch (error) {
-    if (error instanceof UnknownCheckout) return { applied: false, reason: "unknown" };
+    if (error instanceof UnknownCheckout) {
+      console.error(`[billing] checkout ${checkoutId} is unknown to the rail — not reconciled`);
+      return { applied: false };
+    }
     throw error;
   }
 
-  if (state.status === "open") return { applied: false, reason: "pending" };
-  if (state.status === "expired") return { applied: false, reason: "expired" };
+  if (state.status === "open") {
+    console.error(`[billing] checkout ${checkoutId} is still pending — not reconciled`);
+    return { applied: false };
+  }
+  if (state.status === "expired") {
+    console.error(`[billing] checkout ${checkoutId} expired — not reconciled`);
+    return { applied: false };
+  }
 
   if (state.externalCustomerId && state.externalCustomerId !== workspaceId) {
     console.error(
       `[billing] checkout ${checkoutId} belongs to another workspace — not reconciled`,
     );
-    return { applied: false, reason: "refused" };
+    return { applied: false };
   }
   if (!state.planId) {
     console.error(`[billing] checkout ${checkoutId} succeeded with no plan id — not reconciled`);
-    return { applied: false, reason: "refused" };
+    return { applied: false };
   }
 
   await setWorkspacePlan(
