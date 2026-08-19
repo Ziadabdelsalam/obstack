@@ -13,7 +13,7 @@ import {
   upsertPricingOverride,
 } from "@/server/ingest-health";
 import { cancelInvite, createInvite } from "@/server/invites";
-import { queryRows } from "@/server/postgres";
+import { queryRows, withTransaction } from "@/server/postgres";
 import { getSessionContext } from "@/server/session";
 import { SETTINGS_ERRORS, settingsErrorCode, type SettingsErrorCode } from "./errors";
 
@@ -197,6 +197,12 @@ const refused = (code: SettingsErrorCode): OverrideResult => ({ error: SETTINGS_
  * is the store's, enforced inside the INSERT rather than checked here: two tabs
  * at ninety-nine overrides must not both be told they have room.
  *
+ * The write runs inside `withTransaction` so the store's advisory lock (D197)
+ * actually holds — the lock is transaction-scoped, and through the plain pool it
+ * would release inside its own implicit transaction and serialize nothing. This
+ * is what makes "two tabs at ninety-nine" one moment: the second create blocks
+ * on the lock until the first commits and then sees the true count.
+ *
  * A success revalidates and answers with nothing, exactly like `revokeKey`: the
  * new list arrives as the page's own read in the same roundtrip, so there is one
  * definition of what the tab shows and it is the one on `page.tsx`.
@@ -212,10 +218,8 @@ export async function saveOverride(formData: FormData): Promise<OverrideResult> 
   if (inputPerMTok === null || outputPerMTok === null) return refused("override-price-invalid");
 
   try {
-    await upsertPricingOverride(
-      session.workspaceId,
-      { match, inputPerMTok, outputPerMTok },
-      queryRows,
+    await withTransaction((query) =>
+      upsertPricingOverride(session.workspaceId, { match, inputPerMTok, outputPerMTok }, query),
     );
   } catch (failure) {
     return refused(codeFor("save price override", failure));

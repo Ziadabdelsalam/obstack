@@ -1,6 +1,6 @@
 import "server-only";
 import { randomBytes } from "node:crypto";
-import type { QueryRows } from "@/server/postgres";
+import { lockWorkspace, type QueryRows, type TxQuery } from "@/server/postgres";
 import priceList from "../../../../services/ingest/pricing/prices.json";
 
 /**
@@ -209,13 +209,18 @@ const OVERRIDES_SQL = `
    ORDER BY match`;
 
 /**
- * Create or edit one override, and enforce the cap in the SAME statement.
+ * Create or edit one override, counting only the OTHER matches so an edit adds
+ * nothing to bound and replacing an existing match still works at the cap.
  *
- * The count is a subquery inside the INSERT rather than a SELECT before it,
- * because two statements are two moments: two tabs at 99 overrides would both
- * read 99 and both write. Rows whose match differs from the incoming one are
- * what is counted, so replacing an existing match still works at the cap —
- * an edit adds nothing to bound.
+ * The count is a subquery inside the INSERT rather than a SELECT before it, but
+ * a single statement is NOT what makes the cap hold under concurrency (B4-1):
+ * two overlapping creates each read their `count(*)` under their own READ
+ * COMMITTED snapshot, neither sees the other's uncommitted row, both count 99
+ * and both write — the "two tabs at ninety-nine" the subquery was meant to
+ * close. What closes it is `pg_advisory_xact_lock(hashtext(workspace_id))` taken
+ * before this statement inside the caller's transaction (D197): the second
+ * create blocks in `lockWorkspace` until the first commits, then runs this count
+ * against a snapshot that SEES the committed row and is refused at the cap.
  *
  * The conflict target is the UNIQUE the migration states, which makes editing
  * an override the same call as creating one: one rate pair per match per
@@ -329,14 +334,27 @@ export async function listPricingOverrides(
  * already parsed by the caller — a blank match or a negative price is an error
  * the surface shows and not a value this function may coerce into shape.
  *
+ * The workspace lock is taken FIRST (D197): the cap is a read-modify-write, so
+ * the create counts and inserts under one advisory lock and two concurrent
+ * creates at the boundary serialize — the loser reads the committed row and is
+ * refused. The lock is transaction-scoped and serializes only when `query` is
+ * bound to a transaction, which is why `query` is a `TxQuery` (D199): the type
+ * demands the transaction the lock needs, so a plain pooled `queryRows` — through
+ * which the lock would release inside its own implicit transaction and serialize
+ * nothing — does not typecheck here, and the cap can no longer silently re-open
+ * on a caller that forgot to wrap. `saveOverride` opens that transaction with
+ * `withTransaction`; the injected seam (D113) is unchanged, the lock is just
+ * another `$1`-bound statement on it.
+ *
  * No rows back means the cap turned the INSERT into a no-op, which is the only
  * way that can happen: a conflicting row updates and returns.
  */
 export async function upsertPricingOverride(
   workspaceId: string,
   override: { match: string; inputPerMTok: number; outputPerMTok: number },
-  query: QueryRows,
+  query: TxQuery,
 ): Promise<PricingOverride> {
+  await lockWorkspace(query, workspaceId);
   const [row] = await query<OverrideRow>(UPSERT_OVERRIDE_SQL, [
     newId(),
     workspaceId,

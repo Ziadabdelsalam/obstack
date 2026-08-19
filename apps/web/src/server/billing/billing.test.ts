@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { fakeBilling, signFakeWebhook, FAKE_SIGNATURE_HEADER } from "./fake";
+import { fakeBilling, signFakeWebhook, FAKE_SIGNATURE_HEADER, setFakeSubscription } from "./fake";
 import { normalizeWebhook } from "./webhook";
-import { applyWebhook, reconcileCheckout, type ReconcileResult } from "./reconcile";
+import { applyWebhook, reconcileCheckout, syncPlanFromRail, type ReconcileResult } from "./reconcile";
 import { billingMode, createBillingClient } from "./client";
 import {
   CHECKOUT_RETURN_PARAM,
@@ -26,14 +26,20 @@ delete process.env.OBSTACK_BILLING_MODE;
 delete process.env.POLAR_ACCESS_TOKEN;
 delete process.env.POLAR_WEBHOOK_SECRET;
 
-/** A recording `queryRows`: every statement and its bindings, and no database. */
+/**
+ * A recording `queryRows`: every statement and its bindings, and no database.
+ * `plans` narrows to the `workspace_plans` UPSERTs — convergence takes a
+ * `pg_advisory_xact_lock` before it writes, so the lock `SELECT` is a call too,
+ * and "which plan did we write" is a question about the writes alone.
+ */
 function recorder() {
   const calls: { sql: string; params: unknown[] }[] = [];
   const query = async <Row>(sql: string, params: unknown[] = []): Promise<Row[]> => {
     calls.push({ sql, params });
     return [];
   };
-  return { calls, query: query as never };
+  const plans = () => calls.filter((call) => call.sql.includes("workspace_plans"));
+  return { calls, plans, query: query as never };
 }
 
 /**
@@ -110,27 +116,40 @@ test("a fake checkout returns to OUR return path carrying its id", async () => {
   // exercises the real return-reconciliation path with zero third parties.
   assert.equal(created.url, `/app/settings?${CHECKOUT_RETURN_PARAM}=${created.checkoutId}`);
 
+  // The checkout is the TRIGGER and its owner pin, and no more (D195): a paid
+  // session for this workspace, carrying no plan and no ids — the plan comes
+  // from the subscription the checkout created, read back through the rail.
   const state = await fakeBilling.getCheckout(created.checkoutId);
   assert.equal(state.status, "succeeded");
   assert.equal(state.externalCustomerId, "ws_alpha", "one Polar customer per workspace (D110)");
-  assert.equal(state.planId, "pro");
-  assert.ok(state.customerId, "the measured rail carries the customer id at checkout");
+  assert.deepEqual(Object.keys(state).sort(), ["externalCustomerId", "status"]);
 });
 
-test("the fake answers NO subscription id at checkout, because the rail does not (D194)", async () => {
-  // The RED PROOF for the double's fidelity: measured on Polar, a Checkout
-  // carries `customer_id` but `subscription_id: null` even once the
-  // subscription is active — the id arrives on the webhook. A fake generous
-  // with it makes CI and the e2e drive assert a value production can never
-  // yield, which is the S2.3 L3 divergence class. If this ever goes green with
-  // an id, the drive's plan-row assertion is lying about production.
+test("a completed fake checkout makes the rail's subscription entitled (D194/D195)", async () => {
+  // The checkout resource never carries a subscription id — measured on Polar,
+  // it stays `null` even once the subscription is active, so a fake generous
+  // with it on the CHECKOUT would let CI and the drive assert a value production
+  // can never yield there (the S2.3 L3 divergence). The id lives on the
+  // SUBSCRIPTION, which is what convergence reads: a completed checkout leaves
+  // the workspace with an entitled subscription that carries both ids.
   const created = await fakeBilling.createCheckout({
-    workspaceId: "ws_alpha",
+    workspaceId: "ws_sub_alpha",
     planId: "pro",
     returnPath: "/app/settings",
   });
-  const state = await fakeBilling.getCheckout(created.checkoutId);
-  assert.equal(state.subscriptionId, undefined, "no subscription id at checkout, ever");
+  assert.equal((await fakeBilling.getCheckout(created.checkoutId)).status, "succeeded");
+
+  const subscription = await fakeBilling.getSubscriptionState("ws_sub_alpha");
+  assert.equal(subscription.active, true);
+  assert.equal(subscription.customerId, "cus_ws_sub_alpha");
+  assert.ok(subscription.subscriptionId, "the subscription id lives here, not on the checkout");
+});
+
+test("the rail answers free for a workspace it never subscribed (D195)", async () => {
+  // No subscription ⇒ free with both ids nulled, which is the answer a spent
+  // bookmark converges to after the revocation that ended its grant.
+  const subscription = await fakeBilling.getSubscriptionState("ws_never_subscribed");
+  assert.deepEqual(subscription, { active: false, customerId: null, subscriptionId: null });
 });
 
 test("an id the rail never issued is UnknownCheckout, exactly as Polar 404s", async () => {
@@ -263,18 +282,17 @@ test("reconcileCheckout writes the plan row on a succeeded checkout (D168)", asy
   const result = await reconcileCheckout(created.checkoutId, "ws_alpha", store.query);
   assert.deepEqual(result, { applied: true, planId: "pro" } satisfies ReconcileResult);
 
-  assert.equal(store.calls.length, 1, "one statement, one row");
-  const [call] = store.calls;
+  const [call] = store.plans();
+  assert.equal(store.plans().length, 1, "one plan row written");
   assert.match(call.sql, /INSERT INTO workspace_plans/);
   assert.match(call.sql, /ON CONFLICT \(workspace_id\) DO UPDATE/, "idempotent by construction");
   assert.equal(call.params[0], "ws_alpha", "the workspace is bound as $1 (D11/D148)");
   assert.equal(call.params[1], "pro");
   assert.equal(call.params[2], "cus_ws_alpha");
-  // NULL, and correctly so (D194): the return path writes what the checkout
-  // carries, and a checkout carries no subscription id. The webhook backfills
-  // that column — `coalesce` in the UPSERT is what lets it, later, without
-  // erasing the customer id this write established.
-  assert.equal(call.params[3], null);
+  // BOTH ids come from the SUBSCRIPTION the checkout created, read back from the
+  // rail (D195) — the checkout object carries neither. Convergence writes
+  // exactly the present subscription, so the subscription id is set, not null.
+  assert.ok(call.params[3], "the subscription id is the rail's, and it is present");
   // Nothing a caller supplied may be interpolated into the statement.
   assert.ok(!call.sql.includes("ws_alpha"), "values are bound, never spliced");
 });
@@ -331,25 +349,26 @@ test("reconcileCheckout treats an id the rail never issued as nothing to do", as
   assert.match(logged[0], /\[billing\] checkout "chk_hostile" is unknown to the rail/);
 });
 
-test("a succeeded checkout with no plan to write is refused loudly, not guessed at", async () => {
-  // Guessing a plan here is how a free workspace becomes a paid row nobody
-  // sold, so the only safe answer is to write nothing and say so.
+test("reconcileCheckout converges to the rail's present, not the checkout (D195)", async () => {
+  // The checkout is a bound, succeeded trigger — but between the payment and
+  // this return the subscription was revoked. Convergence reads THAT present and
+  // writes free, ids nulled: the checkout object never decided the plan, so a
+  // stale succeeded checkout cannot re-grant what the rail has since ended.
   const created = await fakeBilling.createCheckout({
-    workspaceId: "ws_alpha",
-    planId: "",
+    workspaceId: "ws_converge",
+    planId: "pro",
     returnPath: "/app/settings",
   });
+  setFakeSubscription("ws_converge", null); // the rail revoked it after payment
   const store = recorder();
 
-  const { result, logged, warned } = await capturingLogs(() =>
-    reconcileCheckout(created.checkoutId, "ws_alpha", store.query),
-  );
+  const result = await reconcileCheckout(created.checkoutId, "ws_converge", store.query);
 
+  // The spent bookmark converged, but to free — so the return path is told the
+  // upgrade is NOT live (applied:false), not handed a false "upgraded".
   assert.deepEqual(result, { applied: false });
-  assert.equal(store.calls.length, 0, "no statement ran at all");
-  assert.equal(logged.length, 1);
-  assert.equal(warned.length, 0, "a plan-less paid checkout is an anomaly (D193)");
-  assert.match(logged[0], /succeeded with no plan id/);
+  const [call] = store.plans();
+  assert.deepEqual(call.params, ["ws_converge", "free", null, null], "free, both ids nulled");
 });
 
 test("a checkout still open is a warning, not an alert, and writes nothing (D193)", async () => {
@@ -390,7 +409,33 @@ test("an expired checkout is a warning, not an alert, and writes nothing (D193)"
   assert.ok(!warned[0].includes("\n"), "one id, one line — the id is quoted here too");
 });
 
-test("applyWebhook is the same reconciliation the return path uses (one definition)", async () => {
+test("syncPlanFromRail takes the workspace lock BEFORE it writes, and converges both ways", async () => {
+  // The serialization contract in miniature (D195): the advisory lock is the
+  // first statement, so the rail read and the plan write both sit inside it.
+  const store = recorder();
+  const active: BillingClient = {
+    ...fakeBilling,
+    getSubscriptionState: async () => ({ active: true, customerId: "cus_x", subscriptionId: "sub_x" }),
+  };
+
+  const plan = await syncPlanFromRail("ws_lock", store.query, active);
+  assert.equal(plan, "pro");
+  assert.match(store.calls[0].sql, /pg_advisory_xact_lock\(hashtext\(\$1\)\)/, "lock is first");
+  assert.equal(store.calls[0].params[0], "ws_lock", "and keyed on the workspace");
+  assert.deepEqual(store.plans()[0].params, ["ws_lock", "pro", "cus_x", "sub_x"]);
+
+  // No active subscription ⇒ free, both ids nulled, whatever ids the rail
+  // reports on the inactive row.
+  const gone: BillingClient = {
+    ...fakeBilling,
+    getSubscriptionState: async () => ({ active: false, customerId: "cus_x", subscriptionId: "sub_x" }),
+  };
+  const store2 = recorder();
+  assert.equal(await syncPlanFromRail("ws_lock", store2.query, gone), "free");
+  assert.deepEqual(store2.plans()[0].params, ["ws_lock", "free", null, null]);
+});
+
+test("applyWebhook is the same convergence the return path uses (one definition)", async () => {
   const created = await fakeBilling.createCheckout({
     workspaceId: "ws_alpha",
     planId: "pro",
@@ -409,28 +454,33 @@ test("applyWebhook is the same reconciliation the return path uses (one definiti
     store.query,
   );
 
-  assert.equal(store.calls.length, 1);
-  assert.deepEqual(store.calls[0].params.slice(0, 2), ["ws_alpha", "pro"]);
+  assert.equal(store.plans().length, 1);
+  assert.deepEqual(store.plans()[0].params.slice(0, 2), ["ws_alpha", "pro"]);
 });
 
-test("applyWebhook writes a subscription's plan and ACKs everything else", async () => {
+test("applyWebhook is a DOORBELL: it converges to the rail, never the payload (D195)", async () => {
+  // The payload says `pro` with made-up ids — a forged or reordered `active`.
+  // The doorbell ignores all of it and reads the workspace's PRESENT
+  // subscription, which is revoked, and writes free with both ids nulled. This
+  // is why a re-delivered `active` cannot undo a revocation that followed it.
+  setFakeSubscription("ws_doorbell", null);
   const store = recorder();
 
   await applyWebhook(
     {
       consumed: "plan",
-      type: "subscription.revoked",
-      workspaceId: "ws_alpha",
-      planId: "free",
-      customerId: "cus_1",
-      subscriptionId: "sub_1",
+      type: "subscription.active",
+      workspaceId: "ws_doorbell",
+      planId: "pro",
+      customerId: "cus_forged",
+      subscriptionId: "sub_forged",
     },
     store.query,
   );
-  assert.deepEqual(store.calls[0].params, ["ws_alpha", "free", "cus_1", "sub_1"]);
-  // A later event carrying fewer ids must not erase the ones we already know.
-  assert.match(store.calls[0].sql, /coalesce\(EXCLUDED\.polar_customer_id/);
+  assert.deepEqual(store.plans()[0].params, ["ws_doorbell", "free", null, null]);
 
+  // Everything outside the consumed set writes nothing, and a checkout event
+  // that did not succeed is nothing to converge on.
   const ignored: WebhookEvent[] = [
     { consumed: "none", type: "subscription.past_due" },
     { consumed: "none", type: "order.paid" },
@@ -438,12 +488,12 @@ test("applyWebhook writes a subscription's plan and ACKs everything else", async
       consumed: "checkout",
       type: "checkout.updated",
       checkoutId: "chk_open",
-      workspaceId: "ws_alpha",
+      workspaceId: "ws_doorbell",
       succeeded: false,
     },
   ];
   for (const event of ignored) await applyWebhook(event, store.query);
-  assert.equal(store.calls.length, 1, "nothing else touched a row");
+  assert.equal(store.plans().length, 1, "nothing else touched a row");
 });
 
 test("the webhook route refuses in mock mode, where there is nothing to reconcile", async () => {

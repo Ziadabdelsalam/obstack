@@ -193,7 +193,7 @@ func (s *Server) consumeTraces(ctx context.Context, workspaceID string, req ptra
 	td := req.Traces()
 
 	if s.overQuota(workspaceID) {
-		s.countDrop(identity, dropQuota, sampleTraces(td))
+		s.countDrop(identity, dropQuota, s.sampleTraces(td))
 	}
 
 	accepted := td.SpanCount()
@@ -251,12 +251,17 @@ func keepTrace(traceID pcommon.TraceID) bool {
 // sampleTraces drops every span of every sampled-out trace and reports how many
 // records went. Scope and resource groups left empty go with them: an export of
 // empty groups is not telemetry, and the writer would map nothing out of it.
-func sampleTraces(td ptrace.Traces) int {
+//
+// A span with no trace id has nothing to be whole with, so it draws for itself
+// at the same rate (D165) through keepRecord — the same branch trace-less log
+// records take. Routing it through keepTrace instead would hash sixteen zero
+// bytes to one fixed verdict and shed the whole trace-less class at 100%.
+func (s *Server) sampleTraces(td ptrace.Traces) int {
 	dropped := 0
 	td.ResourceSpans().RemoveIf(func(rs ptrace.ResourceSpans) bool {
 		rs.ScopeSpans().RemoveIf(func(ss ptrace.ScopeSpans) bool {
 			ss.Spans().RemoveIf(func(span ptrace.Span) bool {
-				if keepTrace(span.TraceID()) {
+				if s.keepRecord(span.TraceID()) {
 					return false
 				}
 				dropped++

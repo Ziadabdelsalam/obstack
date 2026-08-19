@@ -10,6 +10,7 @@ import {
   type CheckoutRequest,
   type CheckoutState,
   type CreatedCheckout,
+  type SubscriptionState,
   type UsageEvent,
   type UsageIngestResult,
   type WebhookEvent,
@@ -62,11 +63,15 @@ function checkoutStatus(status: string): CheckoutState["status"] {
   return "open";
 }
 
-/** Our plan id, as we stored it on the checkout's metadata at creation. */
-function planFromMetadata(metadata: Record<string, unknown>): string | undefined {
-  const planId = metadata.plan_id;
-  return typeof planId === "string" ? planId : undefined;
-}
+/**
+ * Polar's subscription statuses, reduced to the one bit convergence needs: is
+ * this workspace entitled right now? `active` and `trialing` are live;
+ * `past_due` KEEPS its entitlements because Polar is merchant of record and owns
+ * dunning (D169), so the cutoff is the revocation that may follow, not the
+ * dunning itself. Everything else — canceled, revoked, unpaid, incomplete,
+ * paused — is over.
+ */
+const ENTITLED_STATUS = new Set(["active", "trialing", "past_due"]);
 
 /**
  * Built once per process, on first use — not at module load, so a mock-mode or
@@ -109,10 +114,28 @@ export function createPolarBilling(): BillingClient {
       return {
         status: checkoutStatus(String(checkout.status)),
         externalCustomerId: checkout.externalCustomerId ?? undefined,
-        customerId: checkout.customerId ?? undefined,
-        subscriptionId: checkout.subscriptionId ?? undefined,
-        planId: planFromMetadata(checkout.metadata),
       };
+    },
+
+    async getSubscriptionState(workspaceId: string): Promise<SubscriptionState> {
+      // The customer's subscriptions, by the external id that IS the workspace
+      // (D110). We converge to the FIRST entitled one — a workspace has one
+      // subscription at a time on this product — and to `free` if none is, which
+      // is also the answer for a customer the rail never subscribed. The list is
+      // paged; the iterator walks pages, and we stop at the first entitled row.
+      const pages = await client.subscriptions.list({ externalCustomerId: workspaceId });
+      for await (const page of pages) {
+        for (const subscription of page.result.items) {
+          if (ENTITLED_STATUS.has(String(subscription.status))) {
+            return {
+              active: true,
+              customerId: subscription.customerId ?? null,
+              subscriptionId: subscription.id ?? null,
+            };
+          }
+        }
+      }
+      return { active: false, customerId: null, subscriptionId: null };
     },
 
     async ingestUsage(events: UsageEvent[]): Promise<UsageIngestResult> {

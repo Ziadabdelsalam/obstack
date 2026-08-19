@@ -158,7 +158,12 @@ function Meter({ label, used, quota, unit }: { label: string; used: number; quot
       <div className="mb-1 flex items-baseline justify-between">
         <span className="text-[12.5px] text-mid">{label}</span>
         <span className="font-mono text-[11.5px] text-ink">
-          {used.toLocaleString()} / {quota.toLocaleString()}
+          {/* Grouped in en-US explicitly, matching the shell's usage banner
+              (UsageBanner.tsx): both render on the server before hydration and in
+              the visitor's browser after it, and a bare `toLocaleString()` groups
+              by whichever locale each runtime holds — so the meter and the banner
+              would disagree and the numbers would flip at hydration. */}
+          {used.toLocaleString("en-US")} / {quota.toLocaleString("en-US")}
           {unit ? ` ${unit}` : ""}{" "}
           <span style={{ color: hot ? "var(--color-warn)" : "var(--color-faint)" }}>
             ({pct.toFixed(0)}%)
@@ -721,7 +726,7 @@ function LiveBillingTab({ live }: { live: LiveSettings }) {
               <span className="min-w-0 flex-1">
                 <span className="block text-[13px] text-ink">{plan.name}</span>
                 <span className="block font-mono text-[10.5px] text-faint">
-                  {plan.eventQuota.toLocaleString()} events/mo · {plan.retentionDays}-day retention
+                  {plan.eventQuota.toLocaleString("en-US")} events/mo · {plan.retentionDays}-day retention
                 </span>
               </span>
               <span className="font-mono text-[12.5px] text-mid">${plan.priceUsdMonth}/mo</span>
@@ -914,7 +919,7 @@ function Stat({ label, value, warn }: { label: string; value: number; warn?: boo
         className="mt-0.5 font-mono text-[20px]"
         style={{ color: warn && value > 0 ? "var(--color-warn)" : "var(--color-ink)" }}
       >
-        {value.toLocaleString()}
+        {value.toLocaleString("en-US")}
       </p>
     </div>
   );
@@ -1001,8 +1006,8 @@ function LiveIngestTab({ live }: { live: LiveSettings }) {
                   {key.lastEvent ? `last event ${key.lastEvent}` : "no events yet"}
                 </span>
                 <span className="w-[190px] text-right font-mono text-[11px] text-mid">
-                  {key.accepted.toLocaleString()} accepted · {key.errors.toLocaleString()} errors ·{" "}
-                  {key.sampled.toLocaleString()} sampled
+                  {key.accepted.toLocaleString("en-US")} accepted · {key.errors.toLocaleString("en-US")} errors ·{" "}
+                  {key.sampled.toLocaleString("en-US")} sampled
                 </span>
               </div>
             ))
@@ -1139,7 +1144,7 @@ function IngestTab() {
         <div className="grid grid-cols-2 gap-3">
           <div>
             <p className="font-mono text-[10px] uppercase tracking-widest text-faint">events received</p>
-            <p className="mt-0.5 font-mono text-[20px] text-ink">{ingest.eventsLast24h.toLocaleString()}</p>
+            <p className="mt-0.5 font-mono text-[20px] text-ink">{ingest.eventsLast24h.toLocaleString("en-US")}</p>
           </div>
           <div>
             <p className="font-mono text-[10px] uppercase tracking-widest text-faint">dropped (malformed)</p>

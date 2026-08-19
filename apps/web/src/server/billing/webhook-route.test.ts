@@ -11,11 +11,19 @@ import { signFakeWebhook, FAKE_SIGNATURE_HEADER } from "./fake";
 // `billing.test.ts`, and `node --test` isolates per file (D156), so the two
 // modes can both be real here without either shimming the other.
 //
-// Still no Postgres and still no Polar: billing mode defaults to the fake, and
-// the deliveries below are chosen so that neither answer needs a row.
+// No Polar, billing mode defaults to the fake. The 403 answers and the no-work
+// ACK need no row and no connection. The one delivery that reaches convergence —
+// a succeeded checkout — now runs inside a transaction (D195, the advisory lock
+// holds across the rail read and write), so it dials the compose Postgres; an
+// unset test DSN skips that one, like qa-a4.
 process.env.OBSTACK_DATA_MODE = "live";
 process.env.CLICKHOUSE_URL ??= "http://clickhouse.invalid:8123";
+process.env.OBSTACK_POSTGRES_DSN ??= process.env.OBSTACK_TEST_POSTGRES_DSN;
 delete process.env.OBSTACK_BILLING_MODE;
+
+const skipNoPg = process.env.OBSTACK_TEST_POSTGRES_DSN
+  ? undefined
+  : "OBSTACK_TEST_POSTGRES_DSN is unset — no Postgres to dial (deploy/compose/README.md)";
 
 const post = async (body: string, headers: Record<string, string>): Promise<Response> => {
   const route = await import("@/app/api/billing/webhook/route");
@@ -61,14 +69,19 @@ test("a valid delivery we have no work for is ACKed, not refused (D169)", async 
   }
 });
 
-test("a consumed checkout event naming an id the rail never issued still ACKs", async () => {
-  // The reconciliation is the same one the return path runs, so an id that
-  // resolves to nothing is nothing to do — and a 200, because retrying it would
-  // resolve to nothing ten more times.
-  const body = JSON.stringify({
-    type: "checkout.updated",
-    data: { id: "chk_never_issued", status: "succeeded", externalCustomerId: "ws_alpha" },
-  });
-  const response = await post(body, { [FAKE_SIGNATURE_HEADER]: signFakeWebhook(body) });
-  assert.equal(response.status, 200);
-});
+test(
+  "a consumed checkout event naming an id the rail never issued still ACKs",
+  { skip: skipNoPg },
+  async () => {
+    // The convergence is the same one the return path runs, so an id that
+    // resolves to nothing is nothing to do — and a 200, because retrying it
+    // would resolve to nothing ten more times. It runs inside the transaction
+    // the route opens for a consumed event, which is why this one needs Postgres.
+    const body = JSON.stringify({
+      type: "checkout.updated",
+      data: { id: "chk_never_issued", status: "succeeded", externalCustomerId: "ws_alpha" },
+    });
+    const response = await post(body, { [FAKE_SIGNATURE_HEADER]: signFakeWebhook(body) });
+    assert.equal(response.status, 200);
+  },
+);
