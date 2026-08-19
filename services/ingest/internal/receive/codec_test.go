@@ -121,12 +121,12 @@ const (
 // cached.
 type testResolver map[string]string
 
-func (r testResolver) Workspace(token string) (string, error) {
+func (r testResolver) Workspace(token string) (auth.Identity, error) {
 	workspaceID, ok := r[token]
 	if !ok {
-		return "", auth.ErrUnauthorized
+		return auth.Identity{}, auth.ErrUnauthorized
 	}
-	return workspaceID, nil
+	return auth.Identity{WorkspaceID: workspaceID, KeyID: "key_" + workspaceID}, nil
 }
 
 // startCodecServer serves the trace service over the given codec, with the same

@@ -44,11 +44,11 @@ func (s *Server) authenticate(ctx context.Context, req any, _ *grpc.UnaryServerI
 			authorization = values[0]
 		}
 	}
-	workspaceID, err := s.cfg.Auth.Workspace(authorization)
+	identity, err := s.cfg.Auth.Workspace(authorization)
 	if err != nil {
 		return nil, status.Error(codes.Unauthenticated, err.Error())
 	}
-	return handler(auth.ContextWithWorkspace(ctx, workspaceID), req)
+	return handler(auth.ContextWithIdentity(ctx, identity), req)
 }
 
 // recoverPanic turns a panicking handler into one counted drop and one terminal
@@ -61,7 +61,7 @@ func recoverPanic(ctx context.Context, req any, _ *grpc.UnaryServerInfo, handler
 		if p := recover(); p != nil {
 			slog.Error("panic serving otlp export",
 				"transport", "grpc", "panic", p, "stack", string(debug.Stack()))
-			metrics.Dropped.WithLabelValues(auth.WorkspaceFromContext(ctx), metrics.ReasonPanic).Inc()
+			metrics.Dropped.WithLabelValues(auth.IdentityFromContext(ctx).WorkspaceID, metrics.ReasonPanic).Inc()
 			resp, err = nil, status.Error(codes.Internal, "internal error handling export")
 		}
 	}()
@@ -82,7 +82,7 @@ type traceService struct {
 }
 
 func (t *traceService) Export(ctx context.Context, req ptraceotlp.ExportRequest) (ptraceotlp.ExportResponse, error) {
-	t.srv.consumeTraces(ctx, auth.WorkspaceFromContext(ctx), req)
+	t.srv.consumeTraces(ctx, auth.IdentityFromContext(ctx).WorkspaceID, req)
 	return ptraceotlp.NewExportResponse(), nil
 }
 
@@ -92,6 +92,6 @@ type logService struct {
 }
 
 func (l *logService) Export(ctx context.Context, req plogotlp.ExportRequest) (plogotlp.ExportResponse, error) {
-	l.srv.consumeLogs(ctx, auth.WorkspaceFromContext(ctx), req)
+	l.srv.consumeLogs(ctx, auth.IdentityFromContext(ctx).WorkspaceID, req)
 	return plogotlp.NewExportResponse(), nil
 }

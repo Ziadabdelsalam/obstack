@@ -23,12 +23,12 @@ const (
 // is the header and the 401, not where a key is kept.
 type testResolver map[string]string
 
-func (r testResolver) Workspace(token string) (string, error) {
+func (r testResolver) Workspace(token string) (auth.Identity, error) {
 	ws, ok := r[token]
 	if !ok {
-		return "", auth.ErrUnauthorized
+		return auth.Identity{}, auth.ErrUnauthorized
 	}
-	return ws, nil
+	return auth.Identity{WorkspaceID: ws, KeyID: "key_" + ws}, nil
 }
 
 // recorder stands in for the batch writer T4 plugs in: it only has to remember

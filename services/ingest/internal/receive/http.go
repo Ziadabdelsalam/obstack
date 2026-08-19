@@ -105,12 +105,13 @@ func (s *Server) export(w http.ResponseWriter, r *http.Request, req payload, acc
 	// request. An unreadable Content-Type falls back to protobuf.
 	enc, encErr := requestEncoding(r)
 
-	workspaceID, err := s.cfg.Auth.Workspace(r.Header.Get("Authorization"))
+	identity, err := s.cfg.Auth.Workspace(r.Header.Get("Authorization"))
 	if err != nil {
 		w.Header().Set("WWW-Authenticate", "Bearer")
 		writeError(w, enc, http.StatusUnauthorized, codes.Unauthenticated, err.Error())
 		return
 	}
+	workspaceID := identity.WorkspaceID
 	if slot, ok := r.Context().Value(workspaceKey{}).(*string); ok {
 		*slot = workspaceID
 	}

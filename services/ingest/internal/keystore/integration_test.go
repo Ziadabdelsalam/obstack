@@ -11,9 +11,11 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/Ziadabdelsalam/observer-stack/services/ingest/internal/auth"
 	"github.com/Ziadabdelsalam/observer-stack/services/ingest/internal/pgmigrate"
+	"github.com/Ziadabdelsalam/observer-stack/services/ingest/internal/pricing"
 	"github.com/Ziadabdelsalam/observer-stack/services/ingest/pgmigrations"
 )
 
@@ -119,17 +121,19 @@ func exec(ctx context.Context, t *testing.T, dsn, sql string, args ...any) error
 	return err
 }
 
-// openStore is Open plus a clock the test can move, since the TTL it has to
-// cross is 30 s of real time.
+// openStore builds a store over its own pool — the pool main owns and the
+// metering flusher shares (D164e) — plus a clock the test can move, since the
+// TTL it has to cross is 30 s of real time.
 func openStore(ctx context.Context, t *testing.T, dsn string) (*Store, *fakeClock) {
 	t.Helper()
 
-	s, err := Open(ctx, dsn)
+	pool, err := pgxpool.New(ctx, dsn)
 	if err != nil {
-		t.Fatalf("Open: %v", err)
+		t.Fatalf("connect postgres: %v", err)
 	}
-	t.Cleanup(s.Close)
+	t.Cleanup(pool.Close)
 
+	s := New(pool)
 	clock := &fakeClock{t: time.Date(2026, 8, 19, 12, 0, 0, 0, time.UTC)}
 	s.now = clock.now
 	return s, clock
@@ -171,6 +175,17 @@ func TestIssuedKeyResolvesToItsWorkspace(t *testing.T) {
 	mustResolve(t, s, issuedToken, "ws_alice")
 	mustResolve(t, s, bobsToken, "ws_bob")
 	mustRefuse(t, s, "ok_live_"+strings.Repeat("f", 64))
+
+	// The identity carries the key row's own id, which is what api_key_health is
+	// keyed by (D100): a health row written against a made-up id would violate
+	// its foreign key, so this is the value that has to come out of the lookup.
+	identity, err := s.Workspace(issuedToken)
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if identity.KeyID != "key_alice" {
+		t.Errorf("identity key id = %q, want key_alice — the id api_key_health references", identity.KeyID)
+	}
 
 	// The continuity row from 0004: the credential the collector and every
 	// signed harness send, resolving through the same code, with no dev-key
@@ -236,9 +251,20 @@ func TestPostgresDownServesCachedEntriesStale(t *testing.T) {
 	}
 	issueKey(ctx, t, dsn, "key_alice", "ws_alice", issuedToken)
 
+	// Over its quota and carrying an override, so the fail-open half below has
+	// something it could have got wrong.
+	seedUsage(ctx, t, dsn, "ws_alice", 60_000)
+	if err := exec(ctx, t, dsn,
+		"INSERT INTO pricing_overrides (id, workspace_id, match, input_per_mtok, output_per_mtok) VALUES ('po_1', 'ws_alice', 'gpt-4o', 1, 2)"); err != nil {
+		t.Fatalf("insert override: %v", err)
+	}
+
 	s, clock := openStore(ctx, t, dsn)
 	mustResolve(t, s, issuedToken, "ws_alice")
 	mustResolve(t, s, "ok_dev_local", "ws_demo")
+	if state := s.State("ws_alice"); !state.OverQuota || len(state.Overrides) != 1 {
+		t.Fatalf("state before the outage = %+v, want over quota with one override", state)
+	}
 
 	// Closing the pool is this process losing Postgres: every query from here on
 	// fails, exactly as it does when the server is gone.
@@ -253,6 +279,99 @@ func TestPostgresDownServesCachedEntriesStale(t *testing.T) {
 	// this process never resolved gets nothing — a cold cache plus a dead
 	// Postgres is 401s until Postgres returns.
 	mustRefuse(t, s, "ok_live_"+strings.Repeat("d", 64))
+
+	// And quota goes the other way (D164d): with Postgres gone the workspace
+	// reads back not-over-quota on base prices, because our outage must not
+	// start sampling a paying customer's traces away.
+	if state := s.State("ws_alice"); !isBaseState(state) {
+		t.Errorf("state with Postgres down = %+v, want the zero State — not over quota, base prices", state)
+	}
+}
+
+// seedUsage puts events in the current UTC month's ledger, in the hour bucket
+// the writer truncates to.
+func seedUsage(ctx context.Context, t *testing.T, dsn, workspaceID string, spans int) {
+	t.Helper()
+
+	if err := exec(ctx, t, dsn,
+		"INSERT INTO usage_ledger (workspace_id, period_start, spans, logs) VALUES ($1, date_trunc('hour', now()), $2, 0)",
+		workspaceID, spans); err != nil {
+		t.Fatalf("seed usage for %s: %v", workspaceID, err)
+	}
+}
+
+// The workspace state against the real tables and the real D163 SQL: the
+// month's ledger sum, the plan catalog resolved through COALESCE, and the
+// overrides. A fake cannot say whether that SQL means what the ruling says,
+// because the ruling is written in SQL.
+func TestWorkspaceStateReadsTheLedgerAndTheCatalog(t *testing.T) {
+	ctx := requirePostgres(t)
+	dsn := migratedSchema(ctx, t)
+
+	if err := exec(ctx, t, dsn, "INSERT INTO workspaces (id, org_id) VALUES ('ws_alice', 'org_alice')"); err != nil {
+		t.Fatalf("insert workspace: %v", err)
+	}
+	issueKey(ctx, t, dsn, "key_alice", "ws_alice", issuedToken)
+
+	s, clock := openStore(ctx, t, dsn)
+
+	// No plan row and no usage: free by absence (D163), and well under it.
+	mustResolve(t, s, issuedToken, "ws_alice")
+	if state := s.State("ws_alice"); !isBaseState(state) {
+		t.Fatalf("state of a fresh workspace = %+v, want the zero State", state)
+	}
+
+	// A month's worth of events past the free quota of 50 000, split across two
+	// hour buckets and both signals, because the definition is SUM(spans + logs).
+	if err := exec(ctx, t, dsn,
+		`INSERT INTO usage_ledger (workspace_id, period_start, spans, logs) VALUES
+		   ('ws_alice', date_trunc('hour', now()), 30000, 10000),
+		   ('ws_alice', date_trunc('hour', now()) - interval '2 hours', 9000, 1001)`); err != nil {
+		t.Fatalf("seed usage: %v", err)
+	}
+	// Last month's usage is a different bill and must not count.
+	if err := exec(ctx, t, dsn,
+		"INSERT INTO usage_ledger (workspace_id, period_start, spans, logs) VALUES ('ws_alice', date_trunc('month', now()) - interval '1 hour', 5000000, 0)"); err != nil {
+		t.Fatalf("seed last month: %v", err)
+	}
+
+	clock.advance(keyCacheTTL + time.Second)
+	mustResolve(t, s, issuedToken, "ws_alice")
+	if !s.State("ws_alice").OverQuota {
+		t.Error("50 001 events against the free plan's 50 000 did not read as over quota")
+	}
+
+	// The catalog is what the quota comes from, not a constant in Go: the same
+	// usage against pro is comfortably under.
+	if err := exec(ctx, t, dsn,
+		"INSERT INTO workspace_plans (workspace_id, plan_id) VALUES ('ws_alice', 'pro')"); err != nil {
+		t.Fatalf("insert plan row: %v", err)
+	}
+	clock.advance(keyCacheTTL + time.Second)
+	mustResolve(t, s, issuedToken, "ws_alice")
+	if s.State("ws_alice").OverQuota {
+		t.Error("the same usage read as over quota on pro; the plan catalog is not being joined")
+	}
+
+	// Overrides come back on the D9 row shape, one refresh, not one query per
+	// span.
+	if err := exec(ctx, t, dsn,
+		`INSERT INTO pricing_overrides (id, workspace_id, match, input_per_mtok, output_per_mtok) VALUES
+		   ('po_1', 'ws_alice', 'gpt-4o-mini', 0.11, 0.44)`); err != nil {
+		t.Fatalf("insert override: %v", err)
+	}
+	clock.advance(keyCacheTTL + time.Second)
+	mustResolve(t, s, issuedToken, "ws_alice")
+
+	want := pricing.Rate{Match: "gpt-4o-mini", InputPerMTok: 0.11, OutputPerMTok: 0.44}
+	if overrides := s.State("ws_alice").Overrides; len(overrides) != 1 || overrides[0] != want {
+		t.Errorf("state overrides = %+v, want [%+v]", overrides, want)
+	}
+
+	// Another workspace's override is not this one's.
+	if other := s.State("ws_demo"); other.Overrides != nil {
+		t.Errorf("ws_demo picked up %+v", other.Overrides)
+	}
 }
 
 // The DDL is the artifact, so its contract is asserted against the server that
