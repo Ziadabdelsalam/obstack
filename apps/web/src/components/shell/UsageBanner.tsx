@@ -32,16 +32,42 @@ export interface UsageBannerProps {
 /** Loud enough to matter, quiet enough to ignore: the banner appears from 70% on. */
 const NOTICE_AT_PCT = 70;
 
+/** The banner's numbers when it should show, or null when it should not. */
+export interface UsageNotice {
+  /** The percentage to print — rounded for display, never for the decision below. */
+  pct: number;
+  /**
+   * AT the quota, not past it — the same comparison the tab and Go's over-quota
+   * SELECT make (D163). Not clamped, because a workspace 33% over its plan should
+   * be told that and not shown a tidy 100%.
+   */
+  overQuota: boolean;
+}
+
+/**
+ * The whole show-or-not decision, pulled out of the component so it can be tested
+ * without a DOM (D54(ii) — a `"use client"` component cannot be rendered under the
+ * runner, but a pure function it calls can be imported and driven).
+ *
+ * Two honesty guards live here. A zero or absent quota is degenerate: dividing by
+ * it is Infinity or NaN, not a percentage, so it suppresses rather than paint
+ * "Infinity% used" or raise a false "sampling active" (B5-1). And the threshold is
+ * compared against the UNROUNDED ratio: at 69.5% a rounded percentage reads 70 and
+ * would raise the banner half a point early, so rounding is for the display alone
+ * (B5-2).
+ */
+export function usageBannerNotice(eventsUsed: number, eventQuota: number): UsageNotice | null {
+  if (!(eventQuota > 0)) return null;
+  const ratio = eventsUsed / eventQuota;
+  if (ratio * 100 < NOTICE_AT_PCT) return null;
+  return { pct: Math.round(ratio * 100), overQuota: eventsUsed >= eventQuota };
+}
+
 export function UsageBanner({ planName, eventsUsed, eventQuota, resets }: UsageBannerProps) {
   const [dismissed, setDismissed] = useState(false);
-  const pct = Math.round((eventsUsed / eventQuota) * 100);
-  // The same comparison the tab and Go's over-quota SELECT make (D163): AT the
-  // quota, not past it. Read off the pair rather than taken as a third prop — a
-  // separate `overQuota` flag could disagree with the numbers beside it, and the
-  // percentage is deliberately not clamped, because a workspace 33% over its
-  // plan should be told that and not shown a tidy 100%.
-  const overQuota = eventsUsed >= eventQuota;
-  if (dismissed || pct < NOTICE_AT_PCT) return null;
+  const notice = usageBannerNotice(eventsUsed, eventQuota);
+  if (dismissed || !notice) return null;
+  const { pct, overQuota } = notice;
   return (
     <div
       className="flex items-center gap-3 border-b px-4 py-1.5"
