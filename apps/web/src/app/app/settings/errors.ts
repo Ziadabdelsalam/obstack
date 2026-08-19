@@ -20,7 +20,10 @@ import {
  * resolves it, and the two override writes — which must not redirect, because a
  * redirect would throw away the form the operator typed into — resolve it on the
  * server and return the sentence itself. Same map, same fallback, same D121
- * property either way.
+ * property either way. `checkout-unconfirmed` arrives by the first route from a
+ * READ rather than an action: the checkout return reconciles and then redirects,
+ * so a refusal there is one more `?error=` on this surface (D189) instead of a
+ * second way for a page to say a thing did not happen.
  *
  * Every sentence names what the reader can do about it. The two the library
  * raises — already a member, already invited — are the ones an inviter actually
@@ -46,6 +49,8 @@ export const SETTINGS_ERRORS = {
   "override-price-invalid": `Each price is US dollars per million tokens: a number from 0 to ${PRICE_PER_MTOK_MAX.toLocaleString("en-US")}.`,
   "override-limit": `This workspace already has ${OVERRIDE_MAX} price overrides, which is the most it can hold. Remove one to add another.`,
   "override-not-found": "That override isn't one of this workspace's. The list below is the current one.",
+  "checkout-unconfirmed":
+    "We couldn't confirm that checkout, so your plan is unchanged. If you complete the payment, it applies when Polar confirms it.",
   "settings-failed": "That didn't work. Please try again.",
 } as const;
 

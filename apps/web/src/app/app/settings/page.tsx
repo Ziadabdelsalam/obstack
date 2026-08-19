@@ -50,42 +50,73 @@ const asMinute = (at: Date): string => `${at.toISOString().slice(0, 16).replace(
 const asMonth = (at: Date): string =>
   `${at.toLocaleString("en-US", { month: "long", timeZone: "UTC" })} ${at.getUTCFullYear()}`;
 
+/** Where a reconciled return sends the browser, and where a refused one does. */
+const RETURN_APPLIED = "/app/settings?upgraded=1";
+const RETURN_REFUSED = "/app/settings?error=checkout-unconfirmed";
+
 /**
- * The checkout return, which is D110's poll-on-return: the customer comes back
- * from Polar with `?checkout=<id>` and the plan row is written HERE, by reading
- * the checkout's real state, rather than by trusting the browser that arrived.
- * The webhook reconciles the same way for the customer who never comes back —
- * one function, two callers (D168), which is why nothing about a plan is decided
- * in this file.
+ * The checkout return, which is D110's poll-on-return shaped as
+ * POST-redirect-GET (D189): the customer comes back from Polar with
+ * `?checkout=<id>`, the plan row is written HERE by reading the checkout's real
+ * state rather than by trusting the browser that arrived, and then this render
+ * is thrown away for a redirect. The webhook reconciles the same way for the
+ * customer who never comes back — one function, two callers (D168), which is why
+ * nothing about a plan is decided in this file.
  *
- * The parameter is a URL value, so it is parsed totally (D68): absent, repeated
- * and non-string all mean "no return to reconcile". A billing outage is caught
- * and reported as `failed` — a settings page that 500s because Polar is
- * unreachable would take the roster, the keys and the meter down with it, and
- * the reconciler will catch up on its own.
+ * The redirect is the correctness, not the tidiness. The layout above this page
+ * resolves `getUsage` BEFORE the page below it reconciles, and D183's
+ * request-scoped cache then hands this render the object the layout already got
+ * — so a page that rendered its own return would announce an upgrade beside the
+ * quota, the banner and the meter of the plan the customer had a second ago. A
+ * fresh GET has one post-reconcile cache entry for both, so every number on the
+ * screen is the plan the sentence is about. It also ends the wart where a
+ * refresh re-ran a reconciliation: the id is gone from the URL.
+ *
+ * The parameter is a URL value, so it is parsed totally (D68), and its PRESENCE
+ * is what makes this a return: a repeated or empty value is a checkout that
+ * cannot be confirmed, not a page to render with a checkout id still on it.
+ * Refusals — an id Polar never issued, one that is not paid, one belonging to
+ * another workspace (D176) — and a billing outage all land on the one `?error=`
+ * sentence: a settings page that 500s because Polar is unreachable would take
+ * the roster, the keys and the meter down with it, and the reconciler catches up
+ * on its own either way.
  */
 async function applyCheckoutReturn(
   raw: string | string[] | undefined,
   workspaceId: string,
-): Promise<LiveBilling["checkout"]> {
-  if (raw === undefined) return null;
+): Promise<void> {
+  if (raw === undefined) return;
   const checkoutId = Array.isArray(raw) ? raw[0] : raw;
-  if (typeof checkoutId !== "string" || checkoutId === "") return null;
 
-  try {
-    const result = await reconcileCheckout(checkoutId, workspaceId, queryRows);
-    if (result.applied) return "applied";
-    return result.reason === "pending" ? "pending" : "failed";
-  } catch (error) {
-    console.error("[settings] checkout return", error);
-    return "failed";
+  let applied = false;
+  if (typeof checkoutId === "string" && checkoutId !== "") {
+    try {
+      applied = (await reconcileCheckout(checkoutId, workspaceId, queryRows)).applied;
+    } catch (error) {
+      console.error("[settings] checkout return", error);
+    }
   }
+  redirect(applied ? RETURN_APPLIED : RETURN_REFUSED);
 }
+
+/**
+ * The notice's whole condition, off the URL the redirect above wrote (D189).
+ * Total like every other URL read here (D68), and it decides nothing but a
+ * sentence: the plan, the quota and the meter beside it are read from Postgres,
+ * so `?upgraded=1` typed by hand shows a notice about numbers that are already
+ * true rather than a state this page took from the address bar.
+ */
+const upgradedFlag = (raw: string | string[] | undefined): boolean =>
+  (Array.isArray(raw) ? raw[0] : raw) === "1";
 
 export default async function SettingsPage({
   searchParams,
 }: {
-  searchParams: Promise<{ error?: string | string[]; [CHECKOUT_RETURN_PARAM]?: string | string[] }>;
+  searchParams: Promise<{
+    error?: string | string[];
+    upgraded?: string | string[];
+    [CHECKOUT_RETURN_PARAM]?: string | string[];
+  }>;
 }) {
   if (dataMode !== "live") return <SettingsSuite live={null} />;
   await connection();
@@ -96,11 +127,11 @@ export default async function SettingsPage({
   // answers for itself rather than reading a workspace off a null.
   if (!session) redirect("/login");
 
-  // Before the reads, not beside them: a returning checkout writes the plan row,
-  // and the meter below has to be measured against the plan the customer just
-  // bought rather than the one they had a second ago.
+  // Before the reads, and instead of them: a returning checkout writes the plan
+  // row and redirects, so nothing below this line runs on a return — the render
+  // that shows the new plan is the fresh GET that follows (D189).
   const params = await searchParams;
-  const checkout = await applyCheckoutReturn(params[CHECKOUT_RETURN_PARAM], session.workspaceId);
+  await applyCheckoutReturn(params[CHECKOUT_RETURN_PARAM], session.workspaceId);
 
   const requestHeaders = await headers();
   const [orgName, members, invites, keys, usage, plans, health, overrides] = await Promise.all([
@@ -141,7 +172,7 @@ export default async function SettingsPage({
       retentionDays: plan.retentionDays,
       upgrade: plan.priceUsdMonth > currentPrice,
     })),
-    checkout,
+    upgraded: upgradedFlag(params.upgraded),
   };
 
   // The Data & ingest tab, read HERE like every other tab's rows (D182): a tab

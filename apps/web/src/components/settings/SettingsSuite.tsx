@@ -111,8 +111,9 @@ export interface LivePlan {
  * the meter down here cannot drift apart.
  *
  * `asOf` is null when the workspace has never metered — "no events yet" rather
- * than a date — and `checkout` is the enumerated outcome of a return from Polar,
- * never text from the URL (D121).
+ * than a date — and `upgraded` is a flag the server sets from `?upgraded=1`, the
+ * URL the checkout return redirects to once it has written the plan row (D189).
+ * No text from the URL reaches this component (D121).
  */
 export interface LiveBilling {
   planName: string;
@@ -123,7 +124,7 @@ export interface LiveBilling {
   periodStart: string;
   asOf: string | null;
   plans: LivePlan[];
-  checkout: "applied" | "pending" | "failed" | null;
+  upgraded: boolean;
 }
 
 export interface LiveSettings {
@@ -630,28 +631,17 @@ function KeysTab() {
 /* ---------------- Billing ---------------- */
 
 /**
- * What came back from a checkout. Three outcomes, fixed copy, chosen by the
- * server from `reconcileCheckout`'s result — the `?checkout=` value itself is an
- * id someone could have typed, so it is read, reconciled and discarded, and none
- * of it reaches the screen (D121).
+ * What an applied checkout says, and the only checkout outcome with a notice
+ * here: the page reconciles the return and REDIRECTS to `?upgraded=1` (D189), so
+ * this sentence is rendered by a fresh GET made after the plan row was written —
+ * the meter below it is the new plan's meter in the same paint, which is what
+ * makes the sentence true when it is first read rather than one render later.
  *
- * "pending" is its own sentence rather than a failure: a customer who closed the
- * payment tab is not an error, and telling them their upgrade failed when Polar
- * may still complete it would be a lie the webhook then contradicts (D169 — the
- * reconciler runs either way).
- *
- * "failed" claims nothing about the money. A checkout can reach this branch
- * having actually been PAID — succeeded but missing its plan id is a refusal
- * (`reconcile.ts`) — so "nothing was charged" would be a sentence we cannot
- * know is true, said to someone who just paid. What we do know is what our own
- * row says and that the webhook reconciles the same checkout independently.
+ * A refusal never reaches this branch: the redirect carries it into the page's
+ * `?error=` vocabulary (`settings/errors.ts`) instead, so "nothing happened" and
+ * "you are upgraded" are two different URLs rather than two moods of one.
  */
-const CHECKOUT_NOTICES = {
-  applied: "Your plan is updated — the meter below is measured against it now.",
-  pending: "That checkout isn't paid yet. If you complete it, this page updates on its own.",
-  failed:
-    "We couldn't confirm that checkout, so your plan is unchanged for now. If the payment went through, it applies as soon as Polar confirms it.",
-} as const;
+const UPGRADED_NOTICE = "Your plan is updated — the meter below is measured against it now.";
 
 /**
  * The tab, from `server/usage.ts` and the plan catalog — the D171 one-definition
@@ -671,12 +661,12 @@ function LiveBillingTab({ live }: { live: LiveSettings }) {
 
   return (
     <>
-      {billing.checkout && (
+      {billing.upgraded && (
         <p
           role="status"
           className="mb-4 rounded-lg border border-line bg-surface px-4 py-2.5 text-[12.5px] leading-relaxed text-mid"
         >
-          {CHECKOUT_NOTICES[billing.checkout]}
+          {UPGRADED_NOTICE}
         </p>
       )}
 
@@ -1324,11 +1314,11 @@ function ComplianceTab() {
 
 export function SettingsSuite({ live }: { live: LiveSettings | null }) {
   // A customer coming back from Polar lands on the tab that answers them. The
-  // return is reconciled on the server before this renders (D110's
-  // poll-on-return), and its notice, the new plan and the meter it is measured
-  // against all live in Billing & usage — opening on General would hide the
-  // outcome of a payment behind a click.
-  const [tab, setTab] = useState<Tab>(live?.billing.checkout ? "Billing & usage" : "General");
+  // return is reconciled and redirected on the server before this renders (D189),
+  // and its notice, the new plan and the meter it is measured against all live in
+  // Billing & usage — opening on General would hide the outcome of a payment
+  // behind a click.
+  const [tab, setTab] = useState<Tab>(live?.billing.upgraded ? "Billing & usage" : "General");
   return (
     <div className="mx-auto max-w-3xl px-5 py-6">
       <h1 className="font-display text-[19px] font-semibold text-ink">Settings</h1>

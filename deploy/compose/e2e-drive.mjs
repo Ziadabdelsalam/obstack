@@ -1811,19 +1811,20 @@ try {
     ingestTab.text.slice(0, 240),
   );
 
-  step("a plan change round-trips: checkout → return → reconcile → plan row → the tab says Pro (D168)");
+  step("a plan change round-trips: checkout → return → reconcile → redirect → ONE paint says Pro (D168/D189)");
   await openTab(alice, "Billing & usage", `document.querySelector("main")?.textContent.includes("change plan")`);
   must(await alice.evaluate(clickText("Upgrade to Pro")), "the Billing & usage tab offers no Pro upgrade");
   must(
     await alice.waitFor(
-      `location.search.includes("checkout=") && document.querySelector("main")?.textContent.includes("Your plan is updated")`,
+      `document.querySelector("main")?.textContent.includes("Your plan is updated")`,
       30_000,
     ),
     "the checkout never came back to a reconciled settings page",
   );
-  const returned = await alice.evaluate(BILLING);
+  const landing = await alice.evaluate(`location.pathname + location.search`);
+  const proPlan = await pgOne(`SELECT event_quota, retention_days FROM plans WHERE id = $1`, ["pro"]);
   const planRow = await pgOne(
-    `SELECT plan_id, polar_customer_id, polar_subscription_id FROM workspace_plans WHERE workspace_id = $1`,
+    `SELECT plan_id, polar_customer_id, polar_subscription_id, updated_at FROM workspace_plans WHERE workspace_id = $1`,
     [alice.workspaceId],
   );
   check(
@@ -1836,35 +1837,69 @@ try {
     JSON.stringify(planRow),
   );
   check(
-    "and the page the customer lands on says so, in the fixed copy the server chose (D121)",
-    returned.main.includes("Your plan is updated"),
-    returned.main.slice(0, 200),
+    "and then redirected: the landing is /app/settings?upgraded=1, with the checkout id gone from the address bar (D189)",
+    landing === "/app/settings?upgraded=1",
+    landing,
   );
 
-  // The plan is read on the NEXT render, and that is a measured property of
-  // this seam rather than a convenience: the layout resolves `getUsage` before
-  // the page below it reconciles the returning checkout, and D183's
-  // request-scoped cache then hands the page the same object the layout
-  // already got — so the render that announces the upgrade is still measured
-  // against the plan the customer had a second ago (returned to the manager as
-  // a seam finding). What the round trip has to prove is that the plan the
-  // catalog sells is the plan the product then shows, and that is here.
-  await openTab(alice, "Billing & usage", `document.querySelector("main")?.textContent.includes("usage this period")`);
-  const upgraded = await alice.evaluate(BILLING);
-  const proPair = pairIn(upgraded.main.split("events (spans + log records)")[1] ?? "");
-  const proPlan = await pgOne(`SELECT event_quota, retention_days FROM plans WHERE id = $1`, ["pro"]);
+  // THE LANDING, FETCHED THE WAY THE CUSTOMER'S BROWSER FETCHES IT. A customer
+  // returns from Polar's hosted page, so the return is a document navigation:
+  // the browser GETs `?checkout=<id>`, follows the redirect this page answers
+  // with, and paints the response to `?upgraded=1`. Here the rail is the fake, so
+  // its checkout URL is same-origin and the click above became a CLIENT-side
+  // transition instead — and Next reuses the shared layout segment across those
+  // by design ("shared layouts won't automatically be refetched on every
+  // navigation, only the page segment that changes", staleTimes.md), which would
+  // make a banner read after the click a claim about the previous document, not
+  // about this seam. So the landing URL is fetched as a document, once, and every
+  // number below comes out of THAT ONE render (D189).
+  must(
+    await alice.goto("/app/settings?upgraded=1", `!!document.querySelector("main h1")`),
+    "the return landing never rendered",
+  );
+  const returned = await alice.evaluate(BILLING);
+  const proPair = pairIn(returned.main.split("events (spans + log records)")[1] ?? "");
   check(
-    "the tab now shows the plan it just bought — its name, its catalog quota, its retention, none of them restated in TypeScript (D163)",
-    proPair !== null &&
+    "ONE paint carries the notice AND the plan it just bought — name, catalog quota, retention, none of them restated in TypeScript (D163/D189)",
+    returned.main.includes("Your plan is updated") &&
+      proPair !== null &&
       proPair[0] === ledger.events &&
       proPair[1] === Number(proPlan?.event_quota) &&
-      upgraded.main.includes(`${proPlan?.retention_days} days · Pro`),
-    `${JSON.stringify(proPair)} vs catalog ${JSON.stringify(proPlan)}`,
+      returned.main.includes(`${proPlan?.retention_days} days · Pro`),
+    `${JSON.stringify(proPair)} vs catalog ${JSON.stringify(proPlan)} · ${returned.main.slice(0, 200)}`,
   );
   check(
-    "and the banner goes with it — the same used number, now under a quota that does not warrant one",
-    upgraded.banner === null,
-    upgraded.banner,
+    "and the banner in that same paint goes with it — the same used number, now under a quota that does not warrant one",
+    returned.banner === null,
+    returned.banner,
+  );
+
+  // The refresh, which is where the old shape lied twice: the notice is on the
+  // URL, so it survives a reload honestly, and the checkout id is NOT, so a
+  // reload cannot reconcile a second time. `updated_at` is the measured proof of
+  // the second half — the upsert stamps it on every write, so an unmoved stamp
+  // is a write that did not happen (D189).
+  must(
+    await alice.goto("/app/settings?upgraded=1", `!!document.querySelector("main h1")`),
+    "the reloaded return landing never rendered",
+  );
+  const refreshed = await alice.evaluate(BILLING);
+  const refreshedRow = await pgOne(`SELECT updated_at FROM workspace_plans WHERE workspace_id = $1`, [
+    alice.workspaceId,
+  ]);
+  check(
+    "a refresh of that URL says the same true thing: the notice is sticky because it is on the URL, beside the plan it is about",
+    refreshed.main.includes("Your plan is updated") &&
+      refreshed.main.includes(`${proPlan?.retention_days} days · Pro`) &&
+      refreshed.banner === null,
+    `${refreshed.banner} · ${refreshed.main.slice(0, 200)}`,
+  );
+  check(
+    "and nothing reconciled a second time — the plan row still carries the stamp the return path wrote",
+    Boolean(planRow?.updated_at) &&
+      Boolean(refreshedRow?.updated_at) &&
+      String(refreshedRow.updated_at) === String(planRow.updated_at),
+    `${planRow?.updated_at} → ${refreshedRow?.updated_at}`,
   );
 
   step("alice revokes the key — the row is stamped, and the list says so about THAT key");
