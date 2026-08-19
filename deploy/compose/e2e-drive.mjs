@@ -1902,6 +1902,41 @@ try {
     `${planRow?.updated_at} → ${refreshedRow?.updated_at}`,
   );
 
+  // THE OTHER EXIT of the same seam, walked end to end rather than reasoned
+  // about: a return the rail refuses. An id this rail never issued is the
+  // `UnknownCheckout` class, and the page maps EVERY refusal — unknown, unpaid,
+  // another workspace's (D176), a billing outage — through the one `applied`
+  // boolean, so proving this one proves the branch. What it pins that a unit
+  // test of `reconcileCheckout` cannot: that the code the redirect names is a
+  // member of the settings vocabulary. A typo there still renders a sentence —
+  // the generic one — so the refusal's own copy is what is asserted (D121/D189).
+  must(
+    await alice.goto("/app/settings?checkout=chk_never_issued", `!!document.querySelector("main h1")`),
+    "the refused return never rendered",
+  );
+  const refusedLanding = await alice.evaluate(`location.pathname + location.search`);
+  const refused = await alice.evaluate(SETTINGS);
+  const refusedRow = await pgOne(`SELECT plan_id, updated_at FROM workspace_plans WHERE workspace_id = $1`, [
+    alice.workspaceId,
+  ]);
+  check(
+    "a checkout the rail never issued redirects too — to `?error=checkout-unconfirmed`, with the id gone from the address bar (D189)",
+    refusedLanding === "/app/settings?error=checkout-unconfirmed",
+    refusedLanding,
+  );
+  check(
+    "and it says the refusal's own sentence, not the generic one and not an upgrade notice (D121)",
+    refused.text.includes("We couldn't confirm that checkout, so your plan is unchanged") &&
+      !refused.text.includes("That didn't work") &&
+      !refused.text.includes("Your plan is updated"),
+    refused.text.slice(0, 240),
+  );
+  check(
+    "and nothing was written for it — alice is on the plan she bought, under the stamp the return path wrote",
+    refusedRow?.plan_id === "pro" && String(refusedRow?.updated_at) === String(planRow?.updated_at),
+    `${JSON.stringify(refusedRow)} vs ${planRow?.updated_at}`,
+  );
+
   step("alice revokes the key — the row is stamped, and the list says so about THAT key");
   await openTab(
     alice,

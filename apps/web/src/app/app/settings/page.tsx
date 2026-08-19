@@ -73,8 +73,9 @@ const RETURN_REFUSED = "/app/settings?error=checkout-unconfirmed";
  * refresh re-ran a reconciliation: the id is gone from the URL.
  *
  * The parameter is a URL value, so it is parsed totally (D68), and its PRESENCE
- * is what makes this a return: a repeated or empty value is a checkout that
- * cannot be confirmed, not a page to render with a checkout id still on it.
+ * is what makes this a return: a repeated one is judged by its first member like
+ * every other URL read on this surface, an empty one is a checkout that cannot
+ * be confirmed, and neither ends in a page rendered with a checkout id on it.
  * Refusals — an id Polar never issued, one that is not paid, one belonging to
  * another workspace (D176) — and a billing outage all land on the one `?error=`
  * sentence: a settings page that 500s because Polar is unreachable would take
