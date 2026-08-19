@@ -4,14 +4,66 @@ import { redirect } from "next/navigation";
 import { SideNav } from "@/components/shell/SideNav";
 import { TopBar } from "@/components/shell/TopBar";
 import { CommandPalette } from "@/components/shell/CommandPalette";
-import { UsageBanner } from "@/components/shell/UsageBanner";
+import { UsageBanner, type UsageBannerProps } from "@/components/shell/UsageBanner";
 import { SampleDataBadge } from "@/components/shell/SampleDataBadge";
 import { TourGuide } from "@/components/shell/TourGuide";
 import { FloatingAsk } from "@/components/ask/FloatingAsk";
 import { WorkspaceProvider } from "@/state/workspace-store";
+import { usage as mockUsage } from "@/mock/workspace";
 import { dataMode } from "@/server/data";
 import { getAuth } from "@/server/auth";
+import { queryRows } from "@/server/postgres";
 import { getSessionContext } from "@/server/session";
+import { getUsage } from "@/server/usage";
+
+/**
+ * The demo's banner, which stays mock-fed (D125): mock mode has no ledger to
+ * sum and no workspace to sum it for, so the numbers the demo has always shown
+ * are handed to the same component the live shell uses.
+ */
+const MOCK_BANNER: UsageBannerProps = {
+  planName: mockUsage.plan,
+  eventsUsed: mockUsage.events.used,
+  eventQuota: mockUsage.events.quota,
+  resets: mockUsage.resetsOn,
+};
+
+/**
+ * The period rolls over at the start of the month after the one being metered —
+ * `periodStart` is the UTC month start (D163), so the reset is that month plus
+ * one. Formatted here, in UTC, because the banner is a client component and a
+ * date formatted there is formatted in two timezones across hydration.
+ */
+function resetsOn(periodStart: Date): string {
+  const next = new Date(Date.UTC(periodStart.getUTCFullYear(), periodStart.getUTCMonth() + 1, 1));
+  return next.toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    timeZone: "UTC",
+  });
+}
+
+/**
+ * The live shell's banner numbers, from THE usage definition (D171) — the same
+ * function the Billing & usage tab reads. Two SUMs would be the S2.3 L3
+ * divergence class in its most visible form: a shell warning about a quota the
+ * settings page says is fine.
+ *
+ * No catch: this runs after the guard below, on a path that has already read
+ * Postgres twice for the session, so a database that cannot answer this query
+ * has already taken the shell down — swallowing the error here would only buy a
+ * banner-shaped hole in a page that is not going to render anyway.
+ */
+async function liveBanner(workspaceId: string): Promise<UsageBannerProps> {
+  const usage = await getUsage(workspaceId, queryRows);
+  return {
+    planName: usage.planName,
+    eventsUsed: usage.eventsUsed,
+    eventQuota: usage.eventQuota,
+    resets: resetsOn(usage.periodStart),
+  };
+}
 
 export default async function AppLayout({ children }: { children: React.ReactNode }) {
   const live = dataMode === "live";
@@ -50,14 +102,17 @@ export default async function AppLayout({ children }: { children: React.ReactNod
     session && user
       ? { name: user.name, email: user.email, workspaceId: session.workspaceId }
       : null;
+  const banner = session ? await liveBanner(session.workspaceId) : MOCK_BANNER;
   return (
     <WorkspaceProvider>
       <div className="flex h-screen overflow-hidden">
         <SideNav workspaceId={session?.workspaceId ?? null} />
         <div className="flex min-w-0 flex-1 flex-col">
           <TopBar live={live} account={account} />
-          {/* free-tier quota is mock billing state until M3 owns metering (F7) */}
-          {!live && <UsageBanner />}
+          {/* Real Postgres usage rows in live mode, the demo's numbers in mock —
+              the mode branch is above, and the banner itself takes props either
+              way rather than knowing which product it is in. */}
+          <UsageBanner {...banner} />
           {live && <SampleDataBadge />}
           <main className="min-w-0 flex-1 overflow-x-hidden overflow-y-auto">{children}</main>
         </div>

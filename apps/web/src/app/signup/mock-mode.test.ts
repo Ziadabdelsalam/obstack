@@ -185,8 +185,8 @@ test("the invite-accept action trips the same way in mock mode (D152)", async ()
   assert.match(logged[0] ?? "", /\[invite\] accept posted in mock mode/);
 });
 
-test("every settings write trips the same way in mock mode (D152)", async () => {
-  // The fourth surface, and the widest: four mutations sharing ONE gate
+test("every settings action trips the same way in mock mode (D152)", async () => {
+  // The fourth surface, and the widest: six functions sharing ONE gate
   // (`settingsSession`), so the property is asserted per action rather than on
   // the helper — a future action that forgets to open with it would leave this
   // list unchanged and green, which is exactly what D152 forbids.
@@ -199,11 +199,25 @@ test("every settings write trips the same way in mock mode (D152)", async () => 
   // is called with an EMPTY FormData on purpose: the guard runs before any field
   // is read, so nothing below it can be what answered.
   const actions = await import("@/app/app/settings/actions");
+  const billing = await import("@/app/app/settings/billing-actions");
   const cases: [string, (form: FormData) => Promise<unknown>][] = [
     ["issue key", actions.issueKey],
     ["revoke key", actions.revokeKey],
     ["invite teammate", actions.inviteTeammate],
     ["cancel invitation", actions.cancelInvitation],
+    // The plan change lives in its own module — a `"use server"` file may
+    // export nothing but server actions, so it carries its own copy of the gate
+    // — and joins this list rather than getting a test of its own, because the
+    // property is one property (D152). Its guard would also be the difference
+    // between refusing and reaching Polar with no workspace behind it.
+    ["start checkout", billing.startCheckout],
+    // The Data & ingest tab's two. Its READ is not here because it is not an
+    // action at all — the page reads those rows (D182) — and the writes carry
+    // the same gate as everything above: without it, a post in mock mode would
+    // reach `getSessionContext` and then the pool, the two things this
+    // deployment does not have.
+    ["save price override", actions.saveOverride],
+    ["remove price override", actions.deleteOverride],
   ];
 
   for (const [where, action] of cases) {

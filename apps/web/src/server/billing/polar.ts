@@ -1,0 +1,138 @@
+import "server-only";
+import { Polar } from "@polar-sh/sdk";
+import { ResourceNotFound } from "@polar-sh/sdk/models/errors/resourcenotfound.js";
+import { validateEvent } from "@polar-sh/sdk/webhooks.js";
+import { normalizeWebhook } from "./webhook";
+import {
+  CHECKOUT_RETURN_PARAM,
+  UnknownCheckout,
+  type BillingClient,
+  type CheckoutRequest,
+  type CheckoutState,
+  type CreatedCheckout,
+  type UsageEvent,
+  type UsageIngestResult,
+  type WebhookEvent,
+} from "./types";
+
+/**
+ * The sandbox rail — the ONLY module in the product that calls Polar (D110).
+ * Sandbox is the whole of M3: `server: "sandbox"` targets
+ * `https://sandbox-api.polar.sh`, tokens are environment-separate (a production
+ * token is refused there and vice versa, MEASURED), and promoting this to
+ * production is the registered S5-GATE.
+ *
+ * Four environment values, none of them ever written to git, a log or CI:
+ *
+ *  - `POLAR_ACCESS_TOKEN` — an organization access token (`polar_oat_…`).
+ *  - `POLAR_WEBHOOK_SECRET` — the endpoint secret, base64 per Standard Webhooks;
+ *    it goes to `validateEvent` untouched, which is why the header names stay
+ *    inside the SDK and no signature scheme is reimplemented here.
+ *  - `OBSTACK_APP_URL` — our own origin, because Polar needs an ABSOLUTE success
+ *    URL and this process has no request context when the reporter runs.
+ *  - `POLAR_PRODUCT_<PLAN>` — the Polar product behind a plan id, e.g.
+ *    `POLAR_PRODUCT_PRO`. The product lives in Polar's catalog, our plan lives
+ *    in `plans` (D163), and this mapping is the seam between them; it is env
+ *    rather than a column because the two sides of it differ per environment
+ *    (a sandbox product id means nothing in production).
+ *
+ * Each is demanded at the moment it is needed and the failure names the missing
+ * variable and nothing else — a message that echoed a token would put it in the
+ * log the failure produces.
+ */
+
+/** Missing configuration is loud, immediate, and never a fallback to the fake. */
+function required(name: string): string {
+  const value = process.env[name];
+  if (!value) {
+    throw new Error(`${name} is required when OBSTACK_BILLING_MODE=polar-sandbox`);
+  }
+  return value;
+}
+
+/**
+ * Polar's five checkout states, mapped onto the three the product acts on.
+ * `confirmed` is payment in flight — it is not paid yet, so it reads as still
+ * open and the return path polls again; `failed` is over without a plan change,
+ * which is what `expired` means to us.
+ */
+function checkoutStatus(status: string): CheckoutState["status"] {
+  if (status === "succeeded") return "succeeded";
+  if (status === "expired" || status === "failed") return "expired";
+  return "open";
+}
+
+/** Our plan id, as we stored it on the checkout's metadata at creation. */
+function planFromMetadata(metadata: Record<string, unknown>): string | undefined {
+  const planId = metadata.plan_id;
+  return typeof planId === "string" ? planId : undefined;
+}
+
+/**
+ * Built once per process, on first use — not at module load, so a mock-mode or
+ * fake-mode deployment that has no token still compiles and boots this file
+ * (D114's rule, the same one `getPool` follows).
+ */
+export function createPolarBilling(): BillingClient {
+  const client = new Polar({ accessToken: required("POLAR_ACCESS_TOKEN"), server: "sandbox" });
+
+  return {
+    mode: "polar-sandbox",
+
+    async createCheckout(request: CheckoutRequest): Promise<CreatedCheckout> {
+      const product = required(`POLAR_PRODUCT_${request.planId.toUpperCase()}`);
+      const appUrl = required("OBSTACK_APP_URL").replace(/\/+$/, "");
+      const checkout = await client.checkouts.create({
+        products: [product],
+        // One Polar customer per workspace (D110): the external id IS the
+        // workspace, so Polar creates or reuses the right customer with no
+        // customer table of our own to keep in step.
+        externalCustomerId: request.workspaceId,
+        // `{CHECKOUT_ID}` is Polar's own interpolation, which is what lets the
+        // return path carry the id under the same parameter the fake uses.
+        successUrl: `${appUrl}${request.returnPath}?${CHECKOUT_RETURN_PARAM}={CHECKOUT_ID}`,
+        metadata: { plan_id: request.planId, workspace_id: request.workspaceId },
+      });
+      return { checkoutId: checkout.id, url: checkout.url };
+    },
+
+    async getCheckout(checkoutId: string): Promise<CheckoutState> {
+      let checkout;
+      try {
+        checkout = await client.checkouts.get({ id: checkoutId });
+      } catch (error) {
+        // 404 means the id names nothing — a stale link or a hostile parameter.
+        // Anything else is an outage and must NOT read as a finished checkout.
+        if (error instanceof ResourceNotFound) throw new UnknownCheckout(checkoutId, { cause: error });
+        throw error;
+      }
+      return {
+        status: checkoutStatus(String(checkout.status)),
+        externalCustomerId: checkout.externalCustomerId ?? undefined,
+        customerId: checkout.customerId ?? undefined,
+        subscriptionId: checkout.subscriptionId ?? undefined,
+        planId: planFromMetadata(checkout.metadata),
+      };
+    },
+
+    async ingestUsage(events: UsageEvent[]): Promise<UsageIngestResult> {
+      const response = await client.events.ingest({
+        events: events.map((event) => ({
+          externalCustomerId: event.externalCustomerId,
+          externalId: event.externalId,
+          name: event.name,
+          timestamp: event.timestamp,
+          metadata: event.metadata,
+        })),
+      });
+      return { inserted: response.inserted, duplicates: response.duplicates };
+    },
+
+    verifyWebhook(rawBody: string, headers: Record<string, string>): WebhookEvent {
+      // `validateEvent` throws `WebhookVerificationError` on a bad signature and
+      // parses the body itself — the route hands it the RAW body precisely so
+      // nothing has parsed it first (D169).
+      return normalizeWebhook(validateEvent(rawBody, headers, required("POLAR_WEBHOOK_SECRET")));
+    },
+  };
+}

@@ -10,6 +10,10 @@
 // extends. The request model is priced first and the response model is the
 // fallback (D9) — some SDKs report only the resolved model, some only the
 // requested alias.
+//
+// A workspace may hold its own rows (D108): WithOverrides layers them over the
+// embedded list. Those rows are read from Postgres once per cache refresh and
+// the layered table is built there, not per span.
 package pricing
 
 import (
@@ -107,6 +111,55 @@ func mustLoad(data []byte) *Table {
 		panic("pricing: " + err.Error())
 	}
 	return t
+}
+
+// WithOverrides returns this table with a workspace's override rows layered over
+// it (D108). A workspace's override is a Rate and not a type of its own: it is
+// the same fact — a prefix and its two per-million-token prices — read out of
+// pricing_overrides instead of the embedded file, and a second name for it would
+// only be a second thing to keep in step. Callers build the result once per cache
+// refresh and reuse it (D174): the layering sorts, and a sort per span would
+// price telemetry at the cost of throughput.
+//
+// Precedence is workspace-first. The longest matching override wins outright,
+// and only a model that no override is a prefix of falls through to the base
+// rows — so an override at a coarser prefix than a base row still shadows it. A
+// workspace that has negotiated a family price means it to beat our per-version
+// list price, not to lose to it.
+//
+// Rows that could not price anything — no match, a negative price, a second row
+// for a prefix already taken — are skipped rather than refused: overrides arrive
+// from Postgres on a fail-open path (D164), and one bad row must not cost the
+// workspace the rest of its prices. That is the difference from Load, which
+// refuses: boot can refuse, a cache refresh cannot. Case is not one of those
+// rows — `match` is lowercase by a CHECK on the table (D175), so the lowercasing
+// below is defence against a hand-edited database and nothing the store can
+// produce. AsOf stays the embedded list's date (D29); it answers when *our*
+// numbers were last checked.
+func (t *Table) WithOverrides(overrides []Rate) *Table {
+	rows := make([]Rate, 0, len(overrides))
+	seen := make(map[string]struct{}, len(overrides))
+	for _, o := range overrides {
+		o.Match = strings.ToLower(strings.TrimSpace(o.Match))
+		if o.Match == "" || o.InputPerMTok < 0 || o.OutputPerMTok < 0 {
+			continue
+		}
+		if _, dup := seen[o.Match]; dup {
+			continue
+		}
+		seen[o.Match] = struct{}{}
+		rows = append(rows, o)
+	}
+	if len(rows) == 0 {
+		return t
+	}
+
+	sort.SliceStable(rows, func(i, j int) bool {
+		return len(rows[i].Match) > len(rows[j].Match)
+	})
+	// The base rows are already longest-first and are never mutated: a layered
+	// table shares them, and Default keeps pricing every other workspace.
+	return &Table{AsOf: t.AsOf, rates: append(rows, t.rates...)}
 }
 
 // Lookup returns the row whose match is the longest prefix of model. An empty

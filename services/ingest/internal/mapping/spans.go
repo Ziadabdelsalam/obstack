@@ -15,13 +15,18 @@ import (
 // cannot be mapped is dropped and counted (D6) — the rest of the payload still
 // lands, because one malformed span in a batch of ten thousand is not a reason
 // to lose the other 9,999.
-func SpanRows(workspaceID string, td ptrace.Traces) []SpanRow {
+//
+// prices is the workspace's table — the embedded list with its D108 overrides
+// layered on — resolved by the caller once per export, not per span. It is
+// required: the writer resolves it (nil there means the embedded list), so a
+// span priced by the wrong workspace's table is not a shape this can reach.
+func SpanRows(workspaceID string, td ptrace.Traces, prices *pricing.Table) []SpanRow {
 	rows := make([]SpanRow, 0, td.SpanCount())
 	for _, rs := range td.ResourceSpans().All() {
 		res := mapResource(rs.Resource().Attributes())
 		for _, ss := range rs.ScopeSpans().All() {
 			for _, span := range ss.Spans().All() {
-				row, err := mapSpan(workspaceID, res, span)
+				row, err := mapSpan(workspaceID, res, span, prices)
 				if err != nil {
 					metrics.Dropped.WithLabelValues(workspaceID, metrics.ReasonMapping).Inc()
 					continue
@@ -33,7 +38,7 @@ func SpanRows(workspaceID string, td ptrace.Traces) []SpanRow {
 	return rows
 }
 
-func mapSpan(workspaceID string, res resource, span ptrace.Span) (SpanRow, error) {
+func mapSpan(workspaceID string, res resource, span ptrace.Span, prices *pricing.Table) (SpanRow, error) {
 	// IDs are the primary key and the join key for logs; a span missing either
 	// is unreachable from every surface in the product.
 	if span.TraceID().IsEmpty() {
@@ -87,7 +92,7 @@ func mapSpan(workspaceID string, res resource, span ptrace.Span) (SpanRow, error
 		row.FinishReason = finishReason(attrs)
 		row.Prompt = attrStr(attrs, attrGenAIPrompt)
 		row.Completion = attrStr(attrs, attrGenAICompletion)
-		row.CostUSD = pricing.Default.Cost(
+		row.CostUSD = prices.Cost(
 			row.GenAIRequestModel, row.GenAIResponseModel,
 			int64(row.InputTokens), int64(row.OutputTokens),
 		)

@@ -1,0 +1,425 @@
+import assert from "node:assert/strict";
+import { randomBytes } from "node:crypto";
+import { after, test } from "node:test";
+import * as React from "react";
+import { Client, type QueryResultRow } from "pg";
+import { getPool, queryRows, type QueryRows } from "./postgres";
+import { getUsage, listPlans } from "./usage";
+
+// run with: docker compose -f deploy/compose/docker-compose.yml up -d --wait postgres ingest
+// then:     OBSTACK_TEST_POSTGRES_DSN=postgres://obstack:obstack_postgres_dev@127.0.0.1:5432/obstack \
+//           npm test --workspace apps/web
+//
+// What this file proves that no unit test can (D130): `getUsage` is ONE
+// definition and Postgres agrees with it. The claims:
+//
+//   1. Absent `workspace_plans` row = free, with the catalog's own numbers —
+//      the COALESCE join, run against a workspace that really has no plan row.
+//   2. The month window is real: a bucket one hour before the month start is
+//      proven PRESENT in the table and absent from the sum (S3.1 L1 — the
+//      exclusion is asserted by content, not by a number that happens to match).
+//   3. `SUM(spans + logs)` counts a span and a log record alike (PRD §10).
+//   4. `asOf` is the freshest `updated_at` IN the window, and null when the
+//      workspace has never metered — "no events yet", not the epoch.
+//   5. A plan row moves quota, retention and name to that catalog row — none of
+//      those three numbers exists in TypeScript (D163).
+//   6. Another workspace's ledger rows never enter this workspace's sum.
+//   7. The seeded catalog IS the D163 catalog of record, read through the same
+//      path the billing surface reads it through.
+//   8. The `cache()` wrap (D183) really dedupes inside one request and really
+//      does not across two — the banner and the tab share ONE ledger sum, and
+//      the next request still sees new events.
+//   9. The month boundary is UTC on a server whose session is NOT (D179), read
+//      through a connection that really is an hour ahead — the twin of
+//      `services/ingest/internal/keystore/integration_test.go`'s.
+//
+// D130's skip class, deliberately NARROW: this file self-skips only when
+// `OBSTACK_TEST_POSTGRES_DSN` is UNSET. A DSN naming a dead port or an
+// unmigrated database FAILS here, loudly — an integration test with a DSN never
+// degrades to a pass. The schema is NOT applied here: the ingest binary's
+// migrator applying `services/ingest/pgmigrations/*.sql` is the ONE schema path.
+
+const DSN = process.env.OBSTACK_TEST_POSTGRES_DSN;
+
+const skip = DSN
+  ? undefined
+  : "OBSTACK_TEST_POSTGRES_DSN is unset — no Postgres to dial (deploy/compose/README.md)";
+
+// `postgres.ts` builds its pool lazily on the first query (D114), so pointing the
+// app's own read path at the test DSN is enough: `getUsage` is called below with
+// `queryRows`, the same injected read path the settings page hands it.
+if (DSN) process.env.OBSTACK_POSTGRES_DSN = DSN;
+
+after(async () => {
+  if (DSN) await getPool().end();
+});
+
+/** host:port of the DSN, for failure messages — never its password. */
+function target(): string {
+  try {
+    const url = new URL(DSN as string);
+    return `${url.host}${url.pathname}`;
+  } catch {
+    return "the configured DSN";
+  }
+}
+
+/**
+ * The month boundary as POSTGRES computes it — the same expression `usage.ts`
+ * windows on. The test must not compute the boundary in JavaScript: a fixture
+ * built from this process's clock and a query windowed by the server's would
+ * agree almost always and disagree exactly at the boundary this test is about.
+ */
+const MONTH_START = `(date_trunc('month', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')`;
+
+/**
+ * A ledger bucket `offsetHours` from the month start. Positive offsets are
+ * inside the window, negative ones are the previous month — the row that must
+ * exist and must not count.
+ */
+async function meter(
+  workspaceId: string,
+  offsetHours: number,
+  spans: number,
+  logs: number,
+  updatedAt?: string,
+): Promise<void> {
+  await queryRows(
+    `INSERT INTO usage_ledger (workspace_id, period_start, spans, logs, updated_at)
+          VALUES ($1, ${MONTH_START} + make_interval(hours => $2::int), $3, $4,
+                  coalesce($5::timestamptz, now()))`,
+    [workspaceId, offsetHours, spans, logs, updatedAt ?? null],
+  );
+}
+
+/**
+ * A fresh pair of workspaces for one test, dropped afterwards. Random ids
+ * because CI runs this against a compose Postgres other drives also write to: a
+ * fixed id would collide with a rerun, and a global DELETE would take somebody
+ * else's rows with it. `ON DELETE CASCADE` takes the ledger and plan rows.
+ */
+async function withWorkspacePair(run: (a: string, b: string) => Promise<void>): Promise<void> {
+  const tag = randomBytes(6).toString("hex");
+  const a = `ws_t6a_${tag}`;
+  const b = `ws_t6b_${tag}`;
+  await queryRows(`INSERT INTO workspaces (id, org_id) VALUES ($1, $2), ($3, $4)`, [
+    a,
+    `org_t6a_${tag}`,
+    b,
+    `org_t6b_${tag}`,
+  ]);
+  try {
+    await run(a, b);
+  } finally {
+    await queryRows(`DELETE FROM workspaces WHERE id IN ($1, $2)`, [a, b]);
+  }
+}
+
+/**
+ * One request, as React means it.
+ *
+ * `cache` reads its per-request store off the async dispatcher the server
+ * runtime installs at `ReactSharedInternals.A`, and falls straight THROUGH to
+ * the wrapped function when there is none — measured, not remembered, at the
+ * pinned react 19.2.8: `node_modules/react/cjs/react.react-server.development.js`
+ * returns `fn.apply(null, arguments)` when `A` is null. Node's test runner is
+ * not a request, which is why every other test in this file calls the real
+ * statement every time and their read-after-write assertions still mean
+ * something.
+ *
+ * This installs the smallest dispatcher that satisfies the contract React reads:
+ * a per-scope map keyed by resource type, which is what an RSC render is handed
+ * per request. Nothing else about a request is simulated, because nothing else
+ * is what `cache` keys on.
+ */
+type AsyncDispatcher = {
+  getCacheForType: <T>(create: () => T) => T;
+  cacheSignal: () => AbortSignal | null;
+};
+
+const reactInternals = (
+  React as unknown as {
+    __SERVER_INTERNALS_DO_NOT_USE_OR_WARN_USERS_THEY_CANNOT_UPGRADE: {
+      A: AsyncDispatcher | null;
+    };
+  }
+).__SERVER_INTERNALS_DO_NOT_USE_OR_WARN_USERS_THEY_CANNOT_UPGRADE;
+
+async function inOneRequest<T>(run: () => Promise<T>): Promise<T> {
+  const scope = new Map<() => unknown, unknown>();
+  const outside = reactInternals.A;
+  reactInternals.A = {
+    getCacheForType: <T,>(create: () => T): T => {
+      if (!scope.has(create)) scope.set(create, create());
+      return scope.get(create) as T;
+    },
+    cacheSignal: () => null,
+  };
+  try {
+    return await run();
+  } finally {
+    reactInternals.A = outside;
+  }
+}
+
+/**
+ * A read path on a connection whose session TimeZone is NOT UTC.
+ *
+ * Its own `Client` and not the app's pool: `SET TIME ZONE` is a session setting,
+ * and setting it on a pooled connection would leave it set for whatever ran next
+ * on that connection. The zone is asserted back out of the server before the
+ * body runs, because a test whose whole premise is "the session is an hour
+ * ahead" must not be green on a session that quietly stayed UTC.
+ *
+ * `Etc/GMT-1` is UTC+1 — the POSIX signs are inverted — and it carries no DST,
+ * so the offset is the same offset all year and this test does not change its
+ * mind in October. Same zone, same reason, as the Go twin
+ * (`keystore/integration_test.go`).
+ */
+async function inSessionTimeZone(
+  zone: "Etc/GMT-1",
+  run: (query: QueryRows) => Promise<void>,
+): Promise<void> {
+  const client = new Client({ connectionString: DSN });
+  await client.connect();
+  try {
+    await client.query(`SET TIME ZONE '${zone}'`);
+    const shown = (await client.query<{ TimeZone: string }>(`SHOW TimeZone`)).rows[0];
+    assert.equal(shown?.TimeZone, zone, "the session did not take the timezone this test needs");
+
+    await run(<Row extends QueryResultRow>(sql: string, params?: unknown[]) =>
+      client.query<Row>(sql, params).then((result) => result.rows),
+    );
+  } finally {
+    await client.end();
+  }
+}
+
+/** The catalog row, read raw — so a plan assertion below is never a tautology. */
+async function catalog(planId: string) {
+  const [row] = await queryRows<{
+    name: string;
+    event_quota: string;
+    retention_days: number;
+  }>(`SELECT name, event_quota, retention_days FROM plans WHERE id = $1`, [planId]);
+  return row;
+}
+
+test("the DSN this run was given answers, and it holds the metering schema", { skip }, async () => {
+  // First contact. A refused connection or a missing table surfaces HERE, with
+  // the address in the message, instead of inside a property test — and never
+  // as a skip.
+  try {
+    assert.deepEqual(
+      await queryRows(`SELECT workspace_id FROM usage_ledger WHERE workspace_id = $1`, [
+        `ws_t6_absent_${randomBytes(4).toString("hex")}`,
+      ]),
+      [],
+    );
+  } catch (error) {
+    assert.fail(
+      `OBSTACK_TEST_POSTGRES_DSN is set but ${target()} did not answer a read of usage_ledger — ` +
+        `an integration test with a DSN never degrades to a pass; apply ` +
+        `services/ingest/pgmigrations in filename order and check the port: ${String(error)}`,
+    );
+  }
+});
+
+test("D163: the seeded catalog is the plan catalog of record", { skip }, async () => {
+  // The numbers the landing page and the mock suite show became real pricing on
+  // this sprint's user notice. Nothing in TypeScript defines them — this read is
+  // the whole definition reaching the product, so it is pinned here.
+  assert.deepEqual(await listPlans(queryRows), [
+    { id: "free", name: "Free", eventQuota: 50000, retentionDays: 7, priceUsdMonth: 0 },
+    { id: "pro", name: "Pro", eventQuota: 1000000, retentionDays: 30, priceUsdMonth: 49 },
+  ]);
+});
+
+test("a workspace with no plan row and no events is on free, at zero", { skip }, async () => {
+  await withWorkspacePair(async (a) => {
+    // The premise, measured rather than assumed: there is no plan row. The
+    // COALESCE join is what puts this workspace on a plan, so if a row existed
+    // the assertion below would prove nothing about it.
+    assert.deepEqual(
+      await queryRows(`SELECT plan_id FROM workspace_plans WHERE workspace_id = $1`, [a]),
+      [],
+    );
+
+    const free = await catalog("free");
+    const usage = await getUsage(a, queryRows);
+    assert.equal(usage.planId, "free");
+    assert.equal(usage.planName, free.name);
+    assert.equal(usage.eventQuota, Number(free.event_quota));
+    assert.equal(usage.retentionDays, free.retention_days);
+    assert.equal(usage.eventsUsed, 0);
+    // Never metered: there is no moment to state, and the surface says so
+    // instead of dating the epoch.
+    assert.equal(usage.asOf, null);
+    // ...and the period really is the current UTC month, to the hour.
+    assert.equal(usage.periodStart.getUTCDate(), 1);
+    assert.equal(usage.periodStart.getUTCHours(), 0);
+    assert.equal(usage.periodStart.getUTCMonth(), new Date().getUTCMonth());
+  });
+});
+
+test("events are spans + log records, summed across the month's buckets", { skip }, async () => {
+  await withWorkspacePair(async (a) => {
+    await meter(a, 0, 3, 0); // spans only
+    await meter(a, 1, 0, 5); // log records only
+    await meter(a, 2, 7, 11); // both
+
+    const usage = await getUsage(a, queryRows);
+    assert.equal(usage.eventsUsed, 3 + 5 + 7 + 11);
+  });
+});
+
+test("the month window excludes a bucket that is IN the table but before it", { skip }, async () => {
+  await withWorkspacePair(async (a) => {
+    await meter(a, -1, 1000, 1000); // last month's final hour
+    await meter(a, 0, 4, 6);
+
+    // Content-aware (S3.1 L1): the excluded row is proven to EXIST and to hold
+    // the numbers that would swamp the answer, so "2000 is missing" is a fact
+    // about the window rather than about a row that never landed.
+    const [before] = await queryRows<{ spans: string; logs: string }>(
+      `SELECT spans, logs FROM usage_ledger
+        WHERE workspace_id = $1 AND period_start < ${MONTH_START}`,
+      [a],
+    );
+    assert.deepEqual(before, { spans: "1000", logs: "1000" });
+
+    assert.equal((await getUsage(a, queryRows)).eventsUsed, 10);
+  });
+});
+
+test("asOf is the freshest ledger write in the window", { skip }, async () => {
+  await withWorkspacePair(async (a) => {
+    const older = "2026-08-01T09:00:00Z";
+    const newest = "2026-08-01T11:30:00Z";
+    await meter(a, 0, 1, 0, older);
+    await meter(a, 1, 1, 0, newest);
+    // A LATER write on a bucket OUTSIDE the window must not date the number the
+    // surface is showing: "as of" answers for the sum beside it.
+    await meter(a, -1, 1, 0, "2030-01-01T00:00:00Z");
+
+    const usage = await getUsage(a, queryRows);
+    assert.equal(usage.asOf?.toISOString(), new Date(newest).toISOString());
+    assert.equal(usage.eventsUsed, 2);
+  });
+});
+
+test("a plan row moves quota, retention and name to that catalog row", { skip }, async () => {
+  await withWorkspacePair(async (a) => {
+    await meter(a, 0, 40, 2);
+    const onFree = await getUsage(a, queryRows);
+
+    await queryRows(`INSERT INTO workspace_plans (workspace_id, plan_id) VALUES ($1, 'pro')`, [a]);
+    const onPro = await getUsage(a, queryRows);
+
+    const pro = await catalog("pro");
+    assert.equal(onPro.planId, "pro");
+    assert.equal(onPro.planName, pro.name);
+    assert.equal(onPro.eventQuota, Number(pro.event_quota));
+    assert.equal(onPro.retentionDays, pro.retention_days);
+    // The plan changed what the usage is measured AGAINST and not the usage:
+    // one ledger, one number, whatever is being billed for it (D110).
+    assert.equal(onPro.eventsUsed, onFree.eventsUsed);
+    assert.equal(onPro.eventsUsed, 42);
+    assert.notEqual(onPro.eventQuota, onFree.eventQuota);
+    assert.notEqual(onPro.retentionDays, onFree.retentionDays);
+  });
+});
+
+test("one workspace's ledger never enters another's number", { skip }, async () => {
+  await withWorkspacePair(async (a, b) => {
+    assert.notEqual(a, b);
+    await meter(a, 0, 2, 3);
+    await meter(b, 0, 500, 500);
+
+    assert.equal((await getUsage(a, queryRows)).eventsUsed, 5);
+    assert.equal((await getUsage(b, queryRows)).eventsUsed, 1000);
+
+    // ...and a plan bought by one is not a plan the other is on.
+    await queryRows(`INSERT INTO workspace_plans (workspace_id, plan_id) VALUES ($1, 'pro')`, [b]);
+    assert.equal((await getUsage(a, queryRows)).planId, "free");
+    assert.equal((await getUsage(b, queryRows)).planId, "pro");
+  });
+});
+
+test("D179: the month boundary is UTC, not the session's timezone", { skip }, async () => {
+  await withWorkspacePair(async (a) => {
+    // Last month's final hour, enormous, and this month's own small usage. The
+    // fixture is anchored to the UTC boundary itself — never to a JavaScript
+    // clock and never to the session under test — so "the hour before the month
+    // began" means the same instant to the seeder and to the reader.
+    await meter(a, -1, 5_000_000, 0);
+    await meter(a, 0, 7, 0);
+
+    await inSessionTimeZone("Etc/GMT-1", async (query) => {
+      // Content-aware (S3.1 L1): the excluded row is proven to exist, and to be
+      // large enough that including it could not be mistaken for anything else.
+      const [before] = await query<{ spans: string }>(
+        `SELECT spans FROM usage_ledger
+          WHERE workspace_id = $1 AND period_start < ${MONTH_START}`,
+        [a],
+      );
+      assert.deepEqual(before, { spans: "5000000" });
+
+      // `date_trunc(...)` alone yields a NAKED timestamp, and comparing a
+      // `timestamptz` column against one anchors it in the session's zone: an
+      // hour ahead of UTC the month would start an hour early and swallow the
+      // bucket above — a customer sampled this month for events that were
+      // already billed last month. Drop the trailing `AT TIME ZONE 'UTC'` from
+      // the window in `usage.ts` and this line reads 5,000,007.
+      assert.equal((await getUsage(a, query)).eventsUsed, 7);
+    });
+  });
+});
+
+test("D183: one request sums the ledger once; the next request sums it again", { skip }, async () => {
+  await withWorkspacePair(async (a, b) => {
+    await meter(a, 0, 2, 1);
+    await meter(b, 0, 9, 0);
+
+    // The injected read path, counted. It is the SAME function object on every
+    // call, which matters: `cache` keys on both arguments, so a caller that
+    // built a fresh wrapper per call would be a fresh key per call — the app
+    // hands `getUsage` the one `queryRows` from `postgres.ts` for exactly this
+    // reason.
+    let reads = 0;
+    const counted: QueryRows = <Row extends QueryResultRow>(sql: string, params?: unknown[]) => {
+      reads += 1;
+      return queryRows<Row>(sql, params);
+    };
+
+    const banner = await inOneRequest(async () => {
+      // The app layout reads it for the banner and the settings page reads it
+      // for the meter, in one render (D183/D171).
+      const forBanner = await getUsage(a, counted);
+      const forTab = await getUsage(a, counted);
+
+      // The one-definition proof at its strongest: not two numbers that happen
+      // to agree, ONE object. Unwrap `cache()` in usage.ts and this line and the
+      // count below both go red.
+      assert.equal(forTab, forBanner);
+      assert.equal(reads, 1);
+
+      // ...and the memo is per ARGUMENT, not a process-wide answer: another
+      // workspace in the same request is another statement.
+      assert.equal((await getUsage(b, counted)).eventsUsed, 9);
+      assert.equal(reads, 2);
+
+      return forBanner;
+    });
+    assert.equal(banner.eventsUsed, 3);
+
+    // Request-scoped, and this is the half that keeps the meter honest: events
+    // metered after that render are visible to the next one. A memo that
+    // outlived the request would show a customer a number from a page they
+    // loaded an hour ago.
+    await meter(a, 1, 5, 0);
+    const later = await inOneRequest(() => getUsage(a, counted));
+    assert.equal(later.eventsUsed, 8);
+    assert.equal(reads, 3);
+  });
+});

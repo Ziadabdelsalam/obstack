@@ -47,6 +47,100 @@ func TestCostLongestPrefixWins(t *testing.T) {
 	}
 }
 
+// D108/D167: a workspace's own row beats the embedded list even where the list
+// is more specific. The base prices gpt-4o-mini-2024-07-18 through its
+// gpt-4o-mini row; a workspace that negotiated a gpt-4o family price means that
+// price to apply to the whole family, versioned names included.
+func TestWithOverridesShadowsALongerBaseRow(t *testing.T) {
+	base := fixtureTable(t)
+	table := base.WithOverrides([]Rate{{Match: "gpt-4o", InputPerMTok: 1, OutputPerMTok: 2}})
+
+	got := table.Cost("gpt-4o-mini-2024-07-18", "", 1_000_000, 1_000_000)
+	if want := 1.0 + 2.0; !closeTo(got, want) {
+		t.Errorf("Cost(gpt-4o-mini-2024-07-18) = %v, want %v — the longer base row beat the override", got, want)
+	}
+
+	// The other workspaces on this process still price off the base list.
+	if got := base.Cost("gpt-4o-mini-2024-07-18", "", 1_000_000, 1_000_000); !closeTo(got, 0.15+0.6) {
+		t.Errorf("base Cost after layering = %v, want %v — WithOverrides mutated the table it layered over", got, 0.15+0.6)
+	}
+}
+
+// The other direction: an override more specific than the base row it shadows.
+func TestWithOverridesShadowsAShorterBaseRow(t *testing.T) {
+	table := fixtureTable(t).WithOverrides([]Rate{
+		{Match: "gpt-4o-mini-2024-07-18", InputPerMTok: 0.05, OutputPerMTok: 0.1},
+	})
+
+	got := table.Cost("gpt-4o-mini-2024-07-18", "", 1_000_000, 1_000_000)
+	if want := 0.05 + 0.1; !closeTo(got, want) {
+		t.Errorf("Cost(gpt-4o-mini-2024-07-18) = %v, want %v", got, want)
+	}
+	// A sibling version the override is not a prefix of keeps the base price.
+	if got := table.Cost("gpt-4o-mini-2024-09-01", "", 1_000_000, 1_000_000); !closeTo(got, 0.15+0.6) {
+		t.Errorf("Cost(other mini version) = %v, want the base %v", got, 0.15+0.6)
+	}
+}
+
+func TestWithOverridesLongestOverrideWins(t *testing.T) {
+	table := fixtureTable(t).WithOverrides([]Rate{
+		// Deliberately shortest-first: the layering, not the caller's SELECT
+		// order, decides which one wins.
+		{Match: "gpt-4o", InputPerMTok: 1, OutputPerMTok: 1},
+		{Match: "gpt-4o-mini", InputPerMTok: 0.02, OutputPerMTok: 0.04},
+	})
+
+	if got, want := table.Cost("gpt-4o-mini-2024-07-18", "", 1_000_000, 1_000_000), 0.02+0.04; !closeTo(got, want) {
+		t.Errorf("Cost(mini) = %v, want %v — the coarser override won", got, want)
+	}
+	if got, want := table.Cost("gpt-4o-2024-11-20", "", 1_000_000, 1_000_000), 2.0; !closeTo(got, want) {
+		t.Errorf("Cost(gpt-4o version) = %v, want %v", got, want)
+	}
+}
+
+// A model no override is a prefix of falls through to the embedded list, and a
+// workspace with no rows at all is the base table itself — layering nothing must
+// not cost an allocation per refresh.
+func TestWithOverridesFallsThroughToTheBase(t *testing.T) {
+	base := fixtureTable(t)
+	table := base.WithOverrides([]Rate{{Match: "gpt-4o", InputPerMTok: 1, OutputPerMTok: 2}})
+
+	if got, want := table.Cost("claude-sonnet-4-20250514", "", 1_000_000, 0), 3.0; !closeTo(got, want) {
+		t.Errorf("Cost(claude) = %v, want the base %v", got, want)
+	}
+	if table.AsOf != base.AsOf {
+		t.Errorf("layered AsOf = %q, want the base list's %q", table.AsOf, base.AsOf)
+	}
+	for _, overrides := range [][]Rate{nil, {}} {
+		if got := base.WithOverrides(overrides); got != base {
+			t.Errorf("WithOverrides(%v) built a new table, want the base one back", overrides)
+		}
+	}
+}
+
+// Overrides come from Postgres on a fail-open path (D164): one unusable row must
+// cost that row, not the workspace's other prices. The rows T7 will not let a
+// user create are the rows a hand-edited database can still hold — except the
+// mixed-case one, which the D175 CHECK now makes unreachable from the store; it
+// stays here because this function is the defence, not the constraint.
+func TestWithOverridesSkipsRowsThatCannotPrice(t *testing.T) {
+	table := fixtureTable(t).WithOverrides([]Rate{
+		{Match: "   ", InputPerMTok: 9, OutputPerMTok: 9},
+		{Match: "gpt-4o", InputPerMTok: -1, OutputPerMTok: 1},
+		{Match: "CLAUDE-SONNET-4 ", InputPerMTok: 1, OutputPerMTok: 1},
+		{Match: "claude-sonnet-4", InputPerMTok: 8, OutputPerMTok: 8}, // same prefix, second row
+	})
+
+	// The empty and negative rows left the base list in charge.
+	if got, want := table.Cost("gpt-4o", "", 1_000_000, 0), 2.5; !closeTo(got, want) {
+		t.Errorf("Cost(gpt-4o) = %v, want the base %v", got, want)
+	}
+	// The usable row applies, normalised for case and whitespace like any match.
+	if got, want := table.Cost("claude-sonnet-4-20250514", "", 1_000_000, 0), 1.0; !closeTo(got, want) {
+		t.Errorf("Cost(claude) = %v, want %v — the first row for a prefix wins", got, want)
+	}
+}
+
 func TestCostFallsBackToResponseModel(t *testing.T) {
 	table := fixtureTable(t)
 	for _, tc := range []struct{ name, request string }{

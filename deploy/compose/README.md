@@ -242,6 +242,11 @@ row and silently inflate the counts the drive checks. Each run signs up new
 strangers, so it seeds workspaces nobody has seeded before; `docker compose
 --profile '*' down -v` is how you start the whole thing from nothing.
 
+A driven stack is also not a stack the test suites can run against: the drive's
+quota seeding (`exit-seed.mjs --lower-free-quota`) has no undo, so after a drive
+the plans-catalog assertions in `apps/web`'s suite fail until `down -v` restores
+the migration-seeded catalog. Run `npm test` before the drive, or cycle first.
+
 ### The captured-DDL drift check
 
 better-auth's tables are **captured**, never migrated by the library:

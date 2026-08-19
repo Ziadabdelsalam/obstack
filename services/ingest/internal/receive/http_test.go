@@ -12,6 +12,7 @@ import (
 	"go.opentelemetry.io/collector/pdata/plog/plogotlp"
 	"go.opentelemetry.io/collector/pdata/ptrace/ptraceotlp"
 
+	"github.com/Ziadabdelsalam/observer-stack/services/ingest/internal/metering"
 	"github.com/Ziadabdelsalam/observer-stack/services/ingest/internal/metrics"
 	"github.com/Ziadabdelsalam/observer-stack/services/ingest/internal/receive"
 )
@@ -401,6 +402,42 @@ func TestHTTPPanicIsRecoveredAndCounted(t *testing.T) {
 	}
 	if delta := testutil.ToFloat64(dropped) - before; delta != 2 {
 		t.Fatalf("obstack_ingest_dropped_total{reason=panic} delta = %v, want 2", delta)
+	}
+}
+
+// The two drops the receive path can count exactly land in their own health
+// columns as well as in Prometheus (D162): the workspace's ingest-error count
+// is a product surface, so it cannot only exist in a metrics endpoint the
+// customer never sees. Panic drops deliberately do not join them — a handler
+// that died mid-batch has no honest record count to add.
+func TestHTTPDecodeAndUnsupportedDropsFeedTheHealthRow(t *testing.T) {
+	srv, _, meter := startMetered(t, false, nil)
+	body := mustMarshal(t, ptraceotlp.NewExportRequestFromTraces(traceFixture()).MarshalProto)
+
+	resp := post(t, srv, httpRequest{path: "/v1/traces", contentType: contentTypeProto, body: []byte("not OTLP"), bearer: "Bearer " + testKey})
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("malformed payload status = %d, want 400", resp.StatusCode)
+	}
+	resp = post(t, srv, httpRequest{path: "/v1/traces", contentType: "text/plain", body: body, bearer: "Bearer " + testKey})
+	if resp.StatusCode != http.StatusUnsupportedMediaType {
+		t.Fatalf("unsupported Content-Type status = %d, want 415", resp.StatusCode)
+	}
+
+	if got := meter.droppedRecords(t, metering.DropDecode); got != 1 {
+		t.Errorf("dropped_decode metered = %d, want 1", got)
+	}
+	if got := meter.droppedRecords(t, metering.DropUnsupported); got != 1 {
+		t.Errorf("dropped_unsupported metered = %d, want 1", got)
+	}
+
+	// An unknown key is refused before any of this: nobody without a key gets to
+	// write rows into a workspace's health row.
+	resp = post(t, srv, httpRequest{path: "/v1/traces", contentType: "text/plain", body: body, bearer: "Bearer ok_dev_nope"})
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("unknown key status = %d, want 401", resp.StatusCode)
+	}
+	if got := meter.droppedRecords(t, metering.DropUnsupported); got != 1 {
+		t.Errorf("a 401 metered a drop: dropped_unsupported = %d, want 1", got)
 	}
 }
 

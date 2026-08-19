@@ -3,19 +3,27 @@
 import { revalidatePath } from "next/cache";
 import { headers } from "next/headers";
 import { redirect } from "next/navigation";
+import type { OverrideResult } from "@/components/settings/SettingsSuite";
 import { issueApiKey, parseKeyName, revokeApiKey } from "@/server/api-keys";
 import { dataMode } from "@/server/data";
+import {
+  deletePricingOverride,
+  parseOverrideMatch,
+  parsePricePerMTok,
+  upsertPricingOverride,
+} from "@/server/ingest-health";
 import { cancelInvite, createInvite } from "@/server/invites";
 import { queryRows } from "@/server/postgres";
 import { getSessionContext } from "@/server/session";
-import { settingsErrorCode, type SettingsErrorCode } from "./errors";
+import { SETTINGS_ERRORS, settingsErrorCode, type SettingsErrorCode } from "./errors";
 
 /**
- * Everything the settings surface WRITES: API keys (`server/api-keys.ts`) and
- * invitations (`server/invites.ts`), behind one session gate and one error
- * vocabulary (`errors.ts`). The reads stay on the page — this module exists for
- * the four mutations, and nothing here takes a workspace or an org from its
- * caller.
+ * Everything the settings surface WRITES: API keys (`server/api-keys.ts`),
+ * invitations (`server/invites.ts`) and pricing overrides
+ * (`server/ingest-health.ts`), behind one session gate and one error vocabulary
+ * (`errors.ts`). Writes only — every read on this page is the page's (D182), so
+ * nothing here is reachable by opening a tab. Nothing here takes a workspace or
+ * an org from its caller.
  *
  * That is the authorization, whole (D148): a Server Function is reachable by a
  * direct POST and not only through the UI (Next's own warning, `node_modules/
@@ -28,6 +36,13 @@ import { settingsErrorCode, type SettingsErrorCode } from "./errors";
  * nothing a caller supplies can reach the query string (D121). Successes
  * revalidate the page and return, because the surface that issued a key needs
  * the token back in the SAME response — see `issueKey`.
+ *
+ * The two override writes are the exception, and only in the ROUTE their
+ * refusal takes: they answer with the sentence instead of redirecting to it,
+ * because a redirect re-renders the tab and would throw away the three fields
+ * the operator typed. The words are the same vocabulary's (`errors.ts` — D182),
+ * so the D121 property is unchanged: the sentences are constants and a caller's
+ * value is never interpolated into one.
  */
 
 const SETTINGS_PATH = "/app/settings";
@@ -162,4 +177,72 @@ export async function cancelInvitation(formData: FormData): Promise<void> {
     back(codeFor("cancel invitation", error));
   }
   revalidatePath(SETTINGS_PATH);
+}
+
+/* ---------------- Data & ingest ---------------- */
+
+/**
+ * The other exit, for the two writes that must not redirect: the same code,
+ * resolved to the same sentence, handed back as a value. `back` and this are
+ * the only two ways a failure leaves this module.
+ */
+const refused = (code: SettingsErrorCode): OverrideResult => ({ error: SETTINGS_ERRORS[code] });
+
+/**
+ * Set this workspace's price for a model prefix (D108) — one call for create
+ * and edit, because the row's identity is (workspace, match) and there is no
+ * second thing an operator could mean by naming a match they already have.
+ *
+ * Every field is parsed totally before anything is written (D68), and the cap
+ * is the store's, enforced inside the INSERT rather than checked here: two tabs
+ * at ninety-nine overrides must not both be told they have room.
+ *
+ * A success revalidates and answers with nothing, exactly like `revokeKey`: the
+ * new list arrives as the page's own read in the same roundtrip, so there is one
+ * definition of what the tab shows and it is the one on `page.tsx`.
+ */
+export async function saveOverride(formData: FormData): Promise<OverrideResult> {
+  const session = await settingsSession("save price override");
+
+  const match = parseOverrideMatch(formData.get("match"));
+  const inputPerMTok = parsePricePerMTok(formData.get("inputPerMTok"));
+  const outputPerMTok = parsePricePerMTok(formData.get("outputPerMTok"));
+
+  if (!match) return refused("override-match-invalid");
+  if (inputPerMTok === null || outputPerMTok === null) return refused("override-price-invalid");
+
+  try {
+    await upsertPricingOverride(
+      session.workspaceId,
+      { match, inputPerMTok, outputPerMTok },
+      queryRows,
+    );
+  } catch (failure) {
+    return refused(codeFor("save price override", failure));
+  }
+  revalidatePath(SETTINGS_PATH);
+  return { error: null };
+}
+
+/**
+ * Remove one of this workspace's overrides; the models it matched fall back to
+ * the embedded list on ingest's next cache refresh. The id is judged by the
+ * DELETE's workspace predicate, so a foreign or hostile id needs no parse of
+ * its own: it matches no row and comes back as the same sentence a stale tab
+ * gets.
+ */
+export async function deleteOverride(formData: FormData): Promise<OverrideResult> {
+  const session = await settingsSession("remove price override");
+
+  try {
+    await deletePricingOverride(
+      session.workspaceId,
+      String(formData.get("overrideId") ?? ""),
+      queryRows,
+    );
+  } catch (failure) {
+    return refused(codeFor("remove price override", failure));
+  }
+  revalidatePath(SETTINGS_PATH);
+  return { error: null };
 }

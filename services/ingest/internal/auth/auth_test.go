@@ -15,13 +15,13 @@ type fakeResolver struct {
 	seen       []string
 }
 
-func (f *fakeResolver) Workspace(token string) (string, error) {
+func (f *fakeResolver) Workspace(token string) (auth.Identity, error) {
 	f.seen = append(f.seen, token)
 	ws, ok := f.workspaces[token]
 	if !ok {
-		return "", auth.ErrUnauthorized
+		return auth.Identity{}, auth.ErrUnauthorized
 	}
-	return ws, nil
+	return auth.Identity{WorkspaceID: ws, KeyID: "key_" + ws}, nil
 }
 
 func TestWorkspace(t *testing.T) {
@@ -53,13 +53,24 @@ func TestWorkspace(t *testing.T) {
 				if !errors.Is(err, auth.ErrUnauthorized) {
 					t.Fatalf("Workspace(%q) error = %v, want ErrUnauthorized", tc.authorization, err)
 				}
+				// A refusal carries no identity at all: a caller that leaked the
+				// workspace half of a failed resolve would be leaking it into a
+				// 401 the client reads.
+				if got != (auth.Identity{}) {
+					t.Fatalf("Workspace(%q) refused but returned %+v, want the zero Identity", tc.authorization, got)
+				}
 				return
 			}
 			if err != nil {
 				t.Fatalf("Workspace(%q) error = %v", tc.authorization, err)
 			}
-			if got != tc.want {
-				t.Fatalf("Workspace(%q) = %q, want %q", tc.authorization, got, tc.want)
+			if got.WorkspaceID != tc.want {
+				t.Fatalf("Workspace(%q) = %q, want %q", tc.authorization, got.WorkspaceID, tc.want)
+			}
+			// The key half rides through untouched — it is what the per-key
+			// health rows (D100) are written against.
+			if got.KeyID != "key_"+tc.want {
+				t.Fatalf("Workspace(%q) key id = %q, want %q", tc.authorization, got.KeyID, "key_"+tc.want)
 			}
 		})
 	}
@@ -102,8 +113,8 @@ func TestZeroAuthenticatorAuthorisesNothing(t *testing.T) {
 // A resolver that fails for its own reasons is still one 401 with one message:
 // the transports write this error's text into the response.
 func TestResolverErrorsAreIndistinguishable(t *testing.T) {
-	a := auth.New(resolverFunc(func(string) (string, error) {
-		return "", errors.New("dial tcp 127.0.0.1:5432: connect: connection refused")
+	a := auth.New(resolverFunc(func(string) (auth.Identity, error) {
+		return auth.Identity{}, errors.New("dial tcp 127.0.0.1:5432: connect: connection refused")
 	}))
 
 	_, err := a.Workspace("Bearer ok_live_a1b2")
@@ -115,16 +126,17 @@ func TestResolverErrorsAreIndistinguishable(t *testing.T) {
 	}
 }
 
-type resolverFunc func(token string) (string, error)
+type resolverFunc func(token string) (auth.Identity, error)
 
-func (f resolverFunc) Workspace(token string) (string, error) { return f(token) }
+func (f resolverFunc) Workspace(token string) (auth.Identity, error) { return f(token) }
 
-func TestWorkspaceContext(t *testing.T) {
-	if got := auth.WorkspaceFromContext(context.Background()); got != "" {
-		t.Fatalf("unauthenticated context carried workspace %q", got)
+func TestIdentityContext(t *testing.T) {
+	if got := auth.IdentityFromContext(context.Background()); got != (auth.Identity{}) {
+		t.Fatalf("unauthenticated context carried identity %+v", got)
 	}
-	ctx := auth.ContextWithWorkspace(context.Background(), "ws_demo")
-	if got := auth.WorkspaceFromContext(ctx); got != "ws_demo" {
-		t.Fatalf("WorkspaceFromContext = %q, want ws_demo", got)
+	want := auth.Identity{WorkspaceID: "ws_demo", KeyID: "key_demo"}
+	ctx := auth.ContextWithIdentity(context.Background(), want)
+	if got := auth.IdentityFromContext(ctx); got != want {
+		t.Fatalf("IdentityFromContext = %+v, want %+v", got, want)
 	}
 }

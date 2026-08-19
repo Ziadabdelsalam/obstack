@@ -15,8 +15,10 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/Ziadabdelsalam/observer-stack/services/ingest/internal/config"
+	"github.com/Ziadabdelsalam/observer-stack/services/ingest/internal/keystore"
 	"github.com/Ziadabdelsalam/observer-stack/services/ingest/internal/migrate"
 	"github.com/Ziadabdelsalam/observer-stack/services/ingest/internal/pgmigrate"
+	"github.com/Ziadabdelsalam/observer-stack/services/ingest/internal/pricing"
 	"github.com/Ziadabdelsalam/observer-stack/services/ingest/migrations"
 	"github.com/Ziadabdelsalam/observer-stack/services/ingest/pgmigrations"
 )
@@ -190,6 +192,63 @@ func TestRunRefusesToServeWithoutPostgres(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "OBSTACK_POSTGRES_DSN") {
 		t.Errorf("error = %v, want it to name the variable an operator has to set", err)
+	}
+}
+
+// The process's one Postgres pool (D164e). A DSN nobody can parse is a
+// configuration mistake and has to be reported by the name an operator goes and
+// fixes, not as a dial error three frames deep. Hermetic: the DSN below never
+// parses, so no server has to be running for the refusal to hold.
+func TestOpenPostgresRefusesAMalformedDSN(t *testing.T) {
+	pool, err := openPostgres(t.Context(), "not-a-dsn")
+	if err == nil {
+		pool.Close()
+		t.Fatal("openPostgres accepted an unparseable DSN, want error")
+	}
+	if !strings.Contains(err.Error(), envPostgresDSN) {
+		t.Errorf("error = %v, want it to name %s", err, envPostgresDSN)
+	}
+}
+
+// The write path's price seam, at the site D174 corrected: it hands back the
+// table the keystore already built and builds none of its own. Hermetic — the
+// store is never asked to resolve a token, and State is a map read that touches
+// no pool — because what is being asserted is the wiring, not Postgres.
+func TestPricesForHandsBackTheKeystoresTable(t *testing.T) {
+	keys := keystore.New(nil)
+	prices := pricesFor(keys)
+
+	// Fail-open, and specifically not nil: a workspace the cache has never read
+	// prices off the embedded list, and a writer handed nil would panic costing
+	// its first span.
+	got := prices("ws_never_seen")
+	if got == nil {
+		t.Fatal("the price resolver returned nil for an unknown workspace")
+	}
+	if got != pricing.Default {
+		t.Errorf("prices(unknown workspace) = %p, want the embedded table %p", got, pricing.Default)
+	}
+	// Identity with the cache's own answer, twice: anything built here rather
+	// than looked up would be a fresh table per export.
+	if second := prices("ws_never_seen"); second != got || got != keys.State("ws_never_seen").Prices {
+		t.Error("the resolver built a table instead of returning the one the keystore holds")
+	}
+}
+
+// And the other half: against a real server it connects and pings, which is
+// what makes an unreachable Postgres a boot failure rather than a process that
+// 401s every export it accepts.
+func TestOpenPostgresConnects(t *testing.T) {
+	ctx := requirePostgres(t)
+
+	pool, err := openPostgres(ctx, testPostgresDSN())
+	if err != nil {
+		t.Fatalf("openPostgres: %v", err)
+	}
+	defer pool.Close()
+
+	if err := pool.Ping(ctx); err != nil {
+		t.Fatalf("ping the pool openPostgres handed back: %v", err)
 	}
 }
 

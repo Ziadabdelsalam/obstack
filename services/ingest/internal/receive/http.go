@@ -17,6 +17,7 @@ import (
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 
+	"github.com/Ziadabdelsalam/observer-stack/services/ingest/internal/auth"
 	"github.com/Ziadabdelsalam/observer-stack/services/ingest/internal/metrics"
 )
 
@@ -48,15 +49,15 @@ func (s *Server) httpHandler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/traces", func(w http.ResponseWriter, r *http.Request) {
 		req := ptraceotlp.NewExportRequest()
-		s.export(w, r, req, func(workspaceID string) payload {
-			s.consumeTraces(r.Context(), workspaceID, req)
+		s.export(w, r, req, func(ctx context.Context) payload {
+			s.consumeTraces(ctx, auth.IdentityFromContext(ctx).WorkspaceID, req)
 			return ptraceotlp.NewExportResponse()
 		})
 	})
 	mux.HandleFunc("POST /v1/logs", func(w http.ResponseWriter, r *http.Request) {
 		req := plogotlp.NewExportRequest()
-		s.export(w, r, req, func(workspaceID string) payload {
-			s.consumeLogs(r.Context(), workspaceID, req)
+		s.export(w, r, req, func(ctx context.Context) payload {
+			s.consumeLogs(ctx, auth.IdentityFromContext(ctx).WorkspaceID, req)
 			return plogotlp.NewExportResponse()
 		})
 	})
@@ -97,20 +98,23 @@ func recoverPanics(next http.Handler) http.Handler {
 
 // export runs one request end to end: authenticate, decode into req, then hand
 // the decoded payload to accept, which consumes it and returns the message to
-// acknowledge with.
-func (s *Server) export(w http.ResponseWriter, r *http.Request, req payload, accept func(workspaceID string) payload) {
+// acknowledge with. accept is handed a context carrying the resolved identity —
+// the shape the gRPC interceptor already hands its handlers, so the shared
+// consume path has one place to read who a request was.
+func (s *Server) export(w http.ResponseWriter, r *http.Request, req payload, accept func(ctx context.Context) payload) {
 	// The encoding is resolved before anything else so that every answer,
 	// including the ones that never look at the body, carries its Status in the
 	// encoding the client sent — OTLP/HTTP requires the response to match the
 	// request. An unreadable Content-Type falls back to protobuf.
 	enc, encErr := requestEncoding(r)
 
-	workspaceID, err := s.cfg.Auth.Workspace(r.Header.Get("Authorization"))
+	identity, err := s.cfg.Auth.Workspace(r.Header.Get("Authorization"))
 	if err != nil {
 		w.Header().Set("WWW-Authenticate", "Bearer")
 		writeError(w, enc, http.StatusUnauthorized, codes.Unauthenticated, err.Error())
 		return
 	}
+	workspaceID := identity.WorkspaceID
 	if slot, ok := r.Context().Value(workspaceKey{}).(*string); ok {
 		*slot = workspaceID
 	}
@@ -121,7 +125,7 @@ func (s *Server) export(w http.ResponseWriter, r *http.Request, req payload, acc
 		// Past auth, so this is telemetry from a known workspace that we
 		// refused: a drop like any other (D26), counted one per request because
 		// a body we will not read has no knowable record count.
-		metrics.Dropped.WithLabelValues(workspaceID, metrics.ReasonUnsupported).Inc()
+		s.countDrop(identity, dropUnsupported, 1)
 		writeError(w, enc, http.StatusUnsupportedMediaType, codes.InvalidArgument, encErr.Error())
 		return
 	}
@@ -131,8 +135,9 @@ func (s *Server) export(w http.ResponseWriter, r *http.Request, req payload, acc
 		// A body we cannot even read is telemetry lost past the point where the
 		// service took the request, so it is counted like any other decode
 		// failure — otherwise an exporter shipping unreadable bytes is a silent
-		// hole in the pipeline.
-		countDecodeDrop(workspaceID)
+		// hole in the pipeline. One, not a record count: how many records an
+		// unreadable payload held is unknowable.
+		s.countDrop(identity, dropDecode, 1)
 		var tooLarge *http.MaxBytesError
 		if errors.As(err, &tooLarge) {
 			writeError(w, enc, http.StatusRequestEntityTooLarge, codes.InvalidArgument, "payload is over the 16MiB limit")
@@ -146,12 +151,12 @@ func (s *Server) export(w http.ResponseWriter, r *http.Request, req payload, acc
 		// D6: a payload we cannot read is the client's problem, and one 4xx
 		// ends it. A 5xx here would have the exporter re-send the same
 		// unreadable bytes on every retry.
-		countDecodeDrop(workspaceID)
+		s.countDrop(identity, dropDecode, 1)
 		writeError(w, enc, http.StatusBadRequest, codes.InvalidArgument, "malformed OTLP payload: "+err.Error())
 		return
 	}
 
-	resp := accept(workspaceID)
+	resp := accept(auth.ContextWithIdentity(r.Context(), identity))
 	writeSuccess(w, enc, resp)
 }
 
