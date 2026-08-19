@@ -1,12 +1,18 @@
 import { headers } from "next/headers";
 import { redirect } from "next/navigation";
 import { connection } from "next/server";
-import { SettingsSuite, type LiveSettings } from "@/components/settings/SettingsSuite";
+import {
+  SettingsSuite,
+  type LiveBilling,
+  type LiveSettings,
+} from "@/components/settings/SettingsSuite";
 import { listApiKeys } from "@/server/api-keys";
+import { CHECKOUT_RETURN_PARAM, reconcileCheckout } from "@/server/billing";
 import { dataMode } from "@/server/data";
 import { getOrgName, inviteLinkPath, listOrgMembers, listPendingInvites } from "@/server/invites";
 import { queryRows } from "@/server/postgres";
 import { getSessionContext } from "@/server/session";
+import { getUsage, listPlans } from "@/server/usage";
 import { settingsErrorMessage } from "./errors";
 
 /**
@@ -33,11 +39,45 @@ import { settingsErrorMessage } from "./errors";
  */
 const asDay = (at: Date): string => at.toISOString().slice(0, 10);
 const asMinute = (at: Date): string => `${at.toISOString().slice(0, 16).replace("T", " ")} UTC`;
+const asMonth = (at: Date): string =>
+  `${at.toLocaleString("en-US", { month: "long", timeZone: "UTC" })} ${at.getUTCFullYear()}`;
+
+/**
+ * The checkout return, which is D110's poll-on-return: the customer comes back
+ * from Polar with `?checkout=<id>` and the plan row is written HERE, by reading
+ * the checkout's real state, rather than by trusting the browser that arrived.
+ * The webhook reconciles the same way for the customer who never comes back —
+ * one function, two callers (D168), which is why nothing about a plan is decided
+ * in this file.
+ *
+ * The parameter is a URL value, so it is parsed totally (D68): absent, repeated
+ * and non-string all mean "no return to reconcile". A billing outage is caught
+ * and reported as `failed` — a settings page that 500s because Polar is
+ * unreachable would take the roster, the keys and the meter down with it, and
+ * the reconciler will catch up on its own.
+ */
+async function applyCheckoutReturn(
+  raw: string | string[] | undefined,
+  workspaceId: string,
+): Promise<LiveBilling["checkout"]> {
+  if (raw === undefined) return null;
+  const checkoutId = Array.isArray(raw) ? raw[0] : raw;
+  if (typeof checkoutId !== "string" || checkoutId === "") return null;
+
+  try {
+    const result = await reconcileCheckout(checkoutId, workspaceId, queryRows);
+    if (result.applied) return "applied";
+    return result.reason === "pending" ? "pending" : "failed";
+  } catch (error) {
+    console.error("[settings] checkout return", error);
+    return "failed";
+  }
+}
 
 export default async function SettingsPage({
   searchParams,
 }: {
-  searchParams: Promise<{ error?: string | string[] }>;
+  searchParams: Promise<{ error?: string | string[]; [CHECKOUT_RETURN_PARAM]?: string | string[] }>;
 }) {
   if (dataMode !== "live") return <SettingsSuite live={null} />;
   await connection();
@@ -48,18 +88,51 @@ export default async function SettingsPage({
   // answers for itself rather than reading a workspace off a null.
   if (!session) redirect("/login");
 
+  // Before the reads, not beside them: a returning checkout writes the plan row,
+  // and the meter below has to be measured against the plan the customer just
+  // bought rather than the one they had a second ago.
+  const params = await searchParams;
+  const checkout = await applyCheckoutReturn(params[CHECKOUT_RETURN_PARAM], session.workspaceId);
+
   const requestHeaders = await headers();
-  const [orgName, members, invites, keys] = await Promise.all([
+  const [orgName, members, invites, keys, usage, plans] = await Promise.all([
     getOrgName(session.orgId, queryRows),
     listOrgMembers(session.orgId, queryRows),
     listPendingInvites(session.orgId, requestHeaders),
     listApiKeys(session.workspaceId, queryRows),
+    getUsage(session.workspaceId, queryRows),
+    listPlans(queryRows),
   ]);
 
   // A member row pointing at an organization that does not exist is the same
   // class of half-state `resolveSessionContext` refuses to paper over: loud
   // here beats a settings page that names the workspace after nobody.
   if (!orgName) throw new Error(`organization ${session.orgId} has no row`);
+
+  // Which plans can be BOUGHT is decided here, on the server, and it is decided
+  // by price against the catalog rather than by a list of plan names: a plan
+  // costing more than the current one is an upgrade, and everything else is not
+  // offered, because a checkout is how you pay more and not how you pay less.
+  // Cancelling a subscription is Polar's own surface (D110 — merchant of record).
+  const currentPrice = plans.find((plan) => plan.id === usage.planId)?.priceUsdMonth ?? 0;
+
+  const billing: LiveBilling = {
+    planName: usage.planName,
+    eventsUsed: usage.eventsUsed,
+    eventQuota: usage.eventQuota,
+    retentionDays: usage.retentionDays,
+    periodStart: asMonth(usage.periodStart),
+    asOf: usage.asOf ? asMinute(usage.asOf) : null,
+    plans: plans.map((plan) => ({
+      id: plan.id,
+      name: plan.name,
+      priceUsdMonth: plan.priceUsdMonth,
+      eventQuota: plan.eventQuota,
+      retentionDays: plan.retentionDays,
+      upgrade: plan.priceUsdMonth > currentPrice,
+    })),
+    checkout,
+  };
 
   const live: LiveSettings = {
     orgName,
@@ -78,8 +151,9 @@ export default async function SettingsPage({
       created: asDay(key.createdAt),
       revoked: key.revokedAt ? asDay(key.revokedAt) : null,
     })),
+    billing,
     // The code from the URL is mapped to fixed copy and never rendered (D121).
-    errorMessage: settingsErrorMessage((await searchParams).error),
+    errorMessage: settingsErrorMessage(params.error),
   };
 
   return <SettingsSuite live={live} />;

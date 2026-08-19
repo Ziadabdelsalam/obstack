@@ -13,6 +13,7 @@ import {
   issueKey,
   revokeKey,
 } from "@/app/app/settings/actions";
+import { startCheckout } from "@/app/app/settings/billing-actions";
 
 /**
  * One settings surface, two data sources. `live` is the signed-in session's real
@@ -20,24 +21,25 @@ import {
  * page.tsx`); `null` is the demo product, which has no accounts and no Postgres
  * and keeps rendering exactly what it always did (D125).
  *
- * The split is per TAB, not per page (D106): General, Members and API keys read
- * real rows in live mode, and the other four still render demo content and say
- * so with `SampleMark` — which is why `/app/settings` is registered in
- * `live-routes.ts` and no longer wears the route-wide sample badge. The tab
- * strip, the `Section` frame and the shown-once banner are shared by both
- * halves, so there is one definition of what this page looks like.
+ * The split is per TAB, not per page (D106): General, Members, API keys and
+ * Billing & usage read real rows in live mode, and the rest still render demo
+ * content and say so with `SampleMark` — which is why `/app/settings` is
+ * registered in `live-routes.ts` and no longer wears the route-wide sample
+ * badge. The tab strip, the `Section` frame and the shown-once banner are shared
+ * by both halves, so there is one definition of what this page looks like.
  */
 
 const tabs = ["General", "Members", "API keys", "Billing & usage", "Data & ingest", "Audit log", "Compliance"] as const;
 type Tab = (typeof tabs)[number];
 
 /**
- * The four tabs that are still demo content in live mode, and WHY each one is —
- * the reason rides the badge's tooltip because it differs per tab (D106/D141).
- * A tab leaves this map when its data becomes real; nothing is half-wired.
+ * The tabs that are still demo content in live mode, and WHY each one is — the
+ * reason rides the badge's tooltip because it differs per tab (D106/D141). A tab
+ * leaves this map when its data becomes real; nothing is half-wired. Billing &
+ * usage left it here: the meter, the plan and the retention line are read from
+ * Postgres now (D106).
  */
 const SAMPLE_TABS: Partial<Record<Tab, string>> = {
-  "Billing & usage": "demo billing state — metering and plans land in a later sprint",
   "Data & ingest": "demo ingest health and prices — the real ones land with price overrides",
   "Audit log": "demo audit events — obstack records none yet",
   Compliance: "demo compliance posture — obstack tracks none yet",
@@ -74,12 +76,51 @@ export interface LiveKey {
   revoked: string | null;
 }
 
+/**
+ * A row of the plan catalog. Every number in it is a `plans` column read through
+ * `server/usage.ts` (D163) — quota, retention and price are defined in Postgres
+ * and nowhere in TypeScript, so this interface carries values and never
+ * defaults. `upgrade` is the server's answer to "can this workspace buy this
+ * plan", not the client's: a plan id posted from here is validated against the
+ * same catalog before a checkout exists (D148).
+ */
+export interface LivePlan {
+  id: string;
+  name: string;
+  priceUsdMonth: number;
+  eventQuota: number;
+  retentionDays: number;
+  upgrade: boolean;
+}
+
+/**
+ * The billing tab's whole state, from the one usage definition (D171): the same
+ * `getUsage` call feeds the shell's usage banner, so the percentage up there and
+ * the meter down here cannot drift apart.
+ *
+ * `asOf` is null when the workspace has never metered — "no events yet" rather
+ * than a date — and `checkout` is the enumerated outcome of a return from Polar,
+ * never text from the URL (D121).
+ */
+export interface LiveBilling {
+  planName: string;
+  eventsUsed: number;
+  eventQuota: number;
+  retentionDays: number;
+  /** The billing period, a UTC calendar month, formatted by the page. */
+  periodStart: string;
+  asOf: string | null;
+  plans: LivePlan[];
+  checkout: "applied" | "pending" | "failed" | null;
+}
+
 export interface LiveSettings {
   orgName: string;
   workspaceId: string;
   members: LiveMember[];
   invites: LiveInvite[];
   keys: LiveKey[];
+  billing: LiveBilling;
   /** `?error=` resolved to fixed copy by `settings/errors.ts` — never the code. */
   errorMessage: string | null;
 }
@@ -575,6 +616,130 @@ function KeysTab() {
 
 /* ---------------- Billing ---------------- */
 
+/**
+ * What came back from a checkout. Three outcomes, fixed copy, chosen by the
+ * server from `reconcileCheckout`'s result — the `?checkout=` value itself is an
+ * id someone could have typed, so it is read, reconciled and discarded, and none
+ * of it reaches the screen (D121).
+ *
+ * "pending" is its own sentence rather than a failure: a customer who closed the
+ * payment tab is not an error, and telling them their upgrade failed when Polar
+ * may still complete it would be a lie the webhook then contradicts (D169 — the
+ * reconciler runs either way).
+ */
+const CHECKOUT_NOTICES = {
+  applied: "Your plan is updated — the meter below is measured against it now.",
+  pending: "That checkout isn't paid yet. If you complete it, this page updates on its own.",
+  failed: "We couldn't confirm that checkout. Nothing was charged and your plan is unchanged.",
+} as const;
+
+/**
+ * The tab, from `server/usage.ts` and the plan catalog — the D171 one-definition
+ * surface. What the meter shows is what the shell's banner shows and what the
+ * reporter sends to Polar, because all three read the one function.
+ *
+ * There is no invoice list: Polar is the merchant of record (D110), so the
+ * product computes no tax and holds no invoice — a panel here would either be
+ * empty forever or be a second copy of Polar's. And there is no price anywhere
+ * that is not a `plans` row: quota, retention and cost are Postgres columns
+ * (D163), so this component formats numbers it is given and defines none.
+ */
+function LiveBillingTab({ live }: { live: LiveSettings }) {
+  const { billing } = live;
+  const overQuota = billing.eventsUsed >= billing.eventQuota;
+  const upgrades = billing.plans.filter((plan) => plan.upgrade);
+
+  return (
+    <>
+      {billing.checkout && (
+        <p
+          role="status"
+          className="mb-4 rounded-lg border border-line bg-surface px-4 py-2.5 text-[12.5px] leading-relaxed text-mid"
+        >
+          {CHECKOUT_NOTICES[billing.checkout]}
+        </p>
+      )}
+
+      <Section title="plan">
+        <div className="flex flex-wrap items-baseline justify-between gap-3">
+          <p className="text-[15px] font-semibold text-ink">{billing.planName}</p>
+          <p className="font-mono text-[11px] text-faint">
+            billing period {billing.periodStart} · UTC calendar month
+          </p>
+        </div>
+      </Section>
+
+      <Section title="usage this period">
+        <Meter
+          label="events (spans + log records)"
+          used={billing.eventsUsed}
+          quota={billing.eventQuota}
+        />
+        <p className="mt-2 font-mono text-[10.5px] leading-relaxed text-faint">
+          {billing.asOf ? `as of ${billing.asOf}` : "no events yet this period"}
+        </p>
+        <p className="mt-1 font-mono text-[10.5px] leading-relaxed text-faint">
+          {overQuota
+            ? "over quota — ingestion is sampling now: a sampled-out trace is dropped whole, and every trace that survives stays complete"
+            : "at quota, ingestion degrades to sampled traces instead of a hard cut — nothing is truncated mid-trace"}
+        </p>
+      </Section>
+
+      <Section title="retention">
+        <div className="flex items-center justify-between">
+          <span className="text-[12.5px] text-mid">telemetry retention</span>
+          <span className="font-mono text-[12.5px] text-ink">
+            {billing.retentionDays} days · {billing.planName}
+          </span>
+        </div>
+        {/* D105, and deliberately not a deletion claim: retention is sold as an
+            entitlement and the enforcement status is stated in the same breath,
+            because the product currently over-delivers and saying so is the
+            honest version of both facts. */}
+        <p className="mt-2 text-[12.5px] leading-relaxed text-mid">
+          TTL enforcement lands at M4 and data is currently retained without tier cutoff.
+        </p>
+      </Section>
+
+      {upgrades.length > 0 && (
+        <Section title="change plan">
+          {upgrades.map((plan) => (
+            <div
+              key={plan.id}
+              className="flex flex-wrap items-center gap-3 border-b border-line/60 py-2.5 last:border-0"
+            >
+              <span className="min-w-0 flex-1">
+                <span className="block text-[13px] text-ink">{plan.name}</span>
+                <span className="block font-mono text-[10.5px] text-faint">
+                  {plan.eventQuota.toLocaleString()} events/mo · {plan.retentionDays}-day retention
+                </span>
+              </span>
+              <span className="font-mono text-[12.5px] text-mid">${plan.priceUsdMonth}/mo</span>
+              {/* The form names a PLAN and nothing else: the workspace comes from
+                  the session on the server and the price comes from Polar's own
+                  checkout, so neither is forgeable from here (D148/D110). */}
+              <form action={startCheckout}>
+                <input type="hidden" name="planId" value={plan.id} />
+                <button
+                  type="submit"
+                  className="rounded-md px-3 py-1.5 text-[12.5px] font-medium text-bg"
+                  style={{ background: "var(--color-ink)" }}
+                >
+                  Upgrade to {plan.name}
+                </button>
+              </form>
+            </div>
+          ))}
+          <p className="mt-2.5 font-mono text-[10.5px] leading-relaxed text-faint">
+            checkout, payment and invoices are handled by Polar — obstack stores which plan you are
+            on, never a card
+          </p>
+        </Section>
+      )}
+    </>
+  );
+}
+
 function BillingTab() {
   const [upgradeOpen, setUpgradeOpen] = useState(false);
   return (
@@ -881,7 +1046,7 @@ export function SettingsSuite({ live }: { live: LiveSettings | null }) {
       {tab === "General" && (live ? <LiveGeneralTab live={live} /> : <GeneralTab />)}
       {tab === "Members" && (live ? <LiveMembersTab live={live} /> : <MembersTab />)}
       {tab === "API keys" && (live ? <LiveKeysTab live={live} /> : <KeysTab />)}
-      {tab === "Billing & usage" && <BillingTab />}
+      {tab === "Billing & usage" && (live ? <LiveBillingTab live={live} /> : <BillingTab />)}
       {tab === "Data & ingest" && <IngestTab />}
       {tab === "Audit log" && <AuditTab />}
       {tab === "Compliance" && <ComplianceTab />}
