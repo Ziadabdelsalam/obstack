@@ -2,6 +2,7 @@ package keystore
 
 import (
 	"context"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -97,5 +98,108 @@ func TestQAA3QuotaCrossingIsHonoredForEveryKeyOfTheWorkspace(t *testing.T) {
 			"the state entry expired at T0+30s but key B's fresh token entry never "+
 			"triggers refreshState, so an over-quota workspace ingests unsampled for "+
 			"up to another keyCacheTTL (%s) past the stated window", ws, keyCacheTTL)
+	}
+}
+
+// D196 singleflight, proven the only way a single fetch count can prove it:
+// under N keys of one workspace all arriving on the cache-hit path with the
+// state entry due, exactly one caller re-reads Postgres and the rest serve the
+// entry already there. The refresh read is blocked so every caller is contending
+// at once; if the singleflight were not per-workspace-keyed each concurrent
+// caller would stampede a read of its own and the count would be N, not one.
+// Red by removing the `s.refreshing[workspaceID]` guard from refreshState.
+func TestQAA3StateRefreshIsSingleflightAcrossConcurrentCallers(t *testing.T) {
+	const (
+		tokenA = "ok_qa_a3_sf_a"
+		tokenB = "ok_qa_a3_sf_b"
+		ws     = "ws_qa_a3_sf"
+	)
+	const callers = 16
+
+	base := time.Date(2026, 8, 19, 12, 0, 0, 0, time.UTC)
+	var nowNanos atomic.Int64 // a clock the concurrent callers can read racelessly
+	nowNanos.Store(base.UnixNano())
+	setNow := func(d time.Duration) { nowNanos.Store(base.Add(d).UnixNano()) }
+
+	var fetchCalls atomic.Int32
+	var blocking atomic.Bool
+	entered := make(chan struct{}, 1) // one signal: the single refresher has started its read
+	release := make(chan struct{})    // held closed until the test lets that read finish
+
+	s := newStore(
+		func(_ context.Context, tokenHash string) (auth.Identity, bool, error) {
+			switch tokenHash {
+			case hashToken(tokenA):
+				return auth.Identity{WorkspaceID: ws, KeyID: "key_sf_a"}, true, nil
+			case hashToken(tokenB):
+				return auth.Identity{WorkspaceID: ws, KeyID: "key_sf_b"}, true, nil
+			}
+			return auth.Identity{}, false, nil
+		},
+		func(_ context.Context, _ string) (State, error) {
+			fetchCalls.Add(1)
+			if blocking.Load() {
+				entered <- struct{}{}
+				<-release
+			}
+			return State{OverQuota: true, Prices: pricing.Default}, nil
+		},
+	)
+	s.now = func() time.Time { return time.Unix(0, nowNanos.Load()).UTC() }
+
+	// T0: key A seeds the state entry (expiry T0+30) and its own token entry.
+	if _, err := s.Workspace(tokenA); err != nil {
+		t.Fatalf("seed resolve of key A: %v", err)
+	}
+	// T0+20: key B's first read caches its token entry (expiry T0+50). The state
+	// entry is still fresh, so no refresh — one fetch so far.
+	setNow(20 * time.Second)
+	if _, err := s.Workspace(tokenB); err != nil {
+		t.Fatalf("seed resolve of key B: %v", err)
+	}
+	if got := fetchCalls.Load(); got != 1 {
+		t.Fatalf("state fetches after seeding = %d, want 1 (key B's read found the state fresh)", got)
+	}
+
+	// T0+35: key B's token entry is still fresh but the state entry expired at
+	// T0+30. Every one of `callers` concurrent key-B reads takes the cache-hit
+	// path and finds the state due at once.
+	setNow(35 * time.Second)
+	blocking.Store(true)
+
+	done := make(chan struct{}, callers)
+	for range callers {
+		go func() {
+			if _, err := s.Workspace(tokenB); err != nil {
+				t.Errorf("concurrent Workspace(key B) = %v, want the key to resolve", err)
+			}
+			done <- struct{}{}
+		}()
+	}
+
+	// One caller wins the singleflight and is now blocked inside the read.
+	<-entered
+
+	// The other callers must not block behind it: they serve the existing entry
+	// and return while the single read is still in flight. All but the one
+	// refresher finish before we release the read.
+	for range callers - 1 {
+		<-done
+	}
+	if got := fetchCalls.Load(); got != 2 {
+		t.Fatalf("state fetches under %d concurrent callers = %d, want 2 — one seed plus one "+
+			"singleflight refresh; the rest must serve the stale entry, not each read Postgres", callers, got)
+	}
+
+	// Let the single refresher complete; it too returns.
+	close(release)
+	<-done
+
+	if got := fetchCalls.Load(); got != 2 {
+		t.Fatalf("state fetches after the refresher finished = %d, want 2", got)
+	}
+	// The one read that ran did land: the workspace now reads over quota.
+	if !s.State(ws).OverQuota {
+		t.Fatal("State(ws).OverQuota = false after the singleflight refresh, want true")
 	}
 }

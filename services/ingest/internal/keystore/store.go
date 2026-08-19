@@ -9,10 +9,14 @@
 // (D164): a token map from token hash to the auth.Identity it names, and a
 // workspace map from workspace to the state the write path needs — whether the
 // workspace is over its plan's quota, and the price table its D108 overrides
-// were already layered into. Workspace state is refreshed piggyback on a token
-// round trip, so it costs no extra trip of its own, and State reads it without
-// ever blocking: the consume path must never wait on Postgres. The table is
-// built here, on that refresh, and never on the export path (D167/D174) — the
+// were already layered into. The state entry carries its own expiry, so every
+// Workspace() call checks it and, when it is due, refreshes it synchronously
+// under one per-workspace singleflight (D196): exactly one caller re-reads
+// Postgres while any concurrent caller for that workspace serves the entry
+// already there, so the refresh costs at most one trip per workspace per TTL no
+// matter how many keys carry the workspace's traffic. State reads the entry
+// without ever blocking: the consume path must never wait on Postgres. The table
+// is built here, on that refresh, and never on the export path (D167/D174) — the
 // layering sorts, so building it per export would put a sort in the hot path to
 // produce the same table thirty seconds' worth of exports already share.
 //
@@ -44,7 +48,8 @@
 // api_keys rows customers actually issued. The workspace map is not
 // attacker-growable at all: an entry appears only for a workspace some valid key
 // resolved to. Its size driver is override rows, which the web app caps at 100
-// per workspace, so the worst case is tens of megabytes and no second bound
+// per workspace (enforced transactionally, D197) and the refresh read bounds to
+// the same 100, so the worst case is tens of megabytes and no second bound
 // constant is needed.
 package keystore
 
@@ -81,11 +86,12 @@ const (
 	// The workspace map needs no bound of its own — see the package doc.
 	keyCacheMaxEntries = 10_000
 
-	// lookupTimeout bounds one refresh: the token read plus, when the workspace
-	// state is due, the two statements that refresh it. The auth seam carries no
-	// request context — both transports authenticate before they read a body —
-	// so the queries get their own deadline; without one a wedged Postgres would
-	// hold exports open instead of falling through to the cache.
+	// lookupTimeout bounds one Postgres round trip on the auth path: the token
+	// read, and — separately, since a fresh token can still find the workspace
+	// state due — the two statements that refresh that state. The auth seam
+	// carries no request context — both transports authenticate before they read
+	// a body — so each read gets its own deadline; without one a wedged Postgres
+	// would hold exports open instead of falling through to the cache.
 	lookupTimeout = 3 * time.Second
 )
 
@@ -121,8 +127,12 @@ JOIN plans p ON p.id = COALESCE(wp.plan_id, 'free')
 WHERE w.id = $1`
 
 // The workspace's pricing overrides on the D9 row shape (D108). Read once per
-// refresh, never per span.
-const overridesSQL = `SELECT match, input_per_mtok, output_per_mtok FROM pricing_overrides WHERE workspace_id = $1`
+// refresh, never per span. The hard `ORDER BY match LIMIT 100` is the read-side
+// half of the D197 cap: the web app enforces at most 100 override rows per
+// workspace transactionally, and should that ever be breached this bounds what
+// reaches the cache to the same 100, deterministically — the same rows every
+// refresh, never an unbounded read on the auth path.
+const overridesSQL = `SELECT match, input_per_mtok, output_per_mtok FROM pricing_overrides WHERE workspace_id = $1 ORDER BY match LIMIT 100`
 
 // Store resolves tokens and caches what it resolved, along with the workspace
 // state that resolution turned up. It satisfies auth.Resolver.
@@ -141,6 +151,10 @@ type Store struct {
 	mu    sync.Mutex
 	cache map[string]entry
 	state map[string]stateEntry
+	// refreshing marks the workspaces whose state a caller is currently
+	// re-reading, so the per-workspace singleflight (D196) can let exactly one
+	// refresher through and send the rest on serving the entry already cached.
+	refreshing map[string]bool
 }
 
 // lookupFunc reports the identity a live key's hash names, with found false when
@@ -199,6 +213,7 @@ func newStore(lookup lookupFunc, fetchState stateFunc) *Store {
 		now:        time.Now,
 		cache:      map[string]entry{},
 		state:      map[string]stateEntry{},
+		refreshing: map[string]bool{},
 	}
 }
 
@@ -214,6 +229,12 @@ func (s *Store) Workspace(token string) (auth.Identity, error) {
 		if cached.identity.WorkspaceID == "" {
 			return auth.Identity{}, auth.ErrUnauthorized
 		}
+		// A fresh token entry is not fresh workspace state: the state carries its
+		// own expiry (D196). Check it and, when it is due, refresh under the
+		// singleflight — so a quota crossing is honored within one TTL for every
+		// key of the workspace, not only the one whose token read happened to
+		// coincide with the crossing.
+		s.refreshState(cached.identity.WorkspaceID)
 		return cached.identity, nil
 	}
 
@@ -238,12 +259,12 @@ func (s *Store) Workspace(token string) (auth.Identity, error) {
 		return auth.Identity{}, auth.ErrUnauthorized
 	}
 
-	// Piggyback: the workspace state refreshes on the trip the token already
-	// paid for, and only when it is due. Hanging it off the token read is what
-	// keeps a second periodic query — and a second staleness window — out of the
-	// design, and it is why the cache-hit path above returns without asking
-	// Postgres anything at all.
-	s.refreshState(ctx, identity.WorkspaceID)
+	// The token read just resolved a workspace; refresh its state on the same
+	// call when the state entry is due. The cache-hit path above does the same,
+	// so the state's own TTL — not the token's — is what decides when a quota
+	// crossing is picked up, and the singleflight keeps it to one read per
+	// workspace per TTL however many keys arrive at once.
+	s.refreshState(identity.WorkspaceID)
 	return identity, nil
 }
 
@@ -313,15 +334,36 @@ func (s *Store) evictNegative() {
 }
 
 // refreshState re-reads a workspace's state when its entry is missing or due,
-// and does nothing otherwise. A failed read is dropped rather than cached or
-// retried: the entry that is already there keeps serving until it expires, and
-// then the workspace reads back as the fail-open base state — not over quota, on
-// the embedded list. Quota is the one thing this package is allowed to forget
-// under an outage.
-func (s *Store) refreshState(ctx context.Context, workspaceID string) {
-	if s.stateIsFresh(workspaceID) {
+// under a per-workspace singleflight (D196): exactly one caller does the read,
+// and any concurrent caller for the same workspace returns at once and serves
+// the entry already cached rather than pile a second read onto Postgres — the
+// fail-static shape applied to staleness. A failed read is dropped rather than
+// cached or retried: the entry that is already there keeps serving until it
+// expires, and then the workspace reads back as the fail-open base state — not
+// over quota, on the embedded list. Quota is the one thing this package is
+// allowed to forget under an outage.
+func (s *Store) refreshState(workspaceID string) {
+	s.mu.Lock()
+	e, ok := s.state[workspaceID]
+	if (ok && s.now().Before(e.expiresAt)) || s.refreshing[workspaceID] {
+		// Current, or already being refreshed by another caller — either way this
+		// caller adds no read and serves what is there.
+		s.mu.Unlock()
 		return
 	}
+	s.refreshing[workspaceID] = true
+	s.mu.Unlock()
+
+	defer func() {
+		s.mu.Lock()
+		delete(s.refreshing, workspaceID)
+		s.mu.Unlock()
+	}()
+
+	// The state refresh gets its own deadline: it can run on a cache-hit call
+	// that did no token read, so there is no request context to inherit.
+	ctx, cancel := context.WithTimeout(context.Background(), lookupTimeout)
+	defer cancel()
 
 	state, err := s.fetchState(ctx, workspaceID)
 	if err != nil {
@@ -329,16 +371,8 @@ func (s *Store) refreshState(ctx context.Context, workspaceID string) {
 	}
 
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.state[workspaceID] = stateEntry{state: state, expiresAt: s.now().Add(keyCacheTTL)}
-}
-
-func (s *Store) stateIsFresh(workspaceID string) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	e, ok := s.state[workspaceID]
-	return ok && s.now().Before(e.expiresAt)
+	s.mu.Unlock()
 }
 
 func (s *Store) queryIdentity(ctx context.Context, tokenHash string) (auth.Identity, bool, error) {
