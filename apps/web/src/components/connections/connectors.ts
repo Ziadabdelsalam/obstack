@@ -40,6 +40,10 @@ export interface Connector {
  * and is unrecoverable afterwards (D98), so the definition carries a literal
  * placeholder and the rendering surface interpolates a real token against this
  * exact string (D210 — ConnectModal never issues a key of its own).
+ *
+ * D214: it appears ONLY in snippets that target this deployment's ingest —
+ * today OTLP and Docker. The Helm chart authenticates against its own Postgres,
+ * so a token issued here would be 401'd by the chart's ingest.
  */
 export const API_KEY_PLACEHOLDER = "<OBSTACK_API_KEY>";
 
@@ -77,13 +81,8 @@ export const connectors: Connector[] = [
     connectSteps: [
       {
         title: "Install the chart",
-        body: "The chart lives in this repo — there is no chart repository to add. It brings up the whole stack (ingest, ClickHouse, Postgres, the collector DaemonSet) from this repo's own images, so build and load obstack-ingest:kind and obstack-demo-agent:kind into the cluster first — deploy/helm/obstack/README.md has the exact sequence. 900s covers a cold ClickHouse pull on install; a warm node is done in ~18s.",
-        snippet: `helm install obstack deploy/helm/obstack \\\n  --set collector.apiKey=${API_KEY_PLACEHOLDER} \\\n  --timeout 900s --wait`,
-      },
-      {
-        title: "Rotate the key with an upgrade",
-        body: "collector.apiKey is a client credential, not a server setting; the DaemonSet sends it as Authorization: Bearer.",
-        snippet: `helm upgrade obstack deploy/helm/obstack \\\n  --set collector.apiKey=${API_KEY_PLACEHOLDER} \\\n  --timeout 300s --wait`,
+        body: "The chart brings up a self-contained obstack on your cluster — its own ingest, ClickHouse and Postgres — so the telemetry it collects lands in THAT stack, not in this workspace; connecting an external cluster to this deployment's ingest needs a network-reachable endpoint, which is the self-hosted surface M4 builds. The chart lives in this repo (there is no chart repository to add) and runs from this repo's own images, so build and load obstack-ingest:kind and obstack-demo-agent:kind into the cluster first — deploy/helm/obstack/README.md has the exact sequence. 900s covers a cold ClickHouse pull on install; a warm node is done in ~18s.",
+        snippet: `helm install obstack deploy/helm/obstack \\\n  --timeout 900s --wait`,
       },
       {
         title: "What runs",

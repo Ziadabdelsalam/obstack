@@ -49,13 +49,34 @@ test("OTLP endpoints and the collector image match compose", () => {
   assert.ok(composeFile.includes(`image: ${image}`), "compose no longer pins that image");
 });
 
-// The Helm step's `--set` has to name a value the chart actually declares.
-test("the helm step sets a value the chart declares", () => {
+// D214: the chart's ingest reads api_keys from the chart's OWN Postgres, so a
+// key issued in this product would be 401'd there — the helm steps run with the
+// chart's default and the card carries no token slot at all.
+test("the kubernetes card names no key slot", () => {
+  const k8s = connectors.find((c) => c.slug === "kubernetes");
+  assert.ok(k8s?.connectSteps);
+  for (const s of k8s.connectSteps) {
+    assert.equal(
+      (s.snippet ?? "").includes(API_KEY_PLACEHOLDER),
+      false,
+      `the kubernetes snippet carries a token slot the chart's ingest rejects: ${s.snippet}`,
+    );
+    assert.equal((s.snippet ?? "").includes("--set collector.apiKey"), false);
+  }
+  // The chart still declares the default the install relies on.
   const values = readFileSync(path.join(repoRoot, "deploy/helm/obstack/values.yaml"), "utf8");
-  const text = stepText().join("\n");
-  assert.ok(text.includes(`--set collector.apiKey=${API_KEY_PLACEHOLDER}`));
   assert.match(values, /^collector:$/m);
-  assert.match(values, /^ {2}apiKey:/m);
+  assert.match(values, /^ {2}apiKey: \S+$/m);
+});
+
+// The boundary itself is the claim (D87 honest-absence class): the first step
+// says where the telemetry lands, so the card is not read as connecting a
+// cluster to this workspace.
+test("the kubernetes card states the boundary in step 1", () => {
+  const first = connectors.find((c) => c.slug === "kubernetes")?.connectSteps?.[0];
+  assert.ok(first?.body);
+  assert.match(first.body, /self-contained obstack/);
+  assert.match(first.body, /not in this workspace/);
 });
 
 // D210: the definition carries the placeholder, never a token — every step
@@ -66,7 +87,9 @@ test("every key slot is the exported placeholder", () => {
   const snippets = connectors.flatMap((c) =>
     (c.connectSteps ?? []).map((s) => s.snippet ?? "").filter((s) => /API_KEY|apiKey|Bearer/.test(s)),
   );
-  assert.equal(snippets.length, 5);
+  // Two OTLP env blocks + the Docker up.sh line — the only snippets that
+  // target this deployment's ingest (D214).
+  assert.equal(snippets.length, 3);
   for (const s of snippets) {
     assert.ok(s.includes(API_KEY_PLACEHOLDER), `a key slot without the placeholder: ${s}`);
   }
