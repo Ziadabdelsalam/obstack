@@ -93,11 +93,28 @@
  * with none — because "a sampled-out trace drops WHOLE" is the property, and a
  * count of surviving spans would be satisfied by a trace cut in half.
  *
- * This is not S3.4's wire step (D115), which is about ATTRIBUTION — that a
- * token issued here lands its telemetry in its own workspace and no other — and
- * still belongs to that sprint. What is asserted below is what the events did to
- * the METER; the S3.2 exit bundle's runbook remains the attribution evidence of
- * record until the drive grows that step too.
+ * THE S3.4 STEP IS THE ONE D115 NAMED AND THIS FILE DEFERRED THREE TIMES:
+ * ATTRIBUTION — that a token issued in the product lands its telemetry in its
+ * own workspace and no other. It is taken now, and taken through the surface a
+ * customer uses: alice opens /app/onboarding, presses the issue affordance, and
+ * the drive reads the token OFF THE RENDERED SNIPPET (the only place it ever
+ * exists — a stored token is unrecoverable, D98) and sends a real three-span
+ * trace with it over the published OTLP wire. The trace is then asserted present
+ * in alice's rows and absent from bob's, by its own WORDS through the product's
+ * own search and not only by an id (D142); her waiting panel flips, within one
+ * metering flush plus one client poll and never a longer sleep, to a link whose
+ * trace id IS the id the drive sent; and /app/connections shows that key's
+ * cumulative counts with the instant they were counted at. What is asserted in
+ * the metering steps below is a different question — what the events did to the
+ * METER — and the two are kept apart: the attribution trace is three events the
+ * ledger arithmetic there names and accounts for.
+ *
+ * AND THE TOKEN IS A SHOWN-ONCE CREDENTIAL, SO THE DRIVE HANDLES IT LIKE ONE.
+ * Every line this run prints and every artifact it writes is searched for the
+ * literal at the end (the "token hygiene" step): a drive that proved attribution
+ * by copying a live key into a CI log would have published it to everyone who
+ * can read that log. The only place it is allowed to appear is the Authorization
+ * header it is sent in.
  *
  * THE BILLING RAIL HERE IS THE FAKE, ALWAYS (D168). It is not a stub: a checkout
  * is created, the browser is redirected to OUR return path with a real id, the
@@ -120,7 +137,16 @@
 
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  openSync,
+  readdirSync,
+  readFileSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { connect } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -228,7 +254,7 @@ const PINNED_VECTORS = [
 
 /** What the wire step should end up having cost the ledger, from what it sent. */
 const KEPT_VECTORS = PINNED_VECTORS.filter((v) => v.keep).length;
-const EXPECTED_ACCEPTED = FILL_EVENTS + KEPT_VECTORS * (VECTOR_SPANS + 1);
+const METERED_ACCEPTED = FILL_EVENTS + KEPT_VECTORS * (VECTOR_SPANS + 1);
 const EXPECTED_QUOTA_DROPS = (PINNED_VECTORS.length - KEPT_VECTORS) * (VECTOR_SPANS + 1);
 
 /**
@@ -240,6 +266,44 @@ const QUOTA_TOKEN = `zzmeter${RUN}`;
 
 /** The banner's own vocabulary — one string, so "raised" and "absent" are one claim. */
 const BANNER_MARK = "-tier events used";
+
+// --------------------------------------- the S3.4 attribution values (D115)
+/**
+ * The first trace a workspace ever sends is a TRACE, not a span: a root and the
+ * two children under it, which is the shape the product's waterfall renders and
+ * the shape a single span would not have proven anything about.
+ *
+ * Its id is derived from this run rather than pinned, because the drive asserts
+ * that the panel links THE TRACE IT SENT — an id shared with an earlier run
+ * would make that equality satisfiable by a leftover row. Its words are its
+ * content label (D142), the same discipline the fixture and the metering step
+ * keep: the attribution claim is read out of the product's own search.
+ */
+const FIRST_SPANS = 3;
+const FIRST_LABEL = `zzfirst${RUN}`;
+const FIRST_TRACE_ID = createHash("sha256").update(`first-trace-${RUN}`).digest("hex").slice(0, 32);
+
+/**
+ * What the ledger holds for alice's WORKSPACE once both wire steps have run —
+ * the attribution trace's three events plus what the metering step's own key
+ * carried. Two constants rather than one because the two claims are different:
+ * the ledger and the Data & ingest tab are per workspace and therefore hold
+ * both keys' events, while the per-key health row the metering step reads holds
+ * only its own (`METERED_ACCEPTED`).
+ */
+const EXPECTED_ACCEPTED = FIRST_SPANS + METERED_ACCEPTED;
+
+/**
+ * The quickstart's client poll (`components/onboarding/Quickstart.tsx`, D203),
+ * mirrored here the way `FLUSH_MS` mirrors the Go constant — and the flip's
+ * ceiling is arithmetic over the two, not a number tuned until it passed: the
+ * counters move within one metering flush, and the panel learns within one poll
+ * of the moment they moved. The extra second and a half is the round trip and
+ * the paint, and nothing above it is waited for: a flip that has not happened by
+ * then is a FAILURE, never a longer sleep (W4 amendment 4).
+ */
+const CLIENT_POLL_MS = 5_000;
+const FLIP_CEILING_MS = FLUSH_MS + CLIENT_POLL_MS + 1_500;
 
 const appEnv = {
   ...process.env,
@@ -256,6 +320,25 @@ const startedAt = Date.now();
 let failures = 0;
 const transcript = [];
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * Everything this run prints, kept as it is printed.
+ *
+ * The token-hygiene step (D98/W4 amendment 2) asserts that a shown-once key
+ * never reached stdout — and on CI stdout IS the log everybody can read. Reading
+ * it back requires having kept it: a reviewer's promise that no `console.log`
+ * below carries a token is exactly the kind of claim this drive exists to
+ * replace with a fact. So the two writers are teed here, once, before any step
+ * runs.
+ */
+const printed = [];
+for (const level of ["log", "error"]) {
+  const original = console[level].bind(console);
+  console[level] = (...args) => {
+    printed.push(args.join(" "));
+    original(...args);
+  };
+}
 
 function step(title) {
   console.log(`\n== ${title}`);
@@ -433,9 +516,12 @@ const recordOf = (traceId, body) => ({
   body: { stringValue: body },
 });
 
-const SERVICE_ATTR = { key: "service.name", value: { stringValue: `${QUOTA_TOKEN}-svc` } };
-const tracesExport = (spans) => ({
-  resourceSpans: [{ resource: { attributes: [SERVICE_ATTR] }, scopeSpans: [{ spans }] }],
+const serviceAttr = (name) => ({ key: "service.name", value: { stringValue: name } });
+const SERVICE_ATTR = serviceAttr(`${QUOTA_TOKEN}-svc`);
+/** The service defaults to the metering step's; the attribution step sends its
+ *  own, because that name is one of the words its trace is then FOUND by (D142). */
+const tracesExport = (spans, service = SERVICE_ATTR) => ({
+  resourceSpans: [{ resource: { attributes: [service] }, scopeSpans: [{ spans }] }],
 });
 const logsExport = (records) => ({
   resourceLogs: [{ resource: { attributes: [SERVICE_ATTR] }, scopeLogs: [{ logRecords: records }] }],
@@ -693,6 +779,58 @@ const SETTINGS = `(() => {
 })()`;
 
 /**
+ * The quickstart, read the way its reader reads it — and read NARROWLY on
+ * purpose: this page carries a live token in its snippets once one is issued, so
+ * the whole-body `text` every other reader here returns is exactly what must not
+ * come back from this one. What the drive gets is a handful of booleans, the
+ * linked trace, and the token itself, which goes into a variable and into an
+ * Authorization header and nowhere else (D98, W4 amendment 2).
+ */
+const QUICKSTART = `(() => {
+  const strip = (s) => (s || "").replace(/\\s+/g, " ").trim();
+  const text = strip(document.body.textContent || "");
+  const snippet = strip(document.querySelector("pre")?.textContent || "");
+  const link = document.querySelector('a[href^="/app/traces/"]');
+  return {
+    badge: text.includes("SAMPLE DATA"),
+    waiting: text.includes("waiting for data"),
+    issued: text.includes("Key issued"),
+    received: text.includes("first trace received"),
+    placeholder: snippet.includes("<OBSTACK_API_KEY>"),
+    bearer: /OTEL_EXPORTER_OTLP_HEADERS=Authorization=Bearer%20\\S+/.test(snippet),
+    href: link?.getAttribute("href") ?? null,
+    linked: strip(link?.textContent || "") || null,
+    token: /ok_live_[0-9a-f]{64}/.exec(snippet)?.[0] ?? null,
+  };
+})()`;
+
+/**
+ * The connections hub as its reader sees it. `main` again, so a claim about the
+ * panel cannot be satisfied by the shell around it, and the whole text comes
+ * back because every assertion on this surface is about WORDS — the hub renders
+ * no token, only a prefix.
+ */
+const CONNECTIONS = `(() => {
+  const strip = (s) => (s || "").replace(/\\s+/g, " ").trim();
+  return {
+    badge: document.body.textContent.includes("SAMPLE DATA"),
+    text: strip(document.querySelector("main")?.textContent || ""),
+  };
+})()`;
+
+/** The revoke control of ONE named key. The list holds two by the time it is
+ *  used — the quickstart's and the metering step's — so "the first revoke
+ *  button" would be a claim about row order; the hidden `keyId` the form posts
+ *  is the row's own identity, and it is the id Postgres just handed us. */
+const clickRevoke = (keyId) => `(() => {
+  const field = document.querySelector(${JSON.stringify(`input[name="keyId"][value="${keyId}"]`)});
+  const button = field?.closest("form")?.querySelector("button");
+  if (!button) return false;
+  button.click();
+  return true;
+})()`;
+
+/**
  * The two places a usage number is printed, read out of ONE rendered page.
  *
  * The banner lives in the app layout and the meter lives inside `main`, so this
@@ -774,6 +912,10 @@ console.log(`   ingest     ${INGEST_OTLP} (OTLP/JSON) · ${INGEST_METRICS}`);
 console.log(
   `   metering   free quota lowered to ${EVIDENCE_FREE_QUOTA} · ${FILL_EVENTS} events sent · ` +
     `wait flush ${FLUSH_MS / 1000}s + state TTL ${STATE_TTL_MS / 1000}s · token ${QUOTA_TOKEN}`,
+);
+console.log(
+  `   first trace ${FIRST_TRACE_ID} · ${FIRST_SPANS} spans labelled ${FIRST_LABEL} · panel flip ceiling ` +
+    `${FLIP_CEILING_MS / 1000}s (flush ${FLUSH_MS / 1000}s + client poll ${CLIENT_POLL_MS / 1000}s)`,
 );
 // The value, not a claim about it: the refusal below accepts an explicit `fake`
 // as well as no value at all, so this prints WHICH of the two this run had and
@@ -1578,6 +1720,175 @@ try {
     bobKeysTab.text.slice(0, 160),
   );
 
+  // ------------------------------- onboarding + attribution (the S3.4 step)
+  /**
+   * WHY HERE. These steps run after alice is settled and BEFORE the quota comes
+   * down: past that line every export is a candidate for sampling, and a first
+   * trace that survives one run in ten would make the panel's flip a coin toss
+   * rather than a claim. Under quota the three spans are simply accepted — and
+   * they are three events in her ledger, which the metering arithmetic below
+   * names (`EXPECTED_ACCEPTED`) instead of pretending they did not happen.
+   */
+  step("alice opens the quickstart: live-wired, a placeholder slot, and an honest wait");
+  must(
+    await alice.goto("/app/onboarding", `document.body.textContent.includes("Get your first trace")`),
+    "/app/onboarding never rendered",
+  );
+  const quickstart = await alice.evaluate(QUICKSTART);
+  check(
+    "the route is live-wired — no SAMPLE badge — and the snippets carry the placeholder slot, not a fabricated key",
+    !quickstart.badge && quickstart.placeholder && quickstart.token === null,
+    `badge=${quickstart.badge} placeholder=${quickstart.placeholder} ` +
+      `token=${quickstart.token === null ? "none" : "PRESENT before issuing"}`,
+  );
+  check(
+    "and the panel is waiting, because nothing has ever reached this workspace over the wire (D203)",
+    quickstart.waiting && quickstart.linked === null,
+    `waiting=${quickstart.waiting} link=${quickstart.linked}`,
+  );
+
+  step("she issues a key on that page, and the snippet she copies IS what carries it (D115/D201)");
+  must(await alice.evaluate(clickText("Issue a key")), "the quickstart has no issue affordance");
+  must(
+    await alice.waitFor(`document.body.textContent.includes("Key issued")`, 20_000),
+    "the quickstart never confirmed an issued key",
+  );
+  const issued = await alice.evaluate(QUICKSTART);
+  /** Taken FROM THE PAGE, which is the only place it exists (D98) — and from
+   *  here on it is a credential: it goes into an Authorization header and into
+   *  no `console.log`, no check detail and no artifact (the hygiene step). */
+  const firstToken = issued.token ?? "";
+  const firstPrefix = firstToken.slice(0, 12);
+  check(
+    "the token lands in the snippet as a whole ok_live_ key, inside the URL-encoded Bearer header the SDKs read (D78)",
+    /^ok_live_[0-9a-f]{64}$/.test(firstToken) && issued.bearer && !issued.placeholder,
+    firstToken
+      ? `${firstPrefix}… (${firstToken.length} chars) bearer=${issued.bearer} placeholder=${issued.placeholder}`
+      : "no token in the snippet",
+  );
+  must(firstToken, "the quickstart rendered no token — every claim below would be about nothing");
+  const firstKey = await pgOne(
+    `SELECT id, name, token_hash FROM api_keys WHERE workspace_id = $1 AND prefix = $2`,
+    [alice.workspaceId, firstPrefix],
+  );
+  check(
+    "and Postgres holds it under the quickstart's own default name, by its SHA-256 and never by its value (D98/D201)",
+    firstKey?.name === "Quickstart" &&
+      firstKey?.token_hash === createHash("sha256").update(firstToken, "utf8").digest("hex"),
+    `name=${firstKey?.name} hash=${firstKey?.token_hash?.slice(0, 16)}…`,
+  );
+
+  step(`that key carries a real trace over OTLP — a root and ${FIRST_SPANS - 1} children, on the published wire (D6)`);
+  const firstRoot = spanOf(FIRST_TRACE_ID, `${FIRST_LABEL} POST /checkout`);
+  const firstSpans = [
+    firstRoot,
+    { ...spanOf(FIRST_TRACE_ID, `${FIRST_LABEL} db.query`), parentSpanId: firstRoot.spanId },
+    { ...spanOf(FIRST_TRACE_ID, `${FIRST_LABEL} llm.chat`), parentSpanId: firstRoot.spanId },
+  ];
+  const firstSend = await otlp("traces", firstToken, tracesExport(firstSpans, serviceAttr(`${FIRST_LABEL}-svc`)));
+  const sentAt = Date.now();
+  check(
+    "ingest accepts it — a token nobody pasted from anywhere, issued and used inside one minute",
+    firstSend.status === 200,
+    `HTTP ${firstSend.status} ${firstSend.body.slice(0, 120)}`,
+  );
+
+  step(
+    `the waiting panel flips inside ${FLIP_CEILING_MS / 1000}s — one ${FLUSH_MS / 1000}s flush plus one ` +
+      `${CLIENT_POLL_MS / 1000}s client poll — and links THAT trace`,
+  );
+  // Bounded from the SEND, not from now: the ceiling is the arithmetic above and
+  // a flip that misses it is red. No sleep here at all — the panel polls itself,
+  // and this waits on what it renders.
+  const flipped = await alice.waitFor(
+    `document.body.textContent.includes("first trace received")`,
+    Math.max(0, sentAt + FLIP_CEILING_MS - Date.now()),
+  );
+  const flipSeconds = ((Date.now() - sentAt) / 1000).toFixed(1);
+  const panel = await alice.evaluate(QUICKSTART);
+  check(
+    "the panel stopped waiting and said so, without a reload — its own poll carried it (D203)",
+    flipped && panel.received && !panel.waiting,
+    `flipped=${flipped} after ${flipSeconds}s (ceiling ${FLIP_CEILING_MS / 1000}s)`,
+  );
+  check(
+    "and the trace it links is the one the drive sent — the id, not merely the newest row in her store",
+    panel.linked === FIRST_TRACE_ID && panel.href === `/app/traces/${FIRST_TRACE_ID}`,
+    `${panel.linked} → ${panel.href} · sent ${FIRST_TRACE_ID}`,
+  );
+
+  step("ATTRIBUTION (D115/D142): that trace is in alice's workspace, in her words, and in no other");
+  const firstSpansIn = (workspace) =>
+    chCount(
+      `SELECT count() FROM obstack.spans WHERE trace_id='${FIRST_TRACE_ID}' ` +
+        `AND workspace_id='${workspace}' AND name LIKE '%${FIRST_LABEL}%'`,
+    );
+  const inAlice = await firstSpansIn(alice.workspaceId);
+  const inBob = await firstSpansIn(bob.workspaceId);
+  // Asked without a workspace filter too, which is the half a per-tenant count
+  // cannot make: three spans HERE and three spans IN TOTAL is what says the key
+  // wrote nowhere else — including into a workspace no actor of this run owns.
+  const inAny = await chCount(`SELECT count() FROM obstack.spans WHERE trace_id='${FIRST_TRACE_ID}'`);
+  check(
+    `all ${FIRST_SPANS} spans landed in the issuing workspace, none in bob's, and none anywhere else in the store`,
+    inAlice === FIRST_SPANS && inBob === 0 && inAny === FIRST_SPANS,
+    `alice=${inAlice} bob=${inBob} everywhere=${inAny}`,
+  );
+  // And through the PRODUCT, by the words the trace says (D142): a count could
+  // be satisfied by rows a page never reaches, and the tenancy claim is about
+  // what each stranger's own surfaces answer.
+  const aliceFinds = await pageFor(alice, `/app/traces?q=${FIRST_LABEL}`);
+  const bobFinds = await pageFor(bob, `/app/traces?q=${FIRST_LABEL}`);
+  check(
+    "the product's own search agrees: her list reaches it by its own vocabulary, his reaches nothing at all",
+    rowsIn(aliceFinds.html) === 1 &&
+      idsIn(aliceFinds.html)[0] === FIRST_TRACE_ID &&
+      rowsIn(bobFinds.html) === 0 &&
+      bobFinds.html.includes("0 of 0 traces"),
+    `alice ${rowsIn(aliceFinds.html)} row(s) ${idsIn(aliceFinds.html)[0]} · bob ${rowsIn(bobFinds.html)} row(s)`,
+  );
+
+  step("/app/connections: that key's health, in the words the surface actually renders (D100/D218/D219)");
+  must(
+    await alice.goto("/app/connections", `document.querySelector("main")?.textContent.includes("connected ·")`),
+    "/app/connections never rendered",
+  );
+  const hub = await alice.evaluate(CONNECTIONS);
+  check(
+    "no SAMPLE badge on /app/connections either — the second of this sprint's two routes to register (D106)",
+    !hub.badge,
+    "badge present",
+  );
+  check(
+    `the panel lists exactly the key events arrived on: the quickstart's, healthy, with its ${FIRST_SPANS} accepted`,
+    hub.text.includes("connected · 1") &&
+      hub.text.includes(`${firstPrefix}…`) &&
+      hub.text.includes("Quickstart") &&
+      hub.text.includes(`${FIRST_SPANS} accepted`) &&
+      hub.text.includes("healthy"),
+    hub.text.slice(0, 240),
+  );
+  check(
+    "and the settings key, which nothing was ever sent on, is not a source — a credential is not a connection",
+    !hub.text.includes(`${prefix}…`),
+    `${prefix}… is listed as a connected source`,
+  );
+  check(
+    "the counts say what they are: cumulative and dated, errors receive-path only, quota as sampling and not a fault (D218/D219)",
+    /counts are cumulative per key, as of \d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC/.test(hub.text) &&
+      hub.text.includes("errors are receive-path only") &&
+      hub.text.includes("sampled records are the plan's quota, not a fault") &&
+      /last event \d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC/.test(hub.text) &&
+      hub.text.includes("0 sampled") &&
+      hub.text.includes("0 errs"),
+    hub.text.slice(0, 320),
+  );
+  check(
+    "and it invents no rate — the D100 counters have no window, so no per-minute figure is rendered (D218)",
+    !hub.text.includes("/min") && !/per minute/i.test(hub.text),
+    hub.text.slice(0, 240),
+  );
+
   // -------------------------------------------- metering (the S3.3 step)
   step(`the free plan's quota comes down to ${EVIDENCE_FREE_QUOTA} in this disposable Postgres (D172)`);
   const quotaSeed = spawnSync("node", [join(composeDir, "exit-seed.mjs"), "--lower-free-quota"], {
@@ -1596,14 +1907,16 @@ try {
   );
 
   // The positive control for everything below: alice's 220 seeded traces went
-  // STRAIGHT INTO CLICKHOUSE and never through ingest, so her ledger is empty
-  // and her shell carries no banner. Without this line, "the banner is raised"
-  // could be a banner that is always there.
+  // STRAIGHT INTO CLICKHOUSE and never through ingest, so the only thing her
+  // ledger holds is the attribution trace's three events — and her shell carries
+  // no banner. Without this line, "the banner is raised" could be a banner that
+  // is always there.
   const quietLedger = await ledgerOf(alice.workspaceId);
   const quietShell = await pageFor(alice, "/app/traces");
   check(
-    "before a single metered event: no ledger row, and no banner in the shell (the control for 'raised')",
-    quietLedger.events === 0 && !quietShell.html.includes(BANNER_MARK),
+    `before the fill: the ledger holds the attribution trace's ${FIRST_SPANS} events and nothing else — ` +
+      `220 seeded traces cost nothing — and no banner in the shell (the control for 'raised')`,
+    quietLedger.events === FIRST_SPANS && !quietShell.html.includes(BANNER_MARK),
     `${quietLedger.events} metered event(s), banner ${quietShell.html.includes(BANNER_MARK)}`,
   );
 
@@ -1632,13 +1945,14 @@ try {
   step(`the crossing propagates: flush ${FLUSH_MS / 1000}s writes the ledger, TTL ${STATE_TTL_MS / 1000}s reaches ingest (D166)`);
   let ledger = await ledgerOf(alice.workspaceId);
   const flushDeadline = Date.now() + 30_000;
-  while (ledger.events < FILL_EVENTS && Date.now() < flushDeadline) {
+  while (ledger.events < FIRST_SPANS + FILL_EVENTS && Date.now() < flushDeadline) {
     await sleep(500);
     ledger = await ledgerOf(alice.workspaceId);
   }
   check(
-    `the metering flush wrote all ${FILL_EVENTS} accepted events into usage_ledger, past the ${EVIDENCE_FREE_QUOTA} quota`,
-    ledger.events === FILL_EVENTS,
+    `the metering flush wrote all ${FILL_EVENTS} accepted events into usage_ledger beside the attribution ` +
+      `trace's ${FIRST_SPANS}, past the ${EVIDENCE_FREE_QUOTA} quota`,
+    ledger.events === FIRST_SPANS + FILL_EVENTS,
     `${ledger.events} event(s) after ${Math.round((Date.now() - lastUnderQuotaSendAt) / 1000)}s`,
   );
   // Measured from the last export, because that is when the workspace-state
@@ -1739,19 +2053,24 @@ try {
   // everything this step sent before either is compared with a screen.
   await sleep(FLUSH_MS + 2_000);
   ledger = await ledgerOf(alice.workspaceId);
+  // BY KEY, not by workspace: alice holds two keys now — the quickstart's, which
+  // carried the attribution trace, and this one — and a health claim that read
+  // whichever row came back first would be a claim about neither.
   const health = await pgOne(
-    `SELECT accepted, dropped_decode, dropped_unsupported, dropped_quota, last_event_at
-       FROM api_key_health WHERE workspace_id = $1`,
-    [alice.workspaceId],
+    `SELECT h.accepted, h.dropped_decode, h.dropped_unsupported, h.dropped_quota, h.last_event_at
+       FROM api_key_health h JOIN api_keys k ON k.id = h.key_id
+      WHERE h.workspace_id = $1 AND k.prefix = $2`,
+    [alice.workspaceId, prefix],
   );
   check(
-    `the ledger holds exactly what ingest accepted — ${FILL_EVENTS} under quota plus the surviving trace, and none of what it shed`,
+    `the ledger holds exactly what ingest accepted — ${FILL_EVENTS} under quota, the surviving trace and the ` +
+      `attribution trace's ${FIRST_SPANS}, and none of what it shed`,
     ledger.events === EXPECTED_ACCEPTED && ledger.asOf !== null,
     `${ledger.events} event(s), want ${EXPECTED_ACCEPTED}`,
   );
   check(
-    "and the per-key health row agrees with it, drop for drop (D100)",
-    Number(health?.accepted) === EXPECTED_ACCEPTED &&
+    "and this key's own health row agrees with what this key sent, drop for drop (D100)",
+    Number(health?.accepted) === METERED_ACCEPTED &&
       Number(health?.dropped_quota) === EXPECTED_QUOTA_DROPS &&
       Number(health?.dropped_decode) === 1 &&
       health?.last_event_at !== null,
@@ -1792,20 +2111,31 @@ try {
     meter.main.slice(0, 400),
   );
 
-  step("the Data & ingest tab: what this workspace's key carried, refused and shed (D100/D141)");
+  step("the Data & ingest tab: what this workspace's keys carried, refused and shed (D100/D141)");
+  // The tab is per WORKSPACE and sums its keys (`getIngestHealth`), so the
+  // denominator here is the drive's own sum over both of alice's health rows —
+  // read as its own statement, the way every other number in this drive is.
+  const healthTotals = await pgOne(
+    `SELECT sum(accepted) AS accepted, sum(dropped_decode) AS dropped_decode,
+            sum(dropped_unsupported) AS dropped_unsupported, sum(dropped_quota) AS dropped_quota
+       FROM api_key_health WHERE workspace_id = $1`,
+    [alice.workspaceId],
+  );
   await openTab(alice, "Data & ingest", `document.querySelector("main")?.textContent.includes("ingest health · ")`);
   const ingestTab = await alice.evaluate(SETTINGS);
   check(
-    `the three totals are the health row's own — ${EXPECTED_ACCEPTED} accepted · 1 receive-path error · ${EXPECTED_QUOTA_DROPS} sampled out`,
-    statAfter(ingestTab.text, "events accepted") === Number(health?.accepted) &&
-      statAfter(ingestTab.text, "receive-path errors") === Number(health?.dropped_decode) &&
-      statAfter(ingestTab.text, "sampled out (quota)") === Number(health?.dropped_quota),
+    `the three totals are both health rows' own — ${EXPECTED_ACCEPTED} accepted · 1 receive-path error · ${EXPECTED_QUOTA_DROPS} sampled out`,
+    Number(healthTotals?.accepted) === EXPECTED_ACCEPTED &&
+      statAfter(ingestTab.text, "events accepted") === Number(healthTotals?.accepted) &&
+      statAfter(ingestTab.text, "receive-path errors") === Number(healthTotals?.dropped_decode) &&
+      statAfter(ingestTab.text, "sampled out (quota)") === Number(healthTotals?.dropped_quota),
     `accepted=${statAfter(ingestTab.text, "events accepted")} errors=${statAfter(ingestTab.text, "receive-path errors")} ` +
-      `sampled=${statAfter(ingestTab.text, "sampled out (quota)")} vs row ${JSON.stringify(health)}`,
+      `sampled=${statAfter(ingestTab.text, "sampled out (quota)")} vs rows ${JSON.stringify(healthTotals)}`,
   );
   check(
-    "attributed to the key alice issued, with the basis and the staleness of the count stated (D162)",
+    "attributed to the keys alice issued, with the basis and the staleness of the count stated (D162)",
     ingestTab.text.includes(`${prefix}…`) &&
+      ingestTab.text.includes(`${firstPrefix}…`) &&
       /receive-path errors, as of \d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC/.test(ingestTab.text) &&
       ingestTab.text.includes("write-path failures are not counted here"),
     ingestTab.text.slice(0, 240),
@@ -1952,7 +2282,13 @@ try {
     "API keys",
     `document.querySelector("main")?.textContent.includes(${JSON.stringify(`${prefix}…`)})`,
   );
-  must(await alice.evaluate(clickText("revoke")), "the listed key has no revoke control");
+  // The metering key BY ID: the list holds two now, and "the revoke control" is
+  // only a definite article while there is one of them.
+  const meteringKeyId = (
+    await pgOne(`SELECT id FROM api_keys WHERE workspace_id = $1 AND prefix = $2`, [alice.workspaceId, prefix])
+  )?.id;
+  must(meteringKeyId, `no api_keys row for ${prefix}`);
+  must(await alice.evaluate(clickRevoke(meteringKeyId)), "the listed key has no revoke control");
   // Polled in the store rather than read off the copy, and this is the D142
   // reason: the tab carries the standing sentence "a revoked key stops being
   // accepted within 30 seconds" whether or not anything is revoked, so a page
@@ -1960,7 +2296,10 @@ try {
   let revokedAt = null;
   for (let attempt = 0; attempt < 40 && !revokedAt; attempt++) {
     revokedAt = (
-      await pgOne(`SELECT revoked_at FROM api_keys WHERE workspace_id = $1`, [alice.workspaceId])
+      await pgOne(`SELECT revoked_at FROM api_keys WHERE workspace_id = $1 AND prefix = $2`, [
+        alice.workspaceId,
+        prefix,
+      ])
     )?.revoked_at;
     if (!revokedAt) await sleep(250);
   }
@@ -2001,14 +2340,19 @@ try {
     alice.workspaceId,
   ]);
   const bobKeys = await pgRows(`SELECT id FROM api_keys WHERE workspace_id = $1`, [bob.workspaceId]);
+  const meteringRow = aliceKeys.find((k) => k.prefix === prefix);
+  const quickstartRow = aliceKeys.find((k) => k.prefix === firstPrefix);
   check(
-    "api_keys holds the seeded dev row live on ws_demo, alice's one issued-and-revoked key, and nothing of bob's",
+    "api_keys holds the seeded dev row live on ws_demo, alice's two issued keys — the quickstart's still live, " +
+      "the settings one revoked — and nothing of bob's",
     devKey?.workspace_id === "ws_demo" &&
       devKey?.prefix === "ok_dev_local" &&
       devKey?.revoked_at === null &&
-      aliceKeys.length === 1 &&
-      aliceKeys[0].prefix === prefix &&
-      aliceKeys[0].revoked_at !== null &&
+      aliceKeys.length === 2 &&
+      meteringRow !== undefined &&
+      meteringRow.revoked_at !== null &&
+      quickstartRow !== undefined &&
+      quickstartRow.revoked_at === null &&
       bobKeys.length === 0,
     `dev=${JSON.stringify(devKey)} alice=${JSON.stringify(aliceKeys)} bob=${bobKeys.length}`,
   );
@@ -2037,7 +2381,15 @@ try {
   // and must be error-free; the NoSessionError line below is the D114 tripwire
   // firing behind a guard that wins the response, which is spec.
   const logSplit = statSync(appLog).size;
-  for (const path of ["/app", "/app/traces", `/app/traces/${PROMPT_TRACE}`, "/app/logs", "/app/settings"]) {
+  for (const path of [
+    "/app",
+    "/app/traces",
+    `/app/traces/${PROMPT_TRACE}`,
+    "/app/logs",
+    "/app/settings",
+    "/app/onboarding",
+    "/app/connections",
+  ]) {
     await alice.goto(path, `document.body.textContent.length > 0`);
     const state = await alice.evaluate(STATE);
     check(
@@ -2046,6 +2398,19 @@ try {
       state.url,
     );
   }
+  // The quickstart's poll is not a navigation, so it does not get one: a signed-
+  // out client asking for status gets the status code and an empty body, not a
+  // login page rendered inside what the caller will parse as JSON (D216). Fetched
+  // rather than navigated to for exactly that reason — this is the request the
+  // client's `fetch` makes, and `redirect: "manual"` is what makes a redirect
+  // show up as a redirect instead of being followed into a 200.
+  const pollUnauthed = await fetch(`${BASE}/app/onboarding/status`, { redirect: "manual" });
+  const pollBody = await pollUnauthed.text();
+  check(
+    "/app/onboarding/status with no session is a bare 401 — no redirect, no body (D203/D216)",
+    pollUnauthed.status === 401 && pollBody === "",
+    `HTTP ${pollUnauthed.status} ${pollUnauthed.headers.get("location") ?? ""} ${pollBody.slice(0, 80)}`,
+  );
 
   step("the server log: clean everywhere, with exactly one named exception (D132)");
   // Sliced as BYTES, because that is what the mark is: the log carries `⨯`, `✓`
@@ -2053,6 +2418,15 @@ try {
   // hands the first segment a fragment of the second one's first error — a
   // split that reports the allowlisted line as an unallowed one (measured).
   const wholeLog = readFileSync(appLog);
+  // THIS PREDICATE IS LOAD-BEARING FOR CODE THAT DOES NOT KNOW ABOUT IT (D206).
+  // Every deliberate refusal the product LOGS on an authenticated path is read
+  // by it, so a refusal worded with "Error" in it would turn a spec'd log line
+  // into a red here. The one that came closest is billing's, and the coupling is
+  // now mirrored rather than remembered: `apps/web/src/server/billing/
+  // reconcile-wording.test.ts` restates this regex as a constant, pins it
+  // against this file, and asserts no refusal in `reconcile.ts` matches it. Same
+  // shape as the FLUSH_MS mirrors above — change the regex here and that test
+  // goes red in the same round.
   const isError = (line) => /Error\b|⨯|unhandledRejection/.test(line);
   const authenticated = wholeLog.subarray(0, logSplit).toString("utf8").split("\n").filter(isError);
   const unauthenticated = wholeLog.subarray(logSplit).toString("utf8").split("\n").filter(isError);
@@ -2070,6 +2444,39 @@ try {
     unauthenticated.length > 0 && notAllowed.length === 0,
     notAllowed.slice(0, 3).join(" | ") || "the tripwire logged nothing at all",
   );
+
+  step("token hygiene: the keys this run issued appear in nothing it printed and nothing it wrote");
+  // Read the same way the log split above is: the drive's own output, as bytes,
+  // by the literal. Both UI-issued tokens are checked, not only the quickstart's
+  // — "shown once" is a property of the product, and a drive that leaked either
+  // one into a CI log would have published a live credential to everyone who can
+  // read that log (D98, W4 amendment 2).
+  //
+  // The scope is what this run PRINTED and what it WROTE: stdout and stderr as
+  // they were emitted, the transcript exactly as the finally block is about to
+  // serialise it, and every artifact file beside it. Chrome's own profile
+  // directories are deliberately not searched — a browser cache holding a page
+  // it was just shown is the browser, not this drive's artifact, and every real
+  // operator's browser does the same.
+  const artifacts = readdirSync(OUT, { withFileTypes: true })
+    .filter((entry) => entry.isFile())
+    .map((entry) => entry.name);
+  const searched = [
+    ["stdout+stderr", printed.join("\n")],
+    ["transcript.json", JSON.stringify(transcript)],
+    ...artifacts.map((name) => [name, readFileSync(join(OUT, name)).toString("utf8")]),
+  ];
+  for (const [issuedToken, where] of [
+    [firstToken, "the quickstart"],
+    [token, "settings"],
+  ]) {
+    const leaked = searched.filter(([, body]) => body.includes(issuedToken)).map(([name]) => name);
+    check(
+      `the key issued from ${where} is in none of ${searched.length} outputs — only in the Authorization header it was sent in`,
+      leaked.length === 0,
+      `present in ${leaked.join(", ")}`,
+    );
+  }
 } catch (error) {
   // A precondition that did not hold, or a step that threw: the run is over and
   // it is a FAILURE, not an exception nobody counted. Everything asserted up to
