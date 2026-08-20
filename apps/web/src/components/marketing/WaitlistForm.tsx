@@ -18,13 +18,16 @@ export function WaitlistForm() {
   const [state, formAction, pending] = useActionState(joinWaitlist, "idle");
   const id = useId();
 
+  // The receipt says only what happened: a row was written. There is no mail
+  // pipeline (U4) and no invite flow, so the confirmation carries the landing's
+  // own wording — a promise from us, not a claim about a system.
   if (state === "joined") {
     return (
       <p role="status" className="text-[13.5px] leading-relaxed text-mid">
         <span className="font-medium" style={{ color: "var(--color-ok)" }}>
           You&apos;re on the list.
         </span>{" "}
-        We&apos;ll email you when your invite is ready.
+        We&apos;ll write when we host obstack for you.
       </p>
     );
   }

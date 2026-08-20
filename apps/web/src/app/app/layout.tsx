@@ -65,6 +65,36 @@ async function liveBanner(workspaceId: string): Promise<UsageBannerProps> {
   };
 }
 
+/**
+ * D134/D228: in mock mode — the public demo — nothing on screen said the
+ * product was a demo. The sample-data badge is live-mode-only by construction
+ * (it marks the unwired routes inside a real workspace), so a stranger could
+ * read every screen of the demo without being told once that none of it
+ * happened.
+ *
+ * A slim persistent bar in the shell, so every mock surface carries it and no
+ * page has to remember to. Live mode never renders it: there the badge speaks
+ * per route, and this sentence would be false about the wired ones.
+ */
+function DemoFooter() {
+  return (
+    <div
+      className="flex shrink-0 items-center gap-2 border-t px-4 py-1.5"
+      style={{
+        borderColor: "color-mix(in srgb, var(--color-warn) 30%, var(--color-line))",
+        background: "color-mix(in srgb, var(--color-warn) 6%, transparent)",
+      }}
+    >
+      <span className="font-mono text-[11px] tracking-wide" style={{ color: "var(--color-warn)" }}>
+        DEMO WORKSPACE
+      </span>
+      <span className="font-mono text-[11px] text-faint">
+        every screen here is sample data from a fictional company — nothing is being ingested
+      </span>
+    </div>
+  );
+}
+
 export default async function AppLayout({ children }: { children: React.ReactNode }) {
   const live = dataMode === "live";
   // The shell's workspace is the signed-in session's, resolved here once (D114).
@@ -115,8 +145,9 @@ export default async function AppLayout({ children }: { children: React.ReactNod
           <UsageBanner {...banner} />
           {live && <SampleDataBadge />}
           <main className="min-w-0 flex-1 overflow-x-hidden overflow-y-auto">{children}</main>
+          {!live && <DemoFooter />}
         </div>
-        <CommandPalette />
+        <CommandPalette live={live} />
         <TourGuide />
         <FloatingAsk />
       </div>

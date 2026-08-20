@@ -116,6 +116,32 @@
  * can read that log. The only place it is allowed to appear is the Authorization
  * header it is sent in.
  *
+ * THE S3.5 STEP IS WHAT SHE DOES WITH A TRACE THAT FAILED. Explain is the first
+ * thing in this product that costs a metered run to press, so the step walks the
+ * whole of it: alice opens one of her own failed traces, presses Explain, and the
+ * panel streams a real answer — the fake engine's, which is the engine with the
+ * provider taken out (D168) and the only one CI ever runs, because U6 is absolute
+ * and CI never spends. Then it walks the refusal ON PURPOSE, by lowering the
+ * plan's Explain allowance the way D172 lowers the event quota, so the run after
+ * the last one is refused and the refusal is read as the product outcome it is
+ * (D241): a 200, a terminal `refusal` frame, and a sentence a person can act on
+ * rather than an error.
+ *
+ * The evidence links are checked where they are actually decided. A panel can
+ * render "show this span" whatever the id underneath it says, so the second run
+ * is made as the panel makes it — the same POST, carrying her session — and read
+ * as the NDJSON contract: every span id the answer cites is checked against the
+ * span ids ClickHouse holds for THAT trace (D223). Two independent runs of one
+ * trace also have to produce one answer, which is what "deterministic" has to
+ * mean for a fake that carries the drive.
+ *
+ * IT RUNS INSIDE THE METERING PROPAGATION WINDOW, DELIBERATELY (D207). The step
+ * below it waits out one flush plus one workspace-state TTL before it can send an
+ * over-quota export, and that wait is wall time this drive was already spending.
+ * Explain touches the app and Postgres and never ingest, so it changes nothing
+ * that wait is about — and the sleep is computed from an ABSOLUTE deadline, so
+ * work done first is work the run gets for free.
+ *
  * THE BILLING RAIL HERE IS THE FAKE, ALWAYS (D168). It is not a stub: a checkout
  * is created, the browser is redirected to OUR return path with a real id, the
  * settings page reads it back and writes the plan row, so the whole return
@@ -305,6 +331,27 @@ const EXPECTED_ACCEPTED = FIRST_SPANS + METERED_ACCEPTED;
 const CLIENT_POLL_MS = 5_000;
 const FLIP_CEILING_MS = FLUSH_MS + CLIENT_POLL_MS + 1_500;
 
+// ------------------------------------------- the S3.5 Explain values (D245)
+/**
+ * The Explain allowance this run's free plan gets. Lowered exactly the way the
+ * event quota is (D172): the catalog says twenty, and pressing Explain twenty
+ * times to watch the twenty-first be refused would buy nothing the second one
+ * does not. Two is the smallest number that still walks BOTH sides of the cap —
+ * one run allowed, one refused — and it is the PLAN row that is lowered, so the
+ * path this exercises (`plans` → `server/explain/quota.ts` → the one atomic
+ * statement) is the same path a real workspace crosses at twenty.
+ */
+const EVIDENCE_EXPLAIN_QUOTA = 2;
+
+/**
+ * Every environment name an Explain credential can arrive under (D102): the
+ * cloud key and the self-hosted one. Named once because two different things
+ * read this list — the environment the app is SERVED with, which must contain
+ * neither, and the hygiene sweep at the end, which searches this run's own
+ * output for whichever of them the caller's shell happened to hold.
+ */
+const EXPLAIN_CREDENTIALS = ["ANTHROPIC_API_KEY", "OBSTACK_EXPLAIN_API_KEY"];
+
 const appEnv = {
   ...process.env,
   OBSTACK_DATA_MODE: "live",
@@ -314,6 +361,12 @@ const appEnv = {
   OBSTACK_POSTGRES_DSN: PG_DSN,
   BETTER_AUTH_SECRET,
 };
+// U6 made mechanical: the server this drive measures holds no Explain
+// credential, so there is none for it to spend and none for it to leak. Fake
+// mode is the client's default and the refusal below keeps it that way; this
+// line is the other half — a key exported in the caller's shell does not travel
+// into the process the drive starts, whatever mode anything later decides.
+for (const name of EXPLAIN_CREDENTIALS) delete appEnv[name];
 
 // ------------------------------------------------------------- reporting
 const startedAt = Date.now();
@@ -439,6 +492,20 @@ async function chCount(sql) {
   const text = await res.text();
   if (!res.ok) throw new Error(`clickhouse: ${res.status} ${text}`);
   return Number(text.trim());
+}
+/**
+ * The same read as `chCount`, as ROWS: the Explain step needs a span's own
+ * words and its id, not a total, and the ids it checks the answer's evidence
+ * links against have to come from the store rather than from the answer.
+ */
+async function chRows(sql) {
+  const res = await fetch(`${CH}/?user=obstack_web&password=obstack_web_dev`, {
+    method: "POST",
+    body: `${sql} FORMAT JSONEachRow`,
+  });
+  const text = await res.text();
+  if (!res.ok) throw new Error(`clickhouse: ${res.status} ${text}`);
+  return text.trim() ? text.trim().split("\n").map((line) => JSON.parse(line)) : [];
 }
 async function denominators(workspace) {
   return {
@@ -818,6 +885,40 @@ const CONNECTIONS = `(() => {
   };
 })()`;
 
+/**
+ * The Explain panel as its reader sees it, and ONLY the panel: the trace page
+ * around it renders the failing span's name and status too, so a claim read off
+ * the whole body could be satisfied by the waterfall rather than by the answer.
+ * The close control is the anchor — it is the panel's own labelled affordance,
+ * and its grandparent is the panel (`ExplainPanel.tsx`: root → header → button).
+ *
+ * The links are counted rather than followed. What a "show this span" button
+ * points at is not in the DOM at all — it calls back into the page with a span
+ * id — so the panel proves the affordance exists, and the frame read beside it
+ * proves the id under it is a span this trace holds.
+ */
+const EXPLAIN = `(() => {
+  const strip = (s) => (s || "").replace(/\\s+/g, " ").trim();
+  const close = document.querySelector('[aria-label="Close explanation"]');
+  const panel = close?.parentElement?.parentElement ?? null;
+  const text = strip(panel?.textContent || "");
+  const counter = /(\\d+) of (\\d+) Explain runs used this month/.exec(text);
+  return {
+    open: Boolean(panel),
+    text,
+    used: counter ? Number(counter[1]) : null,
+    quota: counter ? Number(counter[2]) : null,
+    spanLinks: [...(panel?.querySelectorAll("button") ?? [])]
+      .filter((b) => strip(b.textContent) === "show this span").length,
+    logLinks: [...(panel?.querySelectorAll("a") ?? [])]
+      .filter((a) => strip(a.textContent) === "show the correlated logs").length,
+  };
+})()`;
+
+/** A run is over when the counter line is on screen: the panel renders it only
+ *  once the stream has reached a terminal state (answer or refusal). */
+const EXPLAIN_SETTLED = `/\\d+ of \\d+ Explain runs used this month/.test(document.body.textContent ?? "")`;
+
 /** The revoke control of ONE named key. The list holds two by the time it is
  *  used — the quickstart's and the metering step's — so "the first revoke
  *  button" would be a claim about row order; the hidden `keyId` the form posts
@@ -928,6 +1029,11 @@ console.log(
       : JSON.stringify(process.env.OBSTACK_BILLING_MODE)
   } (the refusals below accept no other rail)`,
 );
+console.log(
+  `   explain    fake engine (OBSTACK_EXPLAIN_MODE ${
+    process.env.OBSTACK_EXPLAIN_MODE === undefined ? "unset — the client's default" : "fake"
+  }, no credential in the served environment) · free allowance lowered to ${EVIDENCE_EXPLAIN_QUOTA} runs`,
+);
 console.log(`   artifacts  ${OUT}`);
 
 step("refusals (this run measures only what it started)");
@@ -942,6 +1048,13 @@ if (process.env.OBSTACK_BILLING_MODE !== undefined && process.env.OBSTACK_BILLIN
     `OBSTACK_BILLING_MODE is ${JSON.stringify(process.env.OBSTACK_BILLING_MODE)} — this drive asserts against ` +
       `the fake rail's semantics (a checkout succeeds at creation, D168), and running it against Polar's ` +
       `sandbox would create real checkouts in someone's organisation on every run. Unset it.`,
+  );
+}
+if (process.env.OBSTACK_EXPLAIN_MODE !== undefined && process.env.OBSTACK_EXPLAIN_MODE !== "fake") {
+  refuse(
+    `OBSTACK_EXPLAIN_MODE is ${JSON.stringify(process.env.OBSTACK_EXPLAIN_MODE)} — U6 is absolute: CI never ` +
+      `spends, so this drive asserts against the fake engine's deterministic output (D168) and never calls a ` +
+      `provider. The one real-key run is the evidence run, made by a person. Unset it.`,
   );
 }
 if (await listening(APP_PORT)) {
@@ -1955,10 +2068,196 @@ try {
     ledger.events === FIRST_SPANS + FILL_EVENTS,
     `${ledger.events} event(s) after ${Math.round((Date.now() - lastUnderQuotaSendAt) / 1000)}s`,
   );
+  // ------------------------------------------- explain (the S3.5 step, D245)
+  // RUN HERE ON PURPOSE (D207). Everything from this line to the sleep below is
+  // wall time the drive was already spending: the sleep is computed from an
+  // ABSOLUTE deadline — one flush plus one workspace-state TTL past the last
+  // under-quota export — so work done before it costs the run nothing until it
+  // exceeds the window. Explain touches the app and Postgres and never ingest,
+  // so nothing it does is visible to the propagation this wait is about.
+  step(`the free plan's Explain allowance comes down to ${EVIDENCE_EXPLAIN_QUOTA} runs a month (D172 class)`);
+  // Written from here rather than from `exit-seed.mjs`: that seeder's subject is
+  // the fixture two workspaces are seeded FROM, and this is one row of this
+  // step's own setup. Same store, same posture as the quota it lowers beside —
+  // an UPDATE with no undo in a disposable Postgres, so a stack that has run the
+  // drive carries a two-run free plan until `docker compose … down -v`. The
+  // number is stated once, above, and every claim below reads it back out of the
+  // catalog rather than restating it (D163: no quota is spelled in a surface).
+  const explainPlan = await pgOne(
+    `UPDATE plans SET explain_quota = $1 WHERE id = 'free' RETURNING id, explain_quota`,
+    [EVIDENCE_EXPLAIN_QUOTA],
+  );
+  check(
+    `the plans catalog — the ONE Explain definition (D226) — now includes ${EVIDENCE_EXPLAIN_QUOTA} runs`,
+    Number(explainPlan?.explain_quota) === EVIDENCE_EXPLAIN_QUOTA,
+    `explain_quota=${explainPlan?.explain_quota}`,
+  );
+
+  step("alice opens one of her own failed traces and presses Explain (D102/D168)");
+  // Her failing trace, found by the drive's own SQL rather than by the id the
+  // fixture happens to give it — and the SAME query hands back the span id the
+  // evidence link is checked against below, so "the link names a span this trace
+  // holds" is a claim about the store and not about the answer that made it.
+  const [failing] = await chRows(
+    `SELECT trace_id, span_id, name, service FROM obstack.spans ` +
+      `WHERE workspace_id='${alice.workspaceId}' AND status_code='error' ORDER BY trace_id LIMIT 1`,
+  );
+  must(failing, `${alice.workspaceId} holds no failing span — there is nothing here to explain`);
+  const traceSpanIds = new Set(
+    (
+      await chRows(
+        `SELECT span_id FROM obstack.spans ` +
+          `WHERE workspace_id='${alice.workspaceId}' AND trace_id='${failing.trace_id}'`,
+      )
+    ).map((row) => row.span_id),
+  );
+  /** What the fake writes off THIS trace: the failing span's own name and service. */
+  const expectedHeadline = `${failing.name} failed in ${failing.service}`;
+
+  must(
+    await alice.goto(
+      `/app/traces/${failing.trace_id}`,
+      `document.body.textContent.includes("Explain this trace")`,
+    ),
+    `the failed trace ${failing.trace_id} never rendered its Explain control`,
+  );
+  const tracePage = await alice.evaluate(STATE);
+  check(
+    "the trace detail carries neither mode marker in live mode: no SAMPLE badge, and no demo-workspace bar (D228)",
+    !tracePage.badge && !tracePage.text.includes("DEMO WORKSPACE"),
+    `badge ${tracePage.badge} · demo bar ${tracePage.text.includes("DEMO WORKSPACE")}`,
+  );
+  must(await alice.evaluate(clickText("Explain this trace")), "the Explain control did not click");
+  must(await alice.waitFor(EXPLAIN_SETTLED, 20_000), "the Explain panel never reached a terminal state");
+  const answered = await alice.evaluate(EXPLAIN);
+  const explainRow = async () =>
+    pgOne(`SELECT used, to_char(period_start, 'YYYY-MM') AS month FROM explain_runs WHERE workspace_id = $1`, [
+      alice.workspaceId,
+    ]);
+  const spent = await explainRow();
+  check(
+    "the panel answered about THIS trace — the failing span's own name and service, under the four labels",
+    answered.open &&
+      answered.text.includes(expectedHeadline) &&
+      answered.text.includes("WHAT FAILED") &&
+      answered.text.includes("ROOT CAUSE") &&
+      answered.text.includes("SUGGESTED FIX"),
+    answered.text.slice(0, 240),
+  );
+  check(
+    "and it says plainly that no model read it — a deployment running the fake cannot show a person a reading nobody made (D102)",
+    answered.text.includes("This deployment runs Explain in fake mode"),
+    answered.text.slice(0, 240),
+  );
+  check(
+    "the evidence is linked rather than narrated: at least one item offers the span it cites",
+    answered.spanLinks >= 1,
+    `${answered.spanLinks} span link(s), ${answered.logLinks} log link(s)`,
+  );
+  check(
+    `the counter line divides the plan's own two numbers — 1 of ${EVIDENCE_EXPLAIN_QUOTA}, and no hardcoded 20 anywhere (D163/D226)`,
+    answered.used === 1 && answered.quota === EVIDENCE_EXPLAIN_QUOTA,
+    `${answered.used} of ${answered.quota}`,
+  );
+  check(
+    "and the spend is one row for this calendar month, in UTC — the drive's own SQL, not the number the panel printed (D225)",
+    Number(spent?.used) === 1 && spent?.month === new Date().toISOString().slice(0, 7),
+    JSON.stringify(spent),
+  );
+
+  step("the frame underneath it: deltas, one terminal event, and evidence ids this trace really holds (D227/D223)");
+  // The second run, made the way the panel makes it — the same POST carrying her
+  // session — because what a "show this span" button points at is not in the DOM.
+  // Two independent runs of one trace must also produce ONE answer: that is what
+  // determinism has to mean for the engine CI runs.
+  const framed = await fetch(`${BASE}/app/traces/${failing.trace_id}/explain`, {
+    method: "POST",
+    headers: { cookie: alice.cookieHeader },
+  });
+  const frames = (await framed.text())
+    .split("\n")
+    .filter((line) => line.trim())
+    .map((line) => JSON.parse(line));
+  const deltas = frames.filter((event) => event.type === "delta");
+  const terminal = frames.filter((event) => event.type !== "delta");
+  check(
+    "200 as newline-delimited JSON, never stored, and the frame is deltas then exactly one terminal `result` (D227)",
+    framed.status === 200 &&
+      framed.headers.get("content-type") === "application/x-ndjson" &&
+      (framed.headers.get("cache-control") ?? "").includes("no-store") &&
+      deltas.length > 1 &&
+      terminal.length === 1 &&
+      terminal[0].type === "result" &&
+      frames[frames.length - 1] === terminal[0],
+    `HTTP ${framed.status} ${framed.headers.get("content-type")} · ${deltas.length} delta(s) · ` +
+      `${terminal.map((event) => event.type).join(", ") || "no terminal event"}`,
+  );
+  const explanation = terminal[0]?.explanation;
+  check(
+    "the deltas ARE the answer, and the answer is the one the panel rendered — two runs of this trace, one reading",
+    deltas.map((event) => event.text).join("").includes(expectedHeadline) &&
+      explanation?.headline === expectedHeadline,
+    `${explanation?.headline} vs ${expectedHeadline}`,
+  );
+  const linked = (explanation?.evidence ?? []).filter((item) => item.spanId);
+  check(
+    "every span id the evidence links is a span ClickHouse holds for this trace, the failing one among them — an id the trace cannot back is dropped, never linked (D102/D223)",
+    linked.length >= 1 &&
+      linked.every((item) => traceSpanIds.has(item.spanId)) &&
+      linked.some((item) => item.spanId === failing.span_id) &&
+      !(explanation?.evidence ?? []).some((item) => item.detail.includes("is not in this trace")),
+    `${linked.map((item) => item.spanId).join(", ") || "no linked evidence"} vs ${failing.span_id}`,
+  );
+
+  step(`run ${EVIDENCE_EXPLAIN_QUOTA + 1} is refused, and the refusal is a product outcome rather than an error (D225/D241)`);
+  must(
+    await alice.goto(
+      `/app/traces/${failing.trace_id}`,
+      `document.body.textContent.includes("Explain this trace")`,
+    ),
+    "the failed trace never rendered a second time",
+  );
+  must(await alice.evaluate(clickText("Explain this trace")), "the Explain control did not click");
+  must(await alice.waitFor(EXPLAIN_SETTLED, 20_000), "the over-quota panel never reached a terminal state");
+  const refusedRun = await alice.evaluate(EXPLAIN);
+  const afterRefusal = await explainRow();
+  check(
+    "the panel states what happened and what changes it — the plan's runs for this month are spent, so no run was made",
+    refusedRun.text.includes(
+      `This workspace has used all ${EVIDENCE_EXPLAIN_QUOTA} Explain runs its plan includes this month, so no run was made`,
+    ) && refusedRun.text.includes("resets at the start of next month"),
+    refusedRun.text.slice(0, 240),
+  );
+  check(
+    `and it spent nothing: the counter still reads ${EVIDENCE_EXPLAIN_QUOTA} of ${EVIDENCE_EXPLAIN_QUOTA}, and so does the row the statement guards (D225)`,
+    refusedRun.used === EVIDENCE_EXPLAIN_QUOTA &&
+      refusedRun.quota === EVIDENCE_EXPLAIN_QUOTA &&
+      Number(afterRefusal?.used) === EVIDENCE_EXPLAIN_QUOTA,
+    `panel ${refusedRun.used} of ${refusedRun.quota} · row ${JSON.stringify(afterRefusal)}`,
+  );
+
+  step("one Explain definition: the panel's counter IS the settings meter (D226)");
+  await openTab(alice, "Billing & usage", `document.querySelector("main")?.textContent.includes("Explain runs")`);
+  const explainMeter = await alice.evaluate(BILLING);
+  const explainPair = pairIn(explainMeter.main.split("Explain runs")[1] ?? "");
+  check(
+    `the meter divides the same two numbers the panel did and the route enforced: ${EVIDENCE_EXPLAIN_QUOTA} of ${EVIDENCE_EXPLAIN_QUOTA}`,
+    explainPair !== null &&
+      explainPair[0] === refusedRun.used &&
+      explainPair[1] === refusedRun.quota &&
+      explainPair[0] === Number(afterRefusal?.used),
+    `meter ${JSON.stringify(explainPair)} · panel ${refusedRun.used} of ${refusedRun.quota}`,
+  );
+
   // Measured from the last export, because that is when the workspace-state
   // entry ingest is holding was last able to be built — it was built with a
-  // ledger that had not crossed yet, and it lives for one TTL.
-  await sleep(Math.max(0, lastUnderQuotaSendAt + STATE_TTL_MS + 3_000 - Date.now()));
+  // ledger that had not crossed yet, and it lives for one TTL. What is left of
+  // it after the Explain step is printed, not assumed: it is the measurement the
+  // D207 reclaim is made of, and the run that stops having any is the run that
+  // starts paying for its steps again.
+  const windowLeftMs = Math.max(0, lastUnderQuotaSendAt + STATE_TTL_MS + 3_000 - Date.now());
+  console.log(`   ${Math.round(windowLeftMs / 1000)}s of the propagation wait left after the Explain step (D207)`);
+  await sleep(windowLeftMs);
 
   step("over quota, the D165 pinned vectors: one trace survives WHOLE, two are absent WHOLE (D186(iii))");
   for (const vector of PINNED_VECTORS) {
@@ -2438,6 +2737,21 @@ try {
   // The allowlist is exactly one error, by name, on these steps only: a
   // different error class here — or this one on an authenticated path above —
   // is still red (D132's rider, D60's precedent).
+  // D241, and deliberately WITHOUT an allowlist entry: CI runs the fake, which
+  // has no provider to lose, so this line appearing at all means either the fake
+  // stopped being deterministic or a provider was called in a run that must
+  // never spend (U6). Its prefix is stable for exactly this reason, and it is
+  // read across the WHOLE log because the run that would print it is the
+  // authenticated one above and the split must not become a place to hide it.
+  const providerFailures = wholeLog
+    .toString("utf8")
+    .split("\n")
+    .filter((line) => line.includes("[explain] run failed mid-stream"));
+  check(
+    "no Explain run failed mid-stream — the fake carries the drive, and a provider failure here is not allowlisted anywhere (D241)",
+    providerFailures.length === 0,
+    providerFailures.slice(0, 2).join(" | "),
+  );
   const notAllowed = unauthenticated.filter((line) => !line.includes("NoSessionError"));
   check(
     "the unauthenticated probe's only error is NoSessionError — the D114 tripwire, allowlisted by name",
@@ -2466,13 +2780,30 @@ try {
     ["transcript.json", JSON.stringify(transcript)],
     ...artifacts.map((name) => [name, readFileSync(join(OUT, name)).toString("utf8")]),
   ];
-  for (const [issuedToken, where] of [
-    [firstToken, "the quickstart"],
-    [token, "settings"],
+  // The Explain half of this claim is the one that is true by construction and
+  // is asserted anyway (D245/S3.4 §6): the served environment carries no Explain
+  // credential — the fake authenticates nothing, so there is no key in this run
+  // to print — and whichever of the two names the CALLER's shell held is swept
+  // as a literal beside the issued tokens, because a drive that printed an
+  // operator's Anthropic key would have published it exactly the same way.
+  check(
+    "the app was served with no Explain credential at all: fake mode signs nothing, so this run held none to leak (U6)",
+    EXPLAIN_CREDENTIALS.every((name) => appEnv[name] === undefined),
+    EXPLAIN_CREDENTIALS.filter((name) => appEnv[name] !== undefined).join(", "),
+  );
+  const SENT = "only in the Authorization header it was sent in";
+  for (const [secret, whose, only] of [
+    [firstToken, "the key issued from the quickstart", SENT],
+    [token, "the key issued from settings", SENT],
+    ...EXPLAIN_CREDENTIALS.filter((name) => process.env[name]).map((name) => [
+      process.env[name],
+      `the caller's ${name}`,
+      "which this run never sent anywhere — it explains through the fake",
+    ]),
   ]) {
-    const leaked = searched.filter(([, body]) => body.includes(issuedToken)).map(([name]) => name);
+    const leaked = searched.filter(([, body]) => body.includes(secret)).map(([name]) => name);
     check(
-      `the key issued from ${where} is in none of ${searched.length} outputs — only in the Authorization header it was sent in`,
+      `${whose} is in none of ${searched.length} outputs — ${only}`,
       leaked.length === 0,
       `present in ${leaked.join(", ")}`,
     );

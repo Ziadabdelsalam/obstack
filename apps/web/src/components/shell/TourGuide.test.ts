@@ -29,7 +29,7 @@ const LOGS_EXPLORER = path.join(HERE, "../logs/LogsExplorer.tsx");
  * good as its own text-ness). Both spellings are hunted.
  *
  * Matching is CASE-INSENSITIVE and that is load-bearing, not tidiness (D67(ii)):
- * one of the two surviving hits spells the claim with a capital L, so a
+ * the one surviving hit spells the claim with a capital L, so a
  * case-sensitive sweep silently misses it — and would then also miss the claim
  * coming back as a Title-Cased heading, which is exactly how UI copy gets
  * written. `caseSensitiveHits` below proves that difference is real rather than
@@ -40,14 +40,13 @@ const CLAIM = ["live", "tail"];
 const NEEDLES = [CLAIM.join(" "), CLAIM.join("-")];
 
 /**
- * Marketing fiction, both M3-deferred (the widened D63 item): a landing-page
- * screenshot blurb and a fake product changelog entry, neither of which
- * annotates a wired surface. Every OTHER hit in the repo is a regression.
+ * The one surviving marketing fiction, M3-deferred (the widened D63 item): a
+ * landing-page screenshot blurb that annotates no wired surface. The changelog
+ * left this list when its copy was repaired (D246) — its remaining comment
+ * describes the claim instead of spelling it, so the sweep guards that file
+ * like any other. Every OTHER hit in the repo is a regression.
  */
-const ALLOWED = [
-  "apps/web/src/app/changelog/page.tsx",
-  "apps/web/src/components/marketing/ScreensShowcase.tsx",
-];
+const ALLOWED = ["apps/web/src/components/marketing/ScreensShowcase.tsx"];
 
 /**
  * Generated or vendored trees, plus `.planning`: the planning record quotes the
@@ -68,7 +67,7 @@ function walk(dir: string, out: string[] = []): string[] {
   return out;
 }
 
-test("D60 sweep: the tail claim survives only in the two named marketing files", () => {
+test("D60 sweep: the tail claim survives only in the one named marketing file", () => {
   const scanned = walk(REPO_ROOT);
   // If the walk ever breaks early the assertion below would pass by finding
   // nothing, so the file count is asserted too — the sweep has to have read a

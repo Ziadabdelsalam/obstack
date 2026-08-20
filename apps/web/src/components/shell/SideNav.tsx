@@ -28,7 +28,6 @@ import {
   FlaskConical,
   Rocket,
   Settings,
-  ChevronsUpDown,
   Command,
 } from "lucide-react";
 import { Wordmark } from "./Wordmark";
@@ -90,28 +89,27 @@ export function SideNav({ workspaceId }: { workspaceId: string | null }) {
         </Link>
       </div>
 
-      <button
-        type="button"
-        className="mx-3 mb-3 flex items-center justify-between rounded-md border border-line bg-raised px-2.5 py-1.5 text-left text-[12.5px] text-ink hover:border-line-strong"
-      >
-        <span className="flex flex-col leading-tight">
-          {/* Live mode names no organisation: signup gives an org the operator's
-              own name as a stand-in (there is no org-name field), so rendering
-              it here would put a person where an org belongs. The workspace
-              below is the real thing this shell reads. */}
-          <span className="font-medium">{workspaceId ? "Workspace" : "Loopwork"}</span>
-          {/* The workspace id, verbatim and alone in its element: this is the
-              line that tells an operator which tenant they are reading, and the
-              e2e drive reads the same text to learn it (D115). */}
-          <span
-            data-workspace-id={workspaceId ?? undefined}
-            className="font-mono text-[10px] text-faint"
-          >
-            {workspaceId ?? "loopwork-prod"}
-          </span>
+      {/* A label, not a switcher (D228). This was a chevroned button with no
+          onClick and no menu behind it — an affordance that promised a
+          workspace picker the product does not have, and nothing in M3 puts an
+          operator in two workspaces. The name and the id stay; the promise
+          goes. */}
+      <div className="mx-3 mb-3 flex flex-col rounded-md border border-line bg-raised px-2.5 py-1.5 text-left text-[12.5px] leading-tight text-ink">
+        {/* Live mode names no organisation: signup gives an org the operator's
+            own name as a stand-in (there is no org-name field), so rendering
+            it here would put a person where an org belongs. The workspace
+            below is the real thing this shell reads. */}
+        <span className="font-medium">{workspaceId ? "Workspace" : "Loopwork"}</span>
+        {/* The workspace id, verbatim and alone in its element: this is the
+            line that tells an operator which tenant they are reading, and the
+            e2e drive reads the same text to learn it (D115). */}
+        <span
+          data-workspace-id={workspaceId ?? undefined}
+          className="font-mono text-[10px] text-faint"
+        >
+          {workspaceId ?? "loopwork-prod"}
         </span>
-        <ChevronsUpDown className="h-3.5 w-3.5 text-faint" />
-      </button>
+      </div>
 
       {sections.map((sec, si) => (
         <nav key={si} className="flex flex-col gap-px px-2 pb-1.5">
@@ -148,8 +146,11 @@ export function SideNav({ workspaceId }: { workspaceId: string | null }) {
           <Command className="h-3 w-3" />K to jump anywhere
         </p>
         <div className="rounded-md border border-line bg-raised px-3 py-2.5">
+          {/* The heading was "demo workspace" in both modes, which reads as a
+              claim about the tenant — false for an operator looking at their
+              own live workspace, where only the unwired surfaces are demo. */}
           <p className="font-mono text-[10px] uppercase tracking-widest text-faint">
-            demo workspace
+            {workspaceId ? "unwired surfaces" : "demo workspace"}
           </p>
           {/* in live mode the wired surfaces are real telemetry — only the rest is demo content */}
           <p className="mt-1 text-[12px] leading-snug text-mid">

@@ -62,7 +62,16 @@ export interface Explanation {
   headline: string;
   failedWhere: string;
   rootCause: string;
-  evidence: { label: string; detail: string }[];
+  /**
+   * One cited fact. `spanId`/`logRef` are the trace's OWN ids (D223) — a
+   * `Span.id` and a `LogRecord.id` — and they are what makes evidence a link
+   * rather than a sentence. Optional because they are not always earned: a live
+   * explanation whose model-supplied id is not in the trace has it dropped and
+   * the drop stated in `detail` (`server/explain/validate.ts`), so the renderer
+   * has to handle an unlinked item anyway. Mock and live render through the one
+   * renderer — there is no mode fork here.
+   */
+  evidence: { label: string; detail: string; spanId?: string; logRef?: string }[];
   suggestion: string;
 }
 

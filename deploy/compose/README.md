@@ -207,6 +207,24 @@ What it asserts, in order:
   and quota drops rendered as sampling rather than as faults (D218/D219), and no
   invented per-minute rate anywhere on the panel. Neither of the two routes this
   sprint registered carries a `SAMPLE DATA` badge, while `/app/costs` still does;
+- **Explain, run and refused** — she opens one of her own failed traces, presses
+  *Explain this trace*, and the panel streams the **fake engine's** answer: the
+  engine with the provider taken out (D168), which is the only one CI ever runs
+  because CI never spends (U6). The answer must be about *that* trace — the
+  failing span's own name and service — must say plainly that no model read it,
+  and must link the evidence it cites; the counter line under it divides the
+  plan's own two numbers, never a hardcoded twenty (D163/D226). A second run,
+  made as the panel makes it, is read as the NDJSON frame (D227): deltas, then
+  exactly one terminal event, and every span id in its evidence is checked
+  against the span ids ClickHouse holds for that trace (D223) — two runs of one
+  trace, one answer. Then the refusal is walked **on purpose**: the free plan's
+  Explain allowance is lowered to two the way the event quota is lowered
+  (D172 class), so the third run is refused as a *product outcome* — a 200
+  carrying a terminal `refusal`, a sentence a person can act on, and nothing
+  spent (D225/D241). The panel's counter, the settings meter and the row the
+  route's statement guards are then the same two numbers. The step runs inside
+  the metering propagation wait on purpose (D207): that sleep is computed from an
+  absolute deadline, so work done first costs the run nothing;
 - **token hygiene** — both keys the run issued through the UI are searched for,
   as literals, in everything the drive printed and everything it wrote: stdout,
   the transcript, the server log, the build log, every artifact beside them. The
@@ -214,7 +232,13 @@ What it asserts, in order:
   sent in — a drive that proved attribution by printing the token would have
   published a working credential into the CI log. (Chrome's own profile
   directories are deliberately not searched: a browser caching a page it was
-  shown is the browser, not this drive's artifact.);
+  shown is the browser, not this drive's artifact.) The sweep covers Explain
+  credentials too: the app is served with `ANTHROPIC_API_KEY` and
+  `OBSTACK_EXPLAIN_API_KEY` removed from its environment — fake mode
+  authenticates nothing, so the measured server holds no key at all — and
+  whichever of the two the caller's own shell held is searched for as a literal
+  beside the issued tokens. The drive refuses outright if `OBSTACK_EXPLAIN_MODE`
+  names anything but the fake;
 - **sign-out and no session** — the one cookie goes, every wired route answers a
   cookie-less browser with `/login` and no telemetry, and the quickstart's poll
   route (`/app/onboarding/status`) answers a bare `401` with no body and no
@@ -279,10 +303,12 @@ row and silently inflate the counts the drive checks. Each run signs up new
 strangers, so it seeds workspaces nobody has seeded before; `docker compose
 --profile '*' down -v` is how you start the whole thing from nothing.
 
-A driven stack is also not a stack the test suites can run against: the drive's
-quota seeding (`exit-seed.mjs --lower-free-quota`) has no undo, so after a drive
-the plans-catalog assertions in `apps/web`'s suite fail until `down -v` restores
-the migration-seeded catalog. Run `npm test` before the drive, or cycle first.
+A driven stack is also not a stack the test suites can run against: the drive
+lowers two columns of the free plan with no undo — the event quota
+(`exit-seed.mjs --lower-free-quota`) and, for the Explain step, `explain_quota` —
+so after a drive the plans-catalog assertions in `apps/web`'s suite fail until
+`down -v` restores the migration-seeded catalog. Run `npm test` before the drive,
+or cycle first.
 
 ### The captured-DDL drift check
 

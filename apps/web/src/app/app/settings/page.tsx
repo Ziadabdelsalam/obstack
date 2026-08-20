@@ -18,6 +18,7 @@ import {
   listPricingOverrides,
 } from "@/server/ingest-health";
 import { getOrgName, inviteLinkPath, listOrgMembers, listPendingInvites } from "@/server/invites";
+import { getExplainQuota } from "@/server/explain/quota";
 import { queryRows } from "@/server/postgres";
 import { getSessionContext } from "@/server/session";
 import { getUsage, listPlans } from "@/server/usage";
@@ -140,12 +141,15 @@ export default async function SettingsPage({
   await applyCheckoutReturn(params[CHECKOUT_RETURN_PARAM], session.workspaceId);
 
   const requestHeaders = await headers();
-  const [orgName, members, invites, keys, usage, plans, health, overrides] = await Promise.all([
+  const [orgName, members, invites, keys, usage, explain, plans, health, overrides] = await Promise.all([
     getOrgName(session.orgId, queryRows),
     listOrgMembers(session.orgId, queryRows),
     listPendingInvites(session.orgId, requestHeaders),
     listApiKeys(session.workspaceId, queryRows),
     getUsage(session.workspaceId, queryRows),
+    // The Explain meter's two numbers, from the one reader the trace panel and
+    // the Explain route also read (D226/D231.3) — not a second definition here.
+    getExplainQuota(session.workspaceId, queryRows),
     listPlans(queryRows),
     getIngestHealth(session.workspaceId, queryRows),
     listPricingOverrides(session.workspaceId, queryRows),
@@ -170,6 +174,8 @@ export default async function SettingsPage({
     retentionDays: usage.retentionDays,
     periodStart: asMonth(usage.periodStart),
     asOf: usage.asOf ? asMinute(usage.asOf) : null,
+    explainUsed: explain.used,
+    explainQuota: explain.quota,
     plans: plans.map((plan) => ({
       id: plan.id,
       name: plan.name,

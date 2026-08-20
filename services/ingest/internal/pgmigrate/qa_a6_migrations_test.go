@@ -12,7 +12,7 @@ import (
 )
 
 // QA A6 — regression + suite-adequacy probes on the Postgres migration set
-// (0001-0005) after S3.3 added 0005_metering.sql on top of the S3.1/S3.2 files.
+// (0001-0006) after S3.3 added 0005_metering.sql on top of the S3.1/S3.2 files.
 //
 // These are the properties the package doc CLAIMS and the standing suite does
 // not exercise:
@@ -103,8 +103,8 @@ func TestQAA6RerunningTheSetChangesNoSeededRow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first boot: %v", err)
 	}
-	if len(first) != 5 {
-		t.Fatalf("first boot applied %v, want the five embedded versions", first)
+	if len(first) != 6 {
+		t.Fatalf("first boot applied %v, want the six embedded versions", first)
 	}
 
 	const catalog = `SELECT string_agg(id || '=' || event_quota || '/' || retention_days || '/' || price_usd_month, ',' ORDER BY id) FROM plans`
@@ -171,7 +171,7 @@ func TestQAA6InheritedFilesAreUndriftedByS33(t *testing.T) {
 
 	// The versions, in the order Run applies them.
 	got := queryText(ctx, t, dsn, "SELECT string_agg(version, ',' ORDER BY version) FROM schema_migrations")
-	const want = "0001_workspaces,0002_saved_views,0003_auth,0004_api_keys,0005_metering"
+	const want = "0001_workspaces,0002_saved_views,0003_auth,0004_api_keys,0005_metering,0006_explain_quota"
 	if got != want {
 		t.Errorf("applied set = %q, want %q", got, want)
 	}

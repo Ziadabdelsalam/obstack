@@ -15,6 +15,11 @@ const comparisonRows: { capability: string; obstack: "yes" | "partial" | "no"; a
   { capability: "Async queue hops inside the same trace", obstack: "yes", apm: "partial", llm: "no" },
   { capability: "Token cost attribution per request & feature", obstack: "yes", apm: "no", llm: "yes" },
   { capability: "K8s events on the trace timeline", obstack: "yes", apm: "partial", llm: "no" },
+  // True as of this sprint, and verified against what ships rather than left
+  // as the promise it used to be: Explain assembles a failed trace's spans and
+  // its correlated logs into a structured summary whose evidence items link
+  // back to the span or log line each one came from (D229/D232 — the row went
+  // true only once the surface landed).
   { capability: "Root-cause explanation from correlated evidence", obstack: "yes", apm: "no", llm: "no" },
   { capability: "One env var to try with existing OTel", obstack: "yes", apm: "partial", llm: "partial" },
 ];
@@ -389,32 +394,56 @@ export default function Landing() {
       <section id="pricing" className="border-t border-line bg-surface">
         <div className="mx-auto w-full max-w-[1400px] px-5 py-16">
           <SectionLabel>pricing</SectionLabel>
-          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+          {/* Free and Pro are the two rows of the `plans` catalog, restated by
+              hand — every number here is a column of it (D226: the landing stays
+              copy, verified true at review, rather than reaching across the
+              D106 fence into Postgres). Seats were never a column, so the seat
+              lines are gone rather than invented. Scale has no catalog row and
+              no product: it states intent and carries no specifics at all
+              (D229). Self-hosted is different (D236) — running obstack yourself
+              is what ships today; only the supported paid tier is unbuilt, so
+              the planned label sits on the price, not on the tier. */}
+          <p className="mt-2 max-w-2xl text-[13px] leading-relaxed text-mid">
+            Free and Pro are the plans the product carries today, and you can
+            self-host obstack today for nothing. Scale is what we intend to
+            build — no numbers yet, because there is nothing behind it to quote.
+          </p>
+          <div className="mt-6 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
             {[
               {
                 name: "Free",
                 price: "$0",
                 per: "",
-                items: ["50k events/mo", "7-day retention", "2 seats", "20 Explain runs/mo"],
+                items: ["50k events/mo", "7-day retention", "20 Explain runs/mo"],
               },
               {
                 name: "Pro",
                 price: "$49",
                 per: "/mo + usage",
                 hot: true,
-                items: ["1M events included", "30-day retention", "Unlimited seats", "200 Explain runs/mo"],
+                items: ["1M events included", "30-day retention", "200 Explain runs/mo"],
               },
               {
                 name: "Scale",
-                price: "Volume",
-                per: "pricing",
-                items: ["90-day retention", "Priority support", "Custom event volume", "Usage alerts"],
+                price: "Planned",
+                per: "",
+                soon: true,
+                items: ["Higher event volume", "Longer retention", "Priority support"],
               },
               {
                 name: "Self-hosted",
-                price: "Annual",
-                per: "license",
-                items: ["Your hardware, your data", "Unlimited volume", "Same product as cloud", "For privacy-critical teams"],
+                // The price is the paid tier's, and that is the only planned
+                // part: the bullets are things you can do this afternoon —
+                // the same obstack the hero says signing up runs, installed
+                // from the chart in this repo (docs' helm path).
+                price: "Planned",
+                per: "",
+                note: "A supported paid tier is planned.",
+                items: [
+                  "Self-host today — free, run it yourself",
+                  "Your hardware, your data",
+                  "helm install obstack deploy/helm/obstack",
+                ],
               },
             ].map((t) => (
               <div
@@ -426,15 +455,40 @@ export default function Landing() {
                     : "var(--color-line)",
                 }}
               >
-                <p className="text-[14px] font-semibold text-ink">{t.name}</p>
+                <div className="flex flex-wrap items-center gap-2">
+                  <p className="text-[14px] font-semibold text-ink">{t.name}</p>
+                  {t.soon && (
+                    <span
+                      className="rounded-[3px] px-1.5 py-px font-mono text-[9.5px] tracking-wide uppercase text-faint"
+                      style={{ background: "color-mix(in srgb, var(--color-line) 60%, transparent)" }}
+                    >
+                      not built yet
+                    </span>
+                  )}
+                </div>
                 <p className="mt-2 flex items-baseline gap-1">
-                  <span className="font-display text-[26px] font-bold text-ink">{t.price}</span>
+                  <span
+                    // "Planned" is not a price, so it never reads like one —
+                    // true of Scale's whole tier and of Self-hosted's paid one.
+                    className={`font-display text-[26px] font-bold ${t.price === "Planned" ? "text-faint" : "text-ink"}`}
+                  >
+                    {t.price}
+                  </span>
                   <span className="font-mono text-[11px] text-faint">{t.per}</span>
                 </p>
+                {t.note && (
+                  <p className="mt-1.5 text-[12px] leading-relaxed text-faint">{t.note}</p>
+                )}
                 <ul className="mt-4 space-y-2">
                   {t.items.map((i) => (
                     <li key={i} className="flex items-start gap-2 text-[12.5px] text-mid">
-                      <Check className="mt-0.5 h-3.5 w-3.5 shrink-0" style={{ color: "var(--color-ok)" }} />
+                      {/* A tick means "you get this"; a planned tier gets a
+                          dash, so the list reads as intent, not inventory. */}
+                      {t.soon ? (
+                        <span className="mt-0.5 w-3.5 shrink-0 text-center font-mono text-faint">–</span>
+                      ) : (
+                        <Check className="mt-0.5 h-3.5 w-3.5 shrink-0" style={{ color: "var(--color-ok)" }} />
+                      )}
                       {i}
                     </li>
                   ))}
@@ -453,8 +507,11 @@ export default function Landing() {
               <h2 className="font-display text-[22px] font-semibold text-ink">
                 See your whole stack in one trace.
               </h2>
+              {/* "live sample data" contradicted itself: the demo is a fixed
+                  sample corpus, and the only thing live about it is that it is
+                  running. Say which of the two it is (D106). */}
               <p className="mt-1 text-[13.5px] text-mid">
-                The demo is live sample data — no signup, no setup.
+                The demo runs on sample data — no signup, no setup.
               </p>
               <p className="mt-1 text-[13.5px] text-mid">
                 Signing up creates your own workspace on an obstack you run. The

@@ -2,18 +2,21 @@
 
 import { useMemo, useState } from "react";
 import Link from "next/link";
-import { ArrowLeft, ArrowRight, Link2, Sparkles, Check, GitCompareArrows, Share2, X, Copy } from "lucide-react";
+import { ArrowLeft, ArrowRight, Link2, Sparkles, Check, GitCompareArrows } from "lucide-react";
 import { fmtCost, fmtMs, fmtTokens, timeAgo } from "@/lib/format";
 import { layerColor } from "@/lib/layers";
 import { NEARBY_LOG_CAP, NEARBY_LOG_WINDOW_S } from "@/lib/nearby-logs";
 import { StatusPill } from "@/components/ui/StatusPill";
 import { allTraces } from "@/mock/traces";
-import type { Trace } from "@/lib/types";
+import type { Explanation, Trace } from "@/lib/types";
 import { Waterfall } from "./Waterfall";
 import { SpanDetail } from "./SpanDetail";
 import { LogsRail } from "./LogsRail";
-import { ExplainPanel } from "./ExplainPanel";
+import { ExplainPanel, costsARun } from "./ExplainPanel";
 import { AgentReplay } from "./AgentReplay";
+
+/** One definition of the correlated-log rail's anchor: the section carries it, the evidence links reach for it. */
+const LOGS_ANCHOR = "correlated-logs";
 
 function Stat({ label, value }: { label: string; value: string }) {
   return (
@@ -29,16 +32,24 @@ function Stat({ label, value }: { label: string; value: string }) {
  * its counterpart out of the mock corpus, so on an ingested trace it would offer
  * a diff against a run that never happened. Defaults to true — mock mode and the
  * diff surface are unchanged.
+ *
+ * `explain` is the page's answer to both Explain questions, because both are
+ * server facts: `live` says a run is fetched on demand from the route rather
+ * than being the demo's prepared story (D224 — the adapter still never sets
+ * `trace.explanation`), and `used`/`quota` is this workspace's Explain month as
+ * the one quota reader read it (D226).
  */
 export function TraceExplorer({
   trace,
   nowMs,
   compareEnabled = true,
+  explain,
 }: {
   trace: Trace;
   /** the request's reference clock, per mode (D50/D64) — never sampled here */
   nowMs: number;
   compareEnabled?: boolean;
+  explain: { live: boolean; used: number; quota: number };
 }) {
   const firstError = useMemo(
     () => trace.spans.find((s) => s.status === "error"),
@@ -49,9 +60,13 @@ export function TraceExplorer({
   );
   const [explainOpen, setExplainOpen] = useState(false);
   const [copied, setCopied] = useState(false);
-  const [shareOpen, setShareOpen] = useState(false);
-  const [shareEnabled, setShareEnabled] = useState(false);
-  const [shareCopied, setShareCopied] = useState(false);
+  // A run this page session spent, held HERE rather than in the panel, because
+  // the panel unmounts when it is closed: the answer survives a close so that
+  // reopening shows it again instead of quietly spending a second metered run,
+  // and the count survives so the footer stops restating the number the server
+  // read at page load.
+  const [runsSpent, setRunsSpent] = useState(0);
+  const [answered, setAnswered] = useState<Explanation | null>(null);
   const [view, setView] = useState<"waterfall" | "replay">("waterfall");
   const hasAgent = trace.spans.some((s) => s.layer === "agent");
 
@@ -64,7 +79,10 @@ export function TraceExplorer({
         : undefined,
     [trace, compareEnabled],
   );
-  const shareUrl = `https://obstack.dev/share/tr_${trace.id.slice(0, 10)}`;
+  // There was a "share" button here that opened a modal around a made-up
+  // `https://obstack.dev/share/…` link (D231.4). Public trace sharing is not
+  // built, so the affordance and the URL are gone rather than re-worded — "copy
+  // link" beside it copies the URL of this page, which is a link that works.
 
   const selected = trace.spans.find((s) => s.id === selectedId) ?? trace.spans[0];
   const hasFailure = trace.status === "error" || trace.spans.some((s) => s.status === "error");
@@ -139,14 +157,6 @@ export function TraceExplorer({
             {copied ? <Check className="h-3.5 w-3.5" style={{ color: "var(--color-ok)" }} /> : <Link2 className="h-3.5 w-3.5" />}
             {copied ? "copied" : "copy link"}
           </button>
-          <button
-            type="button"
-            onClick={() => setShareOpen(true)}
-            className="flex items-center gap-1.5 rounded-md border border-line bg-raised px-2.5 py-1.5 text-[12px] text-mid hover:border-line-strong hover:text-ink"
-          >
-            <Share2 className="h-3.5 w-3.5" />
-            share
-          </button>
           {compareWith && (
             <Link
               href={`/app/traces/diff?a=${trace.id}&b=${compareWith.id}`}
@@ -156,7 +166,10 @@ export function TraceExplorer({
               diff vs healthy run
             </Link>
           )}
-          {hasFailure && trace.explanation && (
+          {/* D224: in live mode a failure is the whole condition — the run is
+              fetched on demand, so nothing has to be attached to the trace for
+              the button to be true. Mock mode still needs its prepared story. */}
+          {hasFailure && (explain.live || trace.explanation) && (
             <button
               type="button"
               onClick={() => setExplainOpen(true)}
@@ -213,7 +226,11 @@ export function TraceExplorer({
             <Waterfall trace={trace} selectedId={selectedId} onSelect={setSelectedId} />
           </section>
 
-          <section className="rounded-lg border border-line bg-surface">
+          {/* The anchor an explanation's `logRef` lands on. veteran: it is the
+              RAIL, not the row — a per-row anchor is a change to `LogsRail`,
+              which this pass does not own; give the rail row ids and this href
+              becomes `#log-<id>` with nothing else moving. */}
+          <section id={LOGS_ANCHOR} className="rounded-lg border border-line bg-surface">
             <div className="flex items-center justify-between border-b border-line px-3 py-2">
               <h2 className="font-mono text-[11px] uppercase tracking-widest text-faint">
                 correlated logs
@@ -230,9 +247,18 @@ export function TraceExplorer({
         </div>
 
         <div className="min-w-0 space-y-4">
-          {explainOpen && trace.explanation && (
+          {explainOpen && (
             <ExplainPanel
-              explanation={trace.explanation}
+              traceId={trace.id}
+              prepared={trace.explanation ?? answered ?? undefined}
+              used={explain.used + runsSpent}
+              quota={explain.quota}
+              logsHref={`#${LOGS_ANCHOR}`}
+              onSelectSpan={setSelectedId}
+              onFinished={(run) => {
+                if (costsARun(run)) setRunsSpent((n) => n + 1);
+                if (run.phase === "answered") setAnswered(run.explanation);
+              }}
               onClose={() => setExplainOpen(false)}
             />
           )}
@@ -248,69 +274,6 @@ export function TraceExplorer({
       </div>
       )}
 
-      {/* share modal */}
-      {shareOpen && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
-          onClick={() => setShareOpen(false)}
-          role="dialog"
-          aria-modal="true"
-          aria-label="Share trace"
-        >
-          <div
-            className="w-full max-w-md rounded-xl border border-line-strong bg-surface p-5 shadow-2xl"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="flex items-center justify-between">
-              <h3 className="text-[15px] font-semibold text-ink">Share this trace</h3>
-              <button type="button" onClick={() => setShareOpen(false)} aria-label="Close" className="rounded p-1 text-faint hover:bg-overlay hover:text-ink">
-                <X className="h-4 w-4" />
-              </button>
-            </div>
-            <div className="mt-4 flex items-center justify-between rounded-md border border-line bg-raised px-3 py-2.5">
-              <span className="text-[13px] text-mid">Public link</span>
-              <button
-                type="button"
-                onClick={() => setShareEnabled((v) => !v)}
-                aria-pressed={shareEnabled}
-                className="h-4 w-7 rounded-full p-px transition-colors"
-                style={{ background: shareEnabled ? "color-mix(in srgb, var(--color-ok) 50%, var(--color-line))" : "var(--color-line)" }}
-              >
-                <span className="block h-3.5 w-3.5 rounded-full bg-ink transition-transform" style={{ transform: shareEnabled ? "translateX(12px)" : "none" }} />
-              </button>
-            </div>
-            {shareEnabled ? (
-              <>
-                <div className="mt-3 flex items-center gap-2">
-                  <code className="flex-1 overflow-x-auto rounded-md border border-line bg-bg px-2.5 py-2 font-mono text-[11.5px] text-ink">
-                    {shareUrl}
-                  </code>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      navigator.clipboard.writeText(shareUrl).catch(() => {});
-                      setShareCopied(true);
-                      setTimeout(() => setShareCopied(false), 1500);
-                    }}
-                    aria-label="Copy share link"
-                    className="rounded-md border border-line bg-raised p-2 text-mid hover:text-ink"
-                  >
-                    {shareCopied ? <Check className="h-3.5 w-3.5" style={{ color: "var(--color-ok)" }} /> : <Copy className="h-3.5 w-3.5" />}
-                  </button>
-                </div>
-                <p className="mt-2 font-mono text-[10.5px] leading-relaxed text-faint">
-                  read-only · prompts and completions redacted by default · expires in 7 days
-                </p>
-              </>
-            ) : (
-              <p className="mt-3 text-[12.5px] leading-relaxed text-mid">
-                Anyone with the link can view this trace read-only — no workspace access, prompts
-                redacted unless you opt in.
-              </p>
-            )}
-          </div>
-        </div>
-      )}
     </div>
   );
 }

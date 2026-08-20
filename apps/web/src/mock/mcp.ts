@@ -69,23 +69,32 @@ export const mcpActivity: McpActivity[] = [
   { agent: "on-call-bot", tool: "get_slo_status", args: "{}", time: "1h ago" },
 ];
 
+/**
+ * Nothing serves these tools yet: there is no MCP endpoint in this product, in
+ * either mode. The snippets used to name an obstack host that does not exist
+ * and hand it over as a copy-pasteable config — the one kind of demo line
+ * someone runs.
+ * Endpoint and token are placeholders in the `<…>` form the connections catalog
+ * already uses for a value the reader supplies (`API_KEY_PLACEHOLDER`), defined
+ * once here (D215) and interpolated into every snippet and the page itself.
+ */
+export const MCP_ENDPOINT_PLACEHOLDER = "<YOUR_OBSTACK_HOST>/mcp";
+export const MCP_TOKEN_PLACEHOLDER = "<OBSTACK_API_KEY>";
+
 export const mcpSetup = [
   {
     id: "claude-code",
     label: "Claude Code",
-    snippet:
-      'claude mcp add obstack \\\n  --transport http https://mcp.obstack.dev \\\n  --header "Authorization: Bearer ob_mcp_read_7k2f…"',
+    snippet: `claude mcp add obstack \\\n  --transport http ${MCP_ENDPOINT_PLACEHOLDER} \\\n  --header "Authorization: Bearer ${MCP_TOKEN_PLACEHOLDER}"`,
   },
   {
     id: "claude-desktop",
     label: "Claude Desktop",
-    snippet:
-      '{\n  "mcpServers": {\n    "obstack": {\n      "url": "https://mcp.obstack.dev",\n      "headers": { "Authorization": "Bearer ob_mcp_read_7k2f…" }\n    }\n  }\n}',
+    snippet: `{\n  "mcpServers": {\n    "obstack": {\n      "url": "${MCP_ENDPOINT_PLACEHOLDER}",\n      "headers": { "Authorization": "Bearer ${MCP_TOKEN_PLACEHOLDER}" }\n    }\n  }\n}`,
   },
   {
     id: "cursor",
     label: "Cursor",
-    snippet:
-      '{\n  "mcpServers": {\n    "obstack": {\n      "url": "https://mcp.obstack.dev",\n      "headers": { "Authorization": "Bearer ob_mcp_read_7k2f…" }\n    }\n  }\n}',
+    snippet: `{\n  "mcpServers": {\n    "obstack": {\n      "url": "${MCP_ENDPOINT_PLACEHOLDER}",\n      "headers": { "Authorization": "Bearer ${MCP_TOKEN_PLACEHOLDER}" }\n    }\n  }\n}`,
   },
 ];
