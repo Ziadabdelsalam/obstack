@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { X, Copy, Check, Bell } from "lucide-react";
-import type { Connector } from "@/mock/types";
+import type { Connector } from "./connectors";
 
 function Snippet({ code }: { code: string }) {
   const [copied, setCopied] = useState(false);

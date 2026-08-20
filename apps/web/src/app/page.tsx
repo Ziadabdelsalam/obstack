@@ -5,7 +5,7 @@ import { HeroTrace } from "@/components/marketing/HeroTrace";
 import { ScreensShowcase } from "@/components/marketing/ScreensShowcase";
 import { WaitlistForm } from "@/components/marketing/WaitlistForm";
 import { layerColor } from "@/lib/layers";
-import { connectors } from "@/mock/connectors";
+import { connectors } from "@/components/connections/connectors";
 
 const comparisonRows: { capability: string; obstack: "yes" | "partial" | "no"; apm: "yes" | "partial" | "no"; llm: "yes" | "partial" | "no" }[] = [
   { capability: "One trace across API, agents, LLM calls and pods", obstack: "yes", apm: "no", llm: "no" },

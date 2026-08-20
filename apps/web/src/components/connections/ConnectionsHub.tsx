@@ -2,8 +2,9 @@
 
 import { useMemo, useState } from "react";
 import { Search } from "lucide-react";
-import { categories, connectedSources, connectors } from "@/mock/connectors";
-import type { ConnectedSource, Connector } from "@/mock/types";
+import { connectedSources } from "@/mock/connectors";
+import type { ConnectedSource } from "@/mock/types";
+import { categories, connectors, type Connector } from "./connectors";
 import { ConnectModal } from "./ConnectModal";
 
 const sourceStatus: Record<
