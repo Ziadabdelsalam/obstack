@@ -10,11 +10,11 @@ export const rotations: Rotation[] = [
   {
     team: "Platform",
     primary: "Nour El-Sayed",
-    secondary: "Ziad Abdelsalam",
+    secondary: "Salma Nabil",
     until: "Mon Aug 11, 09:00",
     week: [
-      { day: "Mon", primary: "Nour" }, { day: "Tue", primary: "Nour" }, { day: "Wed", primary: "Ziad" },
-      { day: "Thu", primary: "Ziad" }, { day: "Fri", primary: "Nour" }, { day: "Sat", primary: "Omar" },
+      { day: "Mon", primary: "Nour" }, { day: "Tue", primary: "Nour" }, { day: "Wed", primary: "Salma" },
+      { day: "Thu", primary: "Salma" }, { day: "Fri", primary: "Nour" }, { day: "Sat", primary: "Omar" },
       { day: "Sun", primary: "Nour" },
     ],
   },
@@ -25,19 +25,19 @@ export const rotations: Rotation[] = [
     until: "Wed Aug 13, 09:00",
     week: [
       { day: "Mon", primary: "Omar" }, { day: "Tue", primary: "Omar" }, { day: "Wed", primary: "Omar" },
-      { day: "Thu", primary: "Nour" }, { day: "Fri", primary: "Nour" }, { day: "Sat", primary: "Ziad" },
+      { day: "Thu", primary: "Nour" }, { day: "Fri", primary: "Nour" }, { day: "Sat", primary: "Salma" },
       { day: "Sun", primary: "Omar" },
     ],
   },
   {
     team: "Infra",
-    primary: "Ziad Abdelsalam",
+    primary: "Salma Nabil",
     secondary: "Omar Farouk",
     until: "Mon Aug 11, 09:00",
     week: [
-      { day: "Mon", primary: "Ziad" }, { day: "Tue", primary: "Ziad" }, { day: "Wed", primary: "Ziad" },
+      { day: "Mon", primary: "Salma" }, { day: "Tue", primary: "Salma" }, { day: "Wed", primary: "Salma" },
       { day: "Thu", primary: "Omar" }, { day: "Fri", primary: "Omar" }, { day: "Sat", primary: "Nour" },
-      { day: "Sun", primary: "Ziad" },
+      { day: "Sun", primary: "Salma" },
     ],
   },
 ];

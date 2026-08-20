@@ -2,54 +2,45 @@ import Link from "next/link";
 import { ArrowRight } from "lucide-react";
 import { Wordmark } from "@/components/shell/Wordmark";
 
+/**
+ * Every entry names something the product does when you run it (D229). The four
+ * that announced surfaces which exist only as demo content — the service map,
+ * Issues/Incidents/SLOs, trace diff, Pipelines, the customizable Overview, the
+ * infra track — are deleted rather than softened: an entry with no true
+ * referent has nothing to reword into. The rest were rewritten down to what
+ * actually shipped, which is why the two-word streaming-tail claim the D60
+ * sweep in `components/shell/TourGuide.test.ts` bans — never spelled here, so
+ * that sweep now covers this file too (D246) — and the "at launch" Vercel and
+ * CloudWatch claims are gone (the connections hub itself marks both
+ * coming-soon, D208).
+ */
 const entries = [
+  // Dated for the real ship, not the date the entry used to carry: Explain
+  // exists as of today, so this is the one entry written the day its feature
+  // landed (D229 rewrite-to-truth, D232's W4 follow-up).
   {
-    date: "Aug 10, 2026",
+    date: "Aug 20, 2026",
     tag: "new",
-    title: "Service map, Issues, Incidents, SLOs & trace diff",
-    body: "The map draws your topology from trace data with live error rates on every edge. Issues groups recurring errors by fingerprint. Incidents reconstructs an outage end-to-end from pipelines, alerts, K8s events and traces. SLOs track error-budget burn, and trace diff compares any two runs span by span.",
-  },
-  {
-    date: "Aug 9, 2026",
-    tag: "new",
-    title: "Pipelines: crons, consumers and backfills with live progress",
-    body: "Every scheduled or event-driven flow in one place — run history, next runs, success rates, and a live progress bar for in-flight backfills, with failures linked straight to their traces.",
-  },
-  {
-    date: "Aug 9, 2026",
-    tag: "new",
-    title: "Customizable Overview",
-    body: "Pin what you actually watch: services, service comparisons, routes, pods, models, tools, queues and pipelines as widgets on your dashboard.",
+    title: "Explain this trace",
+    body: "One click on a failed trace streams a root-cause summary built from that trace's own spans and the log lines on its timeline — the ones carrying its trace id and the nearby lines from the same window. Each piece of evidence links back to the span or log line it came from, and a reference the trace does not contain is dropped, with the drop stated rather than linked. The summary comes from Claude, or from whichever Anthropic-compatible endpoint a self-hosted install is pointed at; with no model configured the panel says so instead of guessing. Runs are metered per plan — 20 a month on Free, 200 on Pro.",
   },
   {
     date: "Aug 8, 2026",
     tag: "new",
-    title: "Logs explorer with live tail",
-    body: "Severity and pod filters, free-text search, and an on-trace-only toggle. Every correlated line is one click from its trace.",
+    title: "Logs explorer",
+    body: "Search log bodies, and filter by minimum severity, pod and time range. Any line carrying a trace id is one click from its trace. Nothing tails: refreshing is a button.",
   },
   {
     date: "Aug 6, 2026",
     tag: "improved",
-    title: "Traces now carry the full pipeline",
-    body: "Async continuation through queues: a webhook that returns 202 in 58ms keeps its trace alive through Kafka, the agent, the database and the notifier. Queue dwell is a span. Service boundaries are marked.",
-  },
-  {
-    date: "Aug 4, 2026",
-    tag: "improved",
-    title: "Infra track in every waterfall",
-    body: "Pods and Kubernetes events (OOM kills, restarts, throttling) render on the trace timeline, aligned with the spans they affected.",
-  },
-  {
-    date: "Aug 1, 2026",
-    tag: "new",
-    title: "Explain this trace",
-    body: "One click on a failed trace produces a root-cause summary built from the correlated spans and logs — with evidence, not vibes.",
+    title: "Traces carry their logs",
+    body: "A trace opens as its spans across every service that took part, with the log lines that share its trace id on the same timeline — plus the nearby lines from the same window, marked as nearby rather than claimed as correlated.",
   },
   {
     date: "Jul 28, 2026",
     tag: "new",
     title: "Connections hub",
-    body: "Cloud, PaaS, containers, databases, LLM gateways and CI as guided connections. OTLP, Kubernetes, Docker, Vercel and AWS CloudWatch at launch.",
+    body: "OpenTelemetry, Kubernetes and Docker as guided connections, each with the ingest health of the source it set up. The rest of the catalog is listed as coming soon, because that is what it is.",
   },
 ];
 

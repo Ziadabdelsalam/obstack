@@ -96,7 +96,7 @@ function AccountMenu({ account }: { account: Account | null }) {
         className="flex items-center gap-1.5 rounded-md p-1 pl-1.5 transition-colors hover:bg-raised"
       >
         <span className="flex h-6 w-6 items-center justify-center rounded-full bg-overlay font-mono text-[10px] text-mid">
-          {account ? initials(account) : "ZA"}
+          {account ? initials(account) : "DO"}
         </span>
         <ChevronDown className="h-3 w-3 text-faint" />
       </button>
@@ -106,16 +106,20 @@ function AccountMenu({ account }: { account: Account | null }) {
           <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
           <div className="absolute top-full right-0 z-50 mt-1.5 w-[240px] overflow-hidden rounded-xl border border-line-strong bg-surface py-1 shadow-2xl">
             <div className="border-b border-line px-3.5 py-2.5">
-              {/* mock mode has no session, so the demo operator is demo content
-                  like the rest of it (D13); live mode names the real one. The
-                  role is not a guess: the session's workspace is resolved
-                  through the org this account OWNS (D120's `member.role`
-                  pin), so anyone who sees this line is that org's owner. */}
+              {/* Live mode names the real operator, and the role is not a
+                  guess: the session's workspace is resolved through the org
+                  this account OWNS (D120's `member.role` pin), so anyone who
+                  sees that line is that org's owner.
+
+                  Mock mode has no session and therefore no operator at all —
+                  it used to borrow a real person's name and address and call
+                  them the owner of an account nobody is signed into. The demo
+                  now says what it is instead of naming somebody. */}
               <p className="text-[13px] font-medium text-ink">
-                {account ? account.name : "Ziad Abdelsalam"}
+                {account ? account.name : "Demo operator"}
               </p>
               <p className="font-mono text-[10.5px] text-faint">
-                {account ? account.email : "ziad@loopwork.ai"} · owner
+                {account ? `${account.email} · owner` : "sample data · not signed in"}
               </p>
               {account && (
                 <p className="mt-1.5 font-mono text-[10.5px] text-faint">
@@ -126,7 +130,12 @@ function AccountMenu({ account }: { account: Account | null }) {
             {[
               { label: "Settings", icon: Settings, href: "/app/settings" },
               { label: "Quickstart", icon: Rocket, href: "/app/onboarding" },
-              { label: "Docs", icon: BookOpen, href: "#" },
+              // There is no published documentation site to point at, so this
+              // entry used to hold the empty fragment href — a menu item that
+              // looks like a link and goes nowhere. It now opens the in-product
+              // docs surface, which carries its own sample-data badge in live
+              // mode.
+              { label: "Docs", icon: BookOpen, href: "/app/docs" },
               { label: "Changelog", icon: ScrollText, href: "/changelog" },
             ].map(({ label, icon: Icon, href }) => (
               <Link
@@ -161,10 +170,18 @@ function AccountMenu({ account }: { account: Account | null }) {
 }
 
 /**
- * `live` gates the chrome's fabricated system claims (D21/F6/F7): throughput and
- * deployment region have no backing in live mode, and a marked lie would still
- * occupy the same bar, so they are simply absent — the real ingest state lives
- * on the overview, and the sample-data badge speaks for unwired routes.
+ * The bar carries no system claims at all. It used to show an events-per-minute
+ * throughput chip and a deployment-region chip in mock mode — both gated out of
+ * live mode because neither has any backing there (D21/F6/F7). But a throughput
+ * reading and a region are claims about the running system rather than demo
+ * telemetry: obstack has no regions and the demo ingests nothing, so those two
+ * chips were fiction about the product in the one strip of chrome a stranger
+ * reads as status. The real ingest state lives on the overview, which measures
+ * it. (The literals are not repeated here: `shell-honesty.test.ts` reads this
+ * file and a quoted lie is still a hit.)
+ *
+ * `live` still reaches the bell, whose unread count is a claim about the
+ * operator's own inbox (D21/F6/F7 again).
  */
 export function TopBar({ live, account }: { live: boolean; account: Account | null }) {
   const openPalette = () => {
@@ -173,25 +190,6 @@ export function TopBar({ live, account }: { live: boolean; account: Account | nu
 
   return (
     <div className="flex h-11 shrink-0 items-center gap-3 border-b border-line bg-surface/60 px-4 backdrop-blur">
-      {!live && (
-        <>
-          {/* live ingest status */}
-          <span className="flex items-center gap-2 font-mono text-[11px] text-faint">
-            <span className="pulse-dot inline-block h-1.5 w-1.5 rounded-full" style={{ background: "var(--color-ok)" }} />
-            ingesting · 9.4k events/min
-          </span>
-          <span
-            className="rounded-[3px] px-1.5 py-px font-mono text-[9.5px] tracking-wide"
-            style={{
-              color: "var(--color-infra)",
-              background: "color-mix(in srgb, var(--color-infra) 10%, transparent)",
-            }}
-          >
-            PROD · EU-CENTRAL
-          </span>
-        </>
-      )}
-
       <div className="ml-auto flex items-center gap-1.5">
         <button
           type="button"

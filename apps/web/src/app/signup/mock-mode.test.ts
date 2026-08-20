@@ -218,6 +218,34 @@ test("the quickstart's issue-key action trips the same way in mock mode (D152)",
   assert.match(logged[0] ?? "", /\[onboarding\] issue key posted in mock mode/);
 });
 
+test("the Explain route 404s rather than running in mock mode (D152)", async () => {
+  // The sixth surface, and the first that is a ROUTE rather than an action, so
+  // the refusal it owes is a status code: mock mode has no workspace to meter,
+  // no Postgres to meter in, and its Explain panel renders prepared stories
+  // (D230) — a POST here came from somewhere no visitor can be. Take the mode
+  // check out and the request reaches `getSessionContext`, which builds the
+  // auth instance on the missing secret and throws; a clean 404 is the evidence
+  // that neither the auth stack nor the pool was touched. `params` is a promise
+  // that is never awaited, because the guard returns above it.
+  const route = await import("@/app/app/traces/[id]/explain/route");
+
+  const logged: string[] = [];
+  const real = console.error;
+  console.error = (...args: unknown[]) => void logged.push(args.map(String).join(" "));
+  let response: Response;
+  try {
+    response = await route.POST(new Request("https://obstack.dev/app/traces/t1/explain", { method: "POST" }), {
+      params: Promise.resolve({ id: "t1" }),
+    });
+  } finally {
+    console.error = real;
+  }
+
+  assert.equal(response.status, 404, "this route does not exist in this deployment");
+  assert.equal(await response.text(), "", "and nothing to read from the refusal");
+  assert.match(logged[0] ?? "", /\[explain\] run posted in mock mode/);
+});
+
 test("every settings action trips the same way in mock mode (D152)", async () => {
   // The fourth surface, and the widest: six functions sharing ONE gate
   // (`settingsSession`), so the property is asserted per action rather than on

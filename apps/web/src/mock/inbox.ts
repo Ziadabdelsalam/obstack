@@ -67,12 +67,20 @@ export interface AuditEntry {
   ip: string;
 }
 
+/**
+ * The demo company's cast is invented (D208) and stays that way (D235): every
+ * actor below is a Loopwork persona on the corpus-wide `loopwork.ai` mailbox
+ * pattern, and every IP is in RFC 5737's documentation range `203.0.113.0/24`,
+ * never one that routes to somebody's house. An audit log is where a reader
+ * looks to learn who someone is; it is the last place a real person's identity
+ * belongs.
+ */
 export const auditLog: AuditEntry[] = [
-  { who: "ziad@loopwork.ai", action: "created API key “key-3” (scope: ingest)", when: "today 13:31", ip: "41.44.129.7" },
+  { who: "salma@loopwork.ai", action: "created API key “key-3” (scope: ingest)", when: "today 13:31", ip: "203.0.113.7" },
   { who: "system", action: "alert triggered: Error rate > 5% (POST /v1/tickets/bulk)", when: "today 13:06", ip: "—" },
-  { who: "omar@loopwork.ai", action: "enabled alert rule “Review confidence drop”", when: "yesterday 16:20", ip: "197.54.12.88" },
-  { who: "ziad@loopwork.ai", action: "invited dina@loopwork.ai (member)", when: "yesterday 11:02", ip: "41.44.129.7" },
-  { who: "nour@loopwork.ai", action: "connected source “Vercel · loopwork-web”", when: "Aug 6 09:41", ip: "102.40.3.19" },
-  { who: "ziad@loopwork.ai", action: "changed retention 3d → 7d", when: "Aug 5 18:12", ip: "41.44.129.7" },
-  { who: "nour@loopwork.ai", action: "signed in (google oauth)", when: "Aug 5 09:00", ip: "102.40.3.19" },
+  { who: "omar@loopwork.ai", action: "enabled alert rule “Review confidence drop”", when: "yesterday 16:20", ip: "203.0.113.88" },
+  { who: "salma@loopwork.ai", action: "invited dina@loopwork.ai (member)", when: "yesterday 11:02", ip: "203.0.113.7" },
+  { who: "nour@loopwork.ai", action: "connected source “Vercel · loopwork-web”", when: "Aug 6 09:41", ip: "203.0.113.19" },
+  { who: "salma@loopwork.ai", action: "changed retention 3d → 7d", when: "Aug 5 18:12", ip: "203.0.113.7" },
+  { who: "nour@loopwork.ai", action: "signed in (google oauth)", when: "Aug 5 09:00", ip: "203.0.113.19" },
 ];

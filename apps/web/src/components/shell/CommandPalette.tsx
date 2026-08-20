@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Search } from "lucide-react";
 import { storyTraces } from "@/mock/stories";
+import { isLiveWiredRoute } from "@/lib/live-routes";
 
 interface Item {
   label: string;
@@ -43,15 +44,35 @@ const pages: Item[] = [
   { label: "Slow traces (>5s)", hint: "filter", href: "/app/traces?minMs=5000" },
 ];
 
+/**
+ * The demo's three prepared traces (D60 as widened by D63). Mock mode only:
+ * these ids exist in the mock corpus and nowhere else, so in live mode every
+ * one of them was a jump straight into a 404 — a search result offering a
+ * trace the workspace has never had.
+ */
 const traceItems: Item[] = storyTraces.map((t) => ({
   label: `${t.rootName} · ${t.id.slice(0, 8)}`,
   hint: t.status === "error" ? "trace · error" : "trace",
   href: `/app/traces/${t.id}`,
 }));
 
-const all = [...pages, ...traceItems];
+/**
+ * The static page list offers surfaces that are not wired to the facade yet.
+ * They exist and they open, so removing them would hide the product; what they
+ * must not do is arrive unannounced, so in live mode an unwired destination
+ * says what it renders — the same sentence the badge on the page itself makes,
+ * one step earlier. `isLiveWiredRoute` is THE definition of wired (D21), read
+ * on the path alone: the two filter entries carry a query string, and `/status`
+ * is a public marketing route the predicate does not speak for.
+ */
+function hintFor(item: Item, live: boolean): string {
+  if (!live) return item.hint;
+  const path = item.href.split("?")[0];
+  if (!path.startsWith("/app")) return item.hint;
+  return isLiveWiredRoute(path) ? item.hint : "sample data";
+}
 
-export function CommandPalette() {
+export function CommandPalette({ live }: { live: boolean }) {
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState("");
   const router = useRouter();
@@ -69,13 +90,13 @@ export function CommandPalette() {
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
-  const results = useMemo(
-    () =>
-      all
-        .filter((i) => i.label.toLowerCase().includes(q.toLowerCase()))
-        .slice(0, 9),
-    [q],
-  );
+  const results = useMemo(() => {
+    const all = live ? pages : [...pages, ...traceItems];
+    return all
+      .filter((i) => i.label.toLowerCase().includes(q.toLowerCase()))
+      .slice(0, 9)
+      .map((i) => ({ ...i, hint: hintFor(i, live) }));
+  }, [q, live]);
 
   const go = (href: string) => {
     setOpen(false);

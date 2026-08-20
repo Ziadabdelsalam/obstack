@@ -14,24 +14,29 @@ interface TourStep {
   body: string;
 }
 
+// The tour narrates surfaces in both modes, and most of the surfaces it walks
+// still render sample data in live mode too — so a step may describe what a
+// screen does, and may point at the demo incident as demo content, but it may
+// not promise a capability the product does not have (D60/D63 class). Every
+// claim below is present-tense true of the code in this repo.
 const steps: TourStep[] = [
   {
     path: "/app",
     target: "overview-charts",
     title: "Overview — your system at a glance",
-    body: "Requests, errors, latency and LLM cost in one place. Notice the spike at 13:05 in every chart — that's a real incident in this demo, and every screen tells part of its story. The dashed violet line is a deploy marker.",
+    body: "Requests, errors, latency and LLM cost in one place. The sample data has one story in it: a spike at 13:05 that shows up in every chart and on every screen of this tour. The dashed violet line beside it marks a deploy.",
   },
   {
     path: "/app",
     target: "watches",
     title: "Your watches",
-    body: "Pin what you personally care about: a service, two services compared, a pod, a model's spend, a queue, a pipeline. Try “Add widget” later — your layout persists.",
+    body: "Pin what you personally care about: a service, two services compared, a pod, a model's spend, a queue, a pipeline. “Add widget” composes one on the spot, and the layout is kept in this browser — it is not saved to your account.",
   },
   {
     path: "/app/map",
     target: "map",
     title: "The service map",
-    body: "Your whole topology, drawn from trace data — no manual config. Edges show live traffic and error rates. The red edge to the LLM provider is the 13:05 incident: 8.1% of calls returning 429. Click any node to drill in.",
+    body: "Topology drawn from trace data rather than from manual config, with traffic and error rates on the edges. In the sample data the red edge to the LLM provider is the 13:05 incident: 8.1% of calls returning 429. Click any node to drill in.",
   },
   {
     path: "/app/traces",
@@ -43,7 +48,7 @@ const steps: TourStep[] = [
     path: "/app/traces/a3f8c1d92b6e407f",
     target: "trace-waterfall",
     title: "The unified trace — obstack's core",
-    body: "One request, every layer: API span, agent steps, LLM calls with prompts inline, and the infra track below — those diamonds are the pod being OOM-killed mid-completion. Try “Explain this trace”, and flip waterfall → replay to read the run as a transcript.",
+    body: "One request, every layer: API span, agent steps, LLM calls with prompts inline, and the infra track below — in the sample data those diamonds are the pod being OOM-killed mid-completion. Live, “Explain this trace” appears on any failed trace: it reads that trace's own spans and logs, its evidence links back to them, and the summary arrives as the model writes it — each run counts against your plan's monthly Explain runs, and out of runs, or with no model configured, the panel says so instead of guessing. Here the explanation is the demo's, prepared. Flip waterfall → replay to read the run as a transcript.",
   },
   {
     // D60: this step annotates a LIVE-WIRED surface, so its words are a claim
@@ -65,13 +70,13 @@ const steps: TourStep[] = [
     path: "/app/pipelines",
     target: "pipelines",
     title: "Pipelines — scheduled & event-driven flows",
-    body: "Crons, Kafka consumers and one-off backfills with run history and live progress. This backfill triggered today's incident — its 41 failures link straight to their traces.",
+    body: "Crons, Kafka consumers and one-off backfills, each with its run history. In the sample data it is a backfill that triggers the incident — its 41 failures link straight to their traces.",
   },
   {
     path: "/app/incidents",
     target: "incident",
     title: "Incidents — the story, stitched",
-    body: "The 13:05 incident reconstructed end to end from pipelines, alerts, k8s events, metrics and traces. Hit “Generate root-cause analysis” for a postmortem you can copy as markdown.",
+    body: "The sample incident laid out end to end — pipelines, alerts, k8s events, metrics and traces on one timeline, which is what the stitching is meant to show. This screen is a design, not a working incident tool: nothing here is generated from your data yet.",
   },
   {
     path: "/app/slos",
@@ -83,7 +88,7 @@ const steps: TourStep[] = [
     path: "/app/costs",
     target: "costs",
     title: "Costs — AI unit economics",
-    body: "Token cost joined to customers, features and models: Meridian costs $84/mo against $299 revenue, and draft_reply is 44% of spend. No other tool joins cost to traces to customers.",
+    body: "Token cost joined to customers, features and models — the join obstack is built around. In the sample data Meridian costs $84/mo against $299 revenue, and draft_reply is 44% of spend.",
   },
   {
     path: "/app/users",
@@ -95,19 +100,19 @@ const steps: TourStep[] = [
     path: "/app/connections",
     target: "connections",
     title: "Connections — every source plugs in",
-    body: "Kubernetes, Docker, Vercel, CloudWatch and plain OTLP work today; requesting anything else is a vote. If it writes a log, it belongs here.",
+    body: "Plain OTLP, Kubernetes and Docker connect today, each with copy-paste steps. Everything else on this page is marked coming soon — asking for one is a vote. If it writes a log, it belongs here.",
   },
   {
     path: "/app/mcp",
     target: "mcp",
     title: "MCP — your agents can read all of this",
-    body: "A read-only MCP server: Claude Code or Cursor can query traces, logs, incidents and SLOs themselves. Every call is audit-logged.",
+    body: "The plan for reading obstack from an agent: a read-only MCP server your coding agent queries for traces, logs, incidents and SLOs. This screen shows the shape it will take — there is no server behind it yet.",
   },
   {
     path: "/app/ask",
     target: "ask",
     title: "Ask — and you're done",
-    body: "Plain-English questions answered from your telemetry, every claim linked to evidence. That's the tour — press ⌘K anytime to jump anywhere. Enjoy poking around.",
+    body: "Where plain-English questions will be answered from your telemetry, every claim linked to the evidence it came from. The answers on this screen are scripted for the demo. That's the tour — press ⌘K anytime to jump anywhere.",
   },
 ];
 

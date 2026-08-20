@@ -9,7 +9,7 @@ export interface Member {
 }
 
 export const members: Member[] = [
-  { name: "Ziad Abdelsalam", email: "ziad@loopwork.ai", role: "owner", joined: "May 2026" },
+  { name: "Salma Nabil", email: "salma@loopwork.ai", role: "owner", joined: "May 2026" },
   { name: "Nour El-Sayed", email: "nour@loopwork.ai", role: "admin", joined: "May 2026" },
   { name: "Omar Farouk", email: "omar@loopwork.ai", role: "member", joined: "Jul 2026" },
   { name: "dina@loopwork.ai", email: "dina@loopwork.ai", role: "member", joined: "—", pending: true },

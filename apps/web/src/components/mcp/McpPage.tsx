@@ -1,26 +1,14 @@
 "use client";
 
 import { useState } from "react";
-import { Check, Copy, Eye, Lock } from "lucide-react";
-import { mcpActivity, mcpSetup, mcpTools } from "@/mock/mcp";
-
-function CopyBtn({ text, label }: { text: string; label?: string }) {
-  const [copied, setCopied] = useState(false);
-  return (
-    <button
-      type="button"
-      onClick={() => {
-        navigator.clipboard.writeText(text).catch(() => {});
-        setCopied(true);
-        setTimeout(() => setCopied(false), 1500);
-      }}
-      aria-label={label ?? "Copy"}
-      className="rounded-md border border-line bg-raised p-1.5 text-faint hover:text-ink"
-    >
-      {copied ? <Check className="h-3.5 w-3.5" style={{ color: "var(--color-ok)" }} /> : <Copy className="h-3.5 w-3.5" />}
-    </button>
-  );
-}
+import { Eye, Lock } from "lucide-react";
+import {
+  MCP_ENDPOINT_PLACEHOLDER,
+  MCP_TOKEN_PLACEHOLDER,
+  mcpActivity,
+  mcpSetup,
+  mcpTools,
+} from "@/mock/mcp";
 
 export function McpPage() {
   const [tab, setTab] = useState(mcpSetup[0].id);
@@ -30,20 +18,27 @@ export function McpPage() {
     <div className="mx-auto max-w-3xl px-5 py-6">
       <div className="flex items-center gap-2.5">
         <h1 className="font-display text-[19px] font-semibold text-ink">MCP server</h1>
+        {/* The green "READ-ONLY" tag asserted a property of a running server.
+            The tag that is true today is that there is no server. */}
         <span
-          className="flex items-center gap-1 rounded-[3px] px-1.5 py-px font-mono text-[9.5px] tracking-wide"
-          style={{
-            color: "var(--color-ok)",
-            background: "color-mix(in srgb, var(--color-ok) 12%, transparent)",
-          }}
+          className="flex items-center gap-1 rounded-[3px] px-1.5 py-px font-mono text-[9.5px] tracking-wide text-faint"
+          style={{ background: "color-mix(in srgb, var(--color-line) 60%, transparent)" }}
         >
-          <Eye className="h-3 w-3" /> READ-ONLY
+          <Eye className="h-3 w-3" /> NOT BUILT YET
         </span>
       </div>
+      {/* The whole page is a preview: no MCP endpoint exists in this product,
+          in either mode. Saying so once, at the top, is what lets the demo
+          content below stand as demo content (D208) instead of reading as a
+          feature you could connect to this afternoon. */}
       <p className="mt-1 text-[13.5px] leading-relaxed text-mid">
-        Give your agents the same view you have. Claude Code, Cursor, or any MCP client can query
-        traces, logs, the service map, incidents and SLOs — debugging alongside you with real
-        evidence instead of guesses.
+        The plan: give your agents the same view you have — Claude Code, Cursor, or any MCP
+        client querying traces, logs and the rest, debugging alongside you with real evidence
+        instead of guesses.
+      </p>
+      <p className="mt-2 text-[13px] leading-relaxed text-faint">
+        None of it runs yet. There is no MCP endpoint to point a client at, so the endpoint,
+        token and activity below are a sketch of the shape, not something to copy.
       </p>
 
       {/* endpoint */}
@@ -52,22 +47,19 @@ export function McpPage() {
           <h2 className="font-mono text-[11px] uppercase tracking-widest text-faint">endpoint</h2>
         </div>
         <div className="space-y-3 px-4 py-3.5">
-          <div className="flex items-center gap-2">
-            <code className="flex-1 overflow-x-auto rounded-md border border-line bg-bg px-3 py-2 font-mono text-[12px] text-ink">
-              https://mcp.obstack.dev
-            </code>
-            <CopyBtn text="https://mcp.obstack.dev" label="Copy endpoint" />
-          </div>
-          <div className="flex items-center gap-2">
-            <code className="flex-1 overflow-x-auto rounded-md border border-line bg-bg px-3 py-2 font-mono text-[12px] text-mid">
-              ob_mcp_read_7k2f…9d1c
-            </code>
-            <CopyBtn text="ob_mcp_read_7k2f9d1c" label="Copy token" />
-          </div>
+          {/* Placeholders, and no copy button on either: a copy affordance next
+              to a credential says the credential is yours to use. The token
+              button used to copy a whole fabricated key literal. */}
+          <code className="block overflow-x-auto rounded-md border border-line bg-bg px-3 py-2 font-mono text-[12px] text-ink">
+            {MCP_ENDPOINT_PLACEHOLDER}
+          </code>
+          <code className="block overflow-x-auto rounded-md border border-line bg-bg px-3 py-2 font-mono text-[12px] text-mid">
+            Authorization: Bearer {MCP_TOKEN_PLACEHOLDER}
+          </code>
           <p className="flex items-start gap-2 font-mono text-[10.5px] leading-relaxed text-faint">
             <Lock className="mt-0.5 h-3 w-3 shrink-0" />
-            scoped to loopwork-prod · read-only — this token cannot mutate anything. Write scopes
-            (silence alerts, trigger pipelines) ship later and stay off by default.
+            read-only is the intended shape — the server would query, never mutate. Nothing is
+            issued today: there is no MCP token class in settings.
           </p>
         </div>
       </section>
@@ -89,13 +81,10 @@ export function McpPage() {
             </button>
           ))}
         </div>
-        <div className="relative px-4 py-3.5">
+        <div className="px-4 py-3.5">
           <pre className="overflow-x-auto rounded-md border border-line bg-bg p-3 font-mono text-[11.5px] leading-relaxed text-mid">
             {active.snippet}
           </pre>
-          <div className="absolute top-6 right-6">
-            <CopyBtn text={active.snippet} label="Copy setup snippet" />
-          </div>
         </div>
       </section>
 
@@ -103,7 +92,7 @@ export function McpPage() {
       <section className="mt-4 rounded-lg border border-line bg-surface">
         <div className="border-b border-line px-4 py-2.5">
           <h2 className="font-mono text-[11px] uppercase tracking-widest text-faint">
-            exposed tools · {mcpTools.length}
+            planned tools · {mcpTools.length}
           </h2>
         </div>
         <div>
@@ -139,8 +128,7 @@ export function McpPage() {
           ))}
         </div>
         <p className="border-t border-line px-4 py-2 font-mono text-[10px] leading-relaxed text-faint">
-          every MCP call is audit-logged · try it: ask your agent “why did INC-42 happen?” and watch
-          it pull the incident, traces and logs itself
+          sample rows · no agent has called anything — nothing is serving these tools yet
         </p>
       </section>
     </div>

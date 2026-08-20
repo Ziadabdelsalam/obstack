@@ -123,6 +123,9 @@ export interface LiveBilling {
   /** The billing period, a UTC calendar month, formatted by the page. */
   periodStart: string;
   asOf: string | null;
+  /** This month's Explain runs against the plan's allowance, from the one quota reader (D226/D231.3). */
+  explainUsed: number;
+  explainQuota: number;
   plans: LivePlan[];
   upgraded: boolean;
 }
@@ -689,6 +692,14 @@ function LiveBillingTab({ live }: { live: LiveSettings }) {
           label="events (spans + log records)"
           used={billing.eventsUsed}
           quota={billing.eventQuota}
+        />
+        {/* The same two numbers the trace panel's counter line shows and the
+            Explain route enforces — `server/explain/quota.ts` is the only place
+            either of them is read (D226). */}
+        <Meter
+          label="Explain runs"
+          used={billing.explainUsed}
+          quota={billing.explainQuota}
         />
         <p className="mt-2 font-mono text-[10.5px] leading-relaxed text-faint">
           {billing.asOf ? `as of ${billing.asOf}` : "no events yet this period"}

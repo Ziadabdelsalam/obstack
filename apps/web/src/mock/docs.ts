@@ -82,12 +82,16 @@ export const docArticles: DocArticle[] = [
       {
         kind: "code",
         lang: "bash",
-        code: "helm repo add obstack https://charts.obstack.dev\nhelm upgrade --install obstack-collector obstack/collector \\\n  --namespace obstack --create-namespace \\\n  --set apiKey=$OBSTACK_KEY --set cluster=loopwork-prod",
+        // There is no chart repository to add and no published collector image
+        // (D214): the chart lives in this repo, so the runbook shows the install
+        // that actually works. A copy-pasteable command is a claim even inside
+        // demo content — it is the one kind of mock line a reader will run.
+        code: "helm install obstack deploy/helm/obstack \\\n  --timeout 900s --wait",
       },
       {
         kind: "steps",
         items: [
-          "Verify pods: kubectl -n obstack get pods — one collector per node, all Running.",
+          "Verify pods: kubectl get pods — one collector per node, all Running.",
           "Confirm ingest on the Connections page — the kubernetes source should read “ingesting”.",
           "Spot-check the join: open any trace and look for the INFRA lane with pod events.",
         ],

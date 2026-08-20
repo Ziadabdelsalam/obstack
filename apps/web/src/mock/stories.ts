@@ -3,6 +3,11 @@ import type { Explanation, LogRecord, Span, Trace } from "@/lib/types";
 /**
  * The three scripted failure stories. These are the demo's proof of the wedge:
  * cause in one layer, symptom in another, joined on one screen.
+ *
+ * Every prepared explanation cites its evidence by the story's OWN span and log
+ * ids (D223), so the demo's Explain panel links exactly the way a live one does
+ * — one renderer, no mode fork, and the demo shows the true product shape
+ * rather than a paragraph that only looks like a citation.
  */
 
 const NS = "loopwork-prod";
@@ -50,18 +55,22 @@ const oomExplanation: Explanation = {
     {
       label: "logs · kubelet",
       detail: `OOMKilled: container "app" in pod ${OOM_POD} exceeded memory limit (512Mi)`,
+      logRef: "l-oom-4",
     },
     {
       label: "span · draft_reply",
       detail: "finish_reason=truncated after 1,204 of ~1,900 expected output tokens",
+      spanId: "s-oom-draft",
     },
     {
       label: "logs · app",
       detail: "rss 498MiB and climbing in the 3s before the kill — matches stream buffering",
+      logRef: "l-oom-3",
     },
     {
       label: "span · POST /v1/tickets/{id}/reply",
       detail: "502 returned at +4.94s, immediately after the agent step failed",
+      spanId: "s-oom-root",
     },
   ],
   suggestion:
@@ -292,14 +301,17 @@ const slowExplanation: Explanation = {
     {
       label: "spans · search_kb ×3",
       detail: "three consecutive 5,000ms timeouts (attempt=1,2,3), then fallback",
+      spanId: "s-slow-kb1",
     },
     {
       label: "logs · kb-service",
       detail: "\"reindex in progress — queries queued\" during the exact window",
+      logRef: "l-slow-2",
     },
     {
       label: "span · review_reply",
       detail: "confidence=0.41 (threshold 0.7) — flagged low_context",
+      spanId: "s-slow-review",
     },
   ],
   suggestion:
@@ -522,18 +534,22 @@ const rateExplanation: Explanation = {
     {
       label: "spans · classify_intent ×5",
       detail: "attempts 1–5 all returned 429; backoff 0.5s, 1s, 2s, 4s between them",
+      spanId: "s-rate-a1",
     },
     {
       label: "logs · app",
       detail: "queue depth 214 (normal <10) during the incident window",
+      logRef: "l-rate-1",
     },
     {
       label: "logs · batch-import",
       detail: "import job started 13:04:52 — 3× normal request volume",
+      logRef: "l-rate-0",
     },
     {
       label: "span · root",
       detail: "504 deadline exceeded at exactly 10,000ms",
+      spanId: "s-rate-root",
     },
   ],
   suggestion:
