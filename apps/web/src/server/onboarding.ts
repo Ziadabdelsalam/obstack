@@ -19,17 +19,10 @@ export type OnboardingStatus = {
   asOf: string | null;
 };
 
-/**
- * Where this deployment's OTLP actually listens — the endpoint the quickstart
- * and the connector steps tell an operator to export to (D101: the
- * environment's real endpoint, never a hosted name we do not run).
- *
- * The default is compose's published OTLP/HTTP port (`docker-compose.yml`:
- * `127.0.0.1:4318`), which is what the e2e drive sends to and what a developer
- * running the stack locally has; a deployment that publishes it elsewhere sets
- * the variable. There is no hosted obstack to fall back to (U1).
- */
-export const INGEST_ENDPOINT = process.env.OBSTACK_INGEST_ENDPOINT ?? "http://127.0.0.1:4318";
+// The endpoint the quickstart names does NOT live here (D215): it is a client-safe
+// constant in `lib/ingest-endpoint.ts`, imported by the snippet surfaces
+// directly. It never was server state — and an env var named for it collided
+// with compose's own `OBSTACK_INGEST_ENDPOINT`, the collector's upstream address.
 
 /** UTC on the server, like every other rendered instant (settings/page.tsx). */
 const asMinute = (at: Date): string => `${at.toISOString().slice(0, 16).replace("T", " ")} UTC`;

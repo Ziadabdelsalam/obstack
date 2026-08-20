@@ -1,81 +1,170 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useTransition } from "react";
 import Link from "next/link";
 import { ArrowRight, Check, Copy } from "lucide-react";
 import { allTraces } from "@/mock/traces";
 import { fmtMs, fmtTokens } from "@/lib/format";
 import { StatusPill } from "@/components/ui/StatusPill";
 import { StartTourButton } from "@/components/shell/TourGuide";
+import { API_KEY_PLACEHOLDER } from "@/components/connections/connectors";
+import { OTLP_GRPC_ENDPOINT, OTLP_HTTP_ENDPOINT } from "@/lib/ingest-endpoint";
 import type { OnboardingStatus } from "@/server/onboarding";
 
-const tabs = [
-  {
-    id: "python",
-    label: "Python",
-    code: `pip install obstack
+/**
+ * The version `npm pack` writes, mirrored from `packages/obstack-js/package.json`
+ * and pinned by `Quickstart.test.ts` — the install line names a file that has to
+ * exist after the pack, so a version bump that missed this line would print a
+ * command nobody can run.
+ */
+const OBSTACK_JS_VERSION = "0.1.0";
 
-# app.py
-import obstack
-obstack.init(api_key="ok_live_9f2e…")  # that's it — OTel underneath
+/** The poll cadence: the counters behind the status flush every 5s (D203). */
+const POLL_MS = 5_000;
 
-# LLM + agent calls are captured automatically
-from obstack import trace_agent
-
-@trace_agent("support-agent")
-def handle_ticket(ticket):
-    ...`,
-  },
-  {
-    id: "typescript",
-    label: "TypeScript",
-    code: `npm install obstack
-
-// instrumentation.ts
-import { init, traceAgent } from "obstack";
-init({ apiKey: "ok_live_9f2e…" }); // that's it — OTel underneath
-
-// LLM + agent calls are captured automatically
-export const handleTicket = traceAgent("support-agent", async (ticket) => {
-  ...
-});`,
-  },
-  {
-    id: "otel",
-    label: "I already have OTel",
-    code: `# no SDK, no code change — point your exporter at obstack
-OTEL_EXPORTER_OTLP_ENDPOINT="https://ingest.obstack.dev"
-OTEL_EXPORTER_OTLP_HEADERS="x-obstack-key=ok_live_9f2e…"`,
-  },
-];
+/** The GET handler beside the page (D203) — a read is a read (D189). */
+const STATUS_PATH = "/app/onboarding/status";
 
 /**
- * What the server hands this component in live mode (D209 — the type is
- * `server/onboarding.ts`'s, imported type-only so nothing server-side follows it
- * across the boundary). Optional because mock mode renders the same component
- * with none of it, and IGNORED by the body below until T2's rework consumes
- * them: the contract is fixed here so the page and the component are one round.
+ * Every snippet on this page, with ONE token slot filled in one place.
+ *
+ * The lines are the two SDK READMEs' own, verbatim (D101/D202): the packages
+ * that exist (`obstack-py`, `obstack-js`) installed the way they actually
+ * install today — from this repo — and the frozen D78 API, which is `init()`
+ * with NO arguments in both languages, configured entirely from the standard
+ * `OTEL_*` environment. Neither SDK takes an `api_key`; the key travels in
+ * `OTEL_EXPORTER_OTLP_HEADERS`, URL-encoded, because the OTel SDKs drop a header
+ * value containing a raw space.
+ *
+ * The Python block carries `OTEL_EXPORTER_OTLP_PROTOCOL` and the
+ * `OTEL_SEMCONV_STABILITY_OPT_IN` note; the TypeScript block carries neither,
+ * and that asymmetry is deliberate — obstack-js builds its exporters itself
+ * (always OTLP protobuf over HTTP) and never consults the semconv variable, so
+ * copying Python's line across is exactly what its README warns against.
  */
-export type QuickstartProps = {
-  initialStatus?: OnboardingStatus;
-  endpoint?: string;
-  issueKey?: (formData: FormData) => Promise<{ token: string }>;
+function snippetsFor(key: string) {
+  return [
+    {
+      id: "python",
+      label: "Python",
+      code: `# the distribution is obstack-py; it imports as obstack
+pip install './packages/obstack-py[fastapi]'
+
+# app.py — these two lines go FIRST, above every other import
+import obstack
+
+obstack.init()  # no arguments: everything comes from the environment below
+
+export OTEL_SERVICE_NAME=my-agent
+export OTEL_EXPORTER_OTLP_ENDPOINT=${OTLP_HTTP_ENDPOINT}
+export OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
+export OTEL_EXPORTER_OTLP_HEADERS=Authorization=Bearer%20${key}
+# URL-encoded on purpose — a raw space drops the header.
+# init() also defaults OTEL_SEMCONV_STABILITY_OPT_IN=http (Python only).`,
+    },
+    {
+      id: "typescript",
+      label: "TypeScript",
+      code: `npm pack ./packages/obstack-js        # -> obstack-js-${OBSTACK_JS_VERSION}.tgz
+npm install ./obstack-js-${OBSTACK_JS_VERSION}.tgz
+
+// instrumentation.ts — before the libraries it instruments are imported
+import { init } from "obstack-js";
+init();
+
+export OTEL_SERVICE_NAME=my-agent
+export OTEL_EXPORTER_OTLP_ENDPOINT=${OTLP_HTTP_ENDPOINT}
+export OTEL_EXPORTER_OTLP_HEADERS=Authorization=Bearer%20${key}
+# URL-encoded on purpose — a raw space drops the header.
+# No OTEL_SEMCONV_STABILITY_OPT_IN here: obstack-js never reads it.`,
+    },
+    {
+      id: "otel",
+      label: "I already have OTel",
+      code: `# no SDK, no code change — repoint the exporter you already run
+export OTEL_EXPORTER_OTLP_ENDPOINT=${OTLP_HTTP_ENDPOINT}
+export OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
+export OTEL_EXPORTER_OTLP_HEADERS=Authorization=Bearer%20${key}
+
+# gRPC instead: ${OTLP_GRPC_ENDPOINT} with OTEL_EXPORTER_OTLP_PROTOCOL=grpc`,
+    },
+  ];
+}
+
+/**
+ * What the server hands this component in live mode (D209 as amended by D215 —
+ * the `endpoint` prop is gone: the endpoint is a constant both this file and the
+ * connector steps import, not something threaded through a render).
+ *
+ * The two fields travel TOGETHER or not at all, which is what the union below
+ * says in the type system: a live render has both, the demo deployment passes
+ * nothing (`<Quickstart />`), and there is no third shape — a status with no way
+ * to issue a key would render a waiting panel above snippets nobody can fill.
+ * "Do I have props" is therefore the live/mock signal in this file, and it is
+ * the same signal the page branches `dataMode` on one level up.
+ */
+export type QuickstartLive = {
+  initialStatus: OnboardingStatus;
+  issueKey: (formData: FormData) => Promise<{ token: string }>;
 };
 
-// eslint-disable-next-line @typescript-eslint/no-unused-vars -- T2's rework reads them; T1 only fixes the contract (D209).
-export function Quickstart(_props: QuickstartProps = {}) {
+export type QuickstartProps = QuickstartLive | { initialStatus?: never; issueKey?: never };
+
+export function Quickstart(props: QuickstartProps) {
+  const live: QuickstartLive | null = props.initialStatus === undefined ? null : props;
+  const isLive = live !== null;
+
   const [tab, setTab] = useState("python");
   const [copied, setCopied] = useState(false);
-  const [arrived, setArrived] = useState(false);
 
-  const firstTrace = allTraces.find((t) => t.status === "ok" && t.totalTokens > 0)!;
+  /**
+   * The issued token, D201: client state and nothing else. It is never written
+   * to storage, never put in a URL and never sent back to the server — it exists
+   * in this component's state until the page unmounts, which is the whole
+   * lifetime a shown-once key (D98) honestly has.
+   */
+  const [token, setToken] = useState<string | null>(null);
+  const [issuing, startIssuing] = useTransition();
 
+  const [status, setStatus] = useState<OnboardingStatus | null>(live?.initialStatus ?? null);
+  const linked = Boolean(status?.arrived && status.firstTrace);
+
+  // Mock mode's arrival: the demo has no ingest to wait for, so the panel plays
+  // the flip on a timer, exactly as it always has (D125 — the demo's DATA is
+  // what that ruling protects). Live mode never runs this.
+  const [demoArrived, setDemoArrived] = useState(false);
   useEffect(() => {
+    if (isLive) return;
     const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    const id = setTimeout(() => setArrived(true), reduced ? 0 : 5000);
+    const id = setTimeout(() => setDemoArrived(true), reduced ? 0 : 5000);
     return () => clearTimeout(id);
-  }, []);
+  }, [isLive]);
 
+  // Live arrival: poll the GET handler at the counters' own cadence until the
+  // workspace's first trace is linkable, then stop asking (D203). Any non-200
+  // stops it too (D216) — a 401 means the session is gone and a 404 means this
+  // deployment has no such route, and neither improves by being asked again in
+  // five seconds. A thrown fetch is a transient network blip and is left alone.
+  useEffect(() => {
+    if (!isLive || linked) return;
+    let stopped = false;
+    const id = setInterval(async () => {
+      const response = await fetch(STATUS_PATH, { cache: "no-store" }).catch(() => null);
+      if (!response || stopped) return;
+      if (!response.ok) {
+        stopped = true;
+        clearInterval(id);
+        return;
+      }
+      setStatus((await response.json()) as OnboardingStatus);
+    }, POLL_MS);
+    return () => {
+      stopped = true;
+      clearInterval(id);
+    };
+  }, [isLive, linked]);
+
+  const tabs = snippetsFor(token ?? API_KEY_PLACEHOLDER);
   const active = tabs.find((t) => t.id === tab)!;
   const copy = () => {
     navigator.clipboard.writeText(active.code).catch(() => {});
@@ -83,14 +172,24 @@ export function Quickstart(_props: QuickstartProps = {}) {
     setTimeout(() => setCopied(false), 1500);
   };
 
+  const issue = (formData: FormData) =>
+    startIssuing(async () => {
+      // `?.` because a REFUSED issue never returns a value: the action redirects
+      // (settings' `issueKey` note explains the same shape).
+      const result = await live?.issueKey(formData);
+      setToken(result?.token ?? null);
+    });
+
   return (
     <div className="mx-auto max-w-2xl px-5 py-8">
       <h1 className="font-display text-[22px] font-semibold text-ink">
         Get your first trace
       </h1>
       <p className="mt-1 text-[13.5px] text-mid">
-        Median time from here to a correlated trace: under 15 minutes. Your API key is
-        already in the snippets.
+        Median time from here to a correlated trace: under 15 minutes.{" "}
+        {live
+          ? `Issue a key below and every snippet on this page carries it in place of ${API_KEY_PLACEHOLDER}.`
+          : `The snippets carry the ${API_KEY_PLACEHOLDER} slot — a real deployment issues the key on this page.`}
       </p>
       <div className="mt-4">
         <StartTourButton variant="big" />
@@ -136,6 +235,43 @@ export function Quickstart(_props: QuickstartProps = {}) {
         </button>
       </div>
 
+      {/*
+        The one caveat, stated once (D202): neither package is released, the
+        registry names are held (U5) rather than usable, and the lines above are
+        the install that works today — from this repo.
+      */}
+      <p className="mt-2.5 font-mono text-[10.5px] text-faint">
+        pre-release: obstack-py and obstack-js install from this repo — the registry names are
+        reserved and the real releases publish at launch
+      </p>
+
+      {/* D201: the key the snippets carry, issued here because a stored token is
+          unrecoverable by design (D98) — a prefix is not something anyone pastes. */}
+      {live && (
+        <div className="mt-3 rounded-lg border border-line bg-surface p-3.5">
+          {token ? (
+            <p className="flex items-center gap-2 text-[12.5px] text-mid">
+              <Check className="h-3.5 w-3.5 shrink-0" style={{ color: "var(--color-ok)" }} />
+              Key issued and pasted into the snippets above. It is shown once — copy a snippet now;
+              reloading this page cannot bring it back.
+            </p>
+          ) : (
+            <form action={issue} className="flex flex-wrap items-center gap-3">
+              <button
+                type="submit"
+                disabled={issuing}
+                className="rounded-md border border-line bg-raised px-3 py-1.5 text-[13px] text-ink hover:border-line-strong disabled:opacity-60"
+              >
+                {issuing ? "issuing…" : "Issue a key"}
+              </button>
+              <span className="text-[12.5px] text-faint">
+                shown once, in the snippets above — it is stored hashed and cannot be read back
+              </span>
+            </form>
+          )}
+        </div>
+      )}
+
       <p className="mt-3 text-[12.5px] text-faint">
         Shipping on Docker or Kubernetes? Add the{" "}
         <Link href="/app/connections" className="text-mid underline decoration-line underline-offset-2 hover:text-ink">
@@ -144,41 +280,104 @@ export function Quickstart(_props: QuickstartProps = {}) {
         too — that&apos;s what joins container logs to these traces.
       </p>
 
+      {/* The measured fence, not a promise (D88/D101): these are the ranges the
+          auto-instrumentation is verified against, and `ai` 7 is named absent
+          rather than left to be discovered. */}
+      <p className="mt-2 font-mono text-[10.5px] text-faint">
+        auto-instrumented, measured: openai &gt;=4.85 &lt;8 · @anthropic-ai/sdk &gt;=0.50 &lt;1 ·
+        ai &gt;=5 &lt;7 — ai@7 is not yet supported (it emits no OTel span); streaming calls are not
+        instrumented in either SDK
+      </p>
+
       {/* waiting → first trace */}
       <div className="mt-6 rounded-lg border border-line bg-surface p-4">
-        {!arrived ? (
-          <div className="flex items-center gap-3 py-3">
-            <span className="pulse-dot h-2 w-2 rounded-full" style={{ background: "var(--color-warn)" }} />
-            <span className="font-mono text-[12.5px] text-mid">
-              waiting for data<span className="pulse-dot">…</span>
-            </span>
-            <span className="ml-auto font-mono text-[11px] text-faint">
-              listening on ingest.obstack.dev
-            </span>
-          </div>
+        {live ? (
+          <LiveArrival status={status} />
         ) : (
-          <div className="fade-up">
-            <p className="mb-2 flex items-center gap-2 font-mono text-[11px] uppercase tracking-widest" style={{ color: "var(--color-ok)" }}>
-              <Check className="h-3.5 w-3.5" /> first trace received
-            </p>
-            <Link
-              href={`/app/traces/${firstTrace.id}`}
-              className="flex items-center justify-between rounded-md border border-line bg-raised px-3 py-2.5 transition-colors hover:border-line-strong"
-            >
-              <span className="flex min-w-0 items-center gap-3">
-                <StatusPill status={firstTrace.status} />
-                <span className="truncate font-mono text-[12.5px] text-ink">
-                  {firstTrace.rootName}
-                </span>
-              </span>
-              <span className="flex items-center gap-3 font-mono text-[11px] text-mid">
-                {fmtMs(firstTrace.durationMs)} · {fmtTokens(firstTrace.totalTokens)} tok
-                <ArrowRight className="h-3.5 w-3.5" style={{ color: "var(--color-api)" }} />
-              </span>
-            </Link>
-          </div>
+          <DemoArrival arrived={demoArrived} />
         )}
       </div>
+    </div>
+  );
+}
+
+/**
+ * The real panel: the workspace's own counters said data arrived and the scoped
+ * search resolved the trace to link (D203). "arrived but no link yet" is the
+ * flush window, and it keeps waiting — a link to a trace that 404s would be
+ * worse than the spinner.
+ */
+function LiveArrival({ status }: { status: OnboardingStatus | null }) {
+  const trace = status?.arrived ? status.firstTrace : null;
+  if (!trace) {
+    return (
+      <div className="flex items-center gap-3 py-3">
+        <span className="pulse-dot h-2 w-2 rounded-full" style={{ background: "var(--color-warn)" }} />
+        <span className="font-mono text-[12.5px] text-mid">
+          waiting for data<span className="pulse-dot">…</span>
+        </span>
+        <span className="ml-auto font-mono text-[11px] text-faint">
+          listening on {OTLP_HTTP_ENDPOINT}
+          {status?.asOf ? ` · as of ${status.asOf}` : ""}
+        </span>
+      </div>
+    );
+  }
+  return (
+    <div className="fade-up">
+      <p className="mb-2 flex items-center gap-2 font-mono text-[11px] uppercase tracking-widest" style={{ color: "var(--color-ok)" }}>
+        <Check className="h-3.5 w-3.5" /> first trace received
+      </p>
+      <Link
+        href={`/app/traces/${trace.id}`}
+        className="flex items-center justify-between rounded-md border border-line bg-raised px-3 py-2.5 transition-colors hover:border-line-strong"
+      >
+        <span className="truncate font-mono text-[12.5px] text-ink">{trace.id}</span>
+        <ArrowRight className="h-3.5 w-3.5 shrink-0" style={{ color: "var(--color-api)" }} />
+      </Link>
+    </div>
+  );
+}
+
+/**
+ * The demo's panel, and the only place `@/mock/traces` is reached from this
+ * file: live mode never renders this component, so the mock rows are
+ * unreachable on the live path by construction rather than by a flag somebody
+ * could forget to check.
+ */
+function DemoArrival({ arrived }: { arrived: boolean }) {
+  if (!arrived) {
+    return (
+      <div className="flex items-center gap-3 py-3">
+        <span className="pulse-dot h-2 w-2 rounded-full" style={{ background: "var(--color-warn)" }} />
+        <span className="font-mono text-[12.5px] text-mid">
+          waiting for data<span className="pulse-dot">…</span>
+        </span>
+        <span className="ml-auto font-mono text-[11px] text-faint">
+          listening on {OTLP_HTTP_ENDPOINT}
+        </span>
+      </div>
+    );
+  }
+  const trace = allTraces.find((t) => t.status === "ok" && t.totalTokens > 0)!;
+  return (
+    <div className="fade-up">
+      <p className="mb-2 flex items-center gap-2 font-mono text-[11px] uppercase tracking-widest" style={{ color: "var(--color-ok)" }}>
+        <Check className="h-3.5 w-3.5" /> first trace received
+      </p>
+      <Link
+        href={`/app/traces/${trace.id}`}
+        className="flex items-center justify-between rounded-md border border-line bg-raised px-3 py-2.5 transition-colors hover:border-line-strong"
+      >
+        <span className="flex min-w-0 items-center gap-3">
+          <StatusPill status={trace.status} />
+          <span className="truncate font-mono text-[12.5px] text-ink">{trace.rootName}</span>
+        </span>
+        <span className="flex items-center gap-3 font-mono text-[11px] text-mid">
+          {fmtMs(trace.durationMs)} · {fmtTokens(trace.totalTokens)} tok
+          <ArrowRight className="h-3.5 w-3.5" style={{ color: "var(--color-api)" }} />
+        </span>
+      </Link>
     </div>
   );
 }

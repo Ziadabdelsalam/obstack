@@ -7,6 +7,12 @@
 // `deploy/compose/docker-compose.yml` — asserted by `connectors.test.ts`, not
 // by review. Nothing here promises a hosted endpoint, a chart repository or a
 // published collector image: the environment is local compose (U1).
+//
+// The ingest addresses are interpolated from `@/lib/ingest-endpoint` rather than
+// spelled out (D215): the quickstart's snippets and these steps name the same
+// ports, and that is one definition pinned against compose, not two literals.
+
+import { OTLP_GRPC_ENDPOINT, OTLP_HTTP_ENDPOINT } from "@/lib/ingest-endpoint";
 
 export type ConnectorCategory =
   | "Cloud"
@@ -61,12 +67,12 @@ export const connectors: Connector[] = [
       {
         title: "Point your exporter at ingest",
         body: "Works with any language's OTel SDK or an existing collector. The header is URL-encoded — a raw space drops it (D4 wire contract: Authorization: Bearer).",
-        snippet: `OTEL_EXPORTER_OTLP_ENDPOINT="http://127.0.0.1:4318"\nOTEL_EXPORTER_OTLP_PROTOCOL="http/protobuf"\nOTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer%20${API_KEY_PLACEHOLDER}"`,
+        snippet: `OTEL_EXPORTER_OTLP_ENDPOINT="${OTLP_HTTP_ENDPOINT}"\nOTEL_EXPORTER_OTLP_PROTOCOL="http/protobuf"\nOTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer%20${API_KEY_PLACEHOLDER}"`,
       },
       {
         title: "Or gRPC on 4317",
         body: "ingest listens for OTLP traces and logs on both standard ports — 127.0.0.1:4317 (gRPC) and 127.0.0.1:4318 (HTTP). No SDK swap, no re-instrumentation.",
-        snippet: `OTEL_EXPORTER_OTLP_ENDPOINT="http://127.0.0.1:4317"\nOTEL_EXPORTER_OTLP_PROTOCOL="grpc"\nOTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer%20${API_KEY_PLACEHOLDER}"`,
+        snippet: `OTEL_EXPORTER_OTLP_ENDPOINT="${OTLP_GRPC_ENDPOINT}"\nOTEL_EXPORTER_OTLP_PROTOCOL="grpc"\nOTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer%20${API_KEY_PLACEHOLDER}"`,
       },
     ],
   },

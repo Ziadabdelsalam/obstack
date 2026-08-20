@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import path from "node:path";
 import test from "node:test";
 import type { QueryResultRow } from "pg";
 import type { TraceSearchResult } from "@/server/queries/traces";
-import { INGEST_ENDPOINT, getOnboardingStatus } from "./onboarding";
+import { getOnboardingStatus } from "./onboarding";
 import type { QueryRows } from "./postgres";
 
 // run with: npm test --workspace apps/web
@@ -118,13 +120,16 @@ test("arrived but not yet queryable keeps the panel waiting on the LINK (D203)",
   assert.equal(status.asOf, "2026-08-20 10:00 UTC");
 });
 
-test("the endpoint the quickstart tells an operator to export to is this environment's", async () => {
-  // Nothing here is hosted (U1), so a hosted name would be the S2.2 L1 lie the
-  // old snippets carried. Unset in this process, so this asserts the default:
-  // compose's published OTLP/HTTP port, the one the e2e drive itself sends to.
-  assert.equal(process.env.OBSTACK_INGEST_ENDPOINT, undefined);
-  assert.equal(INGEST_ENDPOINT, "http://127.0.0.1:4318");
-  assert.equal(INGEST_ENDPOINT.includes("obstack.dev"), false);
+test("this module holds no endpoint and reads no endpoint variable (D215)", async () => {
+  // The endpoint moved to `lib/ingest-endpoint.ts` (client-safe constants, pinned
+  // against compose there), and the env var went away with it:
+  // `OBSTACK_INGEST_ENDPOINT` is compose's name for the COLLECTOR's upstream
+  // (`http://ingest:4318`), so a shell exporting it for collector work would have
+  // repointed the quickstart at an address a browser cannot reach.
+  const source = readFileSync(path.join(import.meta.dirname, "onboarding.ts"), "utf8");
+  assert.equal(source.includes("process.env"), false);
+  const module = await import("./onboarding");
+  assert.deepEqual(Object.keys(module).sort(), ["getOnboardingStatus"]);
 });
 
 test("the status poll is a 404 with a tripwire in mock mode (D203/D193)", async () => {

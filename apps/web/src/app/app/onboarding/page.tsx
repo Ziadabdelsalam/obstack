@@ -2,7 +2,7 @@ import { redirect } from "next/navigation";
 import { connection } from "next/server";
 import { Quickstart } from "@/components/onboarding/Quickstart";
 import { dataForSessionContext, dataMode } from "@/server/data";
-import { INGEST_ENDPOINT, getOnboardingStatus } from "@/server/onboarding";
+import { getOnboardingStatus } from "@/server/onboarding";
 import { queryRows } from "@/server/postgres";
 import { getSessionContext } from "@/server/session";
 import { issueQuickstartKey } from "./actions";
@@ -37,11 +37,11 @@ export default async function OnboardingPage() {
     queryRows,
   );
 
-  // Exactly the D209 props and nothing beside them. No existing-key list: a
+  // Exactly the D209-as-amended props and nothing beside them (D215 deleted the
+  // `endpoint` prop — the component imports `lib/ingest-endpoint`'s constant
+  // directly, like the connector steps do). No existing-key list either: a
   // stored token is unrecoverable (D98), so a prefix is not something anyone can
   // paste into a snippet — which is why D201 put issuance on this surface in the
   // first place. Listing keys here would render a column no step can use.
-  return (
-    <Quickstart initialStatus={status} endpoint={INGEST_ENDPOINT} issueKey={issueQuickstartKey} />
-  );
+  return <Quickstart initialStatus={status} issueKey={issueQuickstartKey} />;
 }
