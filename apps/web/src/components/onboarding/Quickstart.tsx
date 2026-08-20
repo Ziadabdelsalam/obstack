@@ -7,6 +7,7 @@ import { allTraces } from "@/mock/traces";
 import { fmtMs, fmtTokens } from "@/lib/format";
 import { StatusPill } from "@/components/ui/StatusPill";
 import { StartTourButton } from "@/components/shell/TourGuide";
+import type { OnboardingStatus } from "@/server/onboarding";
 
 const tabs = [
   {
@@ -48,7 +49,22 @@ OTEL_EXPORTER_OTLP_HEADERS="x-obstack-key=ok_live_9f2e…"`,
   },
 ];
 
-export function Quickstart() {
+/**
+ * What the server hands this component in live mode (D209 — the type is
+ * `server/onboarding.ts`'s, imported type-only so nothing server-side follows it
+ * across the boundary). Optional because mock mode renders the same component
+ * with none of it, and IGNORED by the body below until T2's rework consumes
+ * them: the contract is fixed here so the page and the component are one round.
+ */
+export type QuickstartProps = {
+  initialStatus?: OnboardingStatus;
+  endpoint?: string;
+  keys?: { id: string; name: string; prefix: string }[];
+  issueKey?: (formData: FormData) => Promise<{ token: string }>;
+};
+
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- T2's rework reads them; T1 only fixes the contract (D209).
+export function Quickstart(_props: QuickstartProps = {}) {
   const [tab, setTab] = useState("python");
   const [copied, setCopied] = useState(false);
   const [arrived, setArrived] = useState(false);
