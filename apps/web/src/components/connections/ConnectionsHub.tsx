@@ -61,22 +61,31 @@ export function sourceErrors(source: LiveSource): number {
 }
 
 /**
- * A key is a connected SOURCE once something has arrived on it. A key that has
- * never carried an event is not a source anyone connected — it is a credential,
- * and the keys tab in settings is where credentials are listed. Filtering here
- * is what makes the empty state honest: "no sources yet" means no key of this
- * workspace has ever carried an event, not "no rows in the table".
+ * A key is a connected SOURCE once ANY record has been counted on it — accepted
+ * or dropped. A key nothing has ever hit is not a source anyone connected: it is
+ * a credential, and the keys tab in settings is where credentials are listed.
+ * But a key whose every record was rejected IS a connection, a broken one, and
+ * that is precisely what an operator opens this panel to find out — the D100
+ * row exists, so hiding it behind `lastEvent` would answer "nothing has reached
+ * this workspace" to someone whose exporter has been sending all along.
  */
 export function connectedSourcesOf(sources: LiveSource[]): LiveSource[] {
-  return sources.filter((source) => source.lastEvent !== null);
+  return sources.filter(
+    (source) =>
+      source.lastEvent !== null || sourceErrors(source) > 0 || source.droppedQuota > 0,
+  );
 }
 
-/** Live rows carry no `silent`: a source only appears once it has events. A
- *  revoked key that carried some is listed and SAID to be revoked — the events
- *  happened, and the key no longer works. */
-export function liveSourceStatus(source: LiveSource): "healthy" | "degraded" | "revoked" {
+/** A revoked key that carried events is listed and SAID to be revoked — the
+ *  events happened, and the key no longer works. `silent` is the key records
+ *  arrived on of which none was ever accepted: not healthy, and not a receive
+ *  error either when the plan's quota sampled them all out. */
+export function liveSourceStatus(
+  source: LiveSource,
+): "healthy" | "degraded" | "silent" | "revoked" {
   if (source.revoked) return "revoked";
-  return sourceErrors(source) > 0 ? "degraded" : "healthy";
+  if (sourceErrors(source) > 0) return "degraded";
+  return source.lastEvent === null ? "silent" : "healthy";
 }
 
 const liveStatusStyle: Record<
@@ -85,6 +94,7 @@ const liveStatusStyle: Record<
 > = {
   healthy: { color: "var(--color-ok)", label: "healthy" },
   degraded: { color: "var(--color-warn)", label: "receive errors" },
+  silent: { color: "var(--color-warn)", label: "nothing accepted" },
   revoked: { color: "var(--color-err)", label: "revoked" },
 };
 
@@ -105,10 +115,10 @@ export function ConnectionsHub({ data }: { data: ConnectedPanel }) {
 
   const bySlug = new Map(connectors.map((c) => [c.slug, c]));
 
-  // Live: only the keys something has arrived on (a key with no events is a
-  // credential, not a connected source). Demo: the sample rows as given.
-  const connected =
-    data.mode === "live" ? connectedSourcesOf(data.sources) : data.sources;
+  // Live: only the keys records have been counted on (a key nothing ever hit is
+  // a credential, not a connected source). Demo: the sample rows as given.
+  const liveRows = data.mode === "live" ? connectedSourcesOf(data.sources) : [];
+  const connectedCount = data.mode === "live" ? liveRows.length : data.sources.length;
 
   return (
     <div className="px-5 py-4">
@@ -136,11 +146,11 @@ export function ConnectionsHub({ data }: { data: ConnectedPanel }) {
       <section className="mb-6 rounded-lg border border-line bg-surface" data-tour="connections">
         <div className="border-b border-line px-3.5 py-2">
           <h2 className="font-mono text-[11px] uppercase tracking-widest text-faint">
-            connected · {connected.length}
+            connected · {connectedCount}
           </h2>
         </div>
         {data.mode === "live" ? (
-          connected.length === 0 ? (
+          liveRows.length === 0 ? (
             /* Not a zero row and not an empty table: what is missing, and the
                two things that end it (D142). A workspace lands here with keys
                it has issued and nothing sent on them, so the sentence is about
@@ -158,7 +168,7 @@ export function ConnectionsHub({ data }: { data: ConnectedPanel }) {
             </div>
           ) : (
             <div className="divide-y divide-line/50">
-              {(connected as LiveSource[]).map((s) => {
+              {liveRows.map((s) => {
                 const st = liveStatusStyle[liveSourceStatus(s)];
                 const errors = sourceErrors(s);
                 return (
@@ -187,7 +197,7 @@ export function ConnectionsHub({ data }: { data: ConnectedPanel }) {
                       {s.droppedQuota.toLocaleString("en-US")} sampled
                     </span>
                     <span className="w-40 text-right font-mono text-[11px] text-faint">
-                      last event {s.lastEvent}
+                      last event {s.lastEvent ?? "never"}
                     </span>
                     <span
                       className="w-16 text-right font-mono text-[11px]"
@@ -202,7 +212,7 @@ export function ConnectionsHub({ data }: { data: ConnectedPanel }) {
           )
         ) : (
           <div className="divide-y divide-line/50">
-            {(connected as ConnectedSource[]).map((s) => {
+            {data.sources.map((s) => {
               const c = bySlug.get(s.connectorSlug);
               const st = sourceStatus[s.status];
               return (

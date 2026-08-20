@@ -62,11 +62,11 @@ test("errors are the receive-path drops and never the quota ones", () => {
   assert.equal(sourceErrors(source({ keyId: "k2", droppedQuota: 5_000 })), 0);
 });
 
-// The empty state is about EVENTS, not rows: a workspace that issued three keys
-// and sent nothing has three health rows and zero sources. Red-provable by
-// returning the list unfiltered — the panel would then list credentials as
-// connected sources and never show the empty state at all.
-test("a key with no events is not a connected source", () => {
+// The empty state is about RECORDS, not rows: a workspace that issued three keys
+// and sent nothing has zero sources. Red-provable by returning the list
+// unfiltered — the panel would then list credentials as connected sources and
+// never show the empty state at all.
+test("a key nothing was ever counted on is not a connected source", () => {
   const sources = [
     source({ keyId: "k1" }),
     source({ keyId: "k2", accepted: 12, lastEvent: "2026-08-20 13:40 UTC" }),
@@ -76,9 +76,28 @@ test("a key with no events is not a connected source", () => {
     connectedSourcesOf(sources).map((s) => s.keyId),
     ["k2"],
   );
-  // A workspace with keys but no events: zero sources, so the panel renders
+  // A workspace with keys but no records: zero sources, so the panel renders
   // the "no sources yet" content instead of a list.
   assert.deepEqual(connectedSourcesOf([source({ keyId: "k1" }), source({ keyId: "k3" })]), []);
+});
+
+// The case the panel exists for: an exporter that has been sending all along
+// and had every record rejected. `last_event_at` stays NULL through a
+// drops-only flush (`metering.go`'s GREATEST), so a filter on arrival alone
+// would answer "nothing has reached this workspace" to the one operator with a
+// real problem — and to the one whose plan quota sampled everything out.
+test("a key that only ever dropped records is a source, and a broken one", () => {
+  const rejected = source({ keyId: "k1", droppedDecode: 4_000 });
+  const sampledOut = source({ keyId: "k2", droppedQuota: 900 });
+  assert.deepEqual(
+    connectedSourcesOf([rejected, sampledOut, source({ keyId: "k3" })]).map((s) => s.keyId),
+    ["k1", "k2"],
+  );
+  assert.equal(liveSourceStatus(rejected), "degraded");
+  // Nothing accepted is not "healthy", and quota sampling is not a fault.
+  assert.equal(liveSourceStatus(sampledOut), "silent");
+  // Such a row has no last event to print, and says so.
+  assert.ok(hubSource.includes('{s.lastEvent ?? "never"}'));
 });
 
 // What the dot says. A source only reaches the panel once it has events, so
