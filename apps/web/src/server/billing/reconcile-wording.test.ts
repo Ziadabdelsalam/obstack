@@ -39,10 +39,14 @@ test("the regex is the drive's own, character for character", () => {
 
 test("no refusal reconcile.ts logs reads as an error line to the drive", () => {
   const source = readFileSync(reconcilePath, "utf8");
-  // Every logged template in the file, not the four this test was written
-  // against: a fifth refusal added later is swept by the same run rather than by
-  // somebody remembering this file exists.
-  const logged = [...source.matchAll(/console\.(?:error|warn|log|info)\(\s*`([^`]*)`/g)].map((m) => m[1]);
+  // Every logged line in the file, not the four this test was written against: a
+  // fifth refusal added later is swept by the same run rather than by somebody
+  // remembering this file exists. All three string forms, because a refusal with
+  // nothing to interpolate is written with quotes and would otherwise be the one
+  // wording this test could not see.
+  const logged = [
+    ...source.matchAll(/console\.(?:error|warn|log|info)\(\s*(?:`([^`]*)`|"([^"]*)"|'([^']*)')/g),
+  ].map((m) => m[1] ?? m[2] ?? m[3]);
   assert.ok(logged.length >= 4, `only ${logged.length} logged line(s) found — the scan stopped matching`);
 
   for (const template of logged) {
