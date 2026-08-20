@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import Link from "next/link";
-import { X, Copy, Check, Bell } from "lucide-react";
+import { X, Copy, Check, Plus } from "lucide-react";
 import { API_KEY_PLACEHOLDER, type Connector } from "./connectors";
 
 /**
@@ -158,7 +158,7 @@ export function ConnectModal({
                   </>
                 ) : (
                   <>
-                    <Bell className="h-3.5 w-3.5" />
+                    <Plus className="h-3.5 w-3.5" />
                     Request this connector
                   </>
                 )}

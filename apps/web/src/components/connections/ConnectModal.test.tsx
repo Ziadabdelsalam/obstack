@@ -20,7 +20,7 @@ const origLoad = (Module as unknown as { _load: (r: string, ...a: unknown[]) => 
 ) {
   if (request === "next/link") return { __esModule: true, default: () => null };
   if (request === "lucide-react")
-    return { __esModule: true, X: () => null, Copy: () => null, Check: () => null, Bell: () => null };
+    return { __esModule: true, X: () => null, Copy: () => null, Check: () => null, Plus: () => null };
   return origLoad.call(this, request, ...rest);
 };
 
@@ -80,6 +80,10 @@ test("the request acknowledgment promises no delivery on any channel", () => {
   // And nothing but local state sits behind the click.
   assert.match(modalCode, /onClick=\{\(\) => setRequested\(true\)\}/);
   assert.equal(/fetch\(|useActionState|action=/.test(modalCode), false);
+  // D222: a bell is the notification promise in pictogram form — the icon may
+  // not restate the claim D220 removed from the words. Plus carries "register
+  // interest" and promises no follow-up channel.
+  assert.equal(/\bBell\b/.test(modalSource), false, "Bell restates the notification promise (D222)");
 });
 
 // No real token enters this component (D210): it renders the slot literal and
