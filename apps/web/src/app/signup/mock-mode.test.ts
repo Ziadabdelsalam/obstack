@@ -185,6 +185,39 @@ test("the invite-accept action trips the same way in mock mode (D152)", async ()
   assert.match(logged[0] ?? "", /\[invite\] accept posted in mock mode/);
 });
 
+test("the quickstart's issue-key action trips the same way in mock mode (D152)", async () => {
+  // The fifth surface: the onboarding page issues its own key (D201), so it is
+  // an auth-surface action and joins this list at creation — the whole of D152.
+  //
+  // Same proof shape as the ones above: the redirect target is a bare
+  // `/app/onboarding`. Take the mode check out and the post reaches
+  // `getSessionContext`, which builds the auth instance on a missing secret and
+  // throws something that is not a redirect at all. An EMPTY FormData is
+  // deliberate — the guard runs before the key name is read, so nothing below it
+  // can be what answered.
+  const { issueQuickstartKey } = await import("@/app/app/onboarding/actions");
+
+  const logged: string[] = [];
+  const real = console.error;
+  console.error = (...args: unknown[]) => void logged.push(args.map(String).join(" "));
+  let signal: { digest?: unknown } | undefined;
+  try {
+    await issueQuickstartKey(new FormData());
+  } catch (error) {
+    signal = error as { digest?: unknown };
+  } finally {
+    console.error = real;
+  }
+
+  const digest = String(signal?.digest);
+  assert.equal(digest.split(";")[0], "NEXT_REDIRECT", "refused by sending back");
+  assert.ok(
+    digest.includes(";/app/onboarding;"),
+    "to the onboarding page itself, with no error code appended",
+  );
+  assert.match(logged[0] ?? "", /\[onboarding\] issue key posted in mock mode/);
+});
+
 test("every settings action trips the same way in mock mode (D152)", async () => {
   // The fourth surface, and the widest: six functions sharing ONE gate
   // (`settingsSession`), so the property is asserted per action rather than on

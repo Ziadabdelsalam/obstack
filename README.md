@@ -64,9 +64,11 @@ clients your app already has. `@obstack.trace_agent` / `traceAgent` and
 Cost is not computed here — the SDKs carry no pricing logic at all; ingest
 prices from the tokens and model they report.
 
-**Pre-release: neither package is published.** There is nothing to
-`pip install obstack-py` or `npm install obstack-js` from yet. Both install from
-source, which is what the sample apps do:
+**Pre-release: the registries hold the names, not the packages.**
+`obstack-py 0.0.1` (PyPI) and `obstack-js 0.0.1` (npm) are name-hold
+placeholders marked do-not-use — installing either gets you none of this code.
+The real releases publish at launch; today both install from source, which is
+what the sample apps and the in-product quickstart do:
 
 ```bash
 pip install './packages/obstack-py[fastapi]'                       # Python

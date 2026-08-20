@@ -68,9 +68,9 @@ out.
 
 ## Installing the SDK
 
-**Pre-release.** `obstack-js` is not published to npm — there is nothing to
-`npm install obstack-js` from yet, so this sample installs it from source, which
-is what the commands above do.
+**Pre-release.** npm's `obstack-js` is a `0.0.1` name-hold placeholder marked
+do-not-use, not this SDK, so this sample installs from source — which is what the
+commands above do.
 
 It comes in as the tarball `npm pack` produces, not as a
 workspace link: the tarball is the artifact a customer gets, so this run

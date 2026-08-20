@@ -58,9 +58,15 @@ ingest:
 collector:
   image: otel/opentelemetry-collector-k8s:0.158.0
   # A client credential, not a server setting: the collector sends it as
-  # `Authorization: Bearer <key>`. The default is the dev continuity row
-  # seeded by services/ingest/pgmigrations/0004, which the pg-migrate Job
-  # applies — override it with a key issued in settings for a real cluster.
+  # `Authorization: Bearer <key>`, and it is authenticated against THIS
+  # chart's own Postgres `api_keys` — nothing else. The only row that exists
+  # there is the dev continuity key seeded by
+  # services/ingest/pgmigrations/0004, which the pg-migrate Job applies, so
+  # the default is the only key that works out of the box. This chart ships
+  # no key-issuing surface (no `web` workload until M4 — see the postgres
+  # block above), so a key issued in a hosted product's settings is not a row
+  # here and gets 401'd. Override only with a key row that exists in this
+  # chart's Postgres.
   apiKey: ok_dev_local
   # Must name the demo pod's instrumented container below (D37.3) — the
   # collector's filelog exclusion is keyed on the container name.

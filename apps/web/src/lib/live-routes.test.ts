@@ -32,3 +32,24 @@ test("/app/settings is live-wired, exactly and not as a subtree", () => {
   assert.equal(isLiveWiredRoute("/app/settings"), true);
   assert.equal(isLiveWiredRoute("/app/settings/anything"), false);
 });
+
+// S3.4 T5 (D106): the quickstart renders the workspace's own issued key and
+// polls its real ingest counters, and the hub renders that workspace's sources
+// with their D100 health — neither route renders sample content any more, so
+// the badge must be gone from both. Registration, not the pages (S2.0 L1), and
+// exact entries: nothing lives under either path, and a trailing-slash entry
+// would wire a subtree that does not exist.
+test("/app/onboarding and /app/connections are live-wired, exactly", () => {
+  assert.equal(isLiveWiredRoute("/app/onboarding"), true);
+  assert.equal(isLiveWiredRoute("/app/onboarding/anything"), false);
+  assert.equal(isLiveWiredRoute("/app/connections"), true);
+  assert.equal(isLiveWiredRoute("/app/connections/anything"), false);
+});
+
+// D205: the e2e drive's SAMPLE-badge positive control is `/app/costs`, and this
+// sprint wires neither it nor any other unwired route — a registration that
+// silently vacated that control would leave the drive asserting nothing. The
+// line goes red the moment `/app/costs` (or the `/app/` subtree) is registered.
+test("/app/costs stays unwired — the drive's positive control (D205)", () => {
+  assert.equal(isLiveWiredRoute("/app/costs"), false);
+});

@@ -188,8 +188,37 @@ What it asserts, in order:
   still name his own org and workspace. The key is then revoked, its row stamped
   and the list saying so about *that* prefix — read as a date, because the tab's
   standing copy mentions revoked keys whether or not anything is revoked;
-- **sign-out and no session** — the one cookie goes, and every wired route
-  answers a cookie-less browser with `/login` and no telemetry.
+- **the quickstart, and attribution (D115)** — the same stranger opens
+  `/app/onboarding`, presses *Issue a key* there, and the drive takes the token
+  **off the rendered snippet** — the only place it exists, since a stored token
+  is unrecoverable (D98) — and sends a real three-span trace with it to the
+  compose stack's OTLP endpoint. That trace must land in *her* workspace, in no
+  other workspace at all (asked once with her id and once without), and be
+  reachable by the words it says through the product's own search while the
+  other stranger's search for the same vocabulary finds nothing. Her waiting
+  panel must then flip **on its own poll** — bounded by one metering flush plus
+  one 5s client poll, a failure past it rather than a longer wait — to a link
+  whose trace id is the id the drive sent, not merely the newest row in her
+  store;
+- **connections shows that key** — `/app/connections` lists the key events
+  actually arrived on (the settings key, which nothing was ever sent on, is a
+  credential and is *not* listed), with the D100 counters as they are: cumulative
+  totals with the instant they were counted at, errors that are receive-path only
+  and quota drops rendered as sampling rather than as faults (D218/D219), and no
+  invented per-minute rate anywhere on the panel. Neither of the two routes this
+  sprint registered carries a `SAMPLE DATA` badge, while `/app/costs` still does;
+- **token hygiene** — both keys the run issued through the UI are searched for,
+  as literals, in everything the drive printed and everything it wrote: stdout,
+  the transcript, the server log, the build log, every artifact beside them. The
+  only place a live key is allowed to appear is the `Authorization` header it was
+  sent in — a drive that proved attribution by printing the token would have
+  published a working credential into the CI log. (Chrome's own profile
+  directories are deliberately not searched: a browser caching a page it was
+  shown is the browser, not this drive's artifact.);
+- **sign-out and no session** — the one cookie goes, every wired route answers a
+  cookie-less browser with `/login` and no telemetry, and the quickstart's poll
+  route (`/app/onboarding/status`) answers a bare `401` with no body and no
+  redirect, because a poll is not a navigation (D216).
 
 Properties worth knowing before changing it:
 
@@ -209,6 +238,14 @@ Properties worth knowing before changing it:
 - **The badge check carries a positive control**, an unwired route that must
   still show the badge. Without it, "no badge on `/app/traces`" would also pass
   if the badge had been deleted everywhere.
+- **The attribution step runs before the quota comes down, and its events are
+  counted.** Past that line every export is a candidate for sampling, and a first
+  trace that survived one run in ten would make the panel's flip a coin toss; so
+  the three spans are sent while the workspace is under quota. They are three
+  metered events all the same, and the metering arithmetic below them says so
+  (`EXPECTED_ACCEPTED` = the attribution trace plus what the metering key sent) —
+  the ledger and the Data & ingest tab are per *workspace* and hold both keys,
+  while the per-key health row holds only its own.
 - **The negative probe is ordered, not id-distinct.** `exit-seed.mjs` is the one
   seeding definition and its ids are deliberately label-independent, so both
   workspaces end up holding the *same* trace ids. The probe therefore runs before

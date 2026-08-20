@@ -91,8 +91,11 @@ async function settingsSession(where: string) {
 /**
  * Issue a key, and hand the token back exactly once.
  *
- * This is the ONE action that answers with a value instead of a redirect, and
- * the reason is the secret: a token in a query string is a token in the
+ * One of the two actions that answer with a value instead of a redirect — the
+ * other is the quickstart's own issuance (`app/app/onboarding/actions.ts`,
+ * D201), which exists because a snippet needs a pasteable token and a prefix is
+ * not one. Both answer for the same reason: the secret. A token in a query
+ * string is a token in the
  * browser's history, in a referrer and in every access log the response passes
  * through. It exists in this response and nowhere else — `issueApiKey` stores
  * only its hash (D98), so there is no second chance to read it and no code path

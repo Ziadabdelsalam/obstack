@@ -148,6 +148,10 @@ export async function reconcileCheckout(
   // `JSON.stringify` closes `\n`/`\r` but emits U+2028/U+2029 verbatim, and both
   // are ECMAScript line terminators that split a log line just as a newline does
   // (B2-3). See the note above about forged lines.
+  //
+  // Every console line below is load-bearing for the e2e drive's log-cleanliness
+  // predicate (deploy/compose/e2e-drive.mjs, isError) — reconcile-wording.test.ts
+  // mirrors that regex and goes red if a refusal wording here starts matching it (D206).
   const id = quoteId(checkoutId);
 
   let state;

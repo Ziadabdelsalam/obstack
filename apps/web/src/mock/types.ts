@@ -1,30 +1,6 @@
-export type ConnectorCategory =
-  | "Cloud"
-  | "PaaS"
-  | "Containers & K8s"
-  | "Databases"
-  | "LLM & AI"
-  | "Queues & Events"
-  | "CI/CD";
-
-export interface ConnectStep {
-  title: string;
-  body?: string;
-  snippet?: string;
-}
-
-export interface Connector {
-  slug: string;
-  name: string;
-  category: ConnectorCategory;
-  status: "available" | "coming-soon";
-  blurb: string;
-  /** two-letter mark rendered in mono */
-  mark: string;
-  markColor: string; // css color token value
-  connectSteps?: ConnectStep[];
-}
-
+// `ConnectorCategory` / `ConnectStep` / `Connector` moved to
+// `@/components/connections/connectors` (D204) — one card definition for both
+// modes. Only the demo-source shape below is mock data.
 export interface ConnectedSource {
   connectorSlug: string;
   name: string;
