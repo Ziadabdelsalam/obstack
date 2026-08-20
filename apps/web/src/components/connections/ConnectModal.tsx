@@ -1,8 +1,24 @@
 "use client";
 
 import { useState } from "react";
+import Link from "next/link";
 import { X, Copy, Check, Bell } from "lucide-react";
-import type { Connector } from "./connectors";
+import { API_KEY_PLACEHOLDER, type Connector } from "./connectors";
+
+/**
+ * Does this connector's flow target THIS deployment's ingest, i.e. does any of
+ * its snippets carry the token slot? Only those cards get the issue-a-key line.
+ *
+ * The Kubernetes card deliberately carries no placeholder (D214): the chart
+ * brings up its own self-contained obstack and authenticates against its own
+ * Postgres, so a key issued in this product would be 401'd there — offering one
+ * beside those steps would be the fiction the card exists to avoid.
+ */
+export function needsApiKey(connector: Connector): boolean {
+  return (connector.connectSteps ?? []).some((step) =>
+    step.snippet?.includes(API_KEY_PLACEHOLDER),
+  );
+}
 
 function Snippet({ code }: { code: string }) {
   const [copied, setCopied] = useState(false);
@@ -82,6 +98,22 @@ export function ConnectModal({
         <div className="px-4 py-4">
           <p className="text-[13px] leading-relaxed text-mid">{connector.blurb}</p>
 
+          {available && needsApiKey(connector) && (
+            /* D210: this modal issues nothing and never holds a token. The
+               snippets carry the slot, and this line says where a real key
+               comes from — a key is shown ONCE and is unrecoverable after
+               (D98), so there is no key to render here even if we wanted to. */
+            <p className="mt-3 rounded-md border border-line bg-raised px-3 py-2 text-[12.5px] leading-relaxed text-mid">
+              <code className="font-mono text-[11.5px] text-ink">{API_KEY_PLACEHOLDER}</code> is a
+              key you issue:{" "}
+              <Link href="/app/onboarding" className="text-ink underline underline-offset-2">
+                the Quickstart
+              </Link>{" "}
+              shows a new one once, and Settings → API keys issues one too. Paste it in place of the
+              slot — it is not stored anywhere you can read it back.
+            </p>
+          )}
+
           {available && connector.connectSteps ? (
             <ol className="mt-4 space-y-4">
               {connector.connectSteps.map((step, i) => (
@@ -128,13 +160,12 @@ export function ConnectModal({
               </button>
             </div>
           )}
-
-          {available && (
-            <div className="mt-4 flex items-center gap-2 rounded-md border border-line bg-raised px-3 py-2">
-              <span className="pulse-dot h-1.5 w-1.5 rounded-full" style={{ background: "var(--color-warn)" }} />
-              <span className="font-mono text-[11px] text-mid">waiting for first event…</span>
-            </div>
-          )}
+          {/* There is no waiting row here (D210): the one that used to sit at
+              this spot never updated — it said "waiting for first event…"
+              whether or not anything had arrived, including in a workspace
+              already receiving data. Arrival is the connected-sources panel on
+              the hub, fed by the D100 counters; a second poll here would be a
+              second path to the same truth. */}
         </div>
       </div>
     </div>
