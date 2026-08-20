@@ -77,7 +77,7 @@ export const connectors: Connector[] = [
     connectSteps: [
       {
         title: "Install the chart",
-        body: "The chart lives in this repo — there is no chart repository to add. 900s covers a cold ClickHouse pull on install; a warm node is done in ~18s.",
+        body: "The chart lives in this repo — there is no chart repository to add. It brings up the whole stack (ingest, ClickHouse, Postgres, the collector DaemonSet) from this repo's own images, so build and load obstack-ingest:kind and obstack-demo-agent:kind into the cluster first — deploy/helm/obstack/README.md has the exact sequence. 900s covers a cold ClickHouse pull on install; a warm node is done in ~18s.",
         snippet: `helm install obstack deploy/helm/obstack \\\n  --set collector.apiKey=${API_KEY_PLACEHOLDER} \\\n  --timeout 900s --wait`,
       },
       {
@@ -96,7 +96,7 @@ export const connectors: Connector[] = [
     name: "Docker",
     category: "Containers & K8s",
     status: "available",
-    blurb: "A single container that ships logs from every other container on the host.",
+    blurb: "One collector container that tails other containers' Docker logs and ships them as OTLP.",
     mark: "DK",
     markColor: "var(--color-api)",
     connectSteps: [
@@ -107,7 +107,7 @@ export const connectors: Connector[] = [
       },
       {
         title: "Logs flow automatically",
-        body: "The collector runs deploy/collector/config.compose.yaml on otel/opentelemetry-collector-k8s:0.158.0, tails Docker's own json-file container logs, and ships them as OTLP logs. Its own OTLP ports come up on 127.0.0.1:5317 (gRPC) and 127.0.0.1:5318 (HTTP).",
+        body: "The collector runs deploy/collector/config.compose.yaml on otel/opentelemetry-collector-k8s:0.158.0, tails Docker's own json-file container logs, and ships them as OTLP logs. filelog's include is deliberately scoped to the container IDs up.sh resolves rather than the host-wide glob (it shares your Docker daemon) — widen it in config.compose.yaml to tail your own containers. The collector's own OTLP ports come up on 127.0.0.1:5317 (gRPC) and 127.0.0.1:5318 (HTTP).",
       },
       {
         title: "Skip a container that already exports OTLP",
