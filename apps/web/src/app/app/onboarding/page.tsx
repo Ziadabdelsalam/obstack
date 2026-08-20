@@ -1,5 +1,6 @@
 import { redirect } from "next/navigation";
 import { connection } from "next/server";
+import { DemoArrival } from "@/components/onboarding/DemoArrival";
 import { Quickstart } from "@/components/onboarding/Quickstart";
 import { dataForSessionContext, dataMode } from "@/server/data";
 import { getOnboardingStatus } from "@/server/onboarding";
@@ -20,7 +21,10 @@ import { issueQuickstartKey } from "./actions";
  * `session.workspaceId`.
  */
 export default async function OnboardingPage() {
-  if (dataMode !== "live") return <Quickstart />;
+  // The demo's arrival panel is passed in, not imported by `Quickstart` (D217):
+  // the mock rows are reached from this branch alone, so the live render below
+  // has no path to `@/mock/*` — in the bundle, not only in the JSX.
+  if (dataMode !== "live") return <Quickstart demoArrival={<DemoArrival />} />;
   await connection();
 
   const session = await getSessionContext();

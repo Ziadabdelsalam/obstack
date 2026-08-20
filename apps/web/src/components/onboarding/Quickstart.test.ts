@@ -155,16 +155,20 @@ test("live arrival is polled, never timed", () => {
   assert.ok(source.includes("POLL_MS = 5_000"), "the poll matches the counters' flush cadence");
   assert.match(source, /if \(!response\.ok\) \{\s*\n\s*stopped = true;/, "a non-200 must stop the poll");
   assert.match(source, /if \(!isLive \|\| linked\) return;/, "arrival stops the poll");
-  // The timer that exists is inside the mock branch, and the mock rows are only
-  // reachable from the component live mode never renders.
-  assert.match(source, /if \(isLive\) return;\s*\n\s*const reduced/);
-  const demo = source.slice(source.indexOf("function DemoArrival"));
-  assert.ok(demo.includes("allTraces.find"), "the mock trace link belongs to the demo panel");
-  assert.equal(
-    source.slice(0, source.indexOf("function DemoArrival")).includes("allTraces."),
-    false,
-    "the mock rows must be unreachable outside the demo panel",
-  );
+  // The demo's timer lives with the demo's panel now (D217) — this file has no
+  // arrival timer at all, only the 1.5s "copied" reset on the clipboard button.
+  assert.equal(source.includes("5000"), false, "the demo's 5-second flip is not this file's");
+});
+
+// D217: "live mode never renders it" was a claim about a render, not about the
+// bundle — the mock import sat in the live surface's module graph waiting for a
+// refactor to re-reach it (S1 L2 / D125/D158). The demo panel is a prop now, so
+// this file must name no mock module in any form.
+test("the live surface has no edge to @/mock/*", () => {
+  assert.equal(/from "@\/mock\//.test(source), false, "Quickstart.tsx imports a mock module again");
+  assert.equal(source.includes("@/mock/"), false, "no mock module is named in this file at all");
+  assert.equal(source.includes("allTraces"), false, "the mock rows are reachable from the live file");
+  assert.ok(source.includes("demoArrival"), "the demo panel arrives as a prop from the mock caller");
 });
 
 // D201: the token is client state and nothing else — a shown-once key (D98) has

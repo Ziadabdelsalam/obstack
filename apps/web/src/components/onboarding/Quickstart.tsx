@@ -1,11 +1,8 @@
 "use client";
 
-import { useEffect, useState, useTransition } from "react";
+import { useEffect, useState, useTransition, type ReactNode } from "react";
 import Link from "next/link";
 import { ArrowRight, Check, Copy } from "lucide-react";
-import { allTraces } from "@/mock/traces";
-import { fmtMs, fmtTokens } from "@/lib/format";
-import { StatusPill } from "@/components/ui/StatusPill";
 import { StartTourButton } from "@/components/shell/TourGuide";
 import { API_KEY_PLACEHOLDER } from "@/components/connections/connectors";
 import { OTLP_GRPC_ENDPOINT, OTLP_HTTP_ENDPOINT } from "@/lib/ingest-endpoint";
@@ -98,17 +95,24 @@ export OTEL_EXPORTER_OTLP_HEADERS=Authorization=Bearer%20${key}
  *
  * The two fields travel TOGETHER or not at all, which is what the union below
  * says in the type system: a live render has both, the demo deployment passes
- * nothing (`<Quickstart />`), and there is no third shape — a status with no way
- * to issue a key would render a waiting panel above snippets nobody can fill.
- * "Do I have props" is therefore the live/mock signal in this file, and it is
- * the same signal the page branches `dataMode` on one level up.
+ * its own arrival panel instead, and there is no third shape — a status with no
+ * way to issue a key would render a waiting panel above snippets nobody can
+ * fill. Which arm arrived is therefore the live/mock signal in this file, and it
+ * is the same signal the page branches `dataMode` on one level up.
+ *
+ * The demo arm is a NODE rather than an import (D217): `DemoArrival` reaches the
+ * demo's trace rows, so this file must not name that module — the mock-mode
+ * caller does, and the live path keeps no edge to it at all.
  */
 export type QuickstartLive = {
   initialStatus: OnboardingStatus;
   issueKey: (formData: FormData) => Promise<{ token: string }>;
+  demoArrival?: never;
 };
 
-export type QuickstartProps = QuickstartLive | { initialStatus?: never; issueKey?: never };
+export type QuickstartProps =
+  | QuickstartLive
+  | { demoArrival: ReactNode; initialStatus?: never; issueKey?: never };
 
 export function Quickstart(props: QuickstartProps) {
   const live: QuickstartLive | null = props.initialStatus === undefined ? null : props;
@@ -128,17 +132,6 @@ export function Quickstart(props: QuickstartProps) {
 
   const [status, setStatus] = useState<OnboardingStatus | null>(live?.initialStatus ?? null);
   const linked = Boolean(status?.arrived && status.firstTrace);
-
-  // Mock mode's arrival: the demo has no ingest to wait for, so the panel plays
-  // the flip on a timer, exactly as it always has (D125 — the demo's DATA is
-  // what that ruling protects). Live mode never runs this.
-  const [demoArrived, setDemoArrived] = useState(false);
-  useEffect(() => {
-    if (isLive) return;
-    const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    const id = setTimeout(() => setDemoArrived(true), reduced ? 0 : 5000);
-    return () => clearTimeout(id);
-  }, [isLive]);
 
   // Live arrival: poll the GET handler at the counters' own cadence until the
   // workspace's first trace is linkable, then stop asking (D203). Any non-200
@@ -291,11 +284,7 @@ export function Quickstart(props: QuickstartProps) {
 
       {/* waiting → first trace */}
       <div className="mt-6 rounded-lg border border-line bg-surface p-4">
-        {live ? (
-          <LiveArrival status={status} />
-        ) : (
-          <DemoArrival arrived={demoArrived} />
-        )}
+        {live ? <LiveArrival status={status} /> : props.demoArrival}
       </div>
     </div>
   );
@@ -334,49 +323,6 @@ function LiveArrival({ status }: { status: OnboardingStatus | null }) {
       >
         <span className="truncate font-mono text-[12.5px] text-ink">{trace.id}</span>
         <ArrowRight className="h-3.5 w-3.5 shrink-0" style={{ color: "var(--color-api)" }} />
-      </Link>
-    </div>
-  );
-}
-
-/**
- * The demo's panel, and the only place `@/mock/traces` is reached from this
- * file: live mode never renders this component, so the mock rows are
- * unreachable on the live path by construction rather than by a flag somebody
- * could forget to check.
- */
-function DemoArrival({ arrived }: { arrived: boolean }) {
-  if (!arrived) {
-    return (
-      <div className="flex items-center gap-3 py-3">
-        <span className="pulse-dot h-2 w-2 rounded-full" style={{ background: "var(--color-warn)" }} />
-        <span className="font-mono text-[12.5px] text-mid">
-          waiting for data<span className="pulse-dot">…</span>
-        </span>
-        <span className="ml-auto font-mono text-[11px] text-faint">
-          listening on {OTLP_HTTP_ENDPOINT}
-        </span>
-      </div>
-    );
-  }
-  const trace = allTraces.find((t) => t.status === "ok" && t.totalTokens > 0)!;
-  return (
-    <div className="fade-up">
-      <p className="mb-2 flex items-center gap-2 font-mono text-[11px] uppercase tracking-widest" style={{ color: "var(--color-ok)" }}>
-        <Check className="h-3.5 w-3.5" /> first trace received
-      </p>
-      <Link
-        href={`/app/traces/${trace.id}`}
-        className="flex items-center justify-between rounded-md border border-line bg-raised px-3 py-2.5 transition-colors hover:border-line-strong"
-      >
-        <span className="flex min-w-0 items-center gap-3">
-          <StatusPill status={trace.status} />
-          <span className="truncate font-mono text-[12.5px] text-ink">{trace.rootName}</span>
-        </span>
-        <span className="flex items-center gap-3 font-mono text-[11px] text-mid">
-          {fmtMs(trace.durationMs)} · {fmtTokens(trace.totalTokens)} tok
-          <ArrowRight className="h-3.5 w-3.5" style={{ color: "var(--color-api)" }} />
-        </span>
       </Link>
     </div>
   );
