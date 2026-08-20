@@ -29,6 +29,9 @@ const { needsApiKey } = createRequire(fileURLToPath(import.meta.url))(
 ) as typeof import("./ConnectModal");
 
 const modalSource = readFileSync(path.join(import.meta.dirname, "ConnectModal.tsx"), "utf8");
+// Rendered copy only: each deletion of record is noted in a comment beside the
+// spot it used to occupy, and a note must never read as the claim it removed.
+const modalCode = modalSource.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
 const card = (slug: string) => {
   const found = connectors.find((c) => c.slug === slug);
   assert.ok(found, `${slug} card missing`);
@@ -51,12 +54,32 @@ test("the key line follows the placeholder, so the K8s card gets none", () => {
 // event…" on every open, forever, including in a workspace already receiving
 // data. Arrival lives on the hub's connected panel, off the D100 counters.
 test("no waiting row and no pretend arrival state", () => {
-  // Comments are stripped first — the deletion is recorded in one beside the
-  // spot the row used to occupy, and that note must not read as the row.
-  const code = modalSource.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
   for (const fiction of ["waiting for first event", "pulse-dot"]) {
-    assert.equal(code.includes(fiction), false, `${fiction} is back in the modal`);
+    assert.equal(modalCode.includes(fiction), false, `${fiction} is back in the modal`);
   }
+});
+
+// D220: the request button sets a `useState` flag and reaches nothing else — no
+// action, no fetch, nothing written anywhere. So the acknowledgment promises no
+// delivery and names no channel; U4 puts email furthest out of reach of all.
+test("the request acknowledgment promises no delivery on any channel", () => {
+  for (const promise of [
+    /email/i,
+    /notif/i,
+    /\bwe(&apos;|')?ll\b/i,
+    /get back to you/i,
+    /\bin touch\b/i,
+    /let you know/i,
+    /\bsubscrib/i,
+  ]) {
+    assert.equal(promise.test(modalCode), false, `${promise} is a promise the modal cannot keep`);
+  }
+  // The affordance itself stays — a local acknowledgment, scoped out loud.
+  assert.match(modalCode, /Request this connector/);
+  assert.match(modalCode, /Noted for this session/);
+  // And nothing but local state sits behind the click.
+  assert.match(modalCode, /onClick=\{\(\) => setRequested\(true\)\}/);
+  assert.equal(/fetch\(|useActionState|action=/.test(modalCode), false);
 });
 
 // No real token enters this component (D210): it renders the slot literal and

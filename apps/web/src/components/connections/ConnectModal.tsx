@@ -138,8 +138,13 @@ export function ConnectModal({
           ) : (
             <div className="mt-4 rounded-lg border border-line bg-raised p-4 text-center">
               <p className="text-[13px] text-mid">
-                This connector is on the roadmap. Requests decide what ships next.
+                This connector is on the roadmap — there is nothing to connect yet.
               </p>
+              {/* D220: the acknowledgment is local state and says only that. It
+                  used to read "Requested — we'll email you", which promised a
+                  delivery this product cannot make (no email in M3, U4) off a
+                  click that reaches no backend at all. Nothing here outlives
+                  the render, so nothing here may claim otherwise. */}
               <button
                 type="button"
                 onClick={() => setRequested(true)}
@@ -149,7 +154,7 @@ export function ConnectModal({
                 {requested ? (
                   <>
                     <Check className="h-3.5 w-3.5" style={{ color: "var(--color-ok)" }} />
-                    Requested — we&apos;ll email you
+                    Noted for this session
                   </>
                 ) : (
                   <>
