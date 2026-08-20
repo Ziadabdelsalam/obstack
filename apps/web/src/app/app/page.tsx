@@ -2,10 +2,18 @@ import Link from "next/link";
 import { connection } from "next/server";
 import { ArrowUpRight } from "lucide-react";
 import { topFailing } from "@/mock/metrics";
-import { dataForSession, dataMode } from "@/server/data";
+import { NoSessionError, dataForSession, dataMode, type WorkspaceData } from "@/server/data";
+import { listOrgMembers } from "@/server/invites";
+import { getOnboardingStatus } from "@/server/onboarding";
+import { queryRows } from "@/server/postgres";
+import { getSessionContext } from "@/server/session";
 import { LatencyChart, RequestsChart, TokensChart } from "@/components/dash/Charts";
 import { WatchWidgets } from "@/components/dash/WatchWidgets";
-import { OnboardingChecklist } from "@/components/dash/OnboardingChecklist";
+import {
+  DEMO_CHECKLIST_FLAGS,
+  OnboardingChecklist,
+  type ChecklistFlags,
+} from "@/components/dash/OnboardingChecklist";
 import { LayerChip } from "@/components/ui/LayerChip";
 import { SampleMark } from "@/components/ui/SampleMark";
 import type { Layer } from "@/lib/types";
@@ -89,6 +97,33 @@ function NoData() {
   );
 }
 
+/**
+ * The checklist's live answers (D211), all of them from reads this product
+ * already has: arrival and the first trace come from `getOnboardingStatus` —
+ * the ONE counter path the quickstart's waiting panel polls (D203), so the
+ * dashboard and the quickstart can never disagree about whether data arrived —
+ * and "invite your team" is the settings roster, one member being the owner
+ * alone. No second counter read, and nothing derived here that either module
+ * already decides.
+ *
+ * The session is `getSessionContext`'s request-memoized answer, the same one
+ * `dataForSession` resolved a line above; a null cannot reach here because that
+ * call refuses it first, and this says so in the type system's terms.
+ */
+async function liveChecklistFlags(data: WorkspaceData): Promise<ChecklistFlags> {
+  const session = await getSessionContext();
+  if (!session) throw new NoSessionError();
+  const [status, members] = await Promise.all([
+    getOnboardingStatus(session.workspaceId, data, queryRows),
+    listOrgMembers(session.orgId, queryRows),
+  ]);
+  return {
+    sourceConnected: status.arrived,
+    firstTrace: status.firstTrace !== null,
+    teamInvited: members.length > 1,
+  };
+}
+
 export default async function OverviewPage() {
   const live = dataMode === "live";
   // Live numbers must not be baked into a static prerender (D27a) — connection()
@@ -98,7 +133,10 @@ export default async function OverviewPage() {
   // the label below is the workspace these numbers were queried under, not a
   // second resolution that could disagree with them (D13/D21).
   const data = await dataForSession();
-  const { points, stats } = await data.getOverview();
+  const [{ points, stats }, checklist] = await Promise.all([
+    data.getOverview(),
+    live ? liveChecklistFlags(data) : DEMO_CHECKLIST_FLAGS,
+  ]);
   return (
     <div className="px-5 py-4">
       <div className="mb-4 flex items-center justify-between">
@@ -115,13 +153,8 @@ export default async function OverviewPage() {
         </span>
       </div>
 
-      {live ? (
-        <SampleWidget>
-          <OnboardingChecklist />
-        </SampleWidget>
-      ) : (
-        <OnboardingChecklist />
-      )}
+      {/* No SampleMark: its rows are this workspace's own answers now (D211). */}
+      <OnboardingChecklist flags={checklist} />
 
       {/* stat row */}
       <div className="mb-4 grid grid-cols-2 gap-3 lg:grid-cols-4">

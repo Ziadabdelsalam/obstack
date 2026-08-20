@@ -13,6 +13,8 @@ export const liveWiredRoutes: readonly string[] = [
   "/app/traces", // traces list
   "/app/traces/", // trace detail
   "/app/logs", // logs explorer
+  "/app/onboarding", // quickstart: the workspace's own key, its real arrival signal
+  "/app/connections", // connected sources with their D100 ingest health
   // Settings is wired per SECTION, not per route (D106): General, Members and
   // API keys read Postgres, and the four tabs that still render demo content
   // carry their own `SampleMark` inside the suite. One route-wide badge over a
