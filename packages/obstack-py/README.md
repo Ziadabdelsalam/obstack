@@ -10,8 +10,10 @@ It is thin over the stock OpenTelemetry Python SDK — standard OTLP on the wire
 nothing proprietary — so it works against obstack's ingest, against a collector,
 or against any other OTLP endpoint you point it at.
 
-**Pre-release.** Not published to PyPI. Install from source as shown below. The
-distribution is named `obstack-py` and imports as `obstack`.
+**Pre-release.** PyPI holds `obstack-py 0.0.1` — a name-hold placeholder marked
+do-not-use (U5/D79), not this code. The real release publishes at launch; until
+then install from source as shown below. The distribution is named `obstack-py`
+and imports as `obstack`.
 
 ## Install
 

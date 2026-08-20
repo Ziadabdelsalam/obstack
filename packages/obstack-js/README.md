@@ -10,7 +10,9 @@ standard OTLP over HTTP, configured entirely from the standard `OTEL_*`
 environment — so it points at obstack, at a stock OpenTelemetry Collector, or at
 anything else that speaks OTLP, with no obstack-specific setting anywhere.
 
-> **Pre-release.** Not published to npm. Install it from source, as shown below.
+> **Pre-release.** npm holds `obstack-js 0.0.1` — a name-hold placeholder marked
+> do-not-use (U5/D79), not this code. The real release publishes at launch;
+> until then install from source, as shown below.
 
 ## Install
 
