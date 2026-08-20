@@ -1,6 +1,5 @@
 "use server";
 
-import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { issueApiKey, parseKeyName } from "@/server/api-keys";
 import { dataMode } from "@/server/data";
@@ -27,28 +26,6 @@ const ONBOARDING_PATH = "/app/onboarding";
 const DEFAULT_KEY_NAME = "Quickstart";
 
 /**
- * The same gate the settings actions open with (D150/D152), for the same
- * reasons: the MODE CHECK COMES FIRST and short-circuits before
- * `getSessionContext` builds the auth instance and opens a pool, because the
- * mock deployment has no accounts, no `BETTER_AUTH_SECRET` and no Postgres.
- * Mock mode renders no issue affordance, so a post that gets here came from
- * somewhere no visitor can be — the log line is the tripwire, and it is
- * `console.error` because it cannot happen through honest use (D193).
- *
- * A caller with no session goes to /login: there is nothing on this page for
- * them to read a message on.
- */
-async function onboardingSession(where: string) {
-  if (dataMode === "mock") {
-    console.error(`[onboarding] ${where} posted in mock mode — this deployment keeps no accounts`);
-    redirect(ONBOARDING_PATH);
-  }
-  const session = await getSessionContext();
-  if (!session) redirect("/login");
-  return session;
-}
-
-/**
  * Issue a key and hand the token back exactly once — the second action in the
  * product that answers with a value instead of a redirect, and for the identical
  * reason settings' `issueKey` does: a token in a query string is a token in the
@@ -62,7 +39,22 @@ async function onboardingSession(where: string) {
  * get wrong — every honest press sends no name at all.
  */
 export async function issueQuickstartKey(formData: FormData): Promise<{ token: string }> {
-  const session = await onboardingSession("issue key");
+  // The gate the settings actions open with (D150/D152), inline like every other
+  // one-action surface's (signup, login, invite accept): the MODE CHECK COMES
+  // FIRST and short-circuits before `getSessionContext` builds the auth instance
+  // and opens a pool, because the mock deployment has no accounts, no
+  // `BETTER_AUTH_SECRET` and no Postgres. Mock mode renders no issue affordance,
+  // so a post that gets here came from somewhere no visitor can be — the log
+  // line is the tripwire, and it is `console.error` because it cannot happen
+  // through honest use (D193).
+  if (dataMode === "mock") {
+    console.error("[onboarding] issue key posted in mock mode — this deployment keeps no accounts");
+    redirect(ONBOARDING_PATH);
+  }
+  // A caller with no session goes to /login: there is nothing on this page for
+  // them to read a message on.
+  const session = await getSessionContext();
+  if (!session) redirect("/login");
 
   const name = parseKeyName(formData.get("name") ?? DEFAULT_KEY_NAME);
   if (!name) redirect(ONBOARDING_PATH);
@@ -76,8 +68,8 @@ export async function issueQuickstartKey(formData: FormData): Promise<{ token: s
     console.error("[onboarding] issue key", error);
     redirect(ONBOARDING_PATH);
   }
-  // Refreshes the server-rendered key list in the same roundtrip, so the new
-  // key's prefix appears beside the snippet holding its token.
-  revalidatePath(ONBOARDING_PATH);
+  // No `revalidatePath`: unlike settings, this page server-renders nothing that
+  // issuing a key changes — the token lives in the client's state and the
+  // waiting panel's status answers a different question (D201/D209).
   return { token: issued };
 }

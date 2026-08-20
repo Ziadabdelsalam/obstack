@@ -59,7 +59,6 @@ OTEL_EXPORTER_OTLP_HEADERS="x-obstack-key=ok_live_9f2e…"`,
 export type QuickstartProps = {
   initialStatus?: OnboardingStatus;
   endpoint?: string;
-  keys?: { id: string; name: string; prefix: string }[];
   issueKey?: (formData: FormData) => Promise<{ token: string }>;
 };
 
