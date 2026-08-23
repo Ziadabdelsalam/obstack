@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/ptrace"
@@ -70,7 +71,7 @@ func TestBatcherFlushesAtMaxRows(t *testing.T) {
 	b := newBatcher("spans", 3, time.Hour, func(r mapping.SpanRow) string { return r.WorkspaceID }, rec.insert)
 
 	b.enqueue(spanRows(7))
-	b.close()
+	b.close(context.Background())
 
 	got := rec.sizes()
 	want := []int{3, 3, 1} // two full batches, then the shutdown flush
@@ -87,7 +88,7 @@ func TestBatcherFlushesAtMaxRows(t *testing.T) {
 func TestBatcherFlushesOnInterval(t *testing.T) {
 	rec := &recorder{}
 	b := newBatcher("spans", 1000, 50*time.Millisecond, func(r mapping.SpanRow) string { return r.WorkspaceID }, rec.insert)
-	t.Cleanup(b.close)
+	t.Cleanup(func() { b.close(context.Background()) })
 
 	b.enqueue(spanRows(2))
 
@@ -112,7 +113,7 @@ func TestFailedInsertRetriesThenDropsAndCounts(t *testing.T) {
 	b := newBatcher("spans", 1000, time.Hour, func(r mapping.SpanRow) string { return r.WorkspaceID }, rec.insert)
 
 	b.enqueue(spanRows(2))
-	b.close()
+	b.close(context.Background())
 
 	if attempts := len(rec.sizes()); attempts != maxAttempts {
 		t.Errorf("insert attempts = %d, want %d", attempts, maxAttempts)
@@ -141,7 +142,7 @@ func TestConsumeTracesPricesWithTheWorkspaceTable(t *testing.T) {
 
 	w.ConsumeTraces(context.Background(), "ws_deal", llmTrace("acme-llm-9-turbo"))
 	w.ConsumeTraces(context.Background(), "ws_base", llmTrace("acme-llm-9-turbo"))
-	w.spans.close()
+	w.spans.close(context.Background())
 
 	if len(asked) != 2 || asked[0] != "ws_deal" || asked[1] != "ws_base" {
 		t.Fatalf("price lookups = %v, want one per export, per workspace", asked)
@@ -213,5 +214,128 @@ func TestFullQueueShedsAndCounts(t *testing.T) {
 		t.Errorf("write drop delta = %v, want 0 — a shed is not a failed INSERT", delta)
 	}
 	close(blocked)
-	b.close()
+	b.close(context.Background())
 }
+
+// D263: Writer.Close(ctx) hands the same ctx to both batchers' close, spent
+// sequentially — spans first, then logs with whatever ctx has left. Before
+// the fix each batcher retried under its own independent 30s-per-attempt
+// clock (worst case ~181.5s combined, uncoordinated); a shared deadline means
+// the pair as a whole can never run past it.
+func TestWriterCloseSharesOneDeadlineAcrossBothBatchers(t *testing.T) {
+	blockUntilDone := func(ctx context.Context) error {
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	w := &Writer{conn: fakeConn{}}
+	w.spans = newBatcher("spans", 1000, time.Hour,
+		func(r mapping.SpanRow) string { return r.WorkspaceID },
+		func(ctx context.Context, _ []mapping.SpanRow) error { return blockUntilDone(ctx) })
+	w.logs = newBatcher("logs", 1000, time.Hour,
+		func(r mapping.LogRow) string { return r.WorkspaceID },
+		func(ctx context.Context, _ []mapping.LogRow) error { return blockUntilDone(ctx) })
+
+	w.spans.enqueue(spanRows(1))
+	w.logs.enqueue([]mapping.LogRow{{WorkspaceID: "ws_test"}})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	if err := w.Close(ctx); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	elapsed := time.Since(start)
+
+	// One shared 150ms deadline covers both batchers' final flush; two
+	// independent clocks would each block until their own writeTimeout and
+	// take far longer than this.
+	if elapsed > 400*time.Millisecond {
+		t.Fatalf("Close(ctx) took %v, want close to the shared 150ms deadline, not two independent ones", elapsed)
+	}
+}
+
+// D278: Writer.Close publishes the deadline to BOTH batchers before waiting on
+// either. Waiting spans out first and only then publishing to logs leaves logs
+// on the ordinary unbounded path for the whole spans drain — long enough to run
+// out a full retry ladder and to open one more writeTimeout-long attempt — so
+// the pair's worst case becomes two writeTimeouts (≈60s), past the 45s grace
+// the chart and compose are sized on, instead of the one batcher.close states.
+func TestWriterCloseDeadlineReachesBothBatchersBeforeEitherDrains(t *testing.T) {
+	const ws = "ws_bothclose"
+	shutdownCounter := metrics.Dropped.WithLabelValues(ws, metrics.ReasonShutdown)
+	writeCounter := metrics.Dropped.WithLabelValues(ws, metrics.ReasonWrite)
+	beforeShutdown := testutil.ToFloat64(shutdownCounter)
+	beforeWrite := testutil.ToFloat64(writeCounter)
+
+	// spans is the batcher Close waits on first: its insert is in flight when
+	// Close lands and stays there until the logs ladder has had its say.
+	spansInFlight := make(chan struct{})
+	release := make(chan struct{})
+	spansInsert := func(context.Context, []mapping.SpanRow) error {
+		close(spansInFlight)
+		<-release
+		return nil
+	}
+
+	// logs keeps failing, so it is mid-ladder — sleeping out its first 250ms
+	// backoff under the unbounded ctx — for the whole of the spans drain.
+	logsCalls := make(chan int, maxAttempts)
+	var logsAttempts int
+	logsInsert := func(context.Context, []mapping.LogRow) error {
+		logsAttempts++
+		logsCalls <- logsAttempts
+		return errors.New("clickhouse is down")
+	}
+
+	w := &Writer{conn: fakeConn{}}
+	w.spans = newBatcher("spans", 1, time.Hour,
+		func(r mapping.SpanRow) string { return r.WorkspaceID }, spansInsert)
+	w.logs = newBatcher("logs", 1, time.Hour,
+		func(r mapping.LogRow) string { return r.WorkspaceID }, logsInsert)
+
+	spanRow := spanRows(1)
+	spanRow[0].WorkspaceID = ws
+	w.spans.enqueue(spanRow)
+	<-spansInFlight
+	w.logs.enqueue([]mapping.LogRow{{WorkspaceID: ws}})
+	if got := <-logsCalls; got != 1 {
+		t.Fatalf("logs attempt = %d, want the ladder started before Close", got)
+	}
+
+	// Let the spans drain finish only once the logs ladder has taken its next
+	// attempt, so the assertion is on WHICH ctx that attempt saw, not on timing.
+	go func() {
+		<-logsCalls
+		close(release)
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Nanosecond)
+	defer cancel()
+	if err := w.Close(ctx); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	// Attempt 2 is the one that sees the deadline and abandons attempt 3. With
+	// the deadline published only after the spans drain, that attempt runs on
+	// the unbounded ctx instead, sleeps out its 500ms backoff and takes a third.
+	if logsAttempts != 2 {
+		t.Errorf("logs insert attempts = %d, want 2 — the logs batcher must see the deadline while spans is still draining", logsAttempts)
+	}
+	if delta := testutil.ToFloat64(shutdownCounter) - beforeShutdown; delta != 1 {
+		t.Errorf("shutdown drop delta = %v, want 1 — the logs drop belongs to the deadline, not to ClickHouse", delta)
+	}
+	if delta := testutil.ToFloat64(writeCounter) - beforeWrite; delta != 0 {
+		t.Errorf("write drop delta = %v, want 0 — a deadline overrun is never an ordinary write failure", delta)
+	}
+}
+
+// fakeConn satisfies driver.Conn for Writer.Close's conn.Close() call without
+// implementing the rest of the (large, ClickHouse-specific) interface: the
+// embedded nil driver.Conn panics only if a method besides Close is invoked,
+// and this test never exercises the connection itself.
+type fakeConn struct {
+	driver.Conn
+}
+
+func (fakeConn) Close() error { return nil }

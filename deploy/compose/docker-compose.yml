@@ -35,11 +35,10 @@ services:
   # ClickHouse — these are two stores with two migration sets, and ingest is
   # the one binary that owns both sets' DDL.
   #
-  # Note what is deliberately NOT here: BETTER_AUTH_SECRET / BETTER_AUTH_URL
-  # (D112). Compose does not run the web app, and auth secrets belong to the
-  # process that actually signs cookies — `npm run dev`'s environment, see
-  # README.md. A variable set here would only advertise an effect it does not
-  # have.
+  # BETTER_AUTH_SECRET / BETTER_AUTH_URL are not set on THIS service — D112(b)
+  # still holds, auth secrets belong to the process that signs cookies, and
+  # that has never been Postgres. It IS `web` now (D251(c) — M4 adds it to
+  # this file), so the secret moved there; see that service's block below.
   postgres:
     image: postgres:17.11
     container_name: obstack-postgres
@@ -104,6 +103,79 @@ services:
     healthcheck:
       # The image is distroless, so the binary probes its own /healthz.
       test: ["CMD", "/ingest", "healthcheck"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
+    # D278 (supersedes D263.3/.4's 30s): `Writer.Close(ctx)`'s own deadline is
+    # 10s (main.go's `shutdownTimeout`), and past it the retry ladder abandons
+    # remaining retries rather than sleeping past the deadline — the stated
+    # worst case is <= deadline + one in-flight attempt <= 10s+30s = 40s. This
+    # is the orchestrator's outer bound, with margin for the receiver and admin
+    # server to also unwind — same 45s the chart's `terminationGracePeriodSeconds`
+    # uses (F1), and the sdk-samples precedent for a non-default grace in this
+    # file (`:274`).
+    stop_grace_period: 45s
+    restart: unless-stopped
+
+  # The product surface (D251(c)): default profile, alongside clickhouse,
+  # postgres and ingest — `docker compose up` now boots the whole self-hosted
+  # stack. Built from T1's Dockerfile at the repo-root context (D251(a)),
+  # live-stamped in place via `build:` args (D267) — this compose file only
+  # ever builds and runs `live`; the `:mock` demo variant is the `images`
+  # job's concern (T6), not this one.
+  web:
+    build:
+      context: ../..
+      dockerfile: apps/web/Dockerfile
+      args:
+        OBSTACK_DATA_MODE: live
+    container_name: obstack-web
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      # Both migration sets are ingest's DDL (see the comment on `postgres`
+      # above) — the better-auth tables a login or signup reads exist only
+      # once ingest itself reports healthy.
+      ingest:
+        condition: service_healthy
+    environment:
+      # The stamp baked in by the build above; also the runtime half of the
+      # boot check's mismatch/absence comparison (D251(b)/D267) — this line IS
+      # the "compose and the chart always set it" half of that ruling.
+      OBSTACK_DATA_MODE: live
+      CLICKHOUSE_URL: http://clickhouse:8123
+      CLICKHOUSE_USER: obstack_web
+      CLICKHOUSE_PASSWORD: ${OBSTACK_CLICKHOUSE_WEB_PASSWORD:-obstack_web_dev}
+      OBSTACK_POSTGRES_DSN: postgres://obstack:${OBSTACK_POSTGRES_PASSWORD:-obstack_postgres_dev}@postgres:5432/obstack
+      # D265(a2): an empty default, never `:?` — that syntax fails compose
+      # parse file-wide and would break every harness that never touches web
+      # (smoke.sh, sdk-evidence.sh, the ddl-drift check). The refusal instead
+      # lives in the boot check (mode-stamp.ts), proven against THIS
+      # container's exit. D272: one in-container name, `BETTER_AUTH_SECRET` —
+      # both consumers read it (better-auth's own config, `auth.ts:23`, and
+      # the boot check, `mode-stamp.ts`) — the `OBSTACK_` prefix exists only
+      # at this host layer, mapped from the one operator-set value,
+      # `OBSTACK_BETTER_AUTH_SECRET` (.env.example).
+      BETTER_AUTH_SECRET: ${OBSTACK_BETTER_AUTH_SECRET:-}
+      # The origin a browser reaches this on — also the origin invite and
+      # verification links are written against. Default is the loopback
+      # origin this bundle actually serves over. Setting this to a real
+      # https:// origin is what upgrades the session cookie to the
+      # `__Secure-` name better-auth issues over TLS; left at its http://
+      # default, the cookie stays downgraded (D119) — correct for a laptop
+      # install, and the thing to change the moment this sits behind TLS.
+      BETTER_AUTH_URL: ${OBSTACK_BETTER_AUTH_URL:-http://localhost:3000}
+    ports:
+      - "127.0.0.1:3000:3000"
+    healthcheck:
+      # No curl in `node:24-slim` (T1's runtime stage) — node's own fetch is
+      # the probe, the sdk-sample-ts precedent (`:222`). /login is picked
+      # because it renders in every mode and never depends on a session
+      # already existing.
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/login').then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
       interval: 5s
       timeout: 3s
       retries: 12

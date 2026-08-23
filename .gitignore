@@ -18,6 +18,11 @@ coverage
 # next.js
 .next/
 out/
+# the D267 boot-check stamp (apps/web/src/server/mode-stamp.ts) — baked into
+# the image at build time, never meant to land in a checkout; ignored anyway
+# as insurance against a local stray copy (e.g. from testing the boot check
+# by hand).
+.obstack-mode-stamp
 
 # production
 build
@@ -34,6 +39,9 @@ yarn-error.log*
 
 # env files (can opt-in for committing if needed)
 .env*
+# ...except the documented template beside the compose file (D279) — the
+# thing a self-hoster is told to copy from, not a secret.
+!deploy/compose/.env.example
 
 # vercel
 .vercel

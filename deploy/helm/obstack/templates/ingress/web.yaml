@@ -1,0 +1,40 @@
+# D253 item 4 — optional Ingress in front of the web Service. Disabled by
+# default: a `kubectl port-forward`, or a plain ClusterIP behind some other
+# LB, is a complete, valid deployment. This chart ships no ingress
+# controller and no cert-manager (both refused as speculative components) —
+# the className, host and TLS Secret below assume a controller and, when
+# tls.enabled, an existing certificate Secret.
+{{- if .Values.web.ingress.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ .Release.Name }}-web
+  labels:
+    {{- include "obstack.labels" . | nindent 4 }}
+    app.kubernetes.io/component: web
+  {{- with .Values.web.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with .Values.web.ingress.className }}
+  ingressClassName: {{ . }}
+  {{- end }}
+  {{- if .Values.web.ingress.tls.enabled }}
+  tls:
+    - hosts:
+        - {{ .Values.web.ingress.host | quote }}
+      secretName: {{ .Values.web.ingress.tls.secretName }}
+  {{- end }}
+  rules:
+    - host: {{ .Values.web.ingress.host | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ .Release.Name }}-web
+                port:
+                  name: http
+{{- end }}

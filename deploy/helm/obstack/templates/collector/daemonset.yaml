@@ -44,6 +44,9 @@ spec:
         - name: collector
           image: {{ .Values.collector.image }}
           args: ["--config", "/etc/otelcol/config.yaml"]
+          # D283: requests + limits — values.yaml states the reason.
+          resources:
+            {{- toYaml .Values.collector.resources | nindent 12 }}
           env:
             - name: OBSTACK_INGEST_ENDPOINT
               value: http://{{ .Release.Name }}-ingest:4318

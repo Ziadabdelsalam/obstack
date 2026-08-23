@@ -1,0 +1,142 @@
+# CI-grade ClickHouse (D35) — a StatefulSet with a PersistentVolumeClaim
+# (D253 item 2: this replaces the Deployment+hostPath shape every release
+# through 0.2.0 used — README.md's "Upgrading from 0.2.0"). A normal,
+# release-managed resource (advisor ruling (c) on the T4 chart-structure
+# escalation — see README.md's "Why ClickHouse is a normal resource" for the
+# full story and the pre-install-hook design this replaced): `helm upgrade
+# --set clickhouse.…` applies here like any other value, and `helm uninstall`
+# removes it like any other resource.
+#
+# Because values are live now, an upgrade can legitimately REPLACE this pod
+# (image bump, password change, users.xml edit) — and the schema the migrate
+# Job applied has to survive that replacement, or the same upgrade's
+# pre-upgrade hook has already run against data that no longer exists by the
+# time ingest rolls. The PVC below (via volumeClaimTemplates) outlives pod
+# replacement exactly the way the old hostPath did, but survives the NODE
+# too — the gap the old README named by name ("M4 replaces both Deployments +
+# hostPaths with StatefulSets and PVCs rather than inheriting them silently")
+# is what this file closes.
+{{- include "obstack.refuseLegacyDeployment" (dict "root" $ "component" "clickhouse") }}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ .Release.Name }}-clickhouse
+  labels:
+    {{- include "obstack.labels" . | nindent 4 }}
+    app.kubernetes.io/component: clickhouse
+spec:
+  replicas: 1
+  # The headless Service a StatefulSet's own network identity requires
+  # (templates/clickhouse/headless-service.yaml) — a separate object from the
+  # normal ClusterIP Service beside this file, which every DSN in this chart
+  # still addresses by the SAME name (`{{ .Release.Name }}-clickhouse`),
+  # unchanged by this file.
+  serviceName: {{ .Release.Name }}-clickhouse-headless
+  # No `strategy` field — StatefulSets don't have one. The default
+  # `updateStrategy` (RollingUpdate) terminates a StatefulSet's pod before
+  # creating its replacement, and a StatefulSet's ordinals are exclusive by
+  # construction (unlike a Deployment's, which can surge), so this is exactly
+  # what the old `strategy: Recreate` said: two ClickHouse servers must never
+  # open the same data directory.
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: obstack
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: clickhouse
+  template:
+    metadata:
+      annotations:
+        # Same mechanism as templates/collector/daemonset.yaml, same reason:
+        # a ConfigMap volume is looked up by name, so editing
+        # files/obstack-users.xml alone does not change this pod template and
+        # therefore triggers no rollout on its own. Hashing the packaged
+        # file's content in makes `helm upgrade` roll ClickHouse exactly when
+        # the users config actually changed.
+        checksum/config: {{ .Files.Get "files/obstack-users.xml" | sha256sum }}
+        {{- if not .Values.clickhouse.existingSecret }}
+        # The passwords now ride a secretKeyRef (below), not a literal env
+        # `value:` — a reference is itself a pod-template field, but its
+        # NAME/KEY don't change when only the Secret's DATA does, so a bare
+        # `helm upgrade --set clickhouse.ingestPassword=…` would otherwise
+        # change the Secret without rolling this pod. Hashing the two
+        # password VALUES here (not the rendered Secret object, which would
+        # need a `lookup` and only sees what's already live) restores the
+        # same "a password change rolls this pod" guarantee the old literal
+        # env gave for free. See README.md, "Credentials and rotation".
+        # This covers only this chart's OWN Secret — an existingSecret's
+        # content is invisible to Helm at render time, so a brought Secret's
+        # rotation is the manual `kubectl rollout restart` in "Credentials
+        # and rotation", not an automatic one.
+        checksum/secret: {{ printf "%s%s" .Values.clickhouse.ingestPassword .Values.clickhouse.webPassword | sha256sum }}
+        {{- end }}
+      labels:
+        app.kubernetes.io/name: obstack
+        app.kubernetes.io/instance: {{ .Release.Name }}
+        app.kubernetes.io/component: clickhouse
+    spec:
+      containers:
+        - name: clickhouse
+          image: {{ .Values.clickhouse.image }}
+          # D283: requests only, no limits — values.yaml states the reason.
+          resources:
+            {{- toYaml .Values.clickhouse.resources | nindent 12 }}
+          env:
+            - name: OBSTACK_CLICKHOUSE_INGEST_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "obstack.clickhouse.secretName" . }}
+                  key: clickhouse-ingest-password
+            - name: OBSTACK_CLICKHOUSE_WEB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "obstack.clickhouse.secretName" . }}
+                  key: clickhouse-web-password
+          ports:
+            - name: http
+              containerPort: 8123
+            - name: native
+              containerPort: 9000
+          volumeMounts:
+            # Mounted file-by-file, matching docker-compose.yml's own mount:
+            # the image's entrypoint writes its own default-user.xml into
+            # users.d, so the directory itself must stay writable.
+            - name: users-xml
+              mountPath: /etc/clickhouse-server/users.d/obstack-users.xml
+              subPath: obstack-users.xml
+              readOnly: true
+            - name: data
+              mountPath: /var/lib/clickhouse
+          readinessProbe:
+            httpGet:
+              path: /ping
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 3
+          livenessProbe:
+            httpGet:
+              path: /ping
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 10
+      volumes:
+        - name: users-xml
+          configMap:
+            name: {{ .Release.Name }}-clickhouse-users
+  # The kubelet creates a fresh PVC's mount root:root; the image's own
+  # entrypoint runs as root, chowns, and drops privileges — no
+  # securityContext needed (unlike the collector, whose upstream image stays
+  # non-root), same as the hostPath this replaces.
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          {{- include "obstack.labels" . | nindent 10 }}
+          app.kubernetes.io/component: clickhouse
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        {{- if .Values.clickhouse.storage.storageClassName }}
+        storageClassName: {{ .Values.clickhouse.storage.storageClassName }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.clickhouse.storage.size }}

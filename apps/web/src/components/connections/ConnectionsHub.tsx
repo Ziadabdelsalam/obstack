@@ -5,7 +5,8 @@ import Link from "next/link";
 import { Search } from "lucide-react";
 import type { ConnectedSource } from "@/mock/types";
 import { categories, connectors, type Connector } from "./connectors";
-import { ConnectModal } from "./ConnectModal";
+import { ConnectModal, type ModalEndpoints } from "./ConnectModal";
+import { OTLP_GRPC_ENDPOINT, OTLP_HTTP_ENDPOINT } from "@/lib/ingest-endpoint";
 
 const sourceStatus: Record<
   ConnectedSource["status"],
@@ -98,9 +99,23 @@ const liveStatusStyle: Record<
   revoked: { color: "var(--color-err)", label: "revoked" },
 };
 
-export function ConnectionsHub({ data }: { data: ConnectedPanel }) {
+export function ConnectionsHub({
+  data,
+  endpoints,
+}: {
+  data: ConnectedPanel;
+  // D281: the server-resolved OTLP pair, passed by the live page. The demo
+  // deployment has no configurable ingest to override, so its absent prop
+  // falls back to the same client-safe loopback constants this surface always
+  // rendered — byte-identical mock/demo copy (D208/D266).
+  endpoints?: ModalEndpoints;
+}) {
   const [q, setQ] = useState("");
   const [open, setOpen] = useState<Connector | null>(null);
+  const resolvedEndpoints: ModalEndpoints = endpoints ?? {
+    http: OTLP_HTTP_ENDPOINT,
+    grpc: OTLP_GRPC_ENDPOINT,
+  };
 
   const filtered = useMemo(
     () =>
@@ -328,7 +343,9 @@ export function ConnectionsHub({ data }: { data: ConnectedPanel }) {
         </p>
       )}
 
-      {open && <ConnectModal connector={open} onClose={() => setOpen(null)} />}
+      {open && (
+        <ConnectModal connector={open} endpoints={resolvedEndpoints} onClose={() => setOpen(null)} />
+      )}
     </div>
   );
 }

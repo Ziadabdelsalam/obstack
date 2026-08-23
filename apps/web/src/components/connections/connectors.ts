@@ -8,11 +8,15 @@
 // by review. Nothing here promises a hosted endpoint, a chart repository or a
 // published collector image: the environment is local compose (U1).
 //
-// The ingest addresses are interpolated from `@/lib/ingest-endpoint` rather than
-// spelled out (D215): the quickstart's snippets and these steps name the same
-// ports, and that is one definition pinned against compose, not two literals.
-
-import { OTLP_GRPC_ENDPOINT, OTLP_HTTP_ENDPOINT } from "@/lib/ingest-endpoint";
+// The ingest addresses are PLACEHOLDERS substituted at render (D281 — the
+// same mechanism API_KEY_PLACEHOLDER already established): a snippet baked at
+// module scope would freeze the loopback defaults into a deployment whose
+// operator configured `OBSTACK_PUBLIC_OTLP_*` overrides (D266/D277), handing
+// them an address nothing on their deployment listens on. The modal receives
+// the server-resolved pair as props and substitutes; with no override the
+// substitution yields the same loopback strings every checkout has always
+// shown (D215's one definition survives — the defaults still live in
+// `@/lib/ingest-endpoint`, resolved through `@/server/ingest-endpoint`).
 
 export type ConnectorCategory =
   | "Cloud"
@@ -53,6 +57,15 @@ export interface Connector {
  */
 export const API_KEY_PLACEHOLDER = "<OBSTACK_API_KEY>";
 
+/**
+ * D281: endpoint slots, substituted by ConnectModal at render with the
+ * server-resolved pair — never rendered as literals. A step whose snippet
+ * carries a placeholder for a protocol the deployment does not publish is
+ * rendered as an honest absence instead of its snippet (D282).
+ */
+export const OTLP_HTTP_PLACEHOLDER = "<OBSTACK_OTLP_HTTP_ENDPOINT>";
+export const OTLP_GRPC_PLACEHOLDER = "<OBSTACK_OTLP_GRPC_ENDPOINT>";
+
 export const connectors: Connector[] = [
   /* ---------- available in v1 ---------- */
   {
@@ -67,12 +80,15 @@ export const connectors: Connector[] = [
       {
         title: "Point your exporter at ingest",
         body: "Works with any language's OTel SDK or an existing collector. The header is URL-encoded — a raw space drops it (D4 wire contract: Authorization: Bearer).",
-        snippet: `OTEL_EXPORTER_OTLP_ENDPOINT="${OTLP_HTTP_ENDPOINT}"\nOTEL_EXPORTER_OTLP_PROTOCOL="http/protobuf"\nOTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer%20${API_KEY_PLACEHOLDER}"`,
+        snippet: `OTEL_EXPORTER_OTLP_ENDPOINT="${OTLP_HTTP_PLACEHOLDER}"\nOTEL_EXPORTER_OTLP_PROTOCOL="http/protobuf"\nOTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer%20${API_KEY_PLACEHOLDER}"`,
       },
       {
-        title: "Or gRPC on 4317",
-        body: "ingest listens for OTLP traces and logs on both standard ports — 127.0.0.1:4317 (gRPC) and 127.0.0.1:4318 (HTTP). No SDK swap, no re-instrumentation.",
-        snippet: `OTEL_EXPORTER_OTLP_ENDPOINT="${OTLP_GRPC_ENDPOINT}"\nOTEL_EXPORTER_OTLP_PROTOCOL="grpc"\nOTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer%20${API_KEY_PLACEHOLDER}"`,
+        // D208 ground for the copy change: a port in the title is a product
+        // claim, wrong the moment an override names another address — the
+        // step stays protocol-named, the address lives in the snippet.
+        title: "Or gRPC",
+        body: "ingest listens for OTLP traces and logs over both protocols — gRPC and HTTP. No SDK swap, no re-instrumentation.",
+        snippet: `OTEL_EXPORTER_OTLP_ENDPOINT="${OTLP_GRPC_PLACEHOLDER}"\nOTEL_EXPORTER_OTLP_PROTOCOL="grpc"\nOTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer%20${API_KEY_PLACEHOLDER}"`,
       },
     ],
   },

@@ -5,6 +5,7 @@ package config
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -75,7 +76,34 @@ func LoadDSN() (string, error) {
 	if dsn == "" {
 		return "", fmt.Errorf("CLICKHOUSE_DSN is required")
 	}
-	return dsn, nil
+	return InjectDSNPassword(dsn, "OBSTACK_CLICKHOUSE_DSN_PASSWORD")
+}
+
+// InjectDSNPassword layers a password from envVar onto dsn's user-info
+// component when envVar is set, and returns dsn unchanged when it is not
+// (D275). It exists so the chart's `existingSecret` path can hand this
+// process a DSN with no password in it at all — a user and a host, nothing
+// else — and deliver the password separately, through `secretKeyRef` into
+// envVar, so no Secret value ever sits inside a rendered manifest's DSN
+// string. The chart's own (non-`existingSecret`) Secret still renders the
+// password straight into the DSN literal, same as before this existed;
+// envVar is unset on that path, and this is a no-op there. Both callers here
+// use it against the exact same env-var shape their DSN loader already has —
+// one definition, so the two stores cannot drift in how the split works.
+func InjectDSNPassword(dsn, envVar string) (string, error) {
+	pw := os.Getenv(envVar)
+	if pw == "" {
+		return dsn, nil
+	}
+	u, err := url.Parse(dsn)
+	if err != nil {
+		return "", fmt.Errorf("parse dsn for %s: %w", envVar, err)
+	}
+	if u.User == nil {
+		return "", fmt.Errorf("%s is set but the dsn has no username to attach it to", envVar)
+	}
+	u.User = url.UserPassword(u.User.Username(), pw)
+	return u.String(), nil
 }
 
 func envOr(name, fallback string) string {

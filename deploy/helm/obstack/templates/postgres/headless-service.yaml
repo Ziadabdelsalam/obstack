@@ -1,0 +1,23 @@
+{{- if not .Values.postgres.managed.enabled }}
+# See templates/clickhouse/headless-service.yaml's identical comment: the
+# StatefulSet's own `serviceName` needs a headless Service by convention;
+# every DSN in this chart still addresses Postgres through service.yaml's
+# normal ClusterIP Service (`{{ .Release.Name }}-postgres`), unchanged.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-postgres-headless
+  labels:
+    {{- include "obstack.labels" . | nindent 4 }}
+    app.kubernetes.io/component: postgres
+spec:
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: obstack
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: postgres
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres
+{{- end }}

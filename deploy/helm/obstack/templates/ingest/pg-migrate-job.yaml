@@ -63,12 +63,17 @@ spec:
         app.kubernetes.io/component: pg-migrate
     spec:
       restartPolicy: Never
+      {{- if not .Values.postgres.managed.enabled }}
       initContainers:
         # The same role obstack.waitForClickhouse plays for the other Job, and
         # the same one-define-two-includes rule (K1): this Job and the ingest
         # Deployment, which verifies this set at boot, wait behind byte-identical
         # containers — obstack.waitForPostgres, templates/postgres/_helpers.tpl.
+        # D284: skipped under managed mode — the wait targets this chart's own
+        # Service by name, which no longer renders; the Job's own failure is
+        # the managed target's reachability gate.
         {{- include "obstack.waitForPostgres" . | nindent 8 }}
+      {{- end }}
       containers:
         - name: pg-migrate
           image: {{ .Values.ingest.image }}
@@ -82,13 +87,44 @@ spec:
             # row (pgmigrations/0004), so the collector authenticates the
             # moment this phase completes.
             #
-            # Straight from .Values.postgres.password with no live `lookup`,
-            # unlike obstack.migrate.clickhousePassword: that helper exists
-            # because a ClickHouse password change takes effect the moment
-            # the ClickHouse pod restarts, which is AFTER this phase. Postgres
-            # has no such divergence to bridge — POSTGRES_PASSWORD is an
-            # initdb-time value, so an existing cluster's password is
-            # whatever it was created with, and a rotated value would be
-            # wrong here whichever way it was read. See README.md.
+            # D275: branches on postgres.existingSecret, the same rule the
+            # StatefulSet's own POSTGRES_PASSWORD already follows
+            # (templates/postgres/statefulset.yaml) — no live `lookup` either
+            # way, unlike the deleted ClickHouse rotation helper
+            # (_helpers.tpl), because POSTGRES_PASSWORD is an initdb-time
+            # value: an existing cluster's password is whatever it was
+            # created with regardless of which Secret this Job reads today
+            # (see README.md, "Postgres in this chart"). existingSecret set —
+            # a brought Secret is read through secretKeyRef, so its value
+            # never touches this render; ingest folds the two envs into one
+            # DSN itself (config.InjectDSNPassword, via postgresDSN). Unset —
+            # this chart's own Secret, and the password renders straight into
+            # the DSN literal, same as always.
+            {{- if .Values.postgres.managed.enabled }}
+            # D284: managed mode retargets this SAME one-runner Job at the
+            # operator's Postgres — a managed mode with no schema path would
+            # be a broken product path, not a documentable narrowing. The
+            # password rides D275's injection env (never a DSN literal), from
+            # the chart Secret or the brought one. This Job failing IS the
+            # reachability gate: `helm install --wait` fails loudly here when
+            # the managed target is unreachable — by design, no second
+            # preflight mechanism (README.md, "Managed Postgres").
+            - name: OBSTACK_POSTGRES_DSN
+              value: {{ .Values.postgres.managed.dsn | quote }}
+            - name: OBSTACK_POSTGRES_DSN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "obstack.postgres.secretName" . }}
+                  key: postgres-password
+            {{- else if .Values.postgres.existingSecret }}
+            - name: OBSTACK_POSTGRES_DSN
+              value: postgres://obstack@{{ .Release.Name }}-postgres:5432/obstack
+            - name: OBSTACK_POSTGRES_DSN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "obstack.postgres.secretName" . }}
+                  key: postgres-password
+            {{- else }}
             - name: OBSTACK_POSTGRES_DSN
               value: postgres://obstack:{{ .Values.postgres.password }}@{{ .Release.Name }}-postgres:5432/obstack
+            {{- end }}

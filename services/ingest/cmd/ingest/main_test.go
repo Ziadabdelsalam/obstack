@@ -195,6 +195,40 @@ func TestRunRefusesToServeWithoutPostgres(t *testing.T) {
 	}
 }
 
+// D275: the chart's `existingSecret` path renders OBSTACK_POSTGRES_DSN with no
+// password in it and delivers one separately via secretKeyRef into
+// OBSTACK_POSTGRES_DSN_PASSWORD — postgresDSN has to fold the two together,
+// the same split config.LoadDSN does for CLICKHOUSE_DSN.
+func TestPostgresDSNInjectsPassword(t *testing.T) {
+	t.Setenv("OBSTACK_POSTGRES_DSN", "postgres://obstack@127.0.0.1:5432/obstack")
+	t.Setenv("OBSTACK_POSTGRES_DSN_PASSWORD", "s3cret")
+
+	dsn, err := postgresDSN()
+	if err != nil {
+		t.Fatalf("postgresDSN: %v", err)
+	}
+	if want := "postgres://obstack:s3cret@127.0.0.1:5432/obstack"; dsn != want {
+		t.Errorf("postgresDSN = %q, want %q", dsn, want)
+	}
+}
+
+// Additive per D275: a chart that never sets the password env (today's
+// default, chart-owned-Secret posture) must see its DSN pass through
+// untouched.
+func TestPostgresDSNNoopWhenPasswordEnvUnset(t *testing.T) {
+	const dsn = "postgres://obstack:dev@127.0.0.1:5432/obstack"
+	t.Setenv("OBSTACK_POSTGRES_DSN", dsn)
+	t.Setenv("OBSTACK_POSTGRES_DSN_PASSWORD", "")
+
+	got, err := postgresDSN()
+	if err != nil {
+		t.Fatalf("postgresDSN: %v", err)
+	}
+	if got != dsn {
+		t.Errorf("postgresDSN = %q, want unchanged %q", got, dsn)
+	}
+}
+
 // The process's one Postgres pool (D164e). A DSN nobody can parse is a
 // configuration mistake and has to be reported by the name an operator goes and
 // fixes, not as a dial error three frames deep. Hermetic: the DSN below never

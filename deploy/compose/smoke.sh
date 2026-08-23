@@ -21,7 +21,12 @@ step() { printf '\n== %s\n' "$1"; }
 fail() { printf 'smoke: %s\n' "$1" >&2; exit 1; }
 
 step "booting clickhouse + ingest + demo"
-"${compose[@]}" up -d --build
+# Named service, not the default profile: `demo` alone, with clickhouse,
+# postgres and ingest pulled in by its own depends_on chain (D271). web is not
+# this harness's claim (D265(a1)) — naming it here would both build its image
+# and start it for a process this harness never reaches; the `images` job and
+# the self-hosted user boot it instead.
+"${compose[@]}" up -d --build demo
 
 step "waiting for healthy containers"
 deadline=$((SECONDS + HEALTH_TIMEOUT_S))

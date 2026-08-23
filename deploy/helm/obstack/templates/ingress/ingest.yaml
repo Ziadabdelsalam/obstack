@@ -1,0 +1,44 @@
+# D253 item 4 / D214 — the network-reachable self-hosted ingest surface: an
+# optional Ingress in front of the ingest Service's OTLP/HTTP port. This IS
+# the endpoint an external cluster or SDK points at (the D101 receivers
+# activate against the hosted deployment's equivalent at S5). HTTP/protobuf
+# only (port 4318): gRPC needs dedicated HTTP/2 wiring most controllers do
+# not give a plain rule, so this chart does not claim it — values.yaml and
+# D277's display rule carry the honest omission through to the product's
+# quickstart. Enabling this also sets OBSTACK_PUBLIC_OTLP_HTTP_ENDPOINT on
+# the web workload (templates/web/deployment.yaml) so the product renders
+# this address.
+{{- if .Values.ingest.ingress.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ .Release.Name }}-ingest
+  labels:
+    {{- include "obstack.labels" . | nindent 4 }}
+    app.kubernetes.io/component: ingest
+  {{- with .Values.ingest.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with .Values.ingest.ingress.className }}
+  ingressClassName: {{ . }}
+  {{- end }}
+  {{- if .Values.ingest.ingress.tls.enabled }}
+  tls:
+    - hosts:
+        - {{ .Values.ingest.ingress.host | quote }}
+      secretName: {{ .Values.ingest.ingress.tls.secretName }}
+  {{- end }}
+  rules:
+    - host: {{ .Values.ingest.ingress.host | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ .Release.Name }}-ingest
+                port:
+                  name: otlp-http
+{{- end }}

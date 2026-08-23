@@ -87,3 +87,72 @@ func TestLoadRejectsIncompleteEnv(t *testing.T) {
 		t.Fatal("Load succeeded with no CLICKHOUSE_DSN, want error")
 	}
 }
+
+// D275: the chart's `existingSecret` path hands this process a DSN with no
+// password in it and the password separately, via secretKeyRef into
+// OBSTACK_CLICKHOUSE_DSN_PASSWORD. LoadDSN has to fold the two back into one
+// connection string.
+func TestLoadDSNInjectsPassword(t *testing.T) {
+	t.Setenv("CLICKHOUSE_DSN", "clickhouse://obstack_ingest@clickhouse:9000/obstack")
+	t.Setenv("OBSTACK_CLICKHOUSE_DSN_PASSWORD", "s3cret")
+
+	dsn, err := LoadDSN()
+	if err != nil {
+		t.Fatalf("LoadDSN: %v", err)
+	}
+	if want := "clickhouse://obstack_ingest:s3cret@clickhouse:9000/obstack"; dsn != want {
+		t.Errorf("LoadDSN = %q, want %q", dsn, want)
+	}
+}
+
+// Additive per D275: a chart that never sets the password env (today's
+// default, chart-owned-Secret posture) must see the DSN it was given pass
+// through untouched, password embedded or not.
+func TestInjectDSNPasswordNoopWhenEnvUnset(t *testing.T) {
+	t.Setenv("OBSTACK_CLICKHOUSE_DSN_PASSWORD", "")
+	const dsn = "clickhouse://obstack_ingest:dev@clickhouse:9000/obstack"
+
+	got, err := InjectDSNPassword(dsn, "OBSTACK_CLICKHOUSE_DSN_PASSWORD")
+	if err != nil {
+		t.Fatalf("InjectDSNPassword: %v", err)
+	}
+	if got != dsn {
+		t.Errorf("InjectDSNPassword = %q, want unchanged %q", got, dsn)
+	}
+}
+
+func TestInjectDSNPasswordSetsPassword(t *testing.T) {
+	t.Setenv("OBSTACK_POSTGRES_DSN_PASSWORD", "rotated")
+
+	got, err := InjectDSNPassword("postgres://obstack@postgres:5432/obstack", "OBSTACK_POSTGRES_DSN_PASSWORD")
+	if err != nil {
+		t.Fatalf("InjectDSNPassword: %v", err)
+	}
+	if want := "postgres://obstack:rotated@postgres:5432/obstack"; got != want {
+		t.Errorf("InjectDSNPassword = %q, want %q", got, want)
+	}
+}
+
+// A DSN this malformed is a configuration mistake, reported by the variable
+// name an operator goes and fixes rather than a parse error three frames deep.
+func TestInjectDSNPasswordRejectsUnparseableDSN(t *testing.T) {
+	t.Setenv("OBSTACK_POSTGRES_DSN_PASSWORD", "pw")
+
+	// A port url.Parse actually rejects, not merely an odd-looking string:
+	// url.Parse accepts `not a dsn` as a relative path with no error, so a
+	// test using that would assert the no-username branch below all over
+	// again and never reach the parse error at all.
+	if _, err := InjectDSNPassword("postgres://obstack@postgres:not-a-port/obstack", "OBSTACK_POSTGRES_DSN_PASSWORD"); err == nil {
+		t.Error("InjectDSNPassword accepted an unparseable dsn, want error")
+	}
+}
+
+// A password with nothing to attach to (no username in the DSN) is also a
+// configuration mistake, not a value to silently drop.
+func TestInjectDSNPasswordRequiresAUsername(t *testing.T) {
+	t.Setenv("OBSTACK_POSTGRES_DSN_PASSWORD", "pw")
+
+	if _, err := InjectDSNPassword("postgres://postgres:5432/obstack", "OBSTACK_POSTGRES_DSN_PASSWORD"); err == nil {
+		t.Error("InjectDSNPassword accepted a dsn with no username, want error")
+	}
+}

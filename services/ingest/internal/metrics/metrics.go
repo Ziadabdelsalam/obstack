@@ -54,6 +54,13 @@ const (
 	ReasonOverload = "overload"
 	// ReasonWrite — the batch INSERT failed after its bounded retries (D5).
 	ReasonWrite = "write"
+	// ReasonShutdown — a batch was still unwritten when the shutdown deadline
+	// (D263) ran out: the retry loop stopped short of its bounded attempts
+	// rather than sleep past a deadline the caller had already stopped
+	// waiting on. Distinct from ReasonWrite: this is the batcher's own clock
+	// running out, not ClickHouse refusing the insert after every attempt got
+	// its full say.
+	ReasonShutdown = "shutdown"
 	// ReasonPanic — a handler panicked and its records were lost with it. The
 	// process survives: both transports recover, count here, and answer with a
 	// terminal error rather than dying on a poison payload (D26).

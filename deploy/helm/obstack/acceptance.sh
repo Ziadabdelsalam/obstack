@@ -30,6 +30,12 @@ RELEASE="${RELEASE:-obstack}"
 # running compose stack on the same machine is never what this asserts against.
 CLICKHOUSE_PORT="${CLICKHOUSE_PORT:-18123}"
 DEMO_PORT="${DEMO_PORT:-18000}"
+WEB_PORT="${WEB_PORT:-13000}"
+# The one chart value with no default by design (D251(c)/D272: a committed
+# cookie-signing secret in a distributable bundle is a shipped vulnerability),
+# so this harness supplies a per-run one — exactly what a real operator does.
+# Everything else stays chart defaults.
+WEB_AUTH_SECRET="${WEB_AUTH_SECRET:-$(openssl rand -base64 32)}"
 COLLECTOR_PORT="${COLLECTOR_PORT:-14318}"
 # The chart README's budget: a cold install is the ClickHouse image pull plus
 # seconds (the migrate Job's own activeDeadlineSeconds already contains the
@@ -93,6 +99,22 @@ harness() {
 step "building this repo's images"
 docker build -t obstack-ingest:kind "$repo_root/services/ingest"
 docker build -t obstack-demo-agent:kind "$repo_root/demo/agent-app"
+# Root context (D251(a) — the workspace-aware Dockerfile), live-stamped
+# (D267): the chart's web workload only ever runs the live variant. Skipped
+# when the image already exists (advisor ruling on the first-runner numbers:
+# this ~2min cold build inside the `stack` job pushed it from ~5m to 7m13s —
+# structural, so CI pre-builds it with a layer cache and this script reuses
+# it). The skip PRINTS what it reuses — created timestamp + mode label — so a
+# stale local image is visible rather than silent; one script for human and
+# CI, staleness stated (S2.1 L3). Delete the image to force a fresh build.
+if docker image inspect obstack-web:kind >/dev/null 2>&1; then
+  printf 'reusing obstack-web:kind (created %s, io.obstack.data-mode=%s)\n' \
+    "$(docker image inspect obstack-web:kind --format '{{.Created}}')" \
+    "$(docker image inspect obstack-web:kind --format '{{index .Config.Labels "io.obstack.data-mode"}}')"
+else
+  docker build -t obstack-web:kind -f "$repo_root/apps/web/Dockerfile" \
+    --build-arg OBSTACK_DATA_MODE=live "$repo_root"
+fi
 
 # Side-load every image the chart renders into the kind node (pin source of
 # truth stays values.yaml — the list is read out of the rendered chart, never
@@ -130,15 +152,20 @@ if helm status "$RELEASE" >/dev/null 2>&1; then
   # probe silently keeps that value across a bare `helm upgrade`). This script
   # asserts the chart's DEFAULTS, so the upgrade path must start from them —
   # otherwise a re-run after a probe asserts a configuration nobody chose.
-  helm upgrade "$RELEASE" "$chart_dir" --reset-values --wait --timeout "$UPGRADE_TIMEOUT"
+  helm upgrade "$RELEASE" "$chart_dir" --reset-values --set "web.betterAuthSecret=$WEB_AUTH_SECRET" --wait --timeout "$UPGRADE_TIMEOUT"
 else
   step "installing release '$RELEASE'"
-  helm install "$RELEASE" "$chart_dir" --wait --timeout "$INSTALL_TIMEOUT"
+  helm install "$RELEASE" "$chart_dir" --set "web.betterAuthSecret=$WEB_AUTH_SECRET" --wait --timeout "$INSTALL_TIMEOUT"
 fi
 
-step "port-forwarding clickhouse + demo"
+step "port-forwarding clickhouse + demo + web"
 port_forward "svc/$RELEASE-clickhouse" "$CLICKHOUSE_PORT:8123" "http://127.0.0.1:$CLICKHOUSE_PORT/ping"
 port_forward "svc/$RELEASE-demo" "$DEMO_PORT:8000" "http://127.0.0.1:$DEMO_PORT/healthz"
+# T5: the web workload serves from the loaded live-stamped image — /login for
+# the same reason the compose healthcheck picks it (renders in every mode,
+# needs no session). A probe answering here means the boot check passed: the
+# stamp matched and the release's BETTER_AUTH_SECRET reached the pod.
+port_forward "svc/$RELEASE-web" "$WEB_PORT:3000" "http://127.0.0.1:$WEB_PORT/login"
 
 step "firing the demo agent"
 trace_1="$(chat 'why did checkout start failing')"

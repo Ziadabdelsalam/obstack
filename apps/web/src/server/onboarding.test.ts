@@ -121,15 +121,18 @@ test("arrived but not yet queryable keeps the panel waiting on the LINK (D203)",
 });
 
 test("this module holds no endpoint and reads no endpoint variable (D215)", async () => {
-  // The endpoint moved to `lib/ingest-endpoint.ts` (client-safe constants, pinned
-  // against compose there), and the env var went away with it:
-  // `OBSTACK_INGEST_ENDPOINT` is compose's name for the COLLECTOR's upstream
-  // (`http://ingest:4318`), so a shell exporting it for collector work would have
-  // repointed the quickstart at an address a browser cannot reach.
+  // The default lives in `lib/ingest-endpoint.ts` (client-safe constants,
+  // pinned against compose there); an operator's override is resolved in
+  // `@/server/ingest-endpoint` (D266/D277) and reaches the page as a prop.
+  // Neither lives here, and no env var does either: `OBSTACK_INGEST_ENDPOINT`
+  // is compose's name for the COLLECTOR's upstream (`http://ingest:4318`), so a
+  // shell exporting it for collector work would have repointed the quickstart
+  // at an address a browser cannot reach — which is why the override's own
+  // names are `OBSTACK_PUBLIC_OTLP_*`, read only by that other module.
   const source = readFileSync(path.join(import.meta.dirname, "onboarding.ts"), "utf8");
   assert.equal(source.includes("process.env"), false);
-  const module = await import("./onboarding");
-  assert.deepEqual(Object.keys(module).sort(), ["getOnboardingStatus"]);
+  const mod = await import("./onboarding");
+  assert.deepEqual(Object.keys(mod).sort(), ["getOnboardingStatus"]);
 });
 
 test("the status poll is a 404 with a tripwire in mock mode (D203/D193)", async () => {

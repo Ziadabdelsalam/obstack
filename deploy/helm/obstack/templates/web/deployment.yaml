@@ -1,0 +1,138 @@
+# The product surface (D253 item 1, T5) — the same Deployment+Service class
+# as ingest, image exact-pinned to the live-stamped artifact T1's Dockerfile
+# produces (D267: `obstack-web:kind`, loaded into kind, never pulled). The
+# boot check inside the image (apps/web/src/server/mode-stamp.ts) is the
+# enforcement: a mismatched OBSTACK_DATA_MODE, or a live boot without
+# BETTER_AUTH_SECRET, exits 1 loudly rather than serving — this chart's job
+# is only to always SET the runtime half (D251(b)/D267: "compose and the
+# chart always set it").
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-web
+  labels:
+    {{- include "obstack.labels" . | nindent 4 }}
+    app.kubernetes.io/component: web
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: obstack
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: web
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: obstack
+        app.kubernetes.io/instance: {{ .Release.Name }}
+        app.kubernetes.io/component: web
+    spec:
+      # Same two gates as the ingest Deployment and for the same reason: on a
+      # fresh install nothing orders this pod against the stores, and holding
+      # in Init beats crash-looping into kubelet's backoff cap while the
+      # migrate Jobs settle the schemas behind it. Schema STATE stays the
+      # Jobs' concern — these waits gate on reachability only.
+      initContainers:
+        {{- include "obstack.waitForClickhouse" . | nindent 8 }}
+        {{- if not .Values.postgres.managed.enabled }}
+        {{- include "obstack.waitForPostgres" . | nindent 8 }}
+        {{- end }}
+      containers:
+        - name: web
+          image: {{ .Values.web.image }}
+          imagePullPolicy: {{ .Values.web.pullPolicy }}
+          # D253 item 5 — values.yaml states the defaults and the reasoning.
+          resources:
+            {{- toYaml .Values.web.resources | nindent 12 }}
+          env:
+            # The runtime half of the boot check's stamp comparison — this
+            # line IS the chart's half of D267's "always set it".
+            - name: OBSTACK_DATA_MODE
+              value: live
+            - name: CLICKHOUSE_URL
+              value: http://{{ .Release.Name }}-clickhouse:8123
+            - name: CLICKHOUSE_USER
+              value: obstack_web
+            # D275's always-secretKeyRef rule, web edition: no password sits
+            # in this rendered manifest. The web read path takes the password
+            # as its own variable, so no DSN assembly is needed for
+            # ClickHouse.
+            - name: CLICKHOUSE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "obstack.clickhouse.secretName" . }}
+                  key: clickhouse-web-password
+            # The web image has no URL-aware password injection (that code is
+            # ingest's, config.InjectDSNPassword), so the DSN is assembled by
+            # Kubernetes' own $(VAR) env interpolation instead: the password
+            # ref is defined FIRST (interpolation only sees earlier entries),
+            # and the rendered manifest still carries no password — kubelet
+            # substitutes at container start, which is the D275 hygiene line.
+            - name: OBSTACK_PG_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "obstack.postgres.secretName" . }}
+                  key: postgres-password
+            {{- if .Values.postgres.managed.enabled }}
+            # values.yaml's stricter managed-DSN contract (exactly one `@`,
+            # no password component) exists for this line: the one `@` is
+            # replaced with `:$(OBSTACK_PG_PASSWORD)@` so the same Secret
+            # rides the operator's own DSN.
+            - name: OBSTACK_POSTGRES_DSN
+              value: {{ .Values.postgres.managed.dsn | replace "@" ":$(OBSTACK_PG_PASSWORD)@" | quote }}
+            {{- else }}
+            - name: OBSTACK_POSTGRES_DSN
+              value: postgres://obstack:$(OBSTACK_PG_PASSWORD)@{{ .Release.Name }}-postgres:5432/obstack
+            {{- end }}
+            # D272: one in-container name, `BETTER_AUTH_SECRET` — both
+            # consumers read it (auth.ts and the boot check). Empty when the
+            # operator set nothing; the boot check's refusal, not a template
+            # error, is what a live pod without it gets — the same posture as
+            # compose (docker-compose.yml's web block).
+            - name: BETTER_AUTH_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "obstack.web.secretName" . }}
+                  key: better-auth-secret
+            # D119: an `https://` origin here upgrades the session cookie to
+            # its `__Secure-` name; the loopback default is correct only
+            # behind `kubectl port-forward` — values.yaml carries the full
+            # note.
+            - name: BETTER_AUTH_URL
+              value: {{ .Values.web.betterAuthUrl | quote }}
+            # Optional by design (Explain's default mode is `fake`, which
+            # reads no key — values.yaml): a brought web Secret may omit the
+            # key entirely rather than carrying an empty one.
+            - name: OBSTACK_EXPLAIN_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "obstack.web.secretName" . }}
+                  key: explain-api-key
+                  optional: true
+            {{- if .Values.ingest.ingress.enabled }}
+            # D266/D277: the ingest ingress is the deployment's public OTLP
+            # address, so the quickstart and connect flows render it instead
+            # of the loopback defaults. HTTP only — gRPC is deliberately not
+            # exposed by that ingress (values.yaml), and D277's display rule
+            # makes the unset gRPC variable an honest omission in the
+            # product, never a loopback beside a public endpoint.
+            - name: OBSTACK_PUBLIC_OTLP_HTTP_ENDPOINT
+              value: {{ printf "%s://%s" (ternary "https" "http" .Values.ingest.ingress.tls.enabled) .Values.ingest.ingress.host | quote }}
+            {{- end }}
+          ports:
+            - name: http
+              containerPort: 3000
+          # /login for the same reason compose's healthcheck picks it: it
+          # renders in every mode and never depends on a session existing.
+          readinessProbe:
+            httpGet:
+              path: /login
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /login
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 10
