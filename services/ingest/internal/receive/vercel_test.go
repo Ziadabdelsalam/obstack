@@ -41,6 +41,9 @@ type drainRecord struct {
 	spanID      string
 	serviceName string
 	attrs       map[string]string
+	// resourceAttrs is the resource the record hangs off — where the drain's
+	// project/deployment identity lives, separate from the per-record fields.
+	resourceAttrs map[string]string
 }
 
 func drainRecords(t *testing.T, rec *recorder) []drainRecord {
@@ -56,6 +59,10 @@ func drainRecords(t *testing.T, rec *recorder) []drainRecord {
 			service := ""
 			if v, ok := rl.Resource().Attributes().Get("service.name"); ok {
 				service = v.Str()
+			}
+			resourceAttrs := map[string]string{}
+			for key, value := range rl.Resource().Attributes().All() {
+				resourceAttrs[key] = value.AsString()
 			}
 			for j := range rl.ScopeLogs().Len() {
 				records := rl.ScopeLogs().At(j).LogRecords()
@@ -74,12 +81,13 @@ func drainRecords(t *testing.T, rec *recorder) []drainRecord {
 						spanID = hex.EncodeToString(sid[:])
 					}
 					out = append(out, drainRecord{
-						body:        r.Body().AsString(),
-						severity:    r.SeverityNumber(),
-						traceID:     traceID,
-						spanID:      spanID,
-						serviceName: service,
-						attrs:       attrs,
+						body:          r.Body().AsString(),
+						severity:      r.SeverityNumber(),
+						traceID:       traceID,
+						spanID:        spanID,
+						serviceName:   service,
+						attrs:         attrs,
+						resourceAttrs: resourceAttrs,
 					})
 				}
 			}
@@ -156,8 +164,22 @@ func TestVercelDrainExtractsOnlyMeasuredTraceContext(t *testing.T) {
 	if lambda.attrs["url.path"] != "/api/users" {
 		t.Errorf("path attribute = %q", lambda.attrs["url.path"])
 	}
-	if build.serviceName != "my-app" {
-		t.Errorf("service.name = %q, want the project name", build.serviceName)
+	// D295: identity is the project id, which every entry of a project carries
+	// — grouping by the optional `projectName` would file the same project's
+	// build and lambda lines under two different services.
+	const projectID = "gdufoJxB6b9b1fEqr1jUtFkyavUU"
+	if build.serviceName != projectID || lambda.serviceName != projectID {
+		t.Errorf("service.name = %q (build) / %q (lambda), want both at the project id %q",
+			build.serviceName, lambda.serviceName, projectID)
+	}
+	// The human name is still carried, for a surface to render over the id —
+	// on the entry that has one, and absent (not invented) on the one that
+	// does not.
+	if got := build.resourceAttrs["vercel.project.name"]; got != "my-app" {
+		t.Errorf("vercel.project.name on the build line = %q, want the payload's", got)
+	}
+	if got, ok := lambda.resourceAttrs["vercel.project.name"]; ok {
+		t.Errorf("vercel.project.name = %q on an entry that carried none", got)
 	}
 	if build.severity != plog.SeverityNumberInfo {
 		t.Errorf("severity = %v, want INFO", build.severity)

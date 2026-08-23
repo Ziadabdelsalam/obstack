@@ -16,9 +16,13 @@
 -- no lease, no watermark, exactly as the cumulative rows work.
 --
 -- The table is bounded by construction rather than by a cleanup job: the same
--- flush deletes buckets older than the retention the flusher states (65
--- minutes, one hour of renderable history plus a margin), so the worst case is
--- keys × 65 rows and there is nothing to schedule, monitor or forget.
+-- flush deletes buckets older than the retention the flusher states (15
+-- minutes — the five-minute window anything renders, plus margin for flush lag
+-- and clock skew), so the worst case is keys × 15 rows and there is nothing to
+-- schedule, monitor or forget. The DELETE fires only when its cutoff minute
+-- advances, which is why no index on bucket_start earns its keep here: the scan
+-- is over that bound, once a minute, against an upsert path that runs twelve
+-- times a minute per key and would pay for the index every time.
 CREATE TABLE IF NOT EXISTS api_key_health_windows (
     key_id              TEXT NOT NULL REFERENCES api_keys (id) ON DELETE CASCADE,
     workspace_id        TEXT NOT NULL REFERENCES workspaces (id) ON DELETE CASCADE,

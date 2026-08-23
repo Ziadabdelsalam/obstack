@@ -314,7 +314,7 @@ export function ConnectionsHub({
              counters, and both are as fresh as the last metering flush. */
           <p className="border-t border-line px-3.5 py-2 font-mono text-[10.5px] leading-relaxed text-faint">
             {data.asOf
-              ? `rate is accepted records per minute over the last ${data.rateWindowMinutes} complete minutes; accepted and sampled are cumulative per key, as of ${data.asOf} — errors are receive-path only; sampled records are the plan's quota, not a fault`
+              ? `rate is accepted records per minute over the last ${data.rateWindowMinutes} complete minutes, and — means no records of any kind arrived on that key in the window; accepted and sampled are cumulative per key, as of ${data.asOf} — errors are receive-path only; sampled records are the plan's quota, not a fault`
               : "no events on any key yet — these counts start with the first accepted record"}
           </p>
         )}

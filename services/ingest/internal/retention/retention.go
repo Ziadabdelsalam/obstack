@@ -26,6 +26,20 @@
 // metering flusher established. At the replica counts the chart ships (1),
 // the duplicate work is a few idempotent statements a day.
 //
+// The bound, stated rather than engineered around (D294): one workspace-table
+// delete gets statementTimeout, and at the measured rate (~8.4s per million
+// rows on the widest table) that is on the order of a hundred million
+// past-cutoff rows in one workspace before a statement cannot finish. Past
+// that the sweep does not chunk and does not fall back to a heavyweight
+// mutation — it fails that statement loudly, counts it, moves to the next
+// workspace, and retries the whole thing tomorrow. The consequence is bounded
+// and benign: that workspace over-retains until the 90-day table TTL takes the
+// rows, which is the direction D252 already called acceptable. Day-partition
+// chunking on this same lightweight DELETE is the mechanism if it is ever
+// needed (spans and logs are already PARTITION BY toDate); the trigger is
+// sweep failures repeating for the same workspace across consecutive sweeps,
+// which the log line below names by workspace and table.
+//
 // Retained semantic, stated once (D252): summaries expire on max_seen_date, so
 // a trace straddling the cutoff loses its older spans while its summary
 // survives to its own expiry — the same semantic the flat TTL had. The sweep

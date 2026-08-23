@@ -147,6 +147,13 @@ test("the live rate is measured over a stated window, never derived from totals"
   // The cumulative totals stay what they are and are still said to be
   // cumulative — two different facts, each named (D260).
   assert.ok(hubSource.includes("accepted and sampled are cumulative per key"));
+  // D297: the dash is a third fact — no records of ANY kind in the window,
+  // which is not the same operator problem as a measured zero — so the caveat
+  // explains it rather than leaving it to be guessed.
+  assert.ok(
+    hubSource.includes("means no records of any kind arrived on that key in the window"),
+    "the caveat must say what the dash means",
+  );
   // Nothing divides a lifetime counter to make a rate.
   assert.ok(
     !/accepted\s*\/\s*\w/.test(hubSource),

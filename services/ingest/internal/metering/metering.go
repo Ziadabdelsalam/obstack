@@ -67,11 +67,15 @@ const (
 	// product surface are about to read.
 	maxLedgerBuckets = 10_000
 
-	// windowRetention is how long a minute bucket stays readable (D260/D288).
-	// Sixty-five minutes is an hour of renderable history plus a margin over
-	// the flush interval, and it is enforced in the same transaction as the
-	// writes, which is what bounds the table without a cleanup job to schedule.
-	windowRetention = 65 * time.Minute
+	// windowRetention is how long a minute bucket stays readable (D260/D296).
+	// Fifteen minutes is the five-minute window anything actually renders plus
+	// ten of margin, which covers the flush lag, a recovering replica's
+	// retained batch, and the clock skew between the process that stamps a
+	// bucket and the Postgres `now()` the read window is computed from. It was
+	// 65 for "an hour of history" that nothing renders — storage bought for a
+	// reader that does not exist. Enforced in the same transaction as the
+	// writes, which is what bounds this table with nothing scheduled.
+	windowRetention = 15 * time.Minute
 )
 
 // The UPSERTs of record (D162). They add rather than set, which is the whole
@@ -161,6 +165,13 @@ type Meter struct {
 	mu     sync.Mutex
 	health map[healthKey]healthCell
 	ledger map[ledgerKey]ledgerCell
+	// lastTrimmed is the cutoff minute this process last swept window rows
+	// past. The retention DELETE is idempotent, so running it every flush was
+	// correct — just twelve identical scans a minute per replica for the
+	// eleven-in-twelve that could delete nothing. Firing only when the cutoff
+	// minute advances costs one in-memory comparison and needs no coordination
+	// with any other replica (D296).
+	lastTrimmed time.Time
 	// windows carries the same per-key counts as health, split into the minute
 	// buckets a true rate is computed from (D260). It accumulates beside health
 	// rather than being derived from it, because a cumulative total cannot be
@@ -483,10 +494,15 @@ func (m *Meter) flushPostgres(ctx context.Context, b batch) error {
 			return fmt.Errorf("api key health window upsert: %w", err)
 		}
 	}
-	if len(b.windows) > 0 {
-		if _, err := tx.Exec(ctx, windowTrimSQL, m.now().UTC().Add(-windowRetention)); err != nil {
+	// Trim when this flush's cutoff minute is past the last one we swept — a
+	// per-replica watermark, not a lease: two replicas trimming the same minute
+	// delete the same rows and agree (D296).
+	cutoff := m.now().UTC().Add(-windowRetention).Truncate(time.Minute)
+	if cutoff.After(m.lastTrimmed) {
+		if _, err := tx.Exec(ctx, windowTrimSQL, cutoff); err != nil {
 			return fmt.Errorf("api key health window trim: %w", err)
 		}
+		m.lastTrimmed = cutoff
 	}
 
 	if err := tx.Commit(ctx); err != nil {

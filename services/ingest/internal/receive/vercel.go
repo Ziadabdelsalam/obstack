@@ -240,7 +240,11 @@ func vercelLogsToPdata(entries []vercelLog) (plog.Logs, int) {
 	ld := plog.NewLogs()
 	skipped := 0
 
-	type resourceKey struct{ project, projectName, deployment, environment string }
+	// The resource identity is built from fields that identify a deployment,
+	// never from the optional display name (D295): keying on `projectName`
+	// would put two entries of the same deployment under two resources purely
+	// because one of them omitted a label.
+	type resourceKey struct{ project, deployment, environment string }
 	scopes := map[resourceKey]plog.LogRecordSlice{}
 
 	for _, entry := range entries {
@@ -252,15 +256,21 @@ func vercelLogsToPdata(entries []vercelLog) (plog.Logs, int) {
 			continue
 		}
 
-		key := resourceKey{entry.ProjectID, entry.ProjectName, entry.DeploymentID, entry.Environment}
+		key := resourceKey{entry.ProjectID, entry.DeploymentID, entry.Environment}
 		records, ok := scopes[key]
 		if !ok {
 			rl := ld.ResourceLogs().AppendEmpty()
 			res := rl.Resource().Attributes()
-			// service.name is what every obstack surface groups by; a Vercel
-			// project is the closest true answer, and the vendor's own name for
-			// the platform is the honest fallback when the entry carries none.
-			res.PutStr("service.name", firstNonEmpty(entry.ProjectName, entry.ProjectID, "vercel"))
+			// service.name is what every obstack surface groups by, so it is
+			// computed from a field that is on EVERY entry of a project: the
+			// project id (D295). `projectName` is per-entry optional — absent
+			// on the vendor's own lambda example, which is the main runtime
+			// source — so grouping by it would split one project into two
+			// services, one of them named and one of them not. The human name
+			// rides along as an attribute for a surface to render; identity
+			// does not depend on it. Stable and opaque beats friendly and
+			// split.
+			res.PutStr("service.name", firstNonEmpty(entry.ProjectID, "vercel"))
 			putIfSet(res, "vercel.project.id", entry.ProjectID)
 			putIfSet(res, "vercel.project.name", entry.ProjectName)
 			putIfSet(res, "vercel.deployment.id", entry.DeploymentID)
