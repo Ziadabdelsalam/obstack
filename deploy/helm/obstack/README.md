@@ -407,21 +407,28 @@ thing both paths leave behind.
 
 D253 item 3's floor: **the standard pattern and nothing more.** Every
 credential this chart handles — both ClickHouse users' passwords, the
-Postgres password, and the `web` workload's two auth slots
-(`BETTER_AUTH_SECRET`, `OBSTACK_EXPLAIN_API_KEY`) — resolves through the same
-three-group pattern. By default this chart renders its own Secret
-(`{{ .Release.Name }}-credentials`, `templates/secret.yaml`) from the values
-above; setting `clickhouse.existingSecret` / `postgres.existingSecret` /
-`web.existingSecret` to the name of a Secret already in the cluster sources
-that group's credentials from it instead — a NAME, never a value, so the
+Postgres password, the `web` workload's two auth slots
+(`BETTER_AUTH_SECRET`, `OBSTACK_EXPLAIN_API_KEY`) and the `ingest` workload's
+one optional slot (the Vercel drain signature secret, D287) — resolves
+through the same four-group pattern. By default this chart renders its own
+Secret (`{{ .Release.Name }}-credentials`, `templates/secret.yaml`) from the
+values above; setting `clickhouse.existingSecret` / `postgres.existingSecret` /
+`web.existingSecret` / `ingest.existingSecret` to the name of a Secret already
+in the cluster sources that group's credentials from it instead — a NAME,
+never a value, so the
 credential itself never has to pass through `values.yaml`, `--set`, or this
 chart's own release manifest. Key names are **fixed by the chart, not
 values-configurable**, so a brought Secret has exactly one thing to get right
 instead of two: `clickhouse-ingest-password`, `clickhouse-web-password`,
-`postgres-password`, `better-auth-secret`, `explain-api-key`. Three groups,
-not five, because ClickHouse's two users rotate together (both live in
+`postgres-password`, `better-auth-secret`, `explain-api-key`,
+`vercel-drain-secret`. Four groups,
+not six, because ClickHouse's two users rotate together (both live in
 `files/obstack-users.xml`) and the web workload's two auth slots are a third
-independent group — measured live: setting all three `existingSecret` values
+independent group; `ingest` is a fourth because its one key rotates with a
+drain's configuration in someone else's dashboard, on nobody else's schedule.
+Both optional keys (`explain-api-key`, `vercel-drain-secret`) are read with
+`optional: true`, so a brought Secret may omit either entirely rather than
+carrying an empty one — measured live: setting the `existingSecret` values
 makes this chart's own Secret disappear entirely (nothing left for it to
 say), both StatefulSets' `secretKeyRef.name` move to the brought Secret on
 the next `helm upgrade`, and both PVCs keep the same underlying volumes

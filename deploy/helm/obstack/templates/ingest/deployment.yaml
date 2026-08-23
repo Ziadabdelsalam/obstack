@@ -140,13 +140,17 @@ spec:
             # an env var referencing a Secret key that was never written keeps
             # the pod in CreateContainerConfigError; unset simply means the
             # drain route authenticates on its bearer key alone, which ingest
-            # states at boot rather than leaving to be inferred.
+            # states at boot rather than leaving to be inferred. `optional:
+            # true` covers the other half of that same failure — a BROUGHT
+            # `ingest.existingSecret` that carries no `vercel-drain-secret`
+            # key — the same way the web workload's optional Explain key does.
             {{- if or .Values.ingest.vercelDrainSecret .Values.ingest.existingSecret }}
             - name: OBSTACK_VERCEL_DRAIN_SECRET
               valueFrom:
                 secretKeyRef:
                   name: {{ include "obstack.ingest.secretName" . }}
                   key: vercel-drain-secret
+                  optional: true
             {{- end }}
           ports:
             - name: otlp-grpc

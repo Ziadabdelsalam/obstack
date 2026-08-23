@@ -196,7 +196,9 @@ ingest:
   # key as that route's only credential; ingest logs which posture it booted in
   # either way, so this being unset is never a silent non-verification.
   # `existingSecret` below routes it around this file the same way every other
-  # credential can be (README.md, "Credentials and existingSecret").
+  # credential can be (README.md, "Credentials and rotation"); a brought Secret
+  # that carries no `vercel-drain-secret` key simply leaves the route on its
+  # bearer key, because the reference is optional.
   vercelDrainSecret: ""
   existingSecret: ""
   # D253 item 5 — see web.resources above for the same reasoning; sized for
