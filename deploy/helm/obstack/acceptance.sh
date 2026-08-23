@@ -100,9 +100,21 @@ step "building this repo's images"
 docker build -t obstack-ingest:kind "$repo_root/services/ingest"
 docker build -t obstack-demo-agent:kind "$repo_root/demo/agent-app"
 # Root context (D251(a) — the workspace-aware Dockerfile), live-stamped
-# (D267): the chart's web workload only ever runs the live variant.
-docker build -t obstack-web:kind -f "$repo_root/apps/web/Dockerfile" \
-  --build-arg OBSTACK_DATA_MODE=live "$repo_root"
+# (D267): the chart's web workload only ever runs the live variant. Skipped
+# when the image already exists (advisor ruling on the first-runner numbers:
+# this ~2min cold build inside the `stack` job pushed it from ~5m to 7m13s —
+# structural, so CI pre-builds it with a layer cache and this script reuses
+# it). The skip PRINTS what it reuses — created timestamp + mode label — so a
+# stale local image is visible rather than silent; one script for human and
+# CI, staleness stated (S2.1 L3). Delete the image to force a fresh build.
+if docker image inspect obstack-web:kind >/dev/null 2>&1; then
+  printf 'reusing obstack-web:kind (created %s, io.obstack.data-mode=%s)\n' \
+    "$(docker image inspect obstack-web:kind --format '{{.Created}}')" \
+    "$(docker image inspect obstack-web:kind --format '{{index .Config.Labels "io.obstack.data-mode"}}')"
+else
+  docker build -t obstack-web:kind -f "$repo_root/apps/web/Dockerfile" \
+    --build-arg OBSTACK_DATA_MODE=live "$repo_root"
+fi
 
 # Side-load every image the chart renders into the kind node (pin source of
 # truth stays values.yaml — the list is read out of the rendered chart, never

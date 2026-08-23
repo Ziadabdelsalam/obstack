@@ -75,6 +75,26 @@ jobs:
         with:
           cluster_name: obstack-stack
 
+      # The web image, pre-built with a layer cache so acceptance.sh reuses it
+      # (its own skip-and-state logic — advisor ruling on the first-runner
+      # numbers: building it cold inside this job pushed stack from its
+      # 5m04–12s range to 7m13s, a structural cost, not variance; the cached
+      # steady state collapses to seconds). `load: true` lands it in the local
+      # daemon under the exact :kind tag the script and values.yaml pin.
+      - name: Set up buildx (layer cache backend)
+        uses: docker/setup-buildx-action@v4.3.0
+
+      - name: Pre-build obstack-web:kind (gha layer cache)
+        uses: docker/build-push-action@v7.3.0
+        with:
+          context: .
+          file: apps/web/Dockerfile
+          build-args: OBSTACK_DATA_MODE=live
+          tags: obstack-web:kind
+          load: true
+          cache-from: type=gha,scope=web-kind
+          cache-to: type=gha,mode=max,scope=web-kind
+
       # The whole exit assertion — identical to a human's local run
       # (README.md, "Running the acceptance"): the script reads the cluster
       # from the current kubectl context, which kind-action just set.
