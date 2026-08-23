@@ -65,6 +65,15 @@ export const OVERRIDE_MATCH_MAX = 200;
  */
 export const PRICE_PER_MTOK_MAX = 10_000;
 
+/**
+ * How many complete minutes the rate is averaged over (D260/D288). Five is long
+ * enough that one quiet minute does not read as an outage and short enough that
+ * the figure is about now. The IN-PROGRESS minute is deliberately excluded: a
+ * bucket still filling would divide a partial count by a whole minute and
+ * render every workspace as slowing down.
+ */
+export const RATE_WINDOW_MINUTES = 5;
+
 /** One key's health, as the tab lists it. `asOf` is null until the flusher writes a row. */
 export interface KeyHealth {
   keyId: string;
@@ -201,6 +210,33 @@ const HEALTH_SQL = `
    WHERE k.workspace_id = $1
    ORDER BY k.created_at, k.id`;
 
+/**
+ * The windowed counts per key: only COMPLETE minutes, only the last
+ * `RATE_WINDOW_MINUTES` of them (D288). The bounds are computed in Postgres off
+ * `now()` rather than off the web tier's clock, so every reader of the table
+ * cuts the window at the same instant no matter which replica served the page.
+ *
+ * The assumption that leaves, said out loud: `bucket_start` is stamped by the
+ * INGEST process's clock (`metering.go` truncates its own `time.Now()`), not by
+ * Postgres, so the two hosts have to agree to well under a minute — the
+ * ordinary NTP posture, not a guarantee this query can make. The failure is
+ * one-directional: an ingest clock BEHIND Postgres pulls a still-filling bucket
+ * into the window and the rate reads low; an ingest clock AHEAD shifts the five
+ * complete minutes back in time, so the figure stays right and goes stale. It
+ * cannot read high either way.
+ *
+ * `$2` is the window length, so the SQL states the same number the type
+ * exports; nothing here re-derives it.
+ */
+const WINDOW_SQL = `
+  SELECT w.key_id AS key_id,
+         sum(w.accepted) AS accepted
+    FROM api_key_health_windows w
+   WHERE w.workspace_id = $1
+     AND w.bucket_start >= date_trunc('minute', now()) - ($2::int * INTERVAL '1 minute')
+     AND w.bucket_start <  date_trunc('minute', now())
+   GROUP BY w.key_id`;
+
 /** Ordered by match so the list reads the same on every load. */
 const OVERRIDES_SQL = `
   SELECT id, match, input_per_mtok, output_per_mtok, updated_at
@@ -264,6 +300,11 @@ type HealthRow = {
   updated_at: Date | null;
 };
 
+type WindowRow = {
+  key_id: string;
+  accepted: string;
+};
+
 type OverrideRow = {
   id: string;
   match: string;
@@ -318,6 +359,27 @@ export async function getIngestHealth(
     droppedQuota: keys.reduce((sum, key) => sum + key.droppedQuota, 0),
     asOf,
   };
+}
+
+/**
+ * Accepted records per minute per key, measured over the last
+ * `RATE_WINDOW_MINUTES` complete minutes (D260). A key absent from the map has
+ * no bucket in the window at all — which the surface renders as an absence, not
+ * as a zero it never measured. That distinction is the whole point: D218
+ * refused an invented /min figure, and this is the measurement that replaces it.
+ *
+ * It is a SEPARATE read from `getIngestHealth` on purpose. The health rows are
+ * also what the onboarding poll asks for arrival (D203), every five seconds per
+ * visitor waiting for their first trace; bundling a rate that poll never renders
+ * would double its query load for nothing. The one surface that shows a rate
+ * asks for it.
+ */
+export async function getAcceptedRates(
+  workspaceId: string,
+  query: QueryRows,
+): Promise<Map<string, number>> {
+  const rows = await query<WindowRow>(WINDOW_SQL, [workspaceId, RATE_WINDOW_MINUTES]);
+  return new Map(rows.map((row) => [row.key_id, toCount(row.accepted) / RATE_WINDOW_MINUTES]));
 }
 
 /** This workspace's overrides, by match. */

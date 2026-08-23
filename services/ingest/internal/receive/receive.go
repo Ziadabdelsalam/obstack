@@ -83,6 +83,14 @@ type Config struct {
 	// Postgres rows. Nil meters nothing; see Meter.
 	Meter Meter
 
+	// VercelDrainSecret turns on the drain route's `x-vercel-signature` check
+	// (D287). Empty leaves the bearer key as that route's only credential,
+	// which is what every other route on this mux runs with. It arrives here
+	// resolved rather than being read from the environment inside the handler,
+	// so which posture the process is in is decided once, at boot, where it can
+	// be stated.
+	VercelDrainSecret string
+
 	// Rand draws the sampling verdict for a log record that carries no trace id
 	// — the one record class with no trace to be whole with. Nil uses the
 	// process's own source; tests inject a deterministic one. Whatever is here

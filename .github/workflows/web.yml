@@ -170,6 +170,38 @@ jobs:
 
       - run: npm run build
 
+      # S4.2: the CloudWatch forwarder is the one deployable artifact that runs
+      # in someone else's AWS account (D254), so both halves of it are exercised
+      # here rather than left to a reader: its harness invokes the real handler
+      # against the captured AWS envelope fixture the ingest tests also read, and
+      # the packaging step proves the zip an operator is told to build actually
+      # builds. It rides this job because it is Node and this job already has
+      # Node — no new job name (K3), no new runner minutes for a toolchain.
+      #
+      # It is deliberately NOT an npm workspace member: the artifact has zero
+      # dependencies, and adding it to the root workspaces globs would put a
+      # deployable into the app's lockfile for nothing.
+      # The two env vars turn on the live leg: this job already has compose
+      # ingest up on 127.0.0.1:4318 with the `ok_dev_local` continuity key the
+      # pg-migrate seed writes, so the handler is exercised against a REAL
+      # endpoint rather than a stubbed fetch. Without them the leg skips, which
+      # is what a laptop with no stack up gets.
+      - name: CloudWatch forwarder — harness + zip
+        working-directory: deploy/cloudwatch-forwarder
+        env:
+          OBSTACK_TEST_INGEST_URL: http://127.0.0.1:4318/v1/integrations/cloudwatch
+          OBSTACK_TEST_API_KEY: ok_dev_local
+        run: |
+          node --test
+          node package.mjs
+
+      - name: Upload the CloudWatch forwarder zip
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: cloudwatch-forwarder
+          path: deploy/cloudwatch-forwarder/dist/cloudwatch-forwarder.zip
+          if-no-files-found: error
+
       # `down -v` takes the whole project, Postgres and its named volume
       # included — nothing this job wrote survives into another run.
       - name: Stop the compose stack (deploy/compose)

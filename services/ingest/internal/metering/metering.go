@@ -66,6 +66,16 @@ const (
 	// first, since the freshest usage is the one the quota decision and the
 	// product surface are about to read.
 	maxLedgerBuckets = 10_000
+
+	// windowRetention is how long a minute bucket stays readable (D260/D296).
+	// Fifteen minutes is the five-minute window anything actually renders plus
+	// ten of margin, which covers the flush lag, a recovering replica's
+	// retained batch, and the clock skew between the process that stamps a
+	// bucket and the Postgres `now()` the read window is computed from. It was
+	// 65 for "an hour of history" that nothing renders — storage bought for a
+	// reader that does not exist. Enforced in the same transaction as the
+	// writes, which is what bounds this table with nothing scheduled.
+	windowRetention = 15 * time.Minute
 )
 
 // The UPSERTs of record (D162). They add rather than set, which is the whole
@@ -92,6 +102,21 @@ ON CONFLICT (key_id) DO UPDATE
       dropped_quota = api_key_health.dropped_quota + EXCLUDED.dropped_quota,
       last_event_at = GREATEST(api_key_health.last_event_at, EXCLUDED.last_event_at),
       updated_at = now()`
+
+	// The windowed counterpart (D260): the same add-never-set semantics on a
+	// minute bucket, so the rate the product renders is computed from counts
+	// rather than estimated from cumulative totals (D218's refusal answered).
+	windowUpsertSQL = `INSERT INTO api_key_health_windows (key_id, workspace_id, bucket_start, accepted, dropped_decode, dropped_unsupported, dropped_quota)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
+ON CONFLICT (key_id, bucket_start) DO UPDATE
+  SET accepted = api_key_health_windows.accepted + EXCLUDED.accepted,
+      dropped_decode = api_key_health_windows.dropped_decode + EXCLUDED.dropped_decode,
+      dropped_unsupported = api_key_health_windows.dropped_unsupported + EXCLUDED.dropped_unsupported,
+      dropped_quota = api_key_health_windows.dropped_quota + EXCLUDED.dropped_quota`
+
+	// Retention, in the same transaction as the writes: the table's bound is a
+	// property of the flush rather than of a job someone has to remember.
+	windowTrimSQL = `DELETE FROM api_key_health_windows WHERE bucket_start < $1`
 )
 
 // Ops-only counters for the flusher itself. They live here rather than in
@@ -140,6 +165,18 @@ type Meter struct {
 	mu     sync.Mutex
 	health map[healthKey]healthCell
 	ledger map[ledgerKey]ledgerCell
+	// lastTrimmed is the cutoff minute this process last swept window rows
+	// past. The retention DELETE is idempotent, so running it every flush was
+	// correct — just twelve identical scans a minute per replica for the
+	// eleven-in-twelve that could delete nothing. Firing only when the cutoff
+	// minute advances costs one in-memory comparison and needs no coordination
+	// with any other replica (D296).
+	lastTrimmed time.Time
+	// windows carries the same per-key counts as health, split into the minute
+	// buckets a true rate is computed from (D260). It accumulates beside health
+	// rather than being derived from it, because a cumulative total cannot be
+	// un-summed back into the minute it happened in.
+	windows map[windowKey]healthCell
 }
 
 // flushFunc writes one snapshot. An error means none of it landed — the snapshot
@@ -147,6 +184,12 @@ type Meter struct {
 type flushFunc func(ctx context.Context, b batch) error
 
 type healthKey struct{ workspaceID, keyID string }
+
+// windowKey is a health cell in the minute it happened in.
+type windowKey struct {
+	workspaceID, keyID string
+	bucketStart        time.Time
+}
 
 type ledgerKey struct {
 	workspaceID string
@@ -165,11 +208,14 @@ type ledgerCell struct{ spans, logs int64 }
 
 // batch is one flush's worth of counts, detached from the live maps.
 type batch struct {
-	health map[healthKey]healthCell
-	ledger map[ledgerKey]ledgerCell
+	health  map[healthKey]healthCell
+	ledger  map[ledgerKey]ledgerCell
+	windows map[windowKey]healthCell
 }
 
-func (b batch) empty() bool { return len(b.health) == 0 && len(b.ledger) == 0 }
+func (b batch) empty() bool {
+	return len(b.health) == 0 && len(b.ledger) == 0 && len(b.windows) == 0
+}
 
 // New meters into the given pool. The pool is the process's one pool (D164e) —
 // the keystore reads keys through it and this writes counts through it, so a
@@ -184,10 +230,11 @@ func New(pool *pgxpool.Pool) *Meter {
 
 func newMeter(flush flushFunc) *Meter {
 	return &Meter{
-		flush:  flush,
-		now:    time.Now,
-		health: map[healthKey]healthCell{},
-		ledger: map[ledgerKey]ledgerCell{},
+		flush:   flush,
+		now:     time.Now,
+		health:  map[healthKey]healthCell{},
+		ledger:  map[ledgerKey]ledgerCell{},
+		windows: map[windowKey]healthCell{},
 	}
 }
 
@@ -217,7 +264,7 @@ func (m *Meter) RecordAccepted(workspaceID, keyID string, spans, logs int64) {
 		m.ledger[key] = cell
 	}
 
-	m.updateHealth(workspaceID, keyID, func(c *healthCell) {
+	m.updateHealth(workspaceID, keyID, at, func(c *healthCell) {
 		c.accepted += max(spans, 0) + max(logs, 0)
 		c.lastEventAt = at
 	})
@@ -230,11 +277,12 @@ func (m *Meter) RecordDropped(workspaceID, keyID string, reason DropReason, reco
 	if records <= 0 {
 		return
 	}
+	at := m.now().UTC()
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	m.updateHealth(workspaceID, keyID, func(c *healthCell) {
+	m.updateHealth(workspaceID, keyID, at, func(c *healthCell) {
 		switch reason {
 		case DropDecode:
 			c.droppedDecode += records
@@ -251,7 +299,7 @@ func (m *Meter) RecordDropped(workspaceID, keyID string, reason DropReason, reco
 // A blank key id is skipped rather than accumulated: api_key_health.key_id is a
 // foreign key, so such a row could never commit, and one uncommittable row would
 // take a whole flush's counts down with it.
-func (m *Meter) updateHealth(workspaceID, keyID string, apply func(*healthCell)) {
+func (m *Meter) updateHealth(workspaceID, keyID string, at time.Time, apply func(*healthCell)) {
 	if workspaceID == "" || keyID == "" {
 		return
 	}
@@ -259,6 +307,14 @@ func (m *Meter) updateHealth(workspaceID, keyID string, apply func(*healthCell))
 	cell := m.health[key]
 	apply(&cell)
 	m.health[key] = cell
+
+	// The same change, in the minute it happened in (D260). One apply on two
+	// accumulators rather than two call sites, so the windowed rate and the
+	// cumulative total can never be counting different events.
+	window := windowKey{workspaceID: workspaceID, keyID: keyID, bucketStart: at.Truncate(time.Minute)}
+	bucket := m.windows[window]
+	apply(&bucket)
+	m.windows[window] = bucket
 }
 
 // Run flushes every flushInterval until the context is cancelled, then flushes
@@ -325,9 +381,10 @@ func (m *Meter) take() batch {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	b := batch{health: m.health, ledger: m.ledger}
+	b := batch{health: m.health, ledger: m.ledger, windows: m.windows}
 	m.health = map[healthKey]healthCell{}
 	m.ledger = map[ledgerKey]ledgerCell{}
+	m.windows = map[windowKey]healthCell{}
 	return b
 }
 
@@ -347,6 +404,18 @@ func (m *Meter) retain(b batch) {
 		live.spans += cell.spans
 		live.logs += cell.logs
 		m.ledger[key] = live
+	}
+	// Window buckets are retained on the same terms as the health cells they
+	// mirror; the retention cutoff below is what keeps a long outage from
+	// accumulating buckets nothing will ever render.
+	cutoff := m.now().UTC().Add(-windowRetention)
+	for key, cell := range b.windows {
+		if key.bucketStart.Before(cutoff) {
+			continue
+		}
+		live := m.windows[key]
+		live.add(cell)
+		m.windows[key] = live
 	}
 	m.trimLedger()
 }
@@ -414,6 +483,28 @@ func (m *Meter) flushPostgres(ctx context.Context, b batch) error {
 		}
 	}
 
+	// The windowed rows go in the same transaction as their cumulative
+	// counterparts (D260): one flush cannot land a rate the totals disagree
+	// with, and the retention DELETE below rides the same commit, which is what
+	// makes the table's bound a property of the flush rather than of a job.
+	for _, key := range sortedWindowKeys(b.windows) {
+		cell := b.windows[key]
+		if _, err := tx.Exec(ctx, windowUpsertSQL, key.keyID, key.workspaceID, key.bucketStart,
+			cell.accepted, cell.droppedDecode, cell.droppedUnsupported, cell.droppedQuota); err != nil {
+			return fmt.Errorf("api key health window upsert: %w", err)
+		}
+	}
+	// Trim when this flush's cutoff minute is past the last one we swept — a
+	// per-replica watermark, not a lease: two replicas trimming the same minute
+	// delete the same rows and agree (D296).
+	cutoff := m.now().UTC().Add(-windowRetention).Truncate(time.Minute)
+	if cutoff.After(m.lastTrimmed) {
+		if _, err := tx.Exec(ctx, windowTrimSQL, cutoff); err != nil {
+			return fmt.Errorf("api key health window trim: %w", err)
+		}
+		m.lastTrimmed = cutoff
+	}
+
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("commit metering flush: %w", err)
 	}
@@ -441,6 +532,23 @@ func sortLedgerKeys(keys []ledgerKey) {
 		}
 		return keys[i].workspaceID < keys[j].workspaceID
 	})
+}
+
+// Window rows take their locks in a fixed order for the reason the others do:
+// two flushers touching the same buckets in map order would deadlock each other
+// for no reason.
+func sortedWindowKeys(m map[windowKey]healthCell) []windowKey {
+	keys := make([]windowKey, 0, len(m))
+	for key := range m {
+		keys = append(keys, key)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		if keys[i].keyID != keys[j].keyID {
+			return keys[i].keyID < keys[j].keyID
+		}
+		return keys[i].bucketStart.Before(keys[j].bucketStart)
+	})
+	return keys
 }
 
 func sortedHealthKeys(m map[healthKey]healthCell) []healthKey {

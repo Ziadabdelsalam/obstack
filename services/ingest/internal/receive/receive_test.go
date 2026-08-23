@@ -228,6 +228,19 @@ type serverOptions struct {
 	overQuota bool
 	meter     receive.Meter
 	rand      func() uint64
+	// vercelDrainSecret turns on the drain route's signature check (D287);
+	// empty is the default posture, bearer-only.
+	vercelDrainSecret string
+}
+
+// startSigningDrain boots a receiver whose drain route verifies signatures
+// under the given secret — the configured posture, reached the way a
+// deployment reaches it (config → Config field) rather than by an env var a
+// handler reads.
+func startSigningDrain(t *testing.T, secret string) (*receive.Server, *recorder) {
+	t.Helper()
+	rec := &recorder{}
+	return start(t, serverOptions{consumer: rec, vercelDrainSecret: secret}), rec
 }
 
 // startMetered boots a receiver with a meter attached, over or under quota, and
@@ -251,6 +264,8 @@ func start(t *testing.T, opts serverOptions) *receive.Server {
 		OverQuota: func(string) bool { return opts.overQuota },
 		Meter:     opts.meter,
 		Rand:      opts.rand,
+
+		VercelDrainSecret: opts.vercelDrainSecret,
 	})
 	if err := srv.Start(); err != nil {
 		t.Fatalf("start receivers: %v", err)

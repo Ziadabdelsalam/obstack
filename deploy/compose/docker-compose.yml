@@ -96,6 +96,13 @@ services:
       # variable here to set. The dev credential clients send below,
       # `ok_dev_local`, is the continuity row seeded by pgmigrations/0004.
       OBSTACK_POSTGRES_DSN: postgres://obstack:${OBSTACK_POSTGRES_PASSWORD:-obstack_postgres_dev}@postgres:5432/obstack
+      # D287 — the Vercel log drain's OPTIONAL signature secret, passed through
+      # with an empty default. Empty means the drain route authenticates on the
+      # bearer key alone (its posture is logged at boot); set it to the secret
+      # the drain was configured with and `x-vercel-signature` is verified.
+      # Host-layer name, container-layer name — the established two-layer
+      # pattern (OBSTACK_POSTGRES_PASSWORD → POSTGRES_PASSWORD).
+      OBSTACK_VERCEL_DRAIN_SECRET: ${OBSTACK_VERCEL_DRAIN_SECRET:-}
     ports:
       - "127.0.0.1:4317:4317" # OTLP/gRPC
       - "127.0.0.1:4318:4318" # OTLP/HTTP

@@ -2,7 +2,7 @@
 # place (D35 — a second chart is drift): CI-grade ClickHouse and Postgres on
 # StatefulSets + PVCs, ingest, the obstack-collector DaemonSet, the demo app,
 # a chart-owned Secret with an `existingSecret` name override on every
-# credential (D253 items 2/3/7), and — T5, landing in this same 0.3.0 train —
+# credential (D253 items 2/3/7), and — T5, landing in the same 0.3.0 train —
 # the `web` workload itself, optional Ingress for web and for ingest's
 # OTLP/HTTP surface, resource requests/limits, and managed-Postgres values
 # (D253 items 1/4/5/6). See README.md's scope boundary for exactly what's
@@ -187,6 +187,20 @@ ingest:
   # No key value here: API keys are Postgres `api_keys` rows (D98), issued in
   # the product and read by ingest through a cached lookup. There is nothing
   # for this chart to configure.
+  #
+  # The Vercel log-drain route's OPTIONAL signature secret (D287). The drain
+  # authenticates with an ordinary obstack ingest key in an `Authorization:
+  # Bearer` custom header, exactly like every other export — this is the
+  # separate per-drain secret Vercel signs the body with, and setting it turns
+  # on `x-vercel-signature` verification. Empty (the default) leaves the bearer
+  # key as that route's only credential; ingest logs which posture it booted in
+  # either way, so this being unset is never a silent non-verification.
+  # `existingSecret` below routes it around this file the same way every other
+  # credential can be (README.md, "Credentials and rotation"); a brought Secret
+  # that carries no `vercel-drain-secret` key simply leaves the route on its
+  # bearer key, because the reference is optional.
+  vercelDrainSecret: ""
+  existingSecret: ""
   # D253 item 5 — see web.resources above for the same reasoning; sized for
   # the OTLP receive + ClickHouse/Postgres write path, not a guess.
   resources:

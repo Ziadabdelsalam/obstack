@@ -67,3 +67,8 @@ pitchdeck-assets/
 # log, server log, seed output and transcript all go to OUT_DIR, which defaults
 # to a temp directory outside the tree.
 test-output.log
+
+# the CloudWatch forwarder's built zip: the deployable artifact is produced by
+# `npm run package` from the two tracked files it contains, and rebuilt in CI —
+# checking it in would be a binary nobody diffs.
+deploy/cloudwatch-forwarder/dist/

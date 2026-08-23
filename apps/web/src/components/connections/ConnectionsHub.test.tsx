@@ -27,7 +27,7 @@ const origLoad = (Module as unknown as { _load: (r: string, ...a: unknown[]) => 
   return origLoad.call(this, request, ...rest);
 };
 
-const { connectedSourcesOf, liveSourceStatus, sourceErrors } = createRequire(
+const { connectedSourcesOf, formatRate, liveSourceStatus, sourceErrors } = createRequire(
   fileURLToPath(import.meta.url),
 )("./ConnectionsHub.tsx") as typeof import("./ConnectionsHub");
 
@@ -42,6 +42,7 @@ const source = (overrides: Partial<LiveSource> & { keyId: string }): LiveSource 
   droppedUnsupported: 0,
   droppedQuota: 0,
   lastEvent: null,
+  ratePerMin: null,
   ...overrides,
 });
 
@@ -123,18 +124,50 @@ test("the hub imports no mock data", () => {
   assert.match(hubSource, /import type \{ ConnectedSource \} from "@\/mock\/types"/);
 });
 
-// T3 done-check: the staleness statement is rendered, and it is the read's own
-// `asOf` (D162) — with the honest alternative when nothing has ever arrived.
-test("the live panel renders the as-of and never a fabricated rate", () => {
+// The staleness statement is rendered, and it is the read's own `asOf` (D162) —
+// with the honest alternative when nothing has ever arrived.
+test("the live panel renders the as-of", () => {
   assert.ok(hubSource.includes("as of ${data.asOf}"), "the live panel must show its as-of");
   assert.ok(hubSource.includes("no events on any key yet"));
-  // `/min` survives in the demo rows only: the D100 counters are cumulative,
-  // so a per-minute number derived from them would be invented (D165 posture).
-  const perMin = hubSource.split("\n").filter((l) => l.includes("/min"));
-  assert.deepEqual(
-    perMin.map((l) => l.trim()),
-    ["{s.ratePerMin.toLocaleString()}/min"],
+});
+
+// D260 supersedes D218's refusal: the live rate is no longer absent because it
+// would be invented — it is MEASURED from the windowed rows the metering flush
+// writes, and the panel says which window it was measured over. What must never
+// return is a rate derived from the cumulative counters.
+test("the live rate is measured over a stated window, never derived from totals", () => {
+  assert.ok(
+    hubSource.includes("formatRate(s.ratePerMin)"),
+    "the live rows must render the measured rate",
   );
+  assert.ok(
+    hubSource.includes("over the last ${data.rateWindowMinutes} complete minutes"),
+    "the panel must state the window the rate was measured over",
+  );
+  // The cumulative totals stay what they are and are still said to be
+  // cumulative — two different facts, each named (D260).
+  assert.ok(hubSource.includes("accepted and sampled are cumulative per key"));
+  // D297: the dash is a third fact — no records of ANY kind in the window,
+  // which is not the same operator problem as a measured zero — so the caveat
+  // explains it rather than leaving it to be guessed.
+  assert.ok(
+    hubSource.includes("means no records of any kind arrived on that key in the window"),
+    "the caveat must say what the dash means",
+  );
+  // Nothing divides a lifetime counter to make a rate.
+  assert.ok(
+    !/accepted\s*\/\s*\w/.test(hubSource),
+    "a rate must never be derived from the cumulative accepted count",
+  );
+});
+
+// A key with no bucket in the window reads as an absence, never as a zero
+// nothing measured — the distinction D218 refused to blur.
+test("formatRate distinguishes no measurement from a measured zero", () => {
+  assert.equal(formatRate(null), "—");
+  assert.equal(formatRate(0), "0/min");
+  assert.equal(formatRate(2.4), "2.4/min");
+  assert.equal(formatRate(8420), "8,420/min");
 });
 
 // D212: the tour step points at this section by attribute; the rewrite keeps it.

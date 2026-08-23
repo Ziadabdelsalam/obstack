@@ -1961,7 +1961,7 @@ try {
     `alice ${rowsIn(aliceFinds.html)} row(s) ${idsIn(aliceFinds.html)[0]} · bob ${rowsIn(bobFinds.html)} row(s)`,
   );
 
-  step("/app/connections: that key's health, in the words the surface actually renders (D100/D218/D219)");
+  step("/app/connections: that key's health, in the words the surface actually renders (D100/D260/D219)");
   must(
     await alice.goto("/app/connections", `document.querySelector("main")?.textContent.includes("connected ·")`),
     "/app/connections never rendered",
@@ -1987,8 +1987,8 @@ try {
     `${prefix}… is listed as a connected source`,
   );
   check(
-    "the counts say what they are: cumulative and dated, errors receive-path only, quota as sampling and not a fault (D218/D219)",
-    /counts are cumulative per key, as of \d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC/.test(hub.text) &&
+    "the counts say what they are: cumulative and dated, errors receive-path only, quota as sampling and not a fault (D260/D219)",
+    /accepted and sampled are cumulative per key, as of \d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC/.test(hub.text) &&
       hub.text.includes("errors are receive-path only") &&
       hub.text.includes("sampled records are the plan's quota, not a fault") &&
       /last event \d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC/.test(hub.text) &&
@@ -1996,10 +1996,20 @@ try {
       hub.text.includes("0 errs"),
     hub.text.slice(0, 320),
   );
+  // D260 supersedes D218's refusal: the rate is MEASURED from the windowed
+  // rows the metering flush writes, over a window the panel states. This
+  // export happened seconds ago, inside the minute still filling, and the
+  // window deliberately covers only COMPLETE minutes — so the honest render
+  // right now is the dash, which the caveat explains in the same breath
+  // (D297). What must never appear is a per-minute figure derived from the
+  // cumulative counters, which is what D218 refused and what a "3/min" here
+  // would be.
   check(
-    "and it invents no rate — the D100 counters have no window, so no per-minute figure is rendered (D218)",
-    !hub.text.includes("/min") && !/per minute/i.test(hub.text),
-    hub.text.slice(0, 240),
+    "the rate is measured over a stated window, and reads — until a complete minute has passed (D260/D297)",
+    hub.text.includes("rate is accepted records per minute over the last 5 complete minutes") &&
+      hub.text.includes("— means no records of any kind arrived on that key in the window") &&
+      !new RegExp(`${FIRST_SPANS}\\s*/min`).test(hub.text),
+    hub.text.slice(0, 320),
   );
 
   // -------------------------------------------- metering (the S3.3 step)

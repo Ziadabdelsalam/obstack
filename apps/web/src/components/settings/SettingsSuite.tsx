@@ -718,13 +718,6 @@ function LiveBillingTab({ live }: { live: LiveSettings }) {
             {billing.retentionDays} days · {billing.planName}
           </span>
         </div>
-        {/* D105, and deliberately not a deletion claim: retention is sold as an
-            entitlement and the enforcement status is stated in the same breath,
-            because the product currently over-delivers and saying so is the
-            honest version of both facts. */}
-        <p className="mt-2 text-[12.5px] leading-relaxed text-mid">
-          TTL enforcement lands at M4 and data is currently retained without tier cutoff.
-        </p>
       </Section>
 
       {upgrades.length > 0 && (

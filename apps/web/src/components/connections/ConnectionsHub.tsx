@@ -38,6 +38,23 @@ export interface LiveSource {
   droppedQuota: number;
   /** Formatted on the server, like every other rendered instant. Null = never. */
   lastEvent: string | null;
+  /**
+   * Accepted records per minute over the last complete window (D260), measured
+   * from the windowed rows rather than derived from the cumulative totals.
+   * Null = no bucket in the window, which renders as an absence and never as a
+   * zero nothing measured.
+   */
+  ratePerMin: number | null;
+}
+
+/**
+ * The rate as it reads: one decimal below ten so a slow source is not rounded
+ * to "0/min" while it is demonstrably sending, whole numbers above it.
+ */
+export function formatRate(ratePerMin: number | null): string {
+  if (ratePerMin === null) return "—";
+  if (ratePerMin > 0 && ratePerMin < 10) return `${ratePerMin.toFixed(1)}/min`;
+  return `${Math.round(ratePerMin).toLocaleString("en-US")}/min`;
 }
 
 /**
@@ -50,7 +67,19 @@ export interface LiveSource {
  * a live surface does not import `@/mock/connectors`.
  */
 export type ConnectedPanel =
-  | { mode: "live"; sources: LiveSource[]; asOf: string | null }
+  | {
+      mode: "live";
+      sources: LiveSource[];
+      asOf: string | null;
+      /**
+       * How many complete minutes `ratePerMin` was averaged over. It arrives as
+       * a prop rather than being imported because the definition lives in the
+       * server module that runs the query (`server/ingest-health.ts`) and this
+       * is a client component — the same server-resolves-and-passes shape the
+       * endpoints and the formatted instants already take (D277).
+       */
+      rateWindowMinutes: number;
+    }
   | { mode: "demo"; sources: ConnectedSource[] };
 
 /** Receive-path errors: decode plus unsupported, and deliberately NOT quota
@@ -205,6 +234,12 @@ export function ConnectionsHub({
                       />
                       {st.label}
                     </span>
+                    {/* The measured rate (D260): accepted records per minute
+                        over the last complete window, from the windowed rows —
+                        not the cumulative total divided by anything. */}
+                    <span className="w-24 text-right font-mono text-[11px] text-ink">
+                      {formatRate(s.ratePerMin)}
+                    </span>
                     <span className="w-32 text-right font-mono text-[11px] text-mid">
                       {s.accepted.toLocaleString("en-US")} accepted
                     </span>
@@ -256,7 +291,7 @@ export function ConnectionsHub({
                     {st.label}
                   </span>
                   <span className="w-24 text-right font-mono text-[11px] text-mid">
-                    {s.ratePerMin.toLocaleString()}/min
+                    {s.ratePerMin.toLocaleString("en-US")}/min
                   </span>
                   <span className="w-20 text-right font-mono text-[11px] text-faint">
                     {s.lastEvent}
@@ -274,11 +309,12 @@ export function ConnectionsHub({
         )}
         {data.mode === "live" && (
           /* The one staleness statement (D162), on the surface that shows the
-             numbers: these are cumulative per-key counters written by the
-             metering flush, so they are seconds behind and they are not a rate. */
+             numbers. Two different facts, each said as what it is (D260): the
+             rate is measured over complete minutes, the totals are lifetime
+             counters, and both are as fresh as the last metering flush. */
           <p className="border-t border-line px-3.5 py-2 font-mono text-[10.5px] leading-relaxed text-faint">
             {data.asOf
-              ? `counts are cumulative per key, as of ${data.asOf} — errors are receive-path only; sampled records are the plan's quota, not a fault`
+              ? `rate is accepted records per minute over the last ${data.rateWindowMinutes} complete minutes, and — means no records of any kind arrived on that key in the window; accepted and sampled are cumulative per key, as of ${data.asOf} — errors are receive-path only; sampled records are the plan's quota, not a fault`
               : "no events on any key yet — these counts start with the first accepted record"}
           </p>
         )}

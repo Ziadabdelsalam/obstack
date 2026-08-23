@@ -1,0 +1,11 @@
+{
+  "name": "@obstack/cloudwatch-forwarder",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Dependency-free AWS Lambda that forwards CloudWatch Logs subscription deliveries to obstack ingest.",
+  "scripts": {
+    "test": "node --test",
+    "package": "node package.mjs"
+  }
+}

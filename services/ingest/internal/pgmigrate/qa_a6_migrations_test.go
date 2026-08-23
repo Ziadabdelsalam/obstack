@@ -103,8 +103,12 @@ func TestQAA6RerunningTheSetChangesNoSeededRow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first boot: %v", err)
 	}
-	if len(first) != 6 {
-		t.Fatalf("first boot applied %v, want the six embedded versions", first)
+	embedded, err := pgmigrations.FS.ReadDir(".")
+	if err != nil {
+		t.Fatalf("read embedded set: %v", err)
+	}
+	if len(first) != len(embedded) {
+		t.Fatalf("first boot applied %v, want all %d embedded versions", first, len(embedded))
 	}
 
 	const catalog = `SELECT string_agg(id || '=' || event_quota || '/' || retention_days || '/' || price_usd_month, ',' ORDER BY id) FROM plans`
@@ -171,7 +175,7 @@ func TestQAA6InheritedFilesAreUndriftedByS33(t *testing.T) {
 
 	// The versions, in the order Run applies them.
 	got := queryText(ctx, t, dsn, "SELECT string_agg(version, ',' ORDER BY version) FROM schema_migrations")
-	const want = "0001_workspaces,0002_saved_views,0003_auth,0004_api_keys,0005_metering,0006_explain_quota"
+	const want = "0001_workspaces,0002_saved_views,0003_auth,0004_api_keys,0005_metering,0006_explain_quota,0007_health_windows"
 	if got != want {
 		t.Errorf("applied set = %q, want %q", got, want)
 	}
