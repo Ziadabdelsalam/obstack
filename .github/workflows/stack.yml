@@ -101,7 +101,7 @@ jobs:
       # tables the product actually needs.
       - name: Postgres schema (deploy/helm/obstack/README.md, "Postgres in this chart")
         run: |
-          kubectl exec deploy/obstack-postgres -- psql -U obstack -d obstack -v ON_ERROR_STOP=1 \
+          kubectl exec statefulset/obstack-postgres -- psql -U obstack -d obstack -v ON_ERROR_STOP=1 \
             -c 'SELECT 1 FROM workspaces LIMIT 1' -c 'SELECT 1 FROM saved_views LIMIT 1'
 
       # S3.1 D122: better-auth's own tables are CAPTURED, never migrated by the
@@ -144,7 +144,7 @@ jobs:
           kubectl logs ds/obstack-collector --tail=80 || true
           kubectl logs deploy/obstack-ingest --tail=40 || true
           kubectl logs deploy/obstack-demo -c demo-agent --tail=40 || true
-          kubectl logs deploy/obstack-postgres --tail=40 || true
+          kubectl logs statefulset/obstack-postgres --tail=40 || true
           kubectl logs -l app.kubernetes.io/component=pg-migrate --tail=40 --all-containers || true
           docker compose -f deploy/compose/docker-compose.yml logs --tail 40 postgres || true
 

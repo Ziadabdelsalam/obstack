@@ -26,8 +26,9 @@ test("the constants are the ports compose publishes", () => {
 
 test("nothing hosted and nothing from the environment", () => {
   // U1: there is no hosted obstack, so a hosted name here is the S2.2 L1 lie the
-  // old quickstart carried. And no env read at all — `OBSTACK_INGEST_ENDPOINT`
-  // is compose's name for the collector's upstream, not for this (D215).
+  // old quickstart carried. And no env read at all — the resolver that reads
+  // the environment moved to `@/server/ingest-endpoint` (D277); this module is
+  // client-safe constants only.
   const source = readFileSync(path.join(import.meta.dirname, "ingest-endpoint.ts"), "utf8");
   for (const endpoint of [OTLP_HTTP_ENDPOINT, OTLP_GRPC_ENDPOINT]) {
     assert.equal(endpoint.includes("obstack.dev"), false);

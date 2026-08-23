@@ -424,8 +424,8 @@ function launch(command, args, { cwd, logPath }) {
   // runs can name the same directory, and the D132 assertion below splits the
   // server log at a BYTE OFFSET taken during THIS run. Against an appended log
   // that offset points into the previous run's bytes, and the previous run's
-  // allowlisted NoSessionError lines are then read as unallowed errors on an
-  // authenticated path — a red about a run that already finished (measured).
+  // unauthenticated-slice lines are then read as errors on an authenticated
+  // path — a red about a run that already finished (measured).
   // Every other artifact here is written per run; the log is no different.
   const fd = openSync(logPath, "w");
   const child = spawn(command, args, { cwd, env: appEnv, detached: true, stdio: ["ignore", fd, fd] });
@@ -2677,8 +2677,10 @@ try {
 
   step("the unauthenticated probe: every wired route refuses a browser with no session");
   // The server log is split HERE (D132): everything above is authenticated work
-  // and must be error-free; the NoSessionError line below is the D114 tripwire
-  // firing behind a guard that wins the response, which is spec.
+  // and must be error-free; everything below is the no-session path, which
+  // D274 made a redirect (307 → /login) rather than a throw — so the slice
+  // below must be error-free TOO, and a NoSessionError appearing there is a
+  // regression of the refit, not an allowlisted tripwire.
   const logSplit = statSync(appLog).size;
   for (const path of [
     "/app",
@@ -2752,11 +2754,15 @@ try {
     providerFailures.length === 0,
     providerFailures.slice(0, 2).join(" | "),
   );
-  const notAllowed = unauthenticated.filter((line) => !line.includes("NoSessionError"));
+  // D274 flipped this assertion's direction: a browser with no session is
+  // redirected before anything can throw, so the probe's slice carries no
+  // error line at all. The NoSessionError class survives only on the
+  // non-request dataForSessionContext(null) contract, which no browser
+  // reaches — one appearing here means the redirect refit regressed.
   check(
-    "the unauthenticated probe's only error is NoSessionError — the D114 tripwire, allowlisted by name",
-    unauthenticated.length > 0 && notAllowed.length === 0,
-    notAllowed.slice(0, 3).join(" | ") || "the tripwire logged nothing at all",
+    "the unauthenticated probe logs no error line at all — no-session is a redirect, never a throw (D274)",
+    unauthenticated.length === 0,
+    unauthenticated.slice(0, 3).join(" | "),
   );
 
   step("token hygiene: the keys this run issued appear in nothing it printed and nothing it wrote");

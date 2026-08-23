@@ -12,16 +12,19 @@
  * disagree — the mirror pattern the drive's `FLUSH_MS` uses for the Go
  * constants (D206), because a comment naming a source is not a check.
  *
- * There is deliberately NO environment variable behind this. `OBSTACK_INGEST_ENDPOINT`
- * is already taken in the same compose file (`:249`) for the collector's UPSTREAM
- * address (`http://ingest:4318`, a name that only resolves inside the compose
- * network), so a shell exporting it for collector work would have repointed the
- * quickstart at an address the operator's browser and host cannot reach. Nothing
- * sets it for the web app; the environment is local compose (U1), and a
- * deployment that publishes ingest elsewhere is the self-hosted surface M4 builds.
+ * There is deliberately NO environment variable behind these two constants.
+ * `OBSTACK_INGEST_ENDPOINT` is already taken in the same compose file (`:249`)
+ * for the collector's UPSTREAM address (`http://ingest:4318`, a name that only
+ * resolves inside the compose network), so a shell exporting it for collector
+ * work would have repointed the quickstart at an address the operator's
+ * browser and host cannot reach.
  *
- * No `server-only`: this is client-safe by construction — two string literals,
- * no env read, no secret.
+ * No `server-only`: this is client-safe by construction — two string
+ * literals, no env read, no secret — which is why the existing `"use client"`
+ * snippet surfaces (`Quickstart.tsx`, `DemoArrival.tsx`) import them directly.
+ * A deployment that wants to override either one reads `resolveIngestEndpoints`
+ * at `@/server/ingest-endpoint` instead (D266/D277) — that module carries
+ * `import "server-only"`, which this one deliberately cannot.
  */
 
 /** OTLP over HTTP/protobuf — what the SDKs and the e2e drive send to. */

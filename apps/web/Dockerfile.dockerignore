@@ -1,0 +1,35 @@
+# BuildKit reads this file — named after the Dockerfile beside it — instead of
+# the context root's .dockerignore. The context is the whole repository (this
+# is an npm workspace: `npm ci` needs the root lockfile plus every workspace's
+# package.json to resolve consistently), so without this file the root
+# `node_modules/` (692M) and every workspace's build output would be uploaded
+# to the daemon to build one image.
+#
+# Everything is excluded, then the paths the build actually reads are added
+# back, minus their own node_modules/build output (the image builds its own).
+# `apps/web/src/server/ingest-health.ts` reaches across the workspace
+# boundary for the one pricing table both languages share (Go's own copy is
+# services/ingest/pricing/pricing.go) — that single file has to be in context
+# too, or `next build` fails to resolve it regardless of OBSTACK_DATA_MODE.
+# Measured context after this file: ~5.8MB (`apps/web` minus `.next` is
+# ~5.2MB; `packages/obstack-js` minus `node_modules`/`dist` is ~150KB; the two
+# root manifests and the pricing table are ~335KB combined).
+*
+!package.json
+!package-lock.json
+!apps/web
+!packages/obstack-js
+!services/ingest/pricing/prices.json
+**/node_modules
+apps/web/.next
+packages/obstack-js/dist
+# `!apps/web` re-admits untracked local files too, and `next build` reads
+# `.env.local` on a production build (`@next/env`'s list is
+# `.env.production.local`, `.env.local`, `.env.production`, `.env`) — so
+# without this line a maintainer's own secrets file joins the build and lands
+# in the `build` stage's layer. This image is configured at RUNTIME (D266);
+# nothing about it may come from whoever's shell ran the build. The other two
+# are local cruft whose only effect is invalidating the `COPY apps/web` layer.
+**/.env*
+**/.DS_Store
+**/*.tsbuildinfo

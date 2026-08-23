@@ -98,3 +98,56 @@ test("the modal holds no token: the slot literal, and links to issue one", () =>
   assert.match(modalSource, /navigator\.clipboard\.writeText\(code\)/);
   assert.equal(/token/i.test(modalSource.replace(/token slot|no token|a token/gi, "")), false);
 });
+
+// D281/D282 — the endpoint substitution, tested on the exported pure resolver
+// (one definition; restating the rule here would be the drift D206 warns
+// about). Three corners of the done-check plus the absence texts' remedy
+// names.
+test("endpoint placeholders: no override substitutes the loopback constants byte-identically", async () => {
+  const { resolveStepSnippet } = await import("./ConnectModal");
+  const { OTLP_HTTP_PLACEHOLDER, OTLP_GRPC_PLACEHOLDER } = await import("./connectors");
+  const { OTLP_HTTP_ENDPOINT, OTLP_GRPC_ENDPOINT } = await import("@/lib/ingest-endpoint");
+  const defaults = { http: OTLP_HTTP_ENDPOINT, grpc: OTLP_GRPC_ENDPOINT };
+  const otlp = connectors.find((c) => c.slug === "otlp")!;
+  for (const step of otlp.connectSteps ?? []) {
+    if (!step.snippet) continue;
+    const resolved = resolveStepSnippet(step.snippet, defaults);
+    assert.ok("code" in resolved, "no step goes absent under the defaults");
+    assert.equal(/<OBSTACK_OTLP_/.test(resolved.code), false, "an unsubstituted endpoint slot");
+    if (step.snippet.includes(OTLP_HTTP_PLACEHOLDER))
+      assert.ok(resolved.code.includes(OTLP_HTTP_ENDPOINT));
+    if (step.snippet.includes(OTLP_GRPC_PLACEHOLDER))
+      assert.ok(resolved.code.includes(OTLP_GRPC_ENDPOINT));
+  }
+});
+
+test("endpoint placeholders: HTTP-only override — the gRPC step goes absent naming its remedy, no loopback anywhere", async () => {
+  const { resolveStepSnippet } = await import("./ConnectModal");
+  const { OTLP_GRPC_ENDPOINT } = await import("@/lib/ingest-endpoint");
+  const httpOnly = { http: "https://ingest.example.com/v1", grpc: null };
+  const otlp = connectors.find((c) => c.slug === "otlp")!;
+  const results = (otlp.connectSteps ?? [])
+    .filter((s) => s.snippet)
+    .map((s) => resolveStepSnippet(s.snippet!, httpOnly));
+  const codes = results.filter((r) => "code" in r) as Array<{ code: string }>;
+  const absences = results.filter((r) => "absence" in r) as Array<{ absence: string }>;
+  assert.equal(absences.length, 1, "exactly the gRPC step goes absent");
+  assert.ok(absences[0].absence.includes("OBSTACK_PUBLIC_OTLP_GRPC_ENDPOINT"), "the absence names its remedy");
+  for (const { code } of codes) {
+    assert.equal(code.includes(OTLP_GRPC_ENDPOINT), false, "never a loopback beside a public endpoint");
+    assert.ok(code.includes(httpOnly.http));
+  }
+});
+
+test("endpoint placeholders: both overridden — both steps render the configured pair", async () => {
+  const { resolveStepSnippet } = await import("./ConnectModal");
+  const both = { http: "https://ingest.example.com/v1", grpc: "https://ingest.example.com:4317" };
+  const otlp = connectors.find((c) => c.slug === "otlp")!;
+  const codes = (otlp.connectSteps ?? [])
+    .filter((s) => s.snippet)
+    .map((s) => resolveStepSnippet(s.snippet!, both));
+  assert.ok(codes.every((r) => "code" in r), "nothing goes absent with both configured");
+  const joined = codes.map((r) => ("code" in r ? r.code : "")).join("\n");
+  assert.ok(joined.includes(both.http) && joined.includes(both.grpc));
+  assert.equal(/127\.0\.0\.1:(4317|4318)/.test(joined), false, "no loopback under a full override");
+});

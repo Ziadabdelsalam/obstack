@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 import { Plus, X } from "lucide-react";
 import { Line, LineChart, ResponsiveContainer, Tooltip } from "recharts";
 import {
@@ -235,21 +235,40 @@ function AddWidgetModal({
   );
 }
 
+// localStorage is an external store, read through the hook built for one
+// (react-hooks/set-state-in-effect). The read is cached at module level so the
+// snapshot stays referentially stable (a fresh JSON.parse per call would loop
+// the hook): one parse per page load, and the persist effect below writes the
+// saved board back into this cache so a remount reads what was last saved.
+const emptySubscribe = () => () => {};
+let storedWidgetsCache: WidgetConfig[] | undefined;
+function readStoredWidgets(): WidgetConfig[] {
+  if (storedWidgetsCache === undefined) {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      storedWidgetsCache = raw ? (JSON.parse(raw) as WidgetConfig[]) : defaultWidgets;
+    } catch {
+      storedWidgetsCache = defaultWidgets;
+    }
+  }
+  return storedWidgetsCache;
+}
+
 export function WatchWidgets() {
-  const [widgets, setWidgets] = useState<WidgetConfig[] | null>(null);
+  // Server snapshot null → the server renders nothing, the same as the old
+  // shape; edits (add/remove) shadow the stored board from the first change.
+  const stored = useSyncExternalStore(emptySubscribe, readStoredWidgets, () => null);
+  const [edits, setEdits] = useState<WidgetConfig[] | null>(null);
+  const widgets = edits ?? stored;
   const [adding, setAdding] = useState(false);
 
   useEffect(() => {
-    try {
-      const raw = localStorage.getItem(STORAGE_KEY);
-      setWidgets(raw ? (JSON.parse(raw) as WidgetConfig[]) : defaultWidgets);
-    } catch {
-      setWidgets(defaultWidgets);
-    }
-  }, []);
-
-  useEffect(() => {
     if (widgets) {
+      // The cache moves with the write. A client navigation off /app and back
+      // remounts this component — `edits` resets, the module cache does not —
+      // so a cache still holding the page-load board would render the
+      // pre-edit widgets and then persist them over the edit below.
+      storedWidgetsCache = widgets;
       try {
         localStorage.setItem(STORAGE_KEY, JSON.stringify(widgets));
       } catch {
@@ -289,7 +308,7 @@ export function WatchWidgets() {
             <WidgetCard
               key={w.id}
               config={w}
-              onRemove={() => setWidgets((ws) => (ws ?? []).filter((x) => x.id !== w.id))}
+              onRemove={() => setEdits(widgets.filter((x) => x.id !== w.id))}
             />
           ))}
         </div>
@@ -298,7 +317,7 @@ export function WatchWidgets() {
       {adding && (
         <AddWidgetModal
           onAdd={(c) =>
-            setWidgets((ws) => [...(ws ?? []), { ...c, id: `w-${Date.now().toString(36)}` }])
+            setEdits([...widgets, { ...c, id: `w-${Date.now().toString(36)}` }])
           }
           onClose={() => setAdding(false)}
         />

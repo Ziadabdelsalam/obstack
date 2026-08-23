@@ -97,13 +97,20 @@ jobs:
 
       - run: npm ci
 
-      # The default profile — ClickHouse, Postgres and ingest. `--wait` is what
-      # makes the next step's precondition true: ingest binds /healthz only
-      # after both migration sets are settled, so a healthy stack is the
-      # statement that the schema the signups land in exists (K1 — the
-      # checked-in migrations are the one schema path).
+      # Named services, not the default profile: clickhouse, postgres and
+      # ingest, with `web` left unnamed (D271 — compose builds and starts the
+      # named services and whatever their `depends_on` chains pull in, and
+      # nothing else; naming `web` here would both build the image and start
+      # the container for a process this harness never reaches, and nothing
+      # named above depends on it). `--wait` is what makes the next step's
+      # precondition true: ingest binds /healthz only after both migration
+      # sets are settled, so a healthy stack is the statement that the schema
+      # the signups land in exists (K1 — the checked-in migrations are the one
+      # schema path). web is not this harness's claim (D265(a1)) — the
+      # `images` job and the self-hosted user boot it. The drive builds and
+      # serves the app itself.
       - name: Compose stack (deploy/compose/README.md, "The e2e drive")
-        run: docker compose -f deploy/compose/docker-compose.yml up -d --wait --wait-timeout 240
+        run: docker compose -f deploy/compose/docker-compose.yml up -d --wait --wait-timeout 240 clickhouse postgres ingest
 
       # M1's signed exit criterion as this job's regression floor (D136): the
       # demo agent's trace lands whole — api, agent, tool and llm under one

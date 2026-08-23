@@ -19,10 +19,14 @@ export type OnboardingStatus = {
   asOf: string | null;
 };
 
-// The endpoint the quickstart names does NOT live here (D215): it is a client-safe
-// constant in `lib/ingest-endpoint.ts`, imported by the snippet surfaces
-// directly. It never was server state — and an env var named for it collided
-// with compose's own `OBSTACK_INGEST_ENDPOINT`, the collector's upstream address.
+// The endpoint the quickstart names does NOT live here (D215): the no-override
+// default is a client-safe constant in `lib/ingest-endpoint.ts`, imported by
+// the snippet surfaces directly, and an operator's override is resolved in
+// `@/server/ingest-endpoint` (D266/D277) and passed down from the page as a
+// prop — neither lives in this module's arrival/status read. An env var named
+// for the endpoint would also have collided with compose's own
+// `OBSTACK_INGEST_ENDPOINT`, the collector's upstream address, which is why the
+// override's own two names are `OBSTACK_PUBLIC_OTLP_*`.
 
 /** UTC on the server, like every other rendered instant (settings/page.tsx). */
 const asMinute = (at: Date): string => `${at.toISOString().slice(0, 16).replace("T", " ")} UTC`;

@@ -3,6 +3,7 @@ import { connection } from "next/server";
 import { DemoArrival } from "@/components/onboarding/DemoArrival";
 import { Quickstart } from "@/components/onboarding/Quickstart";
 import { dataForSessionContext, dataMode } from "@/server/data";
+import { resolveIngestEndpoints } from "@/server/ingest-endpoint";
 import { getOnboardingStatus } from "@/server/onboarding";
 import { queryRows } from "@/server/postgres";
 import { getSessionContext } from "@/server/session";
@@ -41,11 +42,23 @@ export default async function OnboardingPage() {
     queryRows,
   );
 
-  // Exactly the D209-as-amended props and nothing beside them (D215 deleted the
-  // `endpoint` prop — the component imports `lib/ingest-endpoint`'s constant
-  // directly, like the connector steps do). No existing-key list either: a
-  // stored token is unrecoverable (D98), so a prefix is not something anyone can
-  // paste into a snippet — which is why D201 put issuance on this surface in the
-  // first place. Listing keys here would render a column no step can use.
-  return <Quickstart initialStatus={status} issueKey={issueQuickstartKey} />;
+  // Read AFTER `await connection()`, not before: reading `process.env` during
+  // dynamic rendering evaluates it at request time rather than folding it into
+  // a build-time render (node_modules/next/dist/docs/01-app/02-guides/
+  // environment-variables.md, "Runtime Environment Variables" — the exact
+  // `await connection()`-then-`process.env` shape that doc shows). D215 deleted
+  // the `endpoint` prop when there was nothing to override; D266/D277 gives
+  // operators a real one, so it is back — server-resolved here, passed down as
+  // a prop, never imported by the `"use client"` component itself. No
+  // existing-key list either: a stored token is unrecoverable (D98), so a
+  // prefix is not something anyone can paste into a snippet — which is why
+  // D201 put issuance on this surface in the first place. Listing keys here
+  // would render a column no step can use.
+  return (
+    <Quickstart
+      initialStatus={status}
+      issueKey={issueQuickstartKey}
+      endpoints={resolveIngestEndpoints()}
+    />
+  );
 }

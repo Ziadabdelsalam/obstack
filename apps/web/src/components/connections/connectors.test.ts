@@ -2,7 +2,13 @@ import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import test from "node:test";
-import { API_KEY_PLACEHOLDER, categories, connectors } from "./connectors";
+import {
+  API_KEY_PLACEHOLDER,
+  OTLP_GRPC_PLACEHOLDER,
+  OTLP_HTTP_PLACEHOLDER,
+  categories,
+  connectors,
+} from "./connectors";
 
 const repoRoot = path.resolve(import.meta.dirname, "../../../../..");
 const moduleSource = readFileSync(path.join(import.meta.dirname, "connectors.ts"), "utf8");
@@ -36,12 +42,23 @@ test("every in-repo path a step names exists on disk", () => {
   }
 });
 
-// The compose OTLP endpoints and the pinned collector image are facts of
-// docker-compose.yml, not copy: assert against the file itself.
-test("OTLP endpoints and the collector image match compose", () => {
+// D281 changed the OTLP steps from baked literals to placeholders: the
+// endpoint truth now lives in `@/lib/ingest-endpoint` (whose own test pins
+// the loopback constants against compose) and reaches the modal as a
+// server-resolved substitution. What THIS file must guarantee is that the
+// snippets carry the slots — a snippet that spells an address literally is
+// the regression D281 removed. The collector image stays a fact of
+// docker-compose.yml, asserted against the file itself.
+test("OTLP steps carry the endpoint placeholders, never literal addresses", () => {
   const text = stepText().join("\n");
+  assert.ok(text.includes(OTLP_HTTP_PLACEHOLDER), "the OTLP HTTP step lost its endpoint slot");
+  assert.ok(text.includes(OTLP_GRPC_PLACEHOLDER), "the OTLP gRPC step lost its endpoint slot");
+  assert.equal(
+    /127\.0\.0\.1:(4317|4318)/.test(text),
+    false,
+    "a connect step spells a loopback OTLP address literally — D281 moved those to placeholders",
+  );
   for (const port of ["4317", "4318"]) {
-    assert.ok(text.includes(`127.0.0.1:${port}`), `the OTLP steps must name 127.0.0.1:${port}`);
     assert.ok(composeFile.includes(`"127.0.0.1:${port}:${port}"`), `compose no longer publishes ${port}`);
   }
   const image = "otel/opentelemetry-collector-k8s:0.158.0";

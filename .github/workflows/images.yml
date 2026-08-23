@@ -1,0 +1,107 @@
+# `images` — the S4.1 exit clause as a job: a clean checkout produces the web
+# and ingest images, and the compose bundle boots the full stack FROM those
+# images (D261). K3: stable identifier, named once, never renamed.
+#
+# Kept separate from `stack` (5m04–12s) and `e2e` (5m47–50s) so their
+# recorded ranges and pre-registered watches stay unpolluted — the D107
+# "stay separate" ground. Trigger policy: provisionally every-PR; the first
+# real-runner number returns to the advisor and confirms or demotes it
+# (K5/D93/D137 — the deciding machine is the GitHub runner, never a laptop).
+#
+# What it proves, in order:
+#   1. Both D262 variants of the ONE web Dockerfile build at this commit —
+#      live-stamped and mock-stamped (D251(a)/D267).
+#   2. The mode stamp is load-bearing: a mock artifact served as live REFUSES
+#      (exit 1, naming both values), and a live artifact without its
+#      BETTER_AUTH_SECRET refuses with the generate instruction (D251(b),
+#      D265(a2)/D272 — the "costs signup entirely" stakes, proven red here on
+#      every PR).
+#   3. The mock variant serves standalone with no stores at all — the D262
+#      public-demo artifact is a real, bootable thing, not a claim.
+#   4. `docker compose up` boots clickhouse + postgres + ingest + web from
+#      images built at this same commit (compose's own `build:` directives —
+#      D267), converges healthy, and answers a real request.
+name: images
+
+on:
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+
+concurrency:
+  group: images-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  images:
+    name: images
+    runs-on: ubuntu-latest
+    # Bounded like every job here: a wedged `docker build` or compose `up`
+    # must fail the PR in minutes, not hold it for the 360-minute default.
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+
+      - name: Build the web image, both D262 variants
+        run: |
+          docker build -t obstack-web:live -f apps/web/Dockerfile --build-arg OBSTACK_DATA_MODE=live .
+          docker build -t obstack-web:mock -f apps/web/Dockerfile --build-arg OBSTACK_DATA_MODE=mock .
+
+      - name: Build the ingest image
+        run: docker build -t obstack-ingest:ci services/ingest
+
+      # The refusal matrix — the boot check proven RED on the runner, not
+      # believed from a unit test (process.exit(1) is only observable against
+      # a real container; T1's own report records why).
+      # `timeout 60` on both, and exit code 1 EXACTLY: a broken refusal is a
+      # container that boots and serves forever, which without the bound would
+      # hold this job to its 25-minute timeout, and `timeout`'s own 124 would
+      # otherwise read as "non-zero, therefore refused". The message is grepped
+      # too — any other crash also exits non-zero, and "it died" is not the
+      # claim this job makes.
+      - name: Mode-mismatch refusal (mock artifact served as live)
+        run: |
+          set +e
+          out="$(timeout 60 docker run --rm -e OBSTACK_DATA_MODE=live -e BETTER_AUTH_SECRET=ci-refusal-probe obstack-web:mock 2>&1)"
+          rc=$?
+          set -e
+          test "$rc" -eq 1 || { echo "mock-stamped artifact did not refuse a live serve with exit 1 (rc=$rc) — the D251(b) refusal is broken"; echo "$out"; exit 1; }
+          echo "$out" | grep -q "OBSTACK_DATA_MODE=mock baked in" || { echo "the refusal never named the STAMPED value"; echo "$out"; exit 1; }
+          echo "$out" | grep -q "running with OBSTACK_DATA_MODE=live" || { echo "the refusal never named the RUNTIME value"; echo "$out"; exit 1; }
+
+      - name: Live-without-secret refusal
+        run: |
+          set +e
+          out="$(timeout 60 docker run --rm -e OBSTACK_DATA_MODE=live obstack-web:live 2>&1)"
+          rc=$?
+          set -e
+          test "$rc" -eq 1 || { echo "live artifact did not refuse without its auth secret with exit 1 (rc=$rc) — the D272 refusal is broken"; echo "$out"; exit 1; }
+          echo "$out" | grep -q "BETTER_AUTH_SECRET" || { echo "refusal happened but never named the missing variable"; echo "$out"; exit 1; }
+          echo "$out" | grep -q "openssl rand -base64 32" || { echo "refusal named the variable but not how to generate one"; echo "$out"; exit 1; }
+
+      - name: Mock variant serves standalone (the D262 demo artifact)
+        run: |
+          docker run -d --name demo-probe -p 127.0.0.1:3100:3000 -e OBSTACK_DATA_MODE=mock obstack-web:mock
+          for _ in $(seq 1 30); do
+            if curl -fsS -o /dev/null http://127.0.0.1:3100/app; then ok=1; break; fi
+            sleep 2
+          done
+          docker logs demo-probe --tail 20
+          docker rm -f demo-probe
+          test "${ok:-0}" = 1 || { echo "mock artifact never answered /app"; exit 1; }
+
+      # The bundle boot: compose's `build:` directives rebuild web (live) and
+      # ingest from this same commit — layer cache makes this cheap after the
+      # builds above — and `--wait` holds until every healthcheck passes,
+      # including web's own /login probe.
+      - name: Compose bundle boots from these images
+        env:
+          OBSTACK_BETTER_AUTH_SECRET: images-ci-run-secret
+        run: |
+          docker compose -f deploy/compose/docker-compose.yml up -d --build --wait --wait-timeout 300
+          curl -fsS -o /dev/null http://127.0.0.1:3000/login
+          docker compose -f deploy/compose/docker-compose.yml down -v

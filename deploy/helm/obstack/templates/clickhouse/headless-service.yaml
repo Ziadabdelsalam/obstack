@@ -1,0 +1,28 @@
+# The headless Service (`clusterIP: None`) a StatefulSet's `serviceName`
+# requires by convention, for stable per-pod DNS identity, even at a single
+# replica (Kubernetes' own guidance: "You are responsible for creating this
+# Service"). Nothing in this chart resolves THIS Service's name — every DSN
+# still addresses ClickHouse through service.yaml's normal ClusterIP Service
+# (`{{ .Release.Name }}-clickhouse`), byte-unchanged by this file. This
+# object exists only so the StatefulSet controller has something to govern
+# pod network identity through.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-clickhouse-headless
+  labels:
+    {{- include "obstack.labels" . | nindent 4 }}
+    app.kubernetes.io/component: clickhouse
+spec:
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: obstack
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: clickhouse
+  ports:
+    - name: http
+      port: 8123
+      targetPort: http
+    - name: native
+      port: 9000
+      targetPort: native

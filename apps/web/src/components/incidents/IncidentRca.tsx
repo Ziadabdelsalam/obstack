@@ -15,13 +15,13 @@ export function IncidentRca({ incident }: { incident: Incident }) {
   const totalChars = sections.reduce((s, x) => s + x.body.length, 0);
   const done = chars >= totalChars;
 
+  // The reduced-motion fast-forward lives in the start button's click handler
+  // (event-handler setState — react-hooks/set-state-in-effect bans the
+  // synchronous effect-body form this used to be). setChars inside the RAF
+  // callback is asynchronous and fine; the `done` guard makes this effect's
+  // own cleanup cancel the loop when the stream completes.
   useEffect(() => {
-    if (!started) return;
-    const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    if (reduced) {
-      setChars(totalChars);
-      return;
-    }
+    if (!started || done) return;
     let last = performance.now();
     const tick = (now: number) => {
       const dt = now - last;
@@ -33,11 +33,7 @@ export function IncidentRca({ incident }: { incident: Incident }) {
     return () => {
       if (raf.current) cancelAnimationFrame(raf.current);
     };
-  }, [started, totalChars]);
-
-  useEffect(() => {
-    if (done && raf.current) cancelAnimationFrame(raf.current);
-  }, [done]);
+  }, [started, done, totalChars]);
 
   const copyMarkdown = () => {
     const md = [
@@ -55,10 +51,9 @@ export function IncidentRca({ incident }: { incident: Incident }) {
     setTimeout(() => setCopied(false), 1500);
   };
 
-  let budget = Math.floor(chars);
-  const rendered = sections.map((s) => {
-    const take = Math.max(0, Math.min(s.body.length, budget));
-    budget -= s.body.length;
+  const rendered = sections.map((s, i) => {
+    const before = sections.slice(0, i).reduce((sum, x) => sum + x.body.length, 0);
+    const take = Math.max(0, Math.min(s.body.length, Math.floor(chars) - before));
     return { ...s, visible: s.body.slice(0, take), active: take > 0 && take < s.body.length };
   });
 
@@ -66,7 +61,12 @@ export function IncidentRca({ incident }: { incident: Incident }) {
     return (
       <button
         type="button"
-        onClick={() => setStarted(true)}
+        onClick={() => {
+          setStarted(true);
+          if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+            setChars(totalChars);
+          }
+        }}
         className="mt-4 flex w-full items-center justify-center gap-2 rounded-lg border py-3 text-[13.5px] font-medium transition-colors"
         style={{
           color: "var(--color-llm)",

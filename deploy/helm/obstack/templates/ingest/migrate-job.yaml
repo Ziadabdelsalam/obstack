@@ -4,7 +4,7 @@
 # two renderings, the same pod spec either way:
 #
 # - INSTALL: a normal, revision-named Job. ClickHouse
-#   (templates/clickhouse/deployment.yaml) is a normal resource too, created
+#   (templates/clickhouse/statefulset.yaml) is a normal resource too, created
 #   in the very same batch — Helm enforces no ordering between them at all on
 #   a fresh install, so the initContainer below is what makes ClickHouse
 #   actually reachable before `/ingest migrate` runs, the same role
@@ -91,9 +91,27 @@ spec:
             # rather than satisfying validators it never consults
             # (config.LoadDSN's own doc comment; deploy/compose/README.md).
             #
-            # The password comes from the obstack.migrate.clickhousePassword
-            # helper (_helpers.tpl), not .Values.clickhouse.ingestPassword
-            # directly — see that helper's doc comment for why a
-            # password-rotating upgrade needs the two to diverge.
+            # D275: branches on clickhouse.existingSecret, the same rule the
+            # StatefulSet's own env already follows (templates/clickhouse/
+            # statefulset.yaml). existingSecret set — a brought Secret is read
+            # through secretKeyRef, so its value never touches this render;
+            # ingest folds the two envs into one DSN itself
+            # (config.InjectDSNPassword). Unset — this chart's own Secret, and
+            # the password renders straight into the DSN literal, matching
+            # what the StatefulSet was just told to run with in the very same
+            # batch (there is no rotation-timing helper here any more —
+            # _helpers.tpl's comment on the deleted
+            # obstack.migrate.clickhousePassword explains why one no longer
+            # exists).
+            {{- if .Values.clickhouse.existingSecret }}
             - name: CLICKHOUSE_DSN
-              value: clickhouse://obstack_ingest:{{ include "obstack.migrate.clickhousePassword" . }}@{{ .Release.Name }}-clickhouse:9000/obstack
+              value: clickhouse://obstack_ingest@{{ .Release.Name }}-clickhouse:9000/obstack
+            - name: OBSTACK_CLICKHOUSE_DSN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "obstack.clickhouse.secretName" . }}
+                  key: clickhouse-ingest-password
+            {{- else }}
+            - name: CLICKHOUSE_DSN
+              value: clickhouse://obstack_ingest:{{ .Values.clickhouse.ingestPassword }}@{{ .Release.Name }}-clickhouse:9000/obstack
+            {{- end }}

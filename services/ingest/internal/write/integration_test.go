@@ -250,7 +250,7 @@ func TestWriterLandsLogRecordGenAIContent(t *testing.T) {
 
 	w := newWriter(t)
 	w.ConsumeLogs(ctx, workspaceID, contentLogFixture(traceID, spanID, at))
-	if err := w.Close(); err != nil {
+	if err := w.Close(ctx); err != nil {
 		t.Fatalf("close writer: %v", err)
 	}
 
@@ -295,7 +295,7 @@ func TestWriterLandsMappedFixture(t *testing.T) {
 	w := newWriter(t)
 	w.ConsumeTraces(ctx, workspaceID, fixture(traceID, base))
 	w.ConsumeLogs(ctx, workspaceID, logFixture(traceID, base.Add(50*time.Millisecond)))
-	if err := w.Close(); err != nil {
+	if err := w.Close(ctx); err != nil {
 		t.Fatalf("close writer: %v", err)
 	}
 
@@ -490,7 +490,7 @@ func TestSummaryRollupWithRootInSecondBatch(t *testing.T) {
 	// exists for.
 	first := newWriter(t)
 	first.ConsumeTraces(ctx, workspaceID, children)
-	if err := first.Close(); err != nil {
+	if err := first.Close(ctx); err != nil {
 		t.Fatalf("close first writer: %v", err)
 	}
 
@@ -508,7 +508,7 @@ func TestSummaryRollupWithRootInSecondBatch(t *testing.T) {
 
 	second := newWriter(t)
 	second.ConsumeTraces(ctx, workspaceID, roots)
-	if err := second.Close(); err != nil {
+	if err := second.Close(ctx); err != nil {
 		t.Fatalf("close second writer: %v", err)
 	}
 
@@ -588,7 +588,7 @@ func TestWriteFailureIsCountedNotReturned(t *testing.T) {
 
 	// ConsumeTraces has no error to return, by design.
 	w.ConsumeTraces(context.Background(), workspaceID, fixture(newTraceID(0x03), time.Now().UTC()))
-	if err := w.Close(); err != nil {
+	if err := w.Close(ctx); err != nil {
 		t.Fatalf("close writer: %v", err)
 	}
 

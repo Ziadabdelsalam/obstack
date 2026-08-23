@@ -48,6 +48,12 @@ spec:
         app.kubernetes.io/instance: {{ .Release.Name }}
         app.kubernetes.io/component: ingest
     spec:
+      # D278: the shutdown ladder's stated worst case is deadline (10s) + one
+      # in-flight retry attempt (≤30s) = ≤40s (Writer.Close, services/ingest/
+      # internal/write/batcher.go); 45s leaves margin on top for receiver
+      # drain and admin shutdown rather than sitting exactly on the app's own
+      # bound. Supersedes D263.3/.4's 30s.
+      terminationGracePeriodSeconds: 45
       initContainers:
         {{- include "obstack.waitForClickhouse" . | nindent 8 }}
         # Two stores, two waits, for one reason: this pod now settles BOTH
@@ -55,14 +61,35 @@ spec:
         # fresh install would crash-loop it exactly the way an unreachable
         # ClickHouse used to — into kubelet's 5-minute backoff cap, failing
         # `install --wait` while the stack converged healthy behind it.
+        # `postgres.managed.enabled` (D253 item 6) skips this: the wait
+        # targets THIS chart's own Postgres Service by name, which says
+        # nothing about a managed target's reachability.
+        {{- if not .Values.postgres.managed.enabled }}
         {{- include "obstack.waitForPostgres" . | nindent 8 }}
+        {{- end }}
       containers:
         - name: ingest
           image: {{ .Values.ingest.image }}
           imagePullPolicy: {{ .Values.ingest.pullPolicy }}
+          # D253 item 5 — values.yaml states the defaults and the reasoning;
+          # this line is the one place they actually apply.
+          resources:
+            {{- toYaml .Values.ingest.resources | nindent 12 }}
           env:
+            # D275: this Deployment always reads both passwords through
+            # secretKeyRef — the chart's own Secret or an existingSecret
+            # (obstack.clickhouse.secretName resolves either), never a
+            # literal `value:` — so no password sits in this pod's rendered
+            # DSN string either way. cmd/ingest/main.go's config.LoadDSN folds
+            # OBSTACK_CLICKHOUSE_DSN_PASSWORD onto CLICKHOUSE_DSN itself
+            # (config.InjectDSNPassword).
             - name: CLICKHOUSE_DSN
-              value: clickhouse://obstack_ingest:{{ .Values.clickhouse.ingestPassword }}@{{ .Release.Name }}-clickhouse:9000/obstack
+              value: clickhouse://obstack_ingest@{{ .Release.Name }}-clickhouse:9000/obstack
+            - name: OBSTACK_CLICKHOUSE_DSN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "obstack.clickhouse.secretName" . }}
+                  key: clickhouse-ingest-password
             - name: OBSTACK_MIGRATE_ON_BOOT
               value: "false"
             # The Postgres half of the same split, and required rather than
@@ -83,12 +110,29 @@ spec:
             # collector's `ok_dev_local` credential (values.yaml) authenticates
             # against the continuity row the pg-migrate Job seeds.
             #
-            # No `lookup` on the password, unlike the ClickHouse migrate Job's:
-            # POSTGRES_PASSWORD is an initdb-time value, so there is no
-            # rotation window to bridge — see README.md, "Postgres in this
-            # chart".
+            # D275: the same always-secretKeyRef rule as CLICKHOUSE_DSN above,
+            # not a literal `value:` — postgresDSN (cmd/ingest/main.go) folds
+            # OBSTACK_POSTGRES_DSN_PASSWORD onto OBSTACK_POSTGRES_DSN the same
+            # way. POSTGRES_PASSWORD being an initdb-time value (see README.md,
+            # "Postgres in this chart") is a StatefulSet concern, not this
+            # DSN's — this pod always wants the CURRENT Secret content.
+            #
+            # `postgres.managed.enabled` (D253 item 6, values.yaml) swaps the
+            # host half for the operator's own DSN; the password still rides
+            # the same secretKeyRef below either way, since a managed DSN
+            # never carries one.
+            {{- if .Values.postgres.managed.enabled }}
             - name: OBSTACK_POSTGRES_DSN
-              value: postgres://obstack:{{ .Values.postgres.password }}@{{ .Release.Name }}-postgres:5432/obstack
+              value: {{ .Values.postgres.managed.dsn | quote }}
+            {{- else }}
+            - name: OBSTACK_POSTGRES_DSN
+              value: postgres://obstack@{{ .Release.Name }}-postgres:5432/obstack
+            {{- end }}
+            - name: OBSTACK_POSTGRES_DSN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "obstack.postgres.secretName" . }}
+                  key: postgres-password
             - name: OBSTACK_PG_MIGRATE_ON_BOOT
               value: "false"
           ports:

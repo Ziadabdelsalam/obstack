@@ -37,6 +37,9 @@ spec:
         - name: demo-agent
           image: {{ .Values.demo.image }}
           imagePullPolicy: {{ .Values.demo.pullPolicy }}
+          # D283: requests + limits — values.yaml states the reason.
+          resources:
+            {{- toYaml .Values.demo.resources | nindent 12 }}
           ports:
             - name: http
               containerPort: 8000
@@ -102,6 +105,9 @@ spec:
         # join). It is not in collector.excludeContainer, so filelog reads it.
         - name: sidecar
           image: {{ .Values.utilityImage }}
+          # D283: the same bound as its pod-mate — values.yaml's demo block.
+          resources:
+            {{- toYaml .Values.demo.resources | nindent 12 }}
           command:
             - sh
             - -c

@@ -1,8 +1,13 @@
-# obstack Helm chart — values. M2 scope only (D35): CI-grade ClickHouse,
-# ingest, the obstack-collector DaemonSet and the demo app. No self-hosted
-# values surface here — no ingress, no TLS, no resource sizing, no secret
-# backend selection, no `web` image, no TTL tiers. That is M4's job; see
-# README.md's scope boundary.
+# obstack Helm chart — values. M4 extends this chart's self-hosted surface in
+# place (D35 — a second chart is drift): CI-grade ClickHouse and Postgres on
+# StatefulSets + PVCs, ingest, the obstack-collector DaemonSet, the demo app,
+# a chart-owned Secret with an `existingSecret` name override on every
+# credential (D253 items 2/3/7), and — T5, landing in this same 0.3.0 train —
+# the `web` workload itself, optional Ingress for web and for ingest's
+# OTLP/HTTP surface, resource requests/limits, and managed-Postgres values
+# (D253 items 1/4/5/6). See README.md's scope boundary for exactly what's
+# here today, and its "Managed Postgres" section for that item's stated
+# ceiling.
 #
 # Every image below is pinned to an exact tag (D14 precedent) — bumping one
 # is a deliberate edit here, never a floating tag.
@@ -10,26 +15,51 @@
 # Live on upgrade like every other value (advisor ruling (c) — ClickHouse is
 # a normal, release-managed resource): an image bump or a password change
 # rolls the ClickHouse pod and converges, with the schema surviving on the
-# Deployment's hostPath data dir. See README.md, "Why ClickHouse is a normal
+# StatefulSet's PVC data dir. See README.md, "Why ClickHouse is a normal
 # resource, and the migrate Job renders two ways".
 clickhouse:
   image: clickhouse/clickhouse-server:26.3.17.110
-  # Dev/CI defaults, matching deploy/compose/docker-compose.yml's own. A
-  # real deployment overrides these with --set or -f, same as compose's env
-  # overrides — there is no chart-owned Secret to route around (D35: no
-  # self-hosted secret-backend story here).
+  # Dev/CI defaults, matching deploy/compose/docker-compose.yml's own. A real
+  # deployment overrides these with --set or -f, same as compose's env
+  # overrides, OR routes around them entirely with existingSecret below.
   ingestPassword: obstack_ingest_dev
   webPassword: obstack_web_dev
+  # Empty (default): both passwords above populate this chart's own Secret
+  # (templates/secret.yaml). Set to the name of a Secret already in the
+  # cluster to source both instead — fixed key names, D123 rotation
+  # procedure: README.md, "Credentials and rotation".
+  existingSecret: ""
+  storage:
+    # Dev/CI-sized default. A real deployment sets this to what its telemetry
+    # retention actually needs.
+    size: 20Gi
+    # Empty (default): the cluster's default StorageClass provisions the PVC
+    # dynamically — the shape a fresh kind cluster (rancher.io/local-path)
+    # and most real clusters both satisfy out of the box. Set only to pin a
+    # specific class; an explicit empty string here means something
+    # different to Kubernetes (no dynamic provisioning at all), which is why
+    # this field is omitted from the rendered PVC rather than set to "".
+    storageClassName: ""
+  # D283: REQUESTS only, deliberately no limits — a mis-estimated request
+  # degrades scheduling; a mis-estimated limit OOM-kills the store, and a
+  # store limit is only honest when coordinated with ClickHouse's own memory
+  # settings on measured numbers (reopen-on-measurement, owner: S5's sizing
+  # pass). Requests sit at/below the observed kind-acceptance footprint
+  # (~1.66Gi peak under the D37 load).
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
 
 # The identity + saved-views store (D95/D112), the same class of resource as
-# ClickHouse above and for the same reasons: one replica, no PVC, a
-# release-scoped hostPath data dir, normal and release-managed. Telemetry
-# stays in ClickHouse; these are two stores with two migration sets, and the
-# ingest image is the one binary that owns both (templates/ingest/).
+# ClickHouse above and for the same reasons: one replica, a StatefulSet's PVC
+# data dir, normal and release-managed. Telemetry stays in ClickHouse; these
+# are two stores with two migration sets, and the ingest image is the one
+# binary that owns both (templates/ingest/).
 #
-# Not here, deliberately (D112): BETTER_AUTH_SECRET / BETTER_AUTH_URL. This
-# chart has no `web` workload until M4, and auth secrets belong to the
-# process that signs cookies — a value here would configure nothing.
+# BETTER_AUTH_SECRET / BETTER_AUTH_URL are still not here (D112 unchanged):
+# they belong to the `web` block below, the workload that actually reads
+# them, not to this store.
 postgres:
   image: postgres:17.11
   # Dev/CI default, matching deploy/compose/docker-compose.yml's own. Unlike
@@ -39,6 +69,109 @@ postgres:
   # dir already exists rotates nothing and only breaks the migrate Job's DSN.
   # See README.md, "Postgres in this chart".
   password: obstack_postgres_dev
+  # Empty (default): the chart's own Secret (templates/secret.yaml). Same
+  # override shape as clickhouse.existingSecret above — README.md,
+  # "Credentials and rotation".
+  existingSecret: ""
+  storage:
+    size: 10Gi
+    # See clickhouse.storage.storageClassName above — same rule, same reason.
+    storageClassName: ""
+  # D283: same requests-only rule and reason as clickhouse.resources above;
+  # observed footprint ~48Mi in the kind acceptance run.
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+  # D253 item 6 — point ingest (and web, its other Postgres client) at a
+  # Postgres this chart does not run, instead of the StatefulSet below.
+  # Disabled (default): both workloads address this chart's own Service
+  # exactly as today. The password still resolves through existingSecret
+  # above (the same fixed `postgres-password` key) — a managed DSN never
+  # carries one.
+  #
+  # D284: enabling this DISABLES the in-chart Postgres — the StatefulSet and
+  # both Services stop rendering — and the pg-migrate Job retargets the
+  # managed DSN, so the operator's Postgres receives the schema through the
+  # same one-runner Job as always. The Job failing is the reachability gate
+  # by design (`--wait` fails loudly there); no second preflight exists.
+  # Real-provider specifics (TLS/sslmode, provider auth) are pre-registered
+  # to S5 — README.md, "Managed Postgres".
+  managed:
+    enabled: false
+    # A full DSN with exactly ONE `@` and no password component, e.g.
+    # postgres://myuser@managed.example.com:5432/obstack?sslmode=require —
+    # ingest folds the Secret's password onto this at boot
+    # (config.InjectDSNPassword, D275, which parses the DSN as a URL and
+    # tolerates more structure); the web workload does the same through a
+    # plain string `replace` of that one `@` plus Kubernetes' own $(VAR) env
+    # interpolation (templates/web/deployment.yaml), since the web image has
+    # no equivalent URL-aware injection code — which is why this value's
+    # contract is stricter than ingest's.
+    dsn: ""
+
+# The web workload (D253 item 1, T5): the same Deployment+Service class as
+# ingest below, image exact-pinned to the live-stamped artifact T1's
+# Dockerfile produces. betterAuthSecret/explainApiKey are consumed through
+# templates/secret.yaml's `obstack.web.secretName` (this chart's own Secret
+# by default, or web.existingSecret — README.md, "Credentials and
+# rotation"); this file never carries their values as a Deployment `value:`
+# literal.
+web:
+  # Built locally and loaded into kind, live-stamped (T1's Dockerfile,
+  # `--build-arg OBSTACK_DATA_MODE=live`) — the same no-registry-in-the-path
+  # posture as ingest.image below. A real deployment sets `--set
+  # web.image=<registry image> --set web.pullPolicy=IfNotPresent`.
+  image: obstack-web:kind
+  pullPolicy: Never
+  # Empty by default, same as compose's own no-default posture
+  # (docker-compose.yml:38-42) — the boot check (apps/web/src/server/
+  # mode-stamp.ts) is what actually refuses a live-stamped pod that boots
+  # without it, loudly, with the generate instruction.
+  betterAuthSecret: ""
+  # The origin a browser reaches this Deployment on — the same D119 posture
+  # compose's own value documents. The loopback default below is correct
+  # only behind a `kubectl port-forward`, and is the first thing to change
+  # once this sits behind the Ingress below (or any other real hostname): a
+  # `https://` origin here is what upgrades better-auth's session cookie to
+  # the `__Secure-` name it issues over TLS; left at `http://`, the cookie
+  # stays downgraded.
+  betterAuthUrl: "http://localhost:3000"
+  # Optional, and never a boot refusal: Explain's default mode is `fake`
+  # (`OBSTACK_EXPLAIN_MODE`, apps/web/src/server/explain/client.ts), which
+  # reads no key at all. A deployment that sets the mode to `anthropic` and
+  # leaves this empty gets Explain's own per-request refusal naming the
+  # missing variables — never a fabricated summary (D102).
+  explainApiKey: ""
+  existingSecret: ""
+  # D253 item 5 — conservative defaults for a Node process serving requests,
+  # not a request-driven autoscaling target (HA beyond ingest's existing
+  # replicas is OUT, D253): raise these for a real workspace's traffic.
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  # D253 item 4 — optional Ingress in front of this Service. Disabled by
+  # default (a `kubectl port-forward`, or a plain ClusterIP behind some
+  # other LB, is a complete, valid deployment); this chart ships no ingress
+  # controller and no cert-manager (D253 refuses both as speculative
+  # components) — host and tls.secretName below assume one already exists
+  # in the cluster.
+  ingress:
+    enabled: false
+    # Empty (default): the cluster's default IngressClass. Set only to pick
+    # a specific one — the same rule storageClassName above follows.
+    className: ""
+    host: ""
+    tls:
+      enabled: false
+      # A Secret already in the cluster (cert-manager or otherwise) — this
+      # chart never issues or renders certificate material.
+      secretName: ""
+    annotations: {}
 
 ingest:
   # Built locally and loaded into kind (`kind load docker-image`) — no
@@ -54,6 +187,31 @@ ingest:
   # No key value here: API keys are Postgres `api_keys` rows (D98), issued in
   # the product and read by ingest through a cached lookup. There is nothing
   # for this chart to configure.
+  # D253 item 5 — see web.resources above for the same reasoning; sized for
+  # the OTLP receive + ClickHouse/Postgres write path, not a guess.
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+  # D253 item 4 — the OTLP/HTTP surface only (D266/D277): gRPC is NOT
+  # exposed here. Most ingress controllers need dedicated HTTP/2 wiring for
+  # gRPC that this chart does not ship, so a self-hosted deployment's
+  # quickstart shows the honest omission D277's display rule describes
+  # (only the configured protocol renders) rather than a gRPC address
+  # nothing actually serves. Enabling this sets
+  # OBSTACK_PUBLIC_OTLP_HTTP_ENDPOINT on the web workload automatically
+  # (templates/web/deployment.yaml) — nothing else to wire by hand.
+  ingress:
+    enabled: false
+    className: ""
+    host: ""
+    tls:
+      enabled: false
+      secretName: ""
+    annotations: {}
 
 collector:
   image: otel/opentelemetry-collector-k8s:0.158.0
@@ -63,10 +221,10 @@ collector:
   # there is the dev continuity key seeded by
   # services/ingest/pgmigrations/0004, which the pg-migrate Job applies, so
   # the default is the only key that works out of the box. This chart ships
-  # no key-issuing surface (no `web` workload until M4 — see the postgres
-  # block above), so a key issued in a hosted product's settings is not a row
-  # here and gets 401'd. Override only with a key row that exists in this
-  # chart's Postgres.
+  # no key-issuing surface (the `web` block above is a login/signup surface,
+  # not an API-key one — D98), so a key issued in a hosted product's settings
+  # is not a row here and gets 401'd. Override only with a key row that
+  # exists in this chart's Postgres.
   apiKey: ok_dev_local
   # Must name the demo pod's instrumented container below (D37.3) — the
   # collector's filelog exclusion is keyed on the container name.
@@ -75,10 +233,31 @@ collector:
   # the DaemonSet mounts below at this same path, so a collector restart
   # resumes instead of re-shipping every historical line.
   storageDir: /var/lib/obstack-collector
+  # D283: requests AND limits — a bounded, well-understood fixed workload,
+  # and a limit on a log-tailer is genuine node protection (a runaway tailer
+  # is a real class, not a guess).
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
 
 demo:
   image: obstack-demo-agent:kind
   pullPolicy: Never
+  # D283: requests + limits, same ground as collector.resources — a traffic
+  # generator is exactly the thing to bound. Applied to both of the pod's
+  # containers (the agent and the uninstrumented sidecar). Observed agent
+  # footprint ~55Mi.
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 500m
+      memory: 128Mi
 
 # A small, pinned utility image (D14 — exact tag, never floating), used
 # wherever this chart needs a shell and no OTel SDK: the demo pod's second,

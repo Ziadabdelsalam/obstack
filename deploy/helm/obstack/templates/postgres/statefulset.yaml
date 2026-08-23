@@ -1,0 +1,131 @@
+# CI-grade Postgres (D35/D95) — a StatefulSet with a PersistentVolumeClaim,
+# the same class of resource as templates/clickhouse/statefulset.yaml and
+# read alongside it (D253 item 2: this replaces the Deployment+hostPath shape
+# every release through 0.2.0 used — README.md's "Upgrading from 0.2.0"): a
+# normal, release-managed resource, so `helm upgrade --set postgres.…`
+# applies here like any other value and `helm uninstall` removes it like any
+# other resource.
+#
+# The PVC exists for the same reason ClickHouse's does: an upgrade can
+# legitimately replace this pod (an image bump), and the schema the
+# pg-migrate Job applied has to survive that replacement, or ingest boots
+# against a database its migration set no longer matches. It outlives pod
+# replacement AND the node — every consequence README.md's old scope
+# boundary listed for the ClickHouse hostPath held for this one identically,
+# and this file (with ClickHouse's) is what closes that gap for both.
+{{/*
+D284: managed mode DISABLES this store — nothing renders, not an idle copy.
+A "managed" toggle that still ran an in-chart Postgres beside the operator's
+own was the lie-shaped surface the review named; D253 item 6's own wording
+was "disabling the in-chart Postgres".
+*/}}
+{{- if not .Values.postgres.managed.enabled }}
+{{- include "obstack.refuseLegacyDeployment" (dict "root" $ "component" "postgres") }}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ .Release.Name }}-postgres
+  labels:
+    {{- include "obstack.labels" . | nindent 4 }}
+    app.kubernetes.io/component: postgres
+spec:
+  replicas: 1
+  # See templates/clickhouse/statefulset.yaml's identical comment: the
+  # headless Service below is only for the StatefulSet controller's own pod
+  # identity; the normal ClusterIP Service beside this file is what every DSN
+  # in this chart still addresses, unchanged.
+  serviceName: {{ .Release.Name }}-postgres-headless
+  # No `strategy` field — see templates/clickhouse/statefulset.yaml: a
+  # StatefulSet's default RollingUpdate already terminates before replacing a
+  # single-ordinal pod, the same hard rule the old `Recreate` stated: two
+  # postmasters must never open one data directory.
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: obstack
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: postgres
+  template:
+    metadata:
+      {{- if not .Values.postgres.existingSecret }}
+      annotations:
+        # See templates/clickhouse/statefulset.yaml's identical comment: a
+        # secretKeyRef's NAME/KEY don't change when only the Secret's DATA
+        # does, so this hash restores "a password change rolls this pod" for
+        # this chart's own Secret. Postgres itself never picks the new value
+        # up on a running server either way (POSTGRES_PASSWORD is initdb-time
+        # only — README.md's "Postgres in this chart" and "Credentials and
+        # rotation") — this annotation is what makes the ROLL happen, not
+        # what makes Postgres notice.
+        # Covers only this chart's OWN Secret, same ceiling as ClickHouse's
+        # identical annotation — see that file's comment.
+        checksum/secret: {{ .Values.postgres.password | sha256sum }}
+      {{- end }}
+      labels:
+        app.kubernetes.io/name: obstack
+        app.kubernetes.io/instance: {{ .Release.Name }}
+        app.kubernetes.io/component: postgres
+    spec:
+      containers:
+        - name: postgres
+          image: {{ .Values.postgres.image }}
+          # D283: requests only, no limits — values.yaml states the reason.
+          resources:
+            {{- toYaml .Values.postgres.resources | nindent 12 }}
+          env:
+            # Read by the image's entrypoint at initdb time only — see
+            # values.yaml's note on postgres.password and README.md,
+            # "Postgres in this chart".
+            - name: POSTGRES_USER
+              value: obstack
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "obstack.postgres.secretName" . }}
+                  key: postgres-password
+            - name: POSTGRES_DB
+              value: obstack
+            # A subdirectory of the mount, which is upstream's own guidance
+            # for a mounted data volume: initdb needs to own and chmod 0700
+            # the directory it initialises, and the mount point itself is the
+            # kubelet's. The volume path below stays the image's default, so
+            # nothing else has to know about this.
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          ports:
+            - name: postgres
+              containerPort: 5432
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+          readinessProbe:
+            # pg_isready over TCP, not the unix socket: the entrypoint's
+            # initdb phase runs a temporary server on the socket alone, so a
+            # socket probe reports ready while the database is still being
+            # created (the same trap docker-compose.yml's healthcheck names).
+            exec:
+              command: ["pg_isready", "-h", "127.0.0.1", "-U", "obstack", "-d", "obstack"]
+            initialDelaySeconds: 5
+            periodSeconds: 3
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-h", "127.0.0.1", "-U", "obstack", "-d", "obstack"]
+            initialDelaySeconds: 20
+            periodSeconds: 10
+  # The kubelet creates a fresh PVC's mount root:root; the image's entrypoint
+  # runs as root, chowns PGDATA and drops privileges to the postgres user —
+  # no securityContext needed, the same as ClickHouse's.
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          {{- include "obstack.labels" . | nindent 10 }}
+          app.kubernetes.io/component: postgres
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        {{- if .Values.postgres.storage.storageClassName }}
+        storageClassName: {{ .Values.postgres.storage.storageClassName }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.postgres.storage.size }}
+{{- end }}

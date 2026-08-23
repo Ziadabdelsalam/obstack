@@ -270,7 +270,17 @@ export function dataForWorkspace(workspaceId: string): WorkspaceData {
   };
 }
 
-/** A live-mode read was attempted with no signed-in session to scope it (D113). */
+/**
+ * D96/D113's refusal: a live-mode read with no session has no workspace to
+ * scope to, and there is no default to fall back on. Every production caller
+ * of `dataForSessionContext` below already turns a null session into its own
+ * response before reaching it — a 401 (`onboarding/status/route.ts`,
+ * `traces/[id]/explain/route.ts`) or a `redirect` (`onboarding/page.tsx`) —
+ * and `dataForSession` no longer reaches it with a null at all (D274, next).
+ * So this constructor runs in production only if one of those guards is ever
+ * dropped, which is exactly the bug class D96 exists to catch loudly. Tests
+ * drive it directly (`tenancy.test.ts:210`).
+ */
 export class NoSessionError extends Error {
   constructor() {
     super("no signed-in session: a live-mode read has no workspace to scope to");
@@ -282,7 +292,9 @@ export class NoSessionError extends Error {
  * The half of `dataForSession` a test can drive without a request (the
  * `resolveSessionContext` pattern). A missing session is a refusal, never a
  * default workspace — the whole point of D96 is that there is no workspace to
- * fall back to.
+ * fall back to. This stays a throw rather than a redirect: it has no request
+ * shape of its own (a route handler, a page, a test) to decide a response
+ * for, so that decision belongs to the caller, not here.
  */
 export function dataForSessionContext(session: SessionContext | null): WorkspaceData {
   if (!session) throw new NoSessionError();
@@ -298,9 +310,29 @@ export function dataForSessionContext(session: SessionContext | null): Workspace
  * reason (D114 byte-invariance: the demo product must run with no Postgres
  * present at all, and importing this facade must not drag the auth stack in
  * behind it).
+ *
+ * No session (D274, replacing D269): every wired `/app` page calls this and
+ * races `app/app/layout.tsx`'s own session read (D114); the layout's
+ * `redirect()` is what wins that race and what the client actually receives,
+ * a 307. A losing call used to reach `dataForSessionContext` and throw
+ * `NoSessionError`, which Next logged at error level for an outcome the
+ * client never saw as anything but that redirect. `redirect("/login")` here
+ * instead: the same NEXT_REDIRECT short-circuit terminates this render before
+ * anything logs, and the client's 307 is byte-identical to before.
+ * `next/navigation` is imported dynamically, inside the branch that actually
+ * redirects, for the same reason `getSessionContext` above is: this module is
+ * loaded by every test that imports the facade (`layout.test.ts`'s D114
+ * graph-load test, `tenancy.test.ts`, `data.test.ts`), and a component-side
+ * Next module at module scope is exactly what those tests run under
+ * `--conditions react-server` to prove this graph can do without.
  */
 export async function dataForSession(): Promise<WorkspaceData> {
   if (dataMode === "mock") return MOCK_DATA;
   const { getSessionContext } = await import("@/server/session");
-  return dataForSessionContext(await getSessionContext());
+  const session = await getSessionContext();
+  if (!session) {
+    const { redirect } = await import("next/navigation");
+    redirect("/login");
+  }
+  return dataForSessionContext(session);
 }

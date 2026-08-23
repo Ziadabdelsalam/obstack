@@ -121,16 +121,24 @@ func runMigrate() error {
 // therefore cannot boot without it. Keeping it out of Config is what lets the
 // one-shot skip a validator built for serving traffic.
 const (
-	envPostgresDSN     = "OBSTACK_POSTGRES_DSN"
-	envPGMigrateOnBoot = "OBSTACK_PG_MIGRATE_ON_BOOT"
+	envPostgresDSN         = "OBSTACK_POSTGRES_DSN"
+	envPostgresDSNPassword = "OBSTACK_POSTGRES_DSN_PASSWORD"
+	envPGMigrateOnBoot     = "OBSTACK_PG_MIGRATE_ON_BOOT"
 )
 
+// postgresDSN reads the DSN and, per D275, layers a password onto it from
+// envPostgresDSNPassword when the chart set one — the same
+// config.InjectDSNPassword split LoadDSN uses for the ClickHouse DSN, so the
+// two stores' `existingSecret` paths cannot drift in how the password gets
+// from a `secretKeyRef` into the connection string. Unset is a no-op: the
+// chart's own (non-`existingSecret`) Secret still renders the password
+// straight into OBSTACK_POSTGRES_DSN.
 func postgresDSN() (string, error) {
 	dsn := os.Getenv(envPostgresDSN)
 	if dsn == "" {
 		return "", fmt.Errorf("%s is required", envPostgresDSN)
 	}
-	return dsn, nil
+	return config.InjectDSNPassword(dsn, envPostgresDSNPassword)
 }
 
 // pgMigrateOnBoot is OBSTACK_MIGRATE_ON_BOOT's counterpart for the Postgres set,
@@ -162,6 +170,15 @@ func runPGMigrate() error {
 	logSchema(storePostgres, applied)
 	return nil
 }
+
+// shutdownTimeout is the app-level grace period (D263): the deadline
+// receiver.Shutdown and writer.Close share on the way out, generous enough
+// for a clean final flush and inside the chart's 45s
+// terminationGracePeriodSeconds and compose's matching stop_grace_period
+// (D278, superseding D263.3/.4's 30s — 45 covers this deadline plus the one
+// in-flight retry attempt Close cannot abort, ≤40s, and still leaves margin
+// for receiver drain and admin shutdown).
+const shutdownTimeout = 10 * time.Second
 
 func run() error {
 	cfg, err := config.Load()
@@ -250,7 +267,9 @@ func run() error {
 	if err := receiver.Start(); err != nil {
 		stopMeter()
 		<-meterStopped
-		writer.Close()
+		closeCtx, cancelClose := context.WithTimeout(context.Background(), shutdownTimeout)
+		writer.Close(closeCtx)
+		cancelClose()
 		return err
 	}
 
@@ -275,7 +294,7 @@ func run() error {
 		slog.Info("shutting down")
 	}
 
-	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), 10*time.Second)
+	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancelShutdown()
 	// Order matters: stop taking exports, then flush what is buffered, and only
 	// then drop /metrics — the last flush is worth watching. The meter stops
@@ -284,7 +303,10 @@ func run() error {
 	if err := receiver.Shutdown(shutdownCtx); err != nil {
 		slog.Error("otlp shutdown", "error", err)
 	}
-	if err := writer.Close(); err != nil {
+	// writer.Close shares this same ctx (D263): whatever receiver.Shutdown just
+	// spent is gone from the writer's budget too, and the final flush's retry
+	// loop never sleeps past what is left of it.
+	if err := writer.Close(shutdownCtx); err != nil {
 		slog.Error("writer close", "error", err)
 	}
 	stopMeter()

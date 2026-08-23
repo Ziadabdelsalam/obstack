@@ -8,5 +8,9 @@ description: >-
   than replacing it — see README.md's scope boundary.
 type: application
 # 0.2.0: S3.1 added the Postgres workload and its pg-migrate Job.
-version: 0.2.0
+# 0.3.0: S4.1 replaces the ClickHouse/Postgres Deployment+hostPath shape with
+# StatefulSets+PVCs and adds a chart-owned Secret with an existingSecret
+# override on every credential (D253 items 2/3/7, D268) — no upgrade path
+# from 0.2.0 or earlier (README.md, "Upgrading from 0.2.0").
+version: 0.3.0
 appVersion: "0.1.0"

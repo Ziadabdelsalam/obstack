@@ -38,50 +38,38 @@ did.
 {{- end -}}
 
 {{/*
-The migrate Job's ClickHouse ingest password — NOT simply
-.Values.clickhouse.ingestPassword, and this is load-bearing, not decoration
-(found by testing a password rotation, not by inspecting the templates):
-on an upgrade the migrate Job is a pre-upgrade hook, so it runs and needs to
-authenticate *before* Helm applies this revision's main resources —
-including the ClickHouse Deployment's own env, which is where a rotated
-password actually takes effect. A migrate DSN built from the NEW value
-during a password-rotating upgrade would try to authenticate against a
-ClickHouse still running the OLD one and fail every attempt, permanently
-(retrying the same wrong password is not a transient race the way a cold
-ClickHouse pull is). On install there is no "currently running" ClickHouse
-to diverge from — it is being created with this exact value in the same
-batch — so the values password is simply correct there.
-
-On upgrade, `lookup` reads the ClickHouse Deployment as the cluster
-currently has it — the password this revision's changes have not applied
-yet — and that is deliberately what the migrate Job authenticates with. By
-the time the *next* operation needs the new password (ingest's own DSN,
-applied as a main resource in the same batch as ClickHouse's own env
-change), both move together. `lookup` returns an empty dict outside a live
-cluster (`helm template`, `helm lint`, and `helm upgrade --dry-run=client`),
-so this still renders without one; it falls back to the values password,
-same as install. A client-side dry run therefore previews the NEW password
-in this DSN while the real upgrade will use the live one — `--dry-run=server`
-is the rendering that shows what actually runs. The same empty-dict fallback
-happens if the ClickHouse Deployment is missing entirely, and it is harmless
-for the same reason it is unreachable: with no Deployment there is no
-ClickHouse to authenticate against either, so the Job's
-`wait-for-clickhouse` init container fails the hook loudly instead of
-migrating with the wrong password.
+D275 — the migrate Job's password-rotation helper this used to be
+(`obstack.migrate.clickhousePassword`) is deleted, not fixed: it worked by
+`lookup`-ing a live ClickHouse `Deployment`'s env, and that target stopped
+existing the moment ClickHouse became a StatefulSet
+(`templates/clickhouse/statefulset.yaml`, D253 item 2) — every upgrade since
+has silently fallen through to `.Values.clickhouse.ingestPassword` regardless
+of what it looked up, which is dead code wearing a live comment. The
+`existingSecret` path (`templates/ingest/migrate-job.yaml`,
+`templates/ingest/pg-migrate-job.yaml`) replaces the concern it existed for —
+see README.md, "Credentials and rotation" — and the default chart-owned-Secret
+path keeps the plain values password this always actually ran with.
 */}}
-{{- define "obstack.migrate.clickhousePassword" -}}
-{{- $password := .Values.clickhouse.ingestPassword -}}
-{{- if not .Release.IsInstall -}}
-{{- $deployment := lookup "apps/v1" "Deployment" .Release.Namespace (printf "%s-clickhouse" .Release.Name) -}}
-{{- if $deployment -}}
-{{- range $deployment.spec.template.spec.containers -}}
-{{- range .env -}}
-{{- if eq .name "OBSTACK_CLICKHOUSE_INGEST_PASSWORD" -}}
-{{- $password = .value -}}
+
+{{/*
+D276 — refuses a `helm upgrade` over a pre-0.3.0 (<=0.2.0) install rather than
+silently data-losing it. Those releases shipped ClickHouse/Postgres as
+Deployments over hostPath; this chart's StatefulSets share their names but
+are a different resource kind, so Helm patches nothing in place — measured
+(README.md, "Upgrading from 0.2.0"): it deletes the old Deployment, creates
+an empty-PVC StatefulSet, and reports `Upgrade complete` while both stores
+come up empty. `lookup` sees the live Deployment a real upgrade runs
+against and this `fail`s before Helm touches anything. `lookup` returns an
+empty dict outside a live cluster — `helm template`, `helm lint`,
+`helm upgrade --dry-run=client`, and a from-scratch `helm install` (which
+never has an old Deployment to find) — so none of those trip this; only a
+genuine upgrade over a live pre-0.3.0 release does. No adoption code: the
+fix is the README's manual path, not this chart's (`helm uninstall`, remove
+the old release's node-local hostPath directories, fresh install).
+*/}}
+{{- define "obstack.refuseLegacyDeployment" -}}
+{{- $name := printf "%s-%s" .root.Release.Name .component -}}
+{{- if lookup "apps/v1" "Deployment" .root.Release.Namespace $name -}}
+{{- fail (printf "%s exists as a Deployment — the pre-0.3.0 (<=0.2.0) shape this chart no longer ships. There is no upgrade path across that boundary (README.md, \"Upgrading from 0.2.0\"): helm uninstall this release, remove its node-local hostPath directories, then helm install fresh." $name) -}}
 {{- end -}}
-{{- end -}}
-{{- end -}}
-{{- end -}}
-{{- end -}}
-{{- $password -}}
 {{- end -}}

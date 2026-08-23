@@ -3,13 +3,14 @@
 The real Helm chart M4 extends in place (D35) — not a throwaway kind
 manifest and not a first draft superseded later. Installs the obstack stack
 on Kubernetes: CI-grade ClickHouse and Postgres, the ingest service
-(Deployment + its two migrate `Job`s), the `obstack-collector` DaemonSet
-running T1's config byte-for-byte, and a demo app pod carrying a second,
-uninstrumented container.
+(Deployment + its two migrate `Job`s), the `web` workload itself, the
+`obstack-collector` DaemonSet running T1's config byte-for-byte, and a demo
+app pod carrying a second, uninstrumented container.
 
 ## Scope boundary (D35) — read this before extending the chart
 
-**In scope now (M2/S2.2, extended in place by S3.1's Postgres):**
+**In scope now (M2/S2.2, extended in place by S3.1's Postgres and S4.1's
+storage/secrets):**
 
 - CI-grade ClickHouse, both D11 users (`obstack_ingest`, `obstack_web`), as
   normal, release-managed resources.
@@ -29,47 +30,100 @@ uninstrumented container.
 - A demo app pod: the instrumented `demo-agent` container (OTLP routed
   through the collector, D37.1) plus a second, uninstrumented `sidecar`
   container whose stdout is the genuine NEARBY log source (D37.2).
-- Every image pinned to an exact tag (D14); the two images built from this
-  repo (`ingest`, `demo-agent`) are built locally and loaded into kind
+- Every image pinned to an exact tag (D14); the three images built from this
+  repo (`ingest`, `web`, `demo-agent`) are built locally and loaded into kind
   (`imagePullPolicy: Never`, S2.0's precedent) — no registry in the path.
+- **Durable storage for both databases** (D253 item 2): ClickHouse and
+  Postgres are StatefulSets with PersistentVolumeClaims, replacing the
+  Deployment+hostPath shape every release through 0.2.0 used — see
+  "Upgrading from 0.2.0" below for the breaking-change consequence and
+  "Credentials and rotation" for what moved alongside it.
+- **A chart-owned Secret with an `existingSecret` override on every
+  credential** (D253 item 3): both ClickHouse passwords, the Postgres
+  password, and the two slots T5's `web` workload fills (`BETTER_AUTH_SECRET`,
+  `OBSTACK_EXPLAIN_API_KEY`) — see "Credentials and rotation". No
+  external-secrets integration ships here; D253 refuses it as a speculative
+  component.
+- **The `web` workload** (D253 item 1): a Deployment + ClusterIP Service
+  running the live-stamped image `apps/web/Dockerfile` produces, with
+  `OBSTACK_DATA_MODE=live` and its store credentials wired from the Secret
+  above. `web.betterAuthUrl` is the origin a browser reaches it on — the
+  D119 posture is stated at that value.
+- **Optional Ingress for web and for ingest's OTLP/HTTP surface** (D253
+  item 4, the D214 network-reachable endpoint): host, TLS-Secret name and
+  annotation pass-through, both disabled by default. No ingress controller
+  and no cert-manager ship here. Enabling ingest's also sets
+  `OBSTACK_PUBLIC_OTLP_HTTP_ENDPOINT` on the web workload so the product's
+  quickstart renders that address; gRPC is deliberately not exposed.
+- **Resource requests/limits** (D253 item 5) on the two workloads this repo
+  builds — `ingest.resources` and `web.resources`, conservative defaults
+  stated at each. **Not yet on ClickHouse, Postgres, the collector DaemonSet
+  or the demo pod**: sizing a database's limits is a measurement, not a
+  guess, and a wrong limit OOM-kills the store it was meant to protect.
+- **Managed-Postgres values** (item 6) — see "Managed Postgres" below for
+  that item's stated ceiling.
 
-**Explicitly NOT in scope (D35) — this is M4's job, not a gap to silently
-fill:**
+**Explicitly NOT in scope (D35) — this is the rest of the same chart's job,
+not a gap to silently fill:**
 
-- The `web` image. CI asserts the M2 exit through the D17 tsx facade harness
-  against the cluster's ClickHouse instead (T5).
-- TTL tiers, docs content, self-hosted values (ingress, TLS, resource
-  sizing/HA, a secret-backend story). `values.yaml` carries plain dev/CI
-  defaults, the same shape `docker-compose.yml` already uses — there is no
-  chart-owned `Secret`.
+- HA beyond ingest's existing replica story, autoscaling, PDBs,
+  NetworkPolicies, multi-replica ClickHouse, backup automation — named OUT
+  by D253 as S5-informed follow-up.
+- TTL tiers and docs content — unrelated surfaces, no chart involvement
+  either way.
 - A second chart. M4 extends this one in place; a parallel chart is drift.
-- Durable storage for either database. Both data dirs are per-node
-  `hostPath`s (release-scoped, `/var/lib/obstack-clickhouse/<release>` and
-  `/var/lib/obstack-postgres/<release>`) so the schema survives pod
-  replacement within a release's lifetime — enough for CI/kind, where the
-  cluster is thrown away afterwards. M4 replaces both Deployments +
-  hostPaths with StatefulSets and PVCs rather than inheriting them
-  silently. Three consequences of node-disk storage, stated here rather
-  than left for M4 to rediscover — a PVC would have none of them (written
-  for ClickHouse, true of Postgres word for word):
-  - **`helm uninstall` does not remove the data.** Every *cluster* resource
-    goes; the node's `/var/lib/obstack-clickhouse/<release>` directory stays.
-    A later `helm install` of the *same* release name on the same node
-    adopts that database wholesale — measured: the reinstall's migrate Job
-    logged `schema already up to date` and the previous release's tables were
-    all still there. Wipe it (`docker exec <node> rm -rf
-    /var/lib/obstack-clickhouse/<release>`) or throw the cluster away when a
-    run has to start from empty data.
-  - **Single node only.** A `hostPath` follows the node, not the pod, and
-    nothing pins this Deployment to one node. On a multi-node cluster a
-    rescheduled ClickHouse pod comes up on a fresh, empty
-    `DirectoryOrCreate` directory — the same schema-loss wedge the hostPath
-    exists to prevent, just moved to another trigger. kind's single node is
-    the assumption everywhere below.
-  - **One release per cluster.** The path carries the release name but not
-    its namespace, and the collector's ClusterRole/ClusterRoleBinding are
-    named the same way, so two same-named releases in different namespaces
-    would share a data directory and fight over cluster-scoped RBAC.
+
+## Upgrading from 0.2.0
+
+0.3.0 replaces the ClickHouse and Postgres Deployment+hostPath shape with
+StatefulSets and PersistentVolumeClaims (D253 item 2 — the scope boundary
+above named this explicitly, not a gap being silently filled). **There is no
+upgrade path from a pre-0.3.0 release, and none is being built** (D270): zero
+production installs of this chart exist — every standing install is a
+throwaway kind cluster — so migration machinery would move data nobody is
+running.
+
+**`helm upgrade` across this boundary now refuses outright (D276) — it used
+not to, and that was exactly the danger.** Measured before the guard existed
+(helm v4.0.1 on kind: 0.2.0 installed, then `helm upgrade --wait --timeout
+300s` to this chart): a Deployment and a StatefulSet of the same name are
+different kinds, so Helm patched nothing in place and Kubernetes refused
+nothing — Helm simply deleted the two Deployments, created the two
+StatefulSets, and they bound **brand-new, empty PVCs**. The release reported
+`Upgrade complete` in 28s with `--wait` green while both stores were empty
+(`psql \dt` → "Did not find any relations"; ClickHouse → `Database obstack
+does not exist`) and the un-rolled ingest pods logged insert failures against
+the schema that had just vanished. The old hostPath data was still sitting on
+the node with nothing reading it — a silent-green data loss, not a failure a
+human would ever see coming.
+
+**A refusal is not a migration (D276's own ruling on itself):** every chart
+template that replaces a Deployment (`templates/clickhouse/statefulset.yaml`,
+`templates/postgres/statefulset.yaml`) now `lookup`s the live cluster for a
+same-name `Deployment` at render time and `fail`s the whole release before
+Helm touches anything, naming this section. Measured again with the guard in
+place, same repro: `helm upgrade` against a live 0.2.0 install now stops with
+`UPGRADE FAILED: … obstack-postgres exists as a Deployment — …`, revision
+stays at 1, and the running 0.2.0 Deployments are completely untouched — no
+StatefulSets created, no PVCs bound, nothing deleted. `lookup` is a no-op
+outside a real cluster (`helm template`, `helm lint`,
+`helm upgrade --dry-run=client`, and a from-scratch `helm install`, which
+never has an old Deployment to find), so none of those trip it. So the move
+is still a deliberate uninstall, never an upgrade — the guard makes sure
+nobody can reach the silent version of the mistake above by accident:
+
+```bash
+helm uninstall <release>
+# On kind the cluster (and its hostPath dirs) is thrown away with it. On a
+# real node that survives, the OLD chart's per-node directories are not a
+# release resource and are not removed by helm — clean them by hand:
+#   rm -rf /var/lib/obstack-clickhouse/<release> /var/lib/obstack-postgres/<release>
+helm install <release> deploy/helm/obstack   # 0.3.0+, from empty PVCs
+```
+
+Nothing here is a data migration: the fresh install's migrate Jobs apply the
+schema to empty, dynamically-provisioned volumes exactly as a brand-new
+install always has.
 
 ## Why ClickHouse is a normal resource, and the migrate Job renders two ways
 
@@ -137,18 +191,34 @@ waits for `pre-upgrade` hook Jobs before touching any of the release's
 normal resources. Two consequences of values being live are handled inside
 the templates and worth knowing about rather than rediscovering:
 
-- **The hook authenticates with the password the cluster is running, not
-  the one the values now say.** On a password-rotating upgrade the hook runs
-  *before* ClickHouse's env changes, so its DSN is built by the
-  `obstack.migrate.clickhousePassword` helper (`_helpers.tpl`), which
-  `lookup`s the live Deployment. The new password lands on ClickHouse and on
-  ingest's DSN together, in the same post-hook batch.
+- **The hook's password source is `clickhouse.existingSecret`, not a live
+  `lookup` (D275).** `obstack.migrate.clickhousePassword` (formerly
+  `_helpers.tpl`) used to authenticate a password-rotating upgrade's hook
+  with whatever password ClickHouse was ACTUALLY running, by `lookup`-ing the
+  live `Deployment`'s env — that target stopped existing the moment
+  ClickHouse became a StatefulSet (`templates/clickhouse/statefulset.yaml`),
+  so the helper had already silently fallen through to
+  `.Values.clickhouse.ingestPassword` on every upgrade, not just install; it
+  is deleted rather than repointed at the StatefulSet, because the concern it
+  existed for is better solved by `existingSecret`. The migrate Job
+  (`templates/ingest/migrate-job.yaml`) now branches on
+  `clickhouse.existingSecret` the same way the StatefulSet's own env does: set
+  it, and the hook reads the password through `secretKeyRef` from a Secret
+  Helm never renders a value for, so there is nothing for a release's
+  in-flight password change to make stale. Left unset (this chart's own
+  Secret, the dev/CI default), the hook still renders
+  `.Values.clickhouse.ingestPassword` straight into the DSN literal, and a
+  password-rotating upgrade on THAT path can still race the ClickHouse pod's
+  own roll — same limitation as before, now confined to the default path;
+  the workaround is unchanged (roll ClickHouse first, then `helm upgrade`).
 - **The schema survives a ClickHouse pod replacement.** An upgrade that
   changes `clickhouse.image`, a password, or the users XML rolls the
-  ClickHouse pod (`strategy: Recreate` — two servers must never open one
-  data dir). The data dir is a release-scoped hostPath precisely so the
-  schema the hook applied is still there when the replacement pod comes up;
-  with an emptyDir, that same upgrade would wedge — the hook has already
+  ClickHouse pod — a StatefulSet's default RollingUpdate already terminates a
+  single-ordinal pod before replacing it, the same guarantee `strategy:
+  Recreate` gave the Deployment this replaced. The data dir is a
+  PersistentVolumeClaim (`volumeClaimTemplates`, D253 item 2) precisely so
+  the schema the hook applied is still there when the replacement pod comes
+  up; with an emptyDir, that same upgrade would wedge — the hook has already
   run, nothing re-migrates, and rolled ingest pods would refuse forever.
 
 Either way, the invariant this section replaced never changed: **exactly one
@@ -204,8 +274,9 @@ upgrade").
   and each migrate Job's pod in `Init:0/1` (its own store's wait), all with
   zero restarts while the images pull — a restart on an ingest pod now means
   a schema refusal or a defect, never pull speed.
-  Expect a short ClickHouse gap during any upgrade that rolls it
-  (`Recreate`): already-running ingest pods crash-loop through it (init
+  Expect a short ClickHouse gap during any upgrade that rolls it (a
+  StatefulSet's own single-ordinal RollingUpdate, terminate-then-replace):
+  already-running ingest pods crash-loop through it (init
   containers gate startup only), and a rolling upgrade's *new* pods hold in
   `Init` while the old ones serve. All of it converges on its own; none of
   it needs intervention.
@@ -222,11 +293,13 @@ applies `services/ingest/pgmigrations/` from `OBSTACK_POSTGRES_DSN`. Neither
 set references the other's database — D112 bars cross-set references — so
 the two are peers, not a pipeline.
 
-`templates/postgres/deployment.yaml` is the same class of resource as
-ClickHouse's, for the same reasons and with the same caveats: one replica,
-`strategy: Recreate` (two postmasters must never open one data directory), a
-release-scoped `hostPath` data dir, normal and release-managed. Everything
-the scope boundary says about node-disk storage applies to it unchanged.
+`templates/postgres/statefulset.yaml` is the same class of resource as
+ClickHouse's, for the same reasons and with the same caveats: one replica, a
+StatefulSet's default RollingUpdate (two postmasters must never open one data
+directory — the same rule the old `strategy: Recreate` stated), a PVC data
+dir (D253 item 2), normal and release-managed. `POSTGRES_PASSWORD` is a
+`secretKeyRef` into this chart's Secret or `postgres.existingSecret` (D253
+item 3 — see "Credentials and rotation"), not a literal value.
 
 `templates/ingest/pg-migrate-job.yaml` is the ClickHouse migrate Job's
 template shape line for line — normal revision-named Job on install, a
@@ -248,16 +321,19 @@ before changing it:
   already applied.** That is not a half-state: both sets are idempotent and
   independent, so the fixed upgrade re-runs the first hook as a no-op and
   carries on. Nothing rolls back, and nothing needs to.
-- **The DSN's password comes straight from `.Values.postgres.password`, with
-  no live `lookup`.** The `obstack.migrate.clickhousePassword` helper exists
-  because a ClickHouse password change takes effect when the ClickHouse pod
-  restarts, which is *after* the hook phase. Postgres has no such divergence
-  to bridge, for a blunter reason: `POSTGRES_PASSWORD` is an **initdb-time**
-  value. On a release whose data dir already exists, changing
-  `postgres.password` rotates nothing — it only gives the migrate Job a
-  password the cluster never had. Rotating for real means starting from an
-  empty data dir (`kubectl exec <node> rm -rf
-  /var/lib/obstack-postgres/<release>`, or a fresh cluster).
+- **The DSN's password source is `postgres.existingSecret` (D275), same rule
+  as the migrate Job's ClickHouse half.** Set it, and the hook reads the
+  password through `secretKeyRef` instead of `.Values.postgres.password`
+  literal. Unlike ClickHouse there was never a `lookup` to delete here, for a
+  blunter reason: `POSTGRES_PASSWORD` is an **initdb-time** value. On a
+  release whose data dir already exists, changing `postgres.password` (or
+  which Secret this Job reads it from) rotates nothing on its own — it only
+  changes what the migrate Job authenticates as, and that has to match
+  whatever the cluster was actually created with regardless of the source.
+  Rotating for real means starting from an empty data dir (`kubectl delete
+  pvc data-<release>-postgres-0` and let the StatefulSet recreate it, or a
+  fresh cluster) — see "Credentials and rotation" for the two-step procedure
+  that keeps the running database's actual password in sync instead.
 
 **The ingest Deployment is a Postgres client too, and it must be.** It carries
 `OBSTACK_POSTGRES_DSN` and `OBSTACK_PG_MIGRATE_ON_BOOT=false`, the exact
@@ -276,16 +352,47 @@ second init container (`obstack.waitForPostgres`), because a pod that now
 opens two databases at boot would otherwise crash-loop on the cold-start race
 the first one was added to eliminate.
 
-**What is deliberately absent.** No `BETTER_AUTH_SECRET`/`BETTER_AUTH_URL`
-anywhere in this chart (D112): there is no `web` workload here until M4, and
-auth secrets belong to the process that signs cookies.
+**What is deliberately not here.** Neither `BETTER_AUTH_SECRET` nor
+`BETTER_AUTH_URL` belongs to this block (D112): auth secrets and the origin
+they sign against belong to the process that uses them, so both live in the
+`web` block — the secret through `templates/secret.yaml` and
+`web.betterAuthSecret`/`web.existingSecret` (see "Credentials and rotation"),
+the URL as a plain value on the web Deployment. This store holds the identity
+rows, never the credentials that sign against them.
+
+## Managed Postgres
+
+`postgres.managed.enabled` (D253 item 6) points ingest and web at a Postgres
+this chart does not run: `postgres.managed.dsn` replaces the in-chart host
+half of both DSNs, and the password still resolves through the same
+`postgres-password` Secret key, since a managed DSN never carries one. Ingest
+folds it in itself (`config.InjectDSNPassword`); the web Deployment does it
+with a `replace` of the DSN's single `@` plus Kubernetes' own `$(VAR)` env
+interpolation, which is why `postgres.managed.dsn`'s contract is the stricter
+of the two — exactly one `@`, no password component.
+
+**What enabling it actually does (D284):** the in-chart Postgres is
+DISABLED, not idled — the StatefulSet, both its Services and its wait init
+containers stop rendering entirely — and the **pg-migrate Job retargets the
+managed DSN**, so the operator's Postgres receives the schema through the
+same one-runner Job every install has always used (same binary, same
+pre-install/pre-upgrade hook, different target). **The Job failing IS the
+reachability gate, by design:** `helm install --wait` fails loudly at
+pg-migrate when the managed target is unreachable — there is deliberately no
+second preflight mechanism for the same fact.
+
+**Verified in kind against an out-of-release Postgres simulating the brought
+DSN; verification against a real managed provider (TLS/`sslmode`, provider
+auth) cannot exist in kind and is pre-registered to S5**, where the actual
+instance arrives with the hosting decision — recorded here so it is chosen,
+not discovered.
 
 The DDL itself is asserted directly with this line, which is exactly what
 CI's `stack` job runs after the acceptance (S2.1 L3) — the release going
 green already implies it, and this is the one that says so by name:
 
 ```bash
-kubectl exec deploy/obstack-postgres -- psql -U obstack -d obstack -v ON_ERROR_STOP=1 \
+kubectl exec statefulset/obstack-postgres -- psql -U obstack -d obstack -v ON_ERROR_STOP=1 \
   -c 'SELECT 1 FROM workspaces LIMIT 1' -c 'SELECT 1 FROM saved_views LIMIT 1'
 ```
 
@@ -295,6 +402,91 @@ non-zero exit. It asks the database rather than the Job object on purpose:
 the install-rendered Job is swept by `ttlSecondsAfterFinished` and the
 upgrade-rendered one deletes itself on success, so the database is the only
 thing both paths leave behind.
+
+## Credentials and rotation
+
+D253 item 3's floor: **the standard pattern and nothing more.** Every
+credential this chart handles — both ClickHouse users' passwords, the
+Postgres password, and the `web` workload's two auth slots
+(`BETTER_AUTH_SECRET`, `OBSTACK_EXPLAIN_API_KEY`) — resolves through the same
+three-group pattern. By default this chart renders its own Secret
+(`{{ .Release.Name }}-credentials`, `templates/secret.yaml`) from the values
+above; setting `clickhouse.existingSecret` / `postgres.existingSecret` /
+`web.existingSecret` to the name of a Secret already in the cluster sources
+that group's credentials from it instead — a NAME, never a value, so the
+credential itself never has to pass through `values.yaml`, `--set`, or this
+chart's own release manifest. Key names are **fixed by the chart, not
+values-configurable**, so a brought Secret has exactly one thing to get right
+instead of two: `clickhouse-ingest-password`, `clickhouse-web-password`,
+`postgres-password`, `better-auth-secret`, `explain-api-key`. Three groups,
+not five, because ClickHouse's two users rotate together (both live in
+`files/obstack-users.xml`) and the web workload's two auth slots are a third
+independent group — measured live: setting all three `existingSecret` values
+makes this chart's own Secret disappear entirely (nothing left for it to
+say), both StatefulSets' `secretKeyRef.name` move to the brought Secret on
+the next `helm upgrade`, and both PVCs keep the same underlying volumes
+across the roll. **No external-secrets integration ships here** — D253 item 3
+refuses it as a speculative component; the name override is the whole
+mechanism.
+
+**Rotation is D123's documented procedure, never automated, and it differs by
+credential:**
+
+- **ClickHouse** (`obstack_ingest`/`obstack_web`, D11): both users are
+  defined in `files/obstack-users.xml` with `password from_env="…"` — there
+  is no `ALTER USER` to run; the password IS whatever the env resolves to at
+  ClickHouse's own boot. Update the Secret (this chart's own or your
+  `existingSecret`), then roll the pod:
+  `kubectl rollout restart statefulset/<release>-clickhouse`. Changing
+  `clickhouse.ingestPassword`/`webPassword` on THIS chart's own Secret rolls
+  it for you on the next `helm upgrade` — a `checksum/secret` pod-template
+  annotation, the same mechanism `checksum/config` already uses for
+  `obstack-users.xml` — but rotating an `existingSecret` is invisible to Helm
+  at render time, so that roll is always the manual command above.
+  **Roll `deployment/<release>-ingest` as well, on either path.** Its pods
+  read the password through a `secretKeyRef` (D275), and a reference's NAME
+  and KEY do not change when the Secret's DATA does, so nothing rolls them
+  for you any more — before D275 the password sat in their DSN literal and a
+  `--set` rolled them for free. A ClickHouse that came back on the new
+  password while ingest still holds the old one fails every insert until
+  those pods restart (loudly — D5 — but the rows are gone).
+- **Postgres** (`obstack`): `POSTGRES_PASSWORD` is read by the image's
+  entrypoint at initdb time only (see "Postgres in this chart" above) — a
+  Secret update alone rotates nothing on a cluster whose data dir already
+  exists. Rotating for real is two steps, in order: `ALTER USER obstack WITH
+  PASSWORD '<new>'` against the LIVE database, then update the Secret (chart
+  Secret or `existingSecret`) to match and roll
+  `statefulset/<release>-postgres` **and `deployment/<release>-ingest`** (same
+  reason as ClickHouse's above: ingest's Postgres password is a `secretKeyRef`
+  too, so a Secret edit alone never reaches a running pod) so the
+  migrate/pg-migrate Jobs and ingest's own DSN agree with what the database
+  now actually has.
+- **`BETTER_AUTH_SECRET`/`OBSTACK_EXPLAIN_API_KEY`**: the `web` workload
+  reads both through `secretKeyRef` (`OBSTACK_EXPLAIN_API_KEY` optionally, so
+  a brought Secret may omit that key entirely) — update the Secret and roll
+  `deployment/<release>-web`. Rotating `BETTER_AUTH_SECRET` invalidates every
+  live session; users sign in again.
+
+**Closed (D275): every DSN this chart renders resolves `existingSecret`, and
+none of them ever carries a password literal on that path.** The migrate Job,
+the pg-migrate Job and the ingest `Deployment` all branch on
+`clickhouse.existingSecret`/`postgres.existingSecret` the same way the two
+StatefulSets do: `existingSecret` set means the password rides a
+`secretKeyRef` into an ingest-only env (`OBSTACK_CLICKHOUSE_DSN_PASSWORD` /
+`OBSTACK_POSTGRES_DSN_PASSWORD`) instead of the `CLICKHOUSE_DSN` /
+`OBSTACK_POSTGRES_DSN` string itself, and the ingest binary folds the two back
+into one connection string at boot (`config.InjectDSNPassword`,
+`services/ingest/internal/config/config.go`) — additive and optional, a no-op
+when unset. The ingest `Deployment` reads this way unconditionally (it is
+always a chart-owned or brought Secret, never a literal); the two migrate Jobs
+still render the password straight into the DSN literal on the *default*
+(chart-owned-Secret) path, unchanged from before this section closed.
+
+**One caveat, orthogonal to secrets and stated in the section above already:**
+a password-ROTATING `helm upgrade` on the default (non-`existingSecret`) path
+can still race the store's own pod roll for ClickHouse ("Why ClickHouse is a
+normal resource" above) — `existingSecret` doesn't have this race at all,
+since Helm never renders that Secret's value in the first place.
 
 ## The collector DaemonSet's contract
 
@@ -361,24 +553,32 @@ Isolated cluster name, never the shared compose stacks this repo also runs
 (check `docker ps` first):
 
 ```bash
-# build the two images this repo's source produces; ClickHouse, Postgres and
-# the collector are pulled from their pinned public tags
+# build the three images this repo's source produces; ClickHouse, Postgres
+# and the collector are pulled from their pinned public tags
 docker build -t obstack-ingest:kind services/ingest
 docker build -t obstack-demo-agent:kind demo/agent-app
+docker build -t obstack-web:kind -f apps/web/Dockerfile --build-arg OBSTACK_DATA_MODE=live .
 
 kind create cluster --name t4-chart
 kind load docker-image obstack-ingest:kind --name t4-chart
 kind load docker-image obstack-demo-agent:kind --name t4-chart
+kind load docker-image obstack-web:kind --name t4-chart
 
 helm lint deploy/helm/obstack
 # 900s = the migrate Job's own activeDeadlineSeconds, which already contains
 # the cold ClickHouse pull (the shared wait-for-clickhouse init container's
 # 840s poll budget) — see "--wait and --wait-for-jobs, precisely" above.
 # A warm node is done in ~18s.
-helm install obstack deploy/helm/obstack --timeout 900s --wait
+#
+# web.betterAuthSecret is the one value with no default (a committed
+# cookie-signing secret in a distributable chart is a shipped vulnerability),
+# and it is not optional: a live-stamped web image booted without it refuses
+# to serve, so `--wait` would sit on a crash-looping pod until the timeout.
+helm install obstack deploy/helm/obstack --timeout 900s --wait \
+  --set "web.betterAuthSecret=$(openssl rand -base64 32)"
 
-# every component Ready
-kubectl get pods,deploy,ds
+# every component Ready — the two PVCs Bound alongside them
+kubectl get pods,deploy,sts,ds,pvc
 
 # the install-time migrate Job (name is revision-suffixed) applied the
 # schema; ingest only ever verified it — its pods held in Init:0/2 until
@@ -391,7 +591,7 @@ kubectl logs deploy/obstack-ingest | grep "schema verified"
 # claim itself, asked of Postgres rather than of the Job (see "Postgres in
 # this chart"; the second line is what CI's `stack` job runs)
 kubectl logs job/obstack-pg-migrate-1 -c pg-migrate
-kubectl exec deploy/obstack-postgres -- psql -U obstack -d obstack -v ON_ERROR_STOP=1 \
+kubectl exec statefulset/obstack-postgres -- psql -U obstack -d obstack -v ON_ERROR_STOP=1 \
   -c 'SELECT 1 FROM workspaces LIMIT 1' -c 'SELECT 1 FROM saved_views LIMIT 1'
 
 # no-op re-run — this time a `pre-upgrade` hook. It is deleted on success
@@ -407,7 +607,7 @@ helm upgrade obstack deploy/helm/obstack --timeout 300s --wait
 kubectl get events --sort-by=.metadata.creationTimestamp | grep -E "migrate|ingest"
 
 # falsification probe: un-migrated ClickHouse
-kubectl exec deploy/obstack-clickhouse -- clickhouse-client \
+kubectl exec statefulset/obstack-clickhouse -- clickhouse-client \
   --user obstack_ingest --password obstack_ingest_dev --query "DROP DATABASE obstack"
 kubectl rollout restart deployment/obstack-ingest
 kubectl logs -l app.kubernetes.io/component=ingest --tail=5
@@ -417,15 +617,19 @@ kubectl logs -l app.kubernetes.io/component=ingest --tail=5
 
 # clean uninstall — every resource this release owns goes, now that all of
 # them are normal and release-managed. Two things are not release resources
-# and therefore stay, both measured: the node-side hostPath data dirs (files
-# on a throwaway node — see the scope boundary), and any migrate Job left
-# over from an upgrade that failed or timed out. Hook resources live outside
-# the release manifest, and `hook-succeeded` only sweeps the ones that
-# passed while Helm was still watching; the rest linger, labelled, until
-# someone removes them.
+# and therefore stay, both measured: the two PVCs (Kubernetes' own default —
+# a StatefulSet never deletes the volumes its ordinals claimed, precisely so
+# an accidental `helm uninstall` cannot delete data by itself; kept rather
+# than overridden — see "Upgrading from 0.2.0" for the one place this chart
+# DOES want a clean start), and any migrate Job left over from an upgrade
+# that failed or timed out. Hook resources live outside the release
+# manifest, and `hook-succeeded` only sweeps the ones that passed while Helm
+# was still watching; the rest linger, labelled, until someone removes them.
 helm uninstall obstack --timeout 300s
 kubectl get all,cm,sa,clusterrole,clusterrolebinding -l app.kubernetes.io/instance=obstack
 kubectl delete job -l app.kubernetes.io/component=migrate   # only after a failed upgrade
+kubectl get pvc -l app.kubernetes.io/instance=obstack       # both still Bound — deliberate
+kubectl delete pvc -l app.kubernetes.io/instance=obstack    # only when a run must start empty
 
 kind delete cluster --name t4-chart
 ```
@@ -436,13 +640,19 @@ The sprint's exit assertion is one script, `acceptance.sh`, and the `stack`
 CI job (`.github/workflows/stack.yml`) runs exactly it (S2.1 L3 — no
 CI-only sequence, no CI-only timeout arithmetic: the Helm budgets above,
 900s cold install / 300s upgrade, live in the script). It builds this
-repo's two images, side-loads every pinned image into the kind node (an
+repo's three images, side-loads every pinned image into the kind node (an
 optimization, not a correctness mechanism — without it the node pulls the
-same tags itself inside the install budget), installs or upgrades the
-chart, fires `POST /chat`, and asserts through the D17 tsx facade harness
-(`acceptance.ts` — the app's own `@/server/data` facade against the
-cluster's ClickHouse, because the `web` image is deliberately not in this
-chart):
+same tags itself inside the install budget), installs or upgrades the chart
+with a per-run `web.betterAuthSecret` (`WEB_AUTH_SECRET`, generated with
+`openssl rand -base64 32` — exactly what a real operator supplies; every
+other value stays a chart default), fires `POST /chat`, and asserts:
+
+The `web` workload's own check is a `/login` probe over a port-forward, and
+it is the boot check passing: the image's stamp matched `OBSTACK_DATA_MODE`
+and the release's `BETTER_AUTH_SECRET` reached the pod. The telemetry
+assertions run through the D17 tsx facade harness (`acceptance.ts` — the
+app's own `@/server/data` facade against the cluster's ClickHouse, the same
+code the web image serves, driven without a browser):
 
 - the four-layer waterfall (api/agent/tool/llm), token counts and a
   non-zero priced cost — the same shared checks compose's `smoke.sh` runs
@@ -481,7 +691,8 @@ kind delete cluster --name t5
 Re-running against a cluster that already has the release takes the
 `helm upgrade` path (300s budget) — the pre-upgrade migrate hook runs as a
 no-op and the same assertions repeat. The script port-forwards ClickHouse,
-the demo Service and the collector on 18123/18000/14318 (overridable via
-`CLICKHOUSE_PORT`/`DEMO_PORT`/`COLLECTOR_PORT`), deliberately off the
-compose stack's ports so a running compose stack is never what it asserts
-against.
+the demo Service, the web Service and the collector on
+18123/18000/13000/14318 (overridable via `CLICKHOUSE_PORT`/`DEMO_PORT`/
+`WEB_PORT`/`COLLECTOR_PORT`), deliberately off the compose stack's ports so
+a running compose stack is never what it asserts against. `WEB_AUTH_SECRET`
+is overridable too; unset, each run generates its own.

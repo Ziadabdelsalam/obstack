@@ -3,6 +3,7 @@ import { connection } from "next/server";
 import { ConnectionsHub } from "@/components/connections/ConnectionsHub";
 import { dataMode } from "@/server/data";
 import { getIngestHealth } from "@/server/ingest-health";
+import { resolveIngestEndpoints } from "@/server/ingest-endpoint";
 import { connectedSources } from "@/mock/connectors";
 import { queryRows } from "@/server/postgres";
 import { getSessionContext } from "@/server/session";
@@ -59,6 +60,11 @@ export default async function ConnectionsPage() {
         })),
         asOf: health.asOf ? asMinute(health.asOf) : null,
       }}
+      // D281: resolved after `connection()`, so the read is request-time (the
+      // D266 no-build-time-baking rule); the modal substitutes its endpoint
+      // placeholders from this pair and renders honest absences (D282) for
+      // protocols this deployment does not publish.
+      endpoints={resolveIngestEndpoints()}
     />
   );
 }

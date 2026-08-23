@@ -118,7 +118,7 @@ export default function StatusPage() {
             </div>
             <p className="mt-1.5 text-[12.5px] leading-relaxed text-mid">
               A batch import triggered upstream rate limiting, causing failures for ~2% of requests
-              on bulk endpoints for 22 minutes. Interactive conversations were not affected. We've
+              on bulk endpoints for 22 minutes. Interactive conversations were not affected. We&apos;ve
               capped retry behavior and isolated batch traffic to prevent recurrence.
             </p>
             <p className="mt-2 font-mono text-[10px] text-faint">

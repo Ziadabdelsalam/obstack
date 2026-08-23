@@ -120,10 +120,11 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   // either. It has to be a redirect rather than a hidden tree, because a
   // layout does not control whether the rest of the route renders (Next's own
   // warning): every /app segment resolves its own session concurrently with
-  // this one, and each of the wired ones throws `NoSessionError` when it finds
-  // none. `redirect` aborts the WHOLE render with a 307, which is what wins
-  // that race — measured on /app, /app/traces, /app/traces/[id] and /app/logs
-  // against a production serve with no cookie (all four 500 without this line).
+  // this one, and each of the wired ones now redirects to /login itself when
+  // it finds none (D274 — the request-path no-session branch is a redirect,
+  // never a throw). The race is therefore redirect-vs-redirect and either
+  // winner is the same 307; this line stays because the layout must not
+  // render a shell around segments that bailed.
   //
   // A signed-in user whose session disappears between the two reads above is
   // the same verdict from this guard's side: signed out, so /login.

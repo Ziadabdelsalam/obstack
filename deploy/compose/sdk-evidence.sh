@@ -164,7 +164,12 @@ printf '   no foreign project container, 6 ports free, %s probe container names 
 trap cleanup EXIT
 
 step "building and booting clickhouse + ingest + both samples"
-if ! "${compose[@]}" up -d --build --wait --wait-timeout "$HEALTH_TIMEOUT_S" > "$OUT/up.log" 2>&1; then
+# Named services, not the default profile: sdk-sample-py and sdk-sample-ts,
+# with clickhouse/postgres/ingest pulled in by their own depends_on chain
+# (D271). web is not this harness's claim (D265(a1)) — naming it here would
+# both build its image and start it for a process this harness never reaches;
+# the `images` job and the self-hosted user boot it instead.
+if ! "${compose[@]}" up -d --build --wait --wait-timeout "$HEALTH_TIMEOUT_S" sdk-sample-py sdk-sample-ts > "$OUT/up.log" 2>&1; then
   "${compose[@]}" ps
   refuse "the stack did not come up healthy within ${HEALTH_TIMEOUT_S}s — see $OUT/up.log"
 fi

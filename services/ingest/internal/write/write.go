@@ -144,9 +144,22 @@ func (w *Writer) ConsumeLogs(_ context.Context, workspaceID string, ld plog.Logs
 
 // Close flushes both tables and closes the connection. Callers stop the
 // receivers first; enqueueing after Close is a programming error.
-func (w *Writer) Close() error {
-	w.spans.close()
-	w.logs.close()
+//
+// ctx is the shutdown deadline (D263), and BOTH batchers get it before either
+// is waited on — that ordering is the whole point (D278). Waiting spans out
+// first and only then publishing to logs would leave logs on the ordinary
+// unbounded path for however long the spans drain took, free to open one more
+// writeTimeout-long attempt just before its own turn came: two writeTimeouts
+// end to end, past the 45s grace the chart and compose are sized on. Published
+// together, the pair's worst case is the one batcher.close states — the
+// deadline for everything queued, plus the single in-flight attempt neither
+// batcher can abort, and those two run concurrently. Rows still unwritten when
+// ctx ends are counted dropped rather than lost quietly; see batcher.send.
+func (w *Writer) Close(ctx context.Context) error {
+	w.spans.beginClose(ctx)
+	w.logs.beginClose(ctx)
+	<-w.spans.stopped
+	<-w.logs.stopped
 	return w.conn.Close()
 }
 

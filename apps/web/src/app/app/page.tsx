@@ -1,8 +1,9 @@
 import Link from "next/link";
+import { redirect } from "next/navigation";
 import { connection } from "next/server";
 import { ArrowUpRight } from "lucide-react";
 import { topFailing } from "@/mock/metrics";
-import { NoSessionError, dataForSession, dataMode, type WorkspaceData } from "@/server/data";
+import { dataForSession, dataMode, type WorkspaceData } from "@/server/data";
 import { listOrgMembers } from "@/server/invites";
 import { getOnboardingStatus } from "@/server/onboarding";
 import { queryRows } from "@/server/postgres";
@@ -108,11 +109,12 @@ function NoData() {
  *
  * The session is `getSessionContext`'s request-memoized answer, the same one
  * `dataForSession` resolved a line above; a null cannot reach here because that
- * call refuses it first, and this says so in the type system's terms.
+ * call refuses it first (D274: `redirect("/login")`, not a throw), and this
+ * says so in the type system's terms.
  */
 async function liveChecklistFlags(data: WorkspaceData): Promise<ChecklistFlags> {
   const session = await getSessionContext();
-  if (!session) throw new NoSessionError();
+  if (!session) redirect("/login");
   const [status, members] = await Promise.all([
     getOnboardingStatus(session.workspaceId, data, queryRows),
     listOrgMembers(session.orgId, queryRows),

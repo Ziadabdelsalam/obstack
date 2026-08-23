@@ -1,9 +1,9 @@
 # obstack compose bundle
 
-The local backend for obstack: ClickHouse, Postgres, the ingest service, and the
-demo agent app that generates traffic. The web app is **not** containerized in
-Phase 1 — run it with `npm run dev` from the repo root and point it at the two
-databases published here.
+The whole self-hosted stack: ClickHouse, Postgres, the ingest service, and the
+web app (D251(c)) — a clean checkout of this bundle is the product a customer
+installs. The demo agent app that generates traffic joins under its own
+profile, same as the two SDK samples.
 
 ## Run
 
@@ -14,16 +14,61 @@ docker compose up -d clickhouse
 
 `docker compose ps` reports `healthy` once the server answers `SELECT 1`.
 
-The whole Phase 1 pipeline — ClickHouse, Postgres, the ingest service, and the
-demo agent app that generates traffic — comes up with:
+The whole default-profile stack — ClickHouse, Postgres, ingest and web — needs
+one setting first (see [Secrets](#secrets--better_auth_secret) below), then
+comes up with:
+
+```bash
+cd deploy/compose
+cp .env.example .env   # then set OBSTACK_BETTER_AUTH_SECRET — see the file
+docker compose up -d --wait
+```
+
+Ingest applies the schema at boot, so a clean checkout needs nothing else
+besides the secret above: `web` refuses to start without it — everything else
+in the default profile has no such requirement, and without it `docker
+compose up -d --wait` never reports `web` healthy while the other three settle
+normally. Once it does, open <http://localhost:3000>. To also generate
+traffic, add the demo agent:
 
 ```bash
 cd deploy/compose
 docker compose --profile demo up -d --build
 ```
 
-Ingest applies the schema at boot, so a clean checkout needs nothing else. See
-[Smoke test](#smoke-test--the-phase-1-exit-criterion) below to prove it works.
+See [Smoke test](#smoke-test--the-phase-1-exit-criterion) below to prove the
+pipeline works.
+
+## Secrets — `BETTER_AUTH_SECRET`
+
+`web` is the one service in this file with a required setting: the key that
+signs session cookies. There is deliberately no default value in
+`docker-compose.yml` — a cookie-signing secret shipped inside a distributable
+bundle is a vulnerability every install would share (D265(a2)). Set it before
+`docker compose up`:
+
+```bash
+export OBSTACK_BETTER_AUTH_SECRET=$(openssl rand -base64 32)
+```
+
+or put it in `deploy/compose/.env` (`cp .env.example .env`, then fill it in). Left
+unset or empty, `web` starts, notices, prints the exact `openssl` command
+above, and exits 1 — loudly, not a hang and not a silent 500 (the boot check
+shared with the mode-stamp refusal, `apps/web/src/server/mode-stamp.ts`). The
+service carries `restart: unless-stopped` like every other one here, so what
+you SEE is a container that never reaches healthy and keeps coming back —
+D273: the restart loop is the operator symptom. The refusal itself — the sentence naming the variable and the `openssl` line — is
+what `docker compose logs web` prints. Nothing else in this file reads it:
+ClickHouse, Postgres, ingest, the demo agent and both SDK samples have no auth
+of their own to sign.
+
+`BETTER_AUTH_URL` (also `.env.example`) is optional and defaults to
+`http://localhost:3000`, the origin this bundle serves over. Point it at a
+real `https://` origin the moment this sits behind TLS — that is what
+upgrades the session cookie to the `__Secure-` name better-auth issues over a
+secure origin; left at the http:// default, the cookie stays at its
+downgraded name (D119), the correct tradeoff for a loopback-only install and
+the wrong one past it.
 
 ## Collector — optional OTLP + filelog route
 
@@ -56,9 +101,13 @@ that is one command, run from the repo root:
 bash deploy/compose/smoke.sh
 ```
 
-It boots the stack (`--profile demo`, `--build`), waits for every container to
-report healthy, fires `POST localhost:8000/chat` at the demo agent, and then
-asserts through the web facade — `smoke.ts` calls `searchTraces()` and `getTrace()`
+It boots the stack (`--profile demo`, `--build`, naming `demo` on the `up` line
+rather than the default profile — `demo`'s own `depends_on` chain brings
+ClickHouse, Postgres and ingest up with it, and web is not this harness's claim
+(D265(a1)): it asserts through the module below, never through a served page),
+waits for every container to report healthy, fires
+`POST localhost:8000/chat` at the demo agent, and then asserts through the web
+facade — `smoke.ts` calls `searchTraces()` and `getTrace()`
 from `apps/web/src/server/data.ts` with `OBSTACK_DATA_MODE=live`, the same module the app
 renders from, run under `npx tsx --conditions react-server` so the `server-only`
 guard resolves. No Next server and no test-only API route sit in between.
@@ -118,7 +167,7 @@ other's rows. It is the ratified stranger protocol (U9) as an executable, and
 the same three lines CI's `e2e` job runs (S2.1 L3), from the repo root:
 
 ```bash
-docker compose -f deploy/compose/docker-compose.yml up -d --wait --wait-timeout 240
+docker compose -f deploy/compose/docker-compose.yml up -d --wait --wait-timeout 240 clickhouse postgres ingest
 bash deploy/compose/smoke.sh
 node deploy/compose/e2e-drive.mjs
 ```
@@ -128,7 +177,13 @@ The stack goes up first because the drive signs strangers up, and ingest binds
 "the schema these accounts land in exists" a fact rather than a hope, and the
 timeout is what makes a wedged stack say so instead of waiting forever. Booting
 it in its own line rather than leaving it to `smoke.sh` (which would also bring
-it up) is what makes a wedged boot report as a boot failure.
+it up) is what makes a wedged boot report as a boot failure. Naming
+`clickhouse postgres ingest` rather than the default profile (D271): web is
+not this harness's claim (D265(a1)) — the drive below builds and serves the
+production app itself rather than talking to the containerized `web`, so
+naming it here would both build its image and start the container for a
+process nothing in this run ever reaches. The `images` job and a self-hosted
+install are what actually boot it.
 
 `smoke.sh` — the Phase 1 exit criterion above — is this run's **regression
 floor**, and it comes second on purpose: if the ingest pipeline cannot land a
@@ -450,10 +505,11 @@ OBSTACK_POSTGRES_DSN=postgres://obstack:obstack_postgres_dev@127.0.0.1:5432/obst
 psql postgres://obstack:obstack_postgres_dev@127.0.0.1:5432/obstack
 ```
 
-`BETTER_AUTH_SECRET` and `BETTER_AUTH_URL` are deliberately **not** here and not
-in the Helm chart either (D112). Compose does not run the web app, so a secret
-set here would sign nothing; they belong to the `npm run dev` / `npm start`
-environment, documented with the web app.
+`BETTER_AUTH_SECRET` and `BETTER_AUTH_URL` are deliberately **not** on this
+service (D112(b) — a cookie-signing secret belongs to the process that signs
+cookies, which has never been Postgres). They are `web`'s, set from the one
+operator value `OBSTACK_BETTER_AUTH_SECRET`: see
+[Secrets](#secrets--better_auth_secret) above.
 
 ## API keys — Postgres rows, and the dev key
 

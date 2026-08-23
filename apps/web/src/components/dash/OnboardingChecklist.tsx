@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState, useSyncExternalStore } from "react";
 import Link from "next/link";
 import { Check, X, ArrowRight } from "lucide-react";
 
@@ -43,19 +43,25 @@ export function checklistSteps(flags: ChecklistFlags) {
 
 const STORAGE_KEY = "obstack-checklist-dismissed";
 
+// localStorage is an external store, read through the hook built for one
+// (react-hooks/set-state-in-effect): the server snapshot says "dismissed", so
+// the server renders null exactly as the old mount-effect shape did, and the
+// client's first render reads the real flag with no effect and no flash.
+const emptySubscribe = () => () => {};
+function readDismissed(): boolean {
+  try {
+    return localStorage.getItem(STORAGE_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
 export function OnboardingChecklist({ flags }: { flags: ChecklistFlags }) {
   const steps = checklistSteps(flags);
-  const [visible, setVisible] = useState(false);
+  const storedDismissed = useSyncExternalStore(emptySubscribe, readDismissed, () => true);
+  const [dismissedNow, setDismissedNow] = useState(false);
 
-  useEffect(() => {
-    try {
-      setVisible(localStorage.getItem(STORAGE_KEY) !== "1");
-    } catch {
-      setVisible(true);
-    }
-  }, []);
-
-  if (!visible) return null;
+  if (storedDismissed || dismissedNow) return null;
   const done = steps.filter((s) => s.done).length;
 
   return (
@@ -87,7 +93,7 @@ export function OnboardingChecklist({ flags }: { flags: ChecklistFlags }) {
         type="button"
         aria-label="Dismiss setup checklist"
         onClick={() => {
-          setVisible(false);
+          setDismissedNow(true);
           try {
             localStorage.setItem(STORAGE_KEY, "1");
           } catch {}

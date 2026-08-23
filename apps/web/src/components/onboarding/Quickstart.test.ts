@@ -15,8 +15,11 @@ import { OTLP_GRPC_ENDPOINT, OTLP_HTTP_ENDPOINT } from "@/lib/ingest-endpoint";
 //
 // Text, not import: `Quickstart.tsx` is a `"use client"` component and the runner
 // is pinned to `--conditions react-server`, which cannot load one (D54(ii)). The
-// two values the snippets interpolate ARE imported, from the plain modules that
-// own them, so the assertions below are about the same strings the render uses.
+// no-override default values ARE imported, from the plain module that owns
+// them; the display rule's overridden cases below are exercised against
+// literal test values run through the same interpolation `tabCode` performs
+// (D277 — the actual overrides are server-resolved and arrive as props, which
+// this runner cannot exercise on a hook-using client component either way).
 
 const HERE = import.meta.dirname;
 const REPO_ROOT = path.resolve(HERE, "../../../../..");
@@ -29,34 +32,63 @@ const jsPackage = JSON.parse(
 ) as { version: string; peerDependencies: Record<string, string> };
 
 /**
- * What one tab actually shows: the file's template literal with its three
- * interpolations resolved the way the component resolves them — the two endpoint
- * constants, the packed version, and the token slot before a key is issued. So
- * the assertions below compare rendered text against the READMEs' text, while
- * the "nothing is hardcoded" test reads `source` and sees the interpolations.
+ * The gRPC line is assembled OUTSIDE the `code:` block (`snippetsFor`'s
+ * `grpcLine`), so the slice below cannot see it — its template is read out of
+ * the source too, not restated here: a restatement the file is never compared
+ * against is the comment D206 warns about, and it would let the default
+ * render's wording drift while this suite stayed green.
  */
-const INTERPOLATIONS: Record<string, string> = {
-  "${OTLP_HTTP_ENDPOINT}": OTLP_HTTP_ENDPOINT,
-  "${OTLP_GRPC_ENDPOINT}": OTLP_GRPC_ENDPOINT,
-  "${OBSTACK_JS_VERSION}": jsPackage.version,
-  "${key}": API_KEY_PLACEHOLDER,
-};
+const GRPC_LINE_TEMPLATE = (() => {
+  const open = source.indexOf("? `\\n\\n# gRPC instead:");
+  assert.ok(open > 0, "no gRPC line template in snippetsFor");
+  const start = open + "? `".length;
+  return source.slice(start, source.indexOf("`", start)).replace(/\\n/g, "\n");
+})();
 
-function tabCode(id: string): string {
-  const start = source.indexOf(`id: "${id}"`);
-  assert.ok(start > 0, `no ${id} tab in the file`);
-  const open = source.indexOf("code: `", start);
-  const close = source.indexOf("`,", open + 7);
-  assert.ok(open > 0 && close > open, `no code block on the ${id} tab`);
-  let code = source.slice(open + 7, close);
-  for (const [slot, value] of Object.entries(INTERPOLATIONS)) code = code.split(slot).join(value);
+/**
+ * What one tab actually shows: the file's template literal with its
+ * interpolations resolved the way the component resolves them. `http` and
+ * `grpcLine` are the two the display rule (D277) varies per render — the rest
+ * (the packed version, the token slot) never do. `grpcLine` is a whole extra
+ * line, present only when an endpoint pair actually has a gRPC address to show.
+ */
+function tabCode(id: string, endpoints: { http: string | null; grpc: string | null }): string {
+  // The SDK tabs are `sdkTab("<id>", "<Label>", `...`)` calls (D282's absence
+  // refactor); the otel tab keeps its `id:` object shape but its `code:` is
+  // now a conditional with TWO literals — http-branch first, gRPC-only branch
+  // second. Backtick-scan from the id string; neither label nor literal
+  // contains a backtick, so the nth backtick pair is the nth literal.
+  const idIdx = source.indexOf(`"${id}"`);
+  assert.ok(idIdx > 0, `no ${id} tab in the file`);
+  const literalAt = (which: number): string => {
+    let open = source.indexOf("`", idIdx);
+    for (let i = 0; i < which; i++) open = source.indexOf("`", source.indexOf("`", open + 1) + 1);
+    const close = source.indexOf("`", open + 1);
+    assert.ok(open > idIdx && close > open, `no code literal ${which} on the ${id} tab`);
+    return source.slice(open + 1, close);
+  };
+  let code = literalAt(id === "otel" && !endpoints.http ? 1 : 0);
+  const grpcLine = endpoints.grpc
+    ? GRPC_LINE_TEMPLATE.split("${grpc}").join(endpoints.grpc)
+    : "";
+  const interpolations: Record<string, string> = {
+    "${http}": endpoints.http ?? "",
+    "${grpc}": endpoints.grpc ?? "",
+    "${grpcLine}": grpcLine,
+    "${OBSTACK_JS_VERSION}": jsPackage.version,
+    "${key}": API_KEY_PLACEHOLDER,
+  };
+  for (const [slot, value] of Object.entries(interpolations)) code = code.split(slot).join(value);
   assert.equal(/\$\{/.test(code), false, `an unresolved interpolation on the ${id} tab: ${code}`);
   return code;
 }
 
-const python = tabCode("python");
-const typescript = tabCode("typescript");
-const otel = tabCode("otel");
+/** No override (D266/D277): both loopback defaults, same as every checkout. */
+const DEFAULT_ENDPOINTS = { http: OTLP_HTTP_ENDPOINT, grpc: OTLP_GRPC_ENDPOINT };
+
+const python = tabCode("python", DEFAULT_ENDPOINTS);
+const typescript = tabCode("typescript", DEFAULT_ENDPOINTS);
+const otel = tabCode("otel", DEFAULT_ENDPOINTS);
 const allCode = [python, typescript, otel].join("\n");
 
 // D101 defect 1: the packages are `obstack-py` / `obstack-js`, and the install
@@ -141,11 +173,29 @@ test("no forbidden literal survives anywhere in the file", () => {
   for (const lie of ["x-obstack-key", "ingest.obstack.dev", "obstack.dev", "ok_live_9f2e"]) {
     assert.equal(source.includes(lie), false, `${lie} is back in the quickstart`);
   }
-  // The endpoints are interpolated, never spelled: one definition (D215).
+  // The endpoints are interpolated, never spelled: one definition (D215), and
+  // the identifiers below appear only as the demo/no-override FALLBACK
+  // (D266/D277) — the snippets themselves interpolate `endpoints.http` /
+  // `endpoints.grpc`, never the constants directly.
   assert.ok(source.includes("OTLP_HTTP_ENDPOINT") && source.includes("OTLP_GRPC_ENDPOINT"));
   assert.equal(source.includes(OTLP_HTTP_ENDPOINT), false, "the endpoint is hardcoded again");
   assert.equal(source.includes(OTLP_GRPC_ENDPOINT), false, "the gRPC endpoint is hardcoded again");
-  assert.equal(source.includes("endpoint:"), false, "the D209 endpoint prop is gone (D215)");
+});
+
+// D277: D215 deleted the `endpoint` prop when there was nothing to configure;
+// M4 gives operators a real override, so the prop is back, server-resolved and
+// plural — one endpoint pair, not one address (D266).
+test("the endpoint prop is back, server-resolved (D209 as amended by D277)", () => {
+  assert.ok(source.includes("endpoints: ResolvedEndpoints;"), "the live arm carries the resolved pair");
+  assert.ok(
+    source.includes('import { OTLP_GRPC_ENDPOINT, OTLP_HTTP_ENDPOINT } from "@/lib/ingest-endpoint";'),
+    "only the client-safe constants are imported directly — the resolver lives server-side",
+  );
+  assert.equal(
+    /from ["']@\/server\/ingest-endpoint["']/.test(source),
+    false,
+    "a \"use client\" file cannot import the server-only resolver — its result arrives as a prop",
+  );
 });
 
 // D101 defect 3: the demo's 5-second flip is the DEMO's. Live mode polls the
@@ -199,4 +249,80 @@ test("the version fences match package.json and ai@7 is named absent", () => {
     assert.ok(fences.includes(`${name} ${range}`), `the fence for ${name} is not ${range}`);
   }
   assert.ok(fences.includes("ai@7 is not yet supported"));
+});
+
+// D277's display rule, on the ONE tab that ever names gRPC. `tabCode` builds
+// the "otel" tab's actual text for a given resolved pair — the same
+// interpolation `snippetsFor` performs at render — so these three are the
+// three cases the done-check names, each against the rendered string.
+test("display rule — no override: both loopback defaults, byte-identical", () => {
+  const rendered = tabCode("otel", DEFAULT_ENDPOINTS);
+  assert.ok(rendered.includes(`OTEL_EXPORTER_OTLP_ENDPOINT=${OTLP_HTTP_ENDPOINT}`));
+  assert.ok(
+    rendered.includes(`# gRPC instead: ${OTLP_GRPC_ENDPOINT} with OTEL_EXPORTER_OTLP_PROTOCOL=grpc`),
+  );
+});
+
+test("display rule — HTTP override alone: configured HTTP renders, no loopback gRPC anywhere", () => {
+  const configuredHttp = "https://ingest.example.com:4318";
+  const rendered = tabCode("otel", { http: configuredHttp, grpc: null });
+  assert.ok(rendered.includes(`OTEL_EXPORTER_OTLP_ENDPOINT=${configuredHttp}`));
+  assert.equal(rendered.includes("gRPC instead"), false, "an unconfigured protocol is an honest omission");
+  assert.equal(rendered.includes(OTLP_GRPC_ENDPOINT), false, "never a loopback beside a public endpoint");
+});
+
+test("display rule — both overridden: both render", () => {
+  const configuredHttp = "https://ingest.example.com:4318";
+  const configuredGrpc = "https://ingest.example.com:4317";
+  const rendered = tabCode("otel", { http: configuredHttp, grpc: configuredGrpc });
+  assert.ok(rendered.includes(`OTEL_EXPORTER_OTLP_ENDPOINT=${configuredHttp}`));
+  assert.ok(rendered.includes(`# gRPC instead: ${configuredGrpc} with OTEL_EXPORTER_OTLP_PROTOCOL=grpc`));
+});
+
+// D282 — the gRPC-only corner, made symmetric: the SDK tabs (both HTTP-only
+// exporters) render an honest absence that names the remedy variable, the
+// OTel tab gets a REAL gRPC snippet, and no corner ever renders an empty
+// export — an empty OTEL_EXPORTER_OTLP_ENDPOINT= makes the SDK silently fall
+// back to localhost (measured), which is worse than an omission.
+test("display rule — gRPC override alone (D282): SDK tabs go absent with the remedy named, the OTel tab speaks gRPC", () => {
+  const grpcOnly = { http: null, grpc: "https://ingest.example.com:4317" };
+  // The absence path: sdkTab drops the code and carries httpAbsence, whose
+  // template must name the remedy variable and point at the working tab.
+  const absenceIdx = source.indexOf("const httpAbsence =");
+  assert.ok(absenceIdx > 0, "no httpAbsence in snippetsFor");
+  const absenceBlock = source.slice(absenceIdx, source.indexOf(";", absenceIdx));
+  assert.ok(
+    absenceBlock.includes("OBSTACK_PUBLIC_OTLP_HTTP_ENDPOINT"),
+    "the absence line must name the remedy variable",
+  );
+  assert.ok(
+    absenceBlock.includes("I already have OTel"),
+    "the absence line must point at the tab that still works",
+  );
+  const rendered = tabCode("otel", grpcOnly);
+  assert.ok(rendered.includes(`OTEL_EXPORTER_OTLP_ENDPOINT=${grpcOnly.grpc}`));
+  assert.ok(rendered.includes("OTEL_EXPORTER_OTLP_PROTOCOL=grpc"));
+  assert.equal(rendered.includes(OTLP_HTTP_ENDPOINT), false, "never a loopback beside a public endpoint");
+});
+
+test("no corner renders an empty export (D282's class test)", () => {
+  const corners: Array<{ http: string | null; grpc: string | null }> = [
+    DEFAULT_ENDPOINTS,
+    { http: "https://ingest.example.com:4318", grpc: null },
+    { http: null, grpc: "https://ingest.example.com:4317" },
+    { http: "https://ingest.example.com:4318", grpc: "https://ingest.example.com:4317" },
+  ];
+  for (const corner of corners) {
+    for (const id of ["python", "typescript", "otel"]) {
+      // The SDK tabs render an absence (no snippet at all) when HTTP is
+      // unpublished — nothing to scan, and that is the point.
+      if (!corner.http && id !== "otel") continue;
+      const code = tabCode(id, corner);
+      assert.equal(
+        /^export [A-Z_]+=\s*$/m.test(code),
+        false,
+        `${id} rendered an empty export under ${JSON.stringify(corner)}`,
+      );
+    }
+  }
 });
