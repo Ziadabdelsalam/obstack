@@ -9,6 +9,7 @@ import (
 	"mime"
 	"net/http"
 	"runtime/debug"
+	"strings"
 
 	"go.opentelemetry.io/collector/pdata/plog/plogotlp"
 	"go.opentelemetry.io/collector/pdata/ptrace/ptraceotlp"
@@ -28,6 +29,12 @@ const (
 	contentTypeProto = "application/x-protobuf"
 	contentTypeJSON  = "application/json"
 )
+
+// integrationsPrefix is where the launch receivers live (D289 — these paths are
+// operator-facing configuration and do not move). It is a constant because the
+// panic recovery below has to recognise them to answer in their dialect, and a
+// second spelling of the prefix would eventually answer one of them wrongly.
+const integrationsPrefix = "/v1/integrations/"
 
 type encoding int
 
@@ -66,8 +73,8 @@ func (s *Server) httpHandler() http.Handler {
 	// bearer path, metering, health rows, quota, the panic recovery below —
 	// already exists on this one. Their names are stable operator-facing
 	// configuration (D289).
-	mux.HandleFunc("POST /v1/integrations/vercel", s.vercelHandler)
-	mux.HandleFunc("POST /v1/integrations/cloudwatch", s.cloudWatchHandler)
+	mux.HandleFunc("POST "+integrationsPrefix+"vercel", s.vercelHandler)
+	mux.HandleFunc("POST "+integrationsPrefix+"cloudwatch", s.cloudWatchHandler)
 	return recoverPanics(mux)
 }
 
@@ -93,9 +100,18 @@ func recoverPanics(next http.Handler) http.Handler {
 			if p == http.ErrAbortHandler {
 				panic(p)
 			}
-			slog.Error("panic serving otlp export",
+			slog.Error("panic serving export",
 				"path", r.URL.Path, "panic", p, "stack", string(debug.Stack()))
 			metrics.Dropped.WithLabelValues(*workspaceID, metrics.ReasonPanic).Inc()
+			// The answer has to be in the dialect the caller speaks: the OTLP
+			// routes get a google.rpc.Status in the request's encoding, the
+			// integration routes get the same plain JSON they answer with
+			// everywhere else. A drain sender handed a protobuf Status would
+			// log bytes instead of a reason.
+			if strings.HasPrefix(r.URL.Path, integrationsPrefix) {
+				writeJSONError(w, http.StatusInternalServerError, "internal error handling delivery")
+				return
+			}
 			enc, _ := requestEncoding(r)
 			writeError(w, enc, http.StatusInternalServerError, codes.Internal, "internal error handling export")
 		}()

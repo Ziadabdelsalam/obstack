@@ -5,6 +5,8 @@ import (
 	"crypto/hmac"
 	"crypto/sha1" //nolint:gosec // asserting the vendor's documented algorithm
 	"encoding/hex"
+	"encoding/json"
+	"io"
 	"net/http"
 	"os"
 	"strings"
@@ -371,5 +373,38 @@ func TestVercelDrainVerifiesSignatureOverRawBytes(t *testing.T) {
 	}
 	if got := drainRecords(t, rec); len(got) != 2 {
 		t.Fatalf("consumed %d records, want 2", len(got))
+	}
+}
+
+// A panic on a drain delivery must answer in the dialect the sender reads. The
+// OTLP routes reply with a protobuf/JSON google.rpc.Status; a drain sender
+// handed those bytes would log them as garbage instead of a reason, so the
+// integration routes keep their plain JSON all the way through the recovery.
+func TestVercelDrainPanicAnswersInJSON(t *testing.T) {
+	srv := startServerWith(t, panicker{})
+
+	resp := post(t, srv, httpRequest{
+		path:        vercelPath,
+		contentType: contentTypeJSON,
+		body:        vercelFixture(t, "logs.ndjson"),
+		bearer:      "Bearer " + testKey,
+	})
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", resp.StatusCode)
+	}
+	if got := resp.Header.Get("Content-Type"); got != contentTypeJSON {
+		t.Errorf("Content-Type = %q, want %q", got, contentTypeJSON)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	var answer map[string]string
+	if err := json.Unmarshal(body, &answer); err != nil {
+		t.Fatalf("body is not the JSON this route answers with (%q): %v", body, err)
+	}
+	if answer["error"] == "" {
+		t.Errorf("answer = %v, want an error sentence", answer)
 	}
 }
