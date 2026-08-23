@@ -2,7 +2,7 @@
 # place (D35 — a second chart is drift): CI-grade ClickHouse and Postgres on
 # StatefulSets + PVCs, ingest, the obstack-collector DaemonSet, the demo app,
 # a chart-owned Secret with an `existingSecret` name override on every
-# credential (D253 items 2/3/7), and — T5, landing in this same 0.3.0 train —
+# credential (D253 items 2/3/7), and — T5, landing in the same 0.3.0 train —
 # the `web` workload itself, optional Ingress for web and for ingest's
 # OTLP/HTTP surface, resource requests/limits, and managed-Postgres values
 # (D253 items 1/4/5/6). See README.md's scope boundary for exactly what's

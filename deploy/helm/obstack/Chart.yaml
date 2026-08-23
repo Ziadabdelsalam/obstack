@@ -12,5 +12,11 @@ type: application
 # StatefulSets+PVCs and adds a chart-owned Secret with an existingSecret
 # override on every credential (D253 items 2/3/7, D268) — no upgrade path
 # from 0.2.0 or earlier (README.md, "Upgrading from 0.2.0").
-version: 0.3.0
+# 0.4.0: S4.2 adds the ingest credential group — the Vercel drain's optional
+# signature secret (D287) — as a new values block, a fourth existingSecret
+# override and a sixth Secret key. Its own number rather than a second edit to
+# 0.3.0's: the rendered manifests change in a way an operator can observe, and
+# one bump per sprint (D268) is what keeps that legible. Upgrading within M4 is
+# additive — nothing here removes or renames a 0.3.0 object.
+version: 0.4.0
 appVersion: "0.1.0"
