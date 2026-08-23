@@ -36,6 +36,14 @@ type Config struct {
 	// never race on DDL. False is not "skip": the process still refuses to
 	// serve a schema that is behind its own migrations.
 	MigrateOnBoot bool
+
+	// VercelDrainSecret enables the Vercel log drain's `x-vercel-signature`
+	// check when set (D287). Empty means the bearer key alone authenticates
+	// that route — the posture every other route on the mux runs under. It is
+	// resolved HERE rather than read inside the handler so the process can
+	// state at boot which posture it came up in: a mistyped variable name is
+	// then a visible default instead of silent non-verification.
+	VercelDrainSecret string
 }
 
 // Load reads and validates the environment. It fails rather than defaulting on
@@ -58,13 +66,20 @@ func Load() (Config, error) {
 	}
 
 	return Config{
-		ClickHouseDSN: dsn,
-		OTLPGRPCAddr:  envOr("OBSTACK_OTLP_GRPC_ADDR", ":4317"),
-		OTLPHTTPAddr:  envOr("OBSTACK_OTLP_HTTP_ADDR", ":4318"),
-		AdminAddr:     envOr("OBSTACK_ADMIN_ADDR", DefaultAdminAddr),
-		MigrateOnBoot: migrateOnBoot,
+		ClickHouseDSN:     dsn,
+		OTLPGRPCAddr:      envOr("OBSTACK_OTLP_GRPC_ADDR", ":4317"),
+		OTLPHTTPAddr:      envOr("OBSTACK_OTLP_HTTP_ADDR", ":4318"),
+		AdminAddr:         envOr("OBSTACK_ADMIN_ADDR", DefaultAdminAddr),
+		MigrateOnBoot:     migrateOnBoot,
+		VercelDrainSecret: os.Getenv(EnvVercelDrainSecret),
 	}, nil
 }
+
+// EnvVercelDrainSecret is the drain signature secret's variable name. It is a
+// constant rather than a literal because the chart, compose and the docs all
+// have to name the same string, and a K3-stable operator-facing name that
+// exists in only one place cannot drift.
+const EnvVercelDrainSecret = "OBSTACK_VERCEL_DRAIN_SECRET"
 
 // LoadDSN reads the one variable a migrations-only process needs. The `migrate`
 // subcommand goes through here rather than Load because everything else Load

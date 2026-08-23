@@ -123,8 +123,8 @@ func TestSweepStopsOnContextCancel(t *testing.T) {
 	}
 	s.Sweep(ctx)
 
-	if deletesIssued >= 6 {
-		t.Fatalf("issued all %d deletes after cancel, want an early stop", deletesIssued)
+	if deletesIssued != 1 {
+		t.Fatalf("issued %d deletes, want the sweep to stop at the statement after the cancel", deletesIssued)
 	}
 }
 

@@ -118,20 +118,11 @@ func (s *Server) cloudWatchHandler(w http.ResponseWriter, r *http.Request) {
 
 // cloudWatchToPdata maps one delivery to log records: one resource for the
 // delivery, because a subscription-filter delivery is by construction one log
-// group and one stream.
+// group and one stream. A delivery whose events are all unmappable yields no
+// records and is reported entirely as skipped — the caller consumes nothing.
 func cloudWatchToPdata(payload cloudWatchPayload) (plog.Logs, int) {
 	ld := plog.NewLogs()
 	skipped := 0
-
-	usable := 0
-	for _, e := range payload.LogEvents {
-		if e.Timestamp > 0 {
-			usable++
-		}
-	}
-	if usable == 0 {
-		return ld, len(payload.LogEvents)
-	}
 
 	rl := ld.ResourceLogs().AppendEmpty()
 	res := rl.Resource().Attributes()
@@ -139,8 +130,13 @@ func cloudWatchToPdata(payload cloudWatchPayload) (plog.Logs, int) {
 	// leading path segments of the conventional /aws/lambda/<name> shape are
 	// dropped so the name reads as the service it is.
 	res.PutStr("service.name", cloudWatchService(payload.LogGroup))
-	putIfSet(res, "aws.log.group.names", payload.LogGroup)
-	putIfSet(res, "aws.log.stream.names", payload.LogStream)
+	// Deliberately NOT semconv's `aws.log.group.names`/`aws.log.stream.names`:
+	// those are array-typed there, and putting a single string under an
+	// array-typed name would claim a shape these values do not have. A
+	// subscription delivery is one group and one stream, so they are stated as
+	// the singular facts they are, under our own keys.
+	putIfSet(res, "aws.cloudwatch.log_group", payload.LogGroup)
+	putIfSet(res, "aws.cloudwatch.log_stream", payload.LogStream)
 	putIfSet(res, "cloud.account.id", payload.Owner)
 	res.PutStr("cloud.provider", "aws")
 

@@ -2,6 +2,7 @@ package metering
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -264,6 +265,54 @@ func TestFlushWritesLedgerAndHealthRows(t *testing.T) {
 	if h.lastEventAt == nil || !h.lastEventAt.Equal(before) {
 		t.Errorf("last_event_at = %v after a drops-only flush, want it left at %s", h.lastEventAt, before)
 	}
+
+	// The windowed rows (D260), read back from the server rather than trusted:
+	// this is the only place an inverted trim predicate or a SET-instead-of-add
+	// would be caught, and its symptom in the product — a rate that reads "—"
+	// forever — is indistinguishable from nothing having arrived.
+	minute := clock.t.Truncate(time.Minute)
+	if got := windowAccepted(ctx, t, dsn, "key_alice", minute); got != 13 {
+		t.Errorf("window bucket at %s = %d accepted, want the same 13 the cumulative row holds", minute, got)
+	}
+
+	// Past the retention, the same flush that writes the new bucket deletes the
+	// old one — the property that bounds this table with nothing scheduled.
+	clock.advance(windowRetention + time.Minute)
+	m.RecordAccepted("ws_alice", "key_alice", 2, 0)
+	if err := m.Flush(ctx); err != nil {
+		t.Fatalf("post-retention Flush: %v", err)
+	}
+	if got := windowAccepted(ctx, t, dsn, "key_alice", minute); got != -1 {
+		t.Errorf("the bucket at %s survived past the retention with %d accepted, want it deleted", minute, got)
+	}
+	fresh := clock.t.Truncate(time.Minute)
+	if got := windowAccepted(ctx, t, dsn, "key_alice", fresh); got != 2 {
+		t.Errorf("window bucket at %s = %d accepted, want 2", fresh, got)
+	}
+}
+
+// windowAccepted reads one bucket's accepted count, or -1 when the row is not
+// there — the two outcomes the retention proof has to tell apart.
+func windowAccepted(ctx context.Context, t *testing.T, dsn, keyID string, bucket time.Time) int64 {
+	t.Helper()
+
+	conn, err := pgx.Connect(ctx, dsn)
+	if err != nil {
+		t.Fatalf("connect postgres: %v", err)
+	}
+	defer conn.Close(ctx)
+
+	var accepted int64
+	err = conn.QueryRow(ctx,
+		"SELECT accepted FROM api_key_health_windows WHERE key_id = $1 AND bucket_start = $2",
+		keyID, bucket).Scan(&accepted)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return -1
+	}
+	if err != nil {
+		t.Fatalf("read the window bucket: %v", err)
+	}
+	return accepted
 }
 
 // The load-bearing claim, against the server that has to honor it: two flushers
@@ -326,6 +375,12 @@ func TestConcurrentFlushersAddRatherThanSet(t *testing.T) {
 		}
 	}
 	for _, keyID := range []string{"key_alice", "key_bob"} {
+		// The same add-never-set claim the migration file leads with, on the
+		// windowed rows: two flushers, one bucket, both counts present.
+		if got := windowSum(ctx, t, dsn, keyID); got != 2*wantAccept {
+			t.Errorf("window rows for %s sum to %d accepted, want %d — the buckets SET instead of adding",
+				keyID, got, 2*wantAccept)
+		}
 		if got := healthRow(ctx, t, dsn, keyID); got.accepted != 2*wantAccept {
 			t.Errorf("%s accepted = %d, want %d — a concurrent flush clobbered instead of adding",
 				keyID, got.accepted, 2*wantAccept)
@@ -377,4 +432,24 @@ func TestFlushSurvivesADeletedWorkspace(t *testing.T) {
 	if spans, _, _ := ledgerRow(ctx, t, dsn, "ws_alice"); spans != 3 {
 		t.Errorf("ws_alice ledger = %d spans, want the 3 recorded after the rejected flush", spans)
 	}
+}
+
+// windowSum totals a key's window buckets — what two concurrent flushers must
+// have added up to.
+func windowSum(ctx context.Context, t *testing.T, dsn, keyID string) int64 {
+	t.Helper()
+
+	conn, err := pgx.Connect(ctx, dsn)
+	if err != nil {
+		t.Fatalf("connect postgres: %v", err)
+	}
+	defer conn.Close(ctx)
+
+	var total int64
+	if err := conn.QueryRow(ctx,
+		"SELECT coalesce(sum(accepted), 0) FROM api_key_health_windows WHERE key_id = $1",
+		keyID).Scan(&total); err != nil {
+		t.Fatalf("sum the window buckets: %v", err)
+	}
+	return total
 }

@@ -1,6 +1,7 @@
 package receive_test
 
 import (
+	"bytes"
 	"crypto/hmac"
 	"crypto/sha1" //nolint:gosec // asserting the vendor's documented algorithm
 	"encoding/hex"
@@ -10,6 +11,8 @@ import (
 	"testing"
 
 	"go.opentelemetry.io/collector/pdata/plog"
+
+	"github.com/Ziadabdelsalam/observer-stack/services/ingest/internal/metering"
 )
 
 // The drain fixtures are the vendor's published examples, captured verbatim —
@@ -162,6 +165,80 @@ func TestVercelDrainExtractsOnlyMeasuredTraceContext(t *testing.T) {
 	}
 }
 
+// vercelArrayBody wraps the fixture's entries in the bracketed array the
+// measured `json` encoding delivers (VD: "json — an array of log objects"), so
+// that shape is asserted over the vendor's own captured entries rather than
+// over a payload written for the test.
+func vercelArrayBody(t *testing.T) []byte {
+	t.Helper()
+	lines := bytes.Split(bytes.TrimSpace(vercelFixture(t, "logs.ndjson")), []byte("\n"))
+	return append(append([]byte("["), bytes.Join(lines, []byte(","))...), ']')
+}
+
+// The bracketed array is the other half of the drain's `json` encoding, and the
+// branch of the decoder that reads it: the fixtures are per-line, so without
+// this case a real array delivery would be untested.
+func TestVercelDrainAcceptsJSONArray(t *testing.T) {
+	srv, rec := startServer(t)
+	resp := post(t, srv, httpRequest{
+		path:        vercelPath,
+		contentType: contentTypeJSON,
+		body:        vercelArrayBody(t),
+		bearer:      "Bearer " + testKey,
+	})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	records := drainRecords(t, rec)
+	if len(records) != 2 {
+		t.Fatalf("consumed %d records from the array encoding, want 2", len(records))
+	}
+	var traced int
+	for _, r := range records {
+		if r.traceID != "" {
+			traced++
+		}
+	}
+	if traced != 1 {
+		t.Errorf("%d records carry trace context, want the lambda line's", traced)
+	}
+}
+
+// D291's "metering, health rows and drops ride free" made checkable: the route
+// hands its records to the same consumeLogs the OTLP path uses, so the meter
+// behind the per-key health rows (D99/D100) sees drain traffic attributed to
+// the same workspace and key — and an entry the mapping refuses is counted in
+// the same drop vocabulary rather than silently omitted.
+func TestVercelDrainMetersAcceptedAndDropped(t *testing.T) {
+	srv, _, meter := startMetered(t, false, nil)
+
+	body := append(vercelFixture(t, "logs.ndjson"), []byte("\n"+`{"id":"c","level":"info","message":"no time"}`)...)
+	resp := post(t, srv, httpRequest{
+		path:        vercelPath,
+		contentType: contentTypeJSON,
+		body:        body,
+		bearer:      "Bearer " + testKey,
+	})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+
+	accepted := meter.acceptedCalls()
+	if len(accepted) != 1 {
+		t.Fatalf("%d metering calls, want the delivery's one", len(accepted))
+	}
+	if accepted[0].workspaceID != workspaceID || accepted[0].keyID != keyID {
+		t.Errorf("metered as (%q, %q), want (%q, %q)",
+			accepted[0].workspaceID, accepted[0].keyID, workspaceID, keyID)
+	}
+	if accepted[0].logs != 2 || accepted[0].spans != 0 {
+		t.Errorf("metered %d logs / %d spans, want 2/0", accepted[0].logs, accepted[0].spans)
+	}
+	if got := meter.droppedRecords(t, metering.DropDecode); got != 1 {
+		t.Errorf("metered %d decode drops, want the timestampless entry's 1", got)
+	}
+}
+
 func TestVercelDrainAcceptsGzip(t *testing.T) {
 	srv, rec := startServer(t)
 	resp := post(t, srv, httpRequest{
@@ -239,8 +316,6 @@ func TestVercelDrainSkipsTimestamplessEntries(t *testing.T) {
 // signature is refused even with a valid bearer key.
 func TestVercelDrainVerifiesSignatureWhenConfigured(t *testing.T) {
 	const secret = "obstack-test-drain-secret"
-	t.Setenv("OBSTACK_VERCEL_DRAIN_SECRET", secret)
-
 	body := vercelFixture(t, "logs.ndjson")
 	mac := hmac.New(sha1.New, []byte(secret))
 	mac.Write(body)
@@ -256,7 +331,7 @@ func TestVercelDrainVerifiesSignatureWhenConfigured(t *testing.T) {
 		{"missing signature", "", http.StatusUnauthorized},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			srv, _ := startServer(t)
+			srv, _ := startSigningDrain(t, secret)
 			resp := post(t, srv, httpRequest{
 				path:        vercelPath,
 				contentType: contentTypeJSON,
@@ -276,15 +351,13 @@ func TestVercelDrainVerifiesSignatureWhenConfigured(t *testing.T) {
 // which a sender and this receiver agree.
 func TestVercelDrainVerifiesSignatureOverRawBytes(t *testing.T) {
 	const secret = "obstack-test-drain-secret"
-	t.Setenv("OBSTACK_VERCEL_DRAIN_SECRET", secret)
-
 	body := vercelFixture(t, "logs.ndjson")
 	compressed := gzipBytes(t, body)
 	mac := hmac.New(sha1.New, []byte(secret))
 	mac.Write(compressed)
 	overRaw := hex.EncodeToString(mac.Sum(nil))
 
-	srv, rec := startServer(t)
+	srv, rec := startSigningDrain(t, secret)
 	resp := post(t, srv, httpRequest{
 		path:          vercelPath,
 		contentType:   contentTypeJSON,

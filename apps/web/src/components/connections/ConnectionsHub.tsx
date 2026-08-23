@@ -54,7 +54,7 @@ export interface LiveSource {
 export function formatRate(ratePerMin: number | null): string {
   if (ratePerMin === null) return "—";
   if (ratePerMin > 0 && ratePerMin < 10) return `${ratePerMin.toFixed(1)}/min`;
-  return `${Math.round(ratePerMin).toLocaleString()}/min`;
+  return `${Math.round(ratePerMin).toLocaleString("en-US")}/min`;
 }
 
 /**
@@ -291,7 +291,7 @@ export function ConnectionsHub({
                     {st.label}
                   </span>
                   <span className="w-24 text-right font-mono text-[11px] text-mid">
-                    {s.ratePerMin.toLocaleString()}/min
+                    {s.ratePerMin.toLocaleString("en-US")}/min
                   </span>
                   <span className="w-20 text-right font-mono text-[11px] text-faint">
                     {s.lastEvent}

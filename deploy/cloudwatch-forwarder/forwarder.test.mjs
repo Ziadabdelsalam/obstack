@@ -3,8 +3,8 @@
 // half a Go test cannot — that the artifact deployed into someone else's AWS
 // account decodes AWS's envelope and speaks obstack's route correctly.
 //
-// The envelope fixture is the one the ingest package's tests read, so the two
-// halves of this connector cannot drift onto different payloads.
+// The fixtures are the ones the ingest package's tests read, so the two halves
+// of this connector cannot drift onto different payloads.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -20,6 +20,12 @@ const FIXTURES = new URL(
 
 const readFixture = (name) => JSON.parse(readFileSync(new URL(name, FIXTURES), "utf8"));
 
+// The tracked envelope — base64 of gzip of data-message.json, the exact shape
+// AWS delivers — so the primary case decodes bytes nobody built at test time.
+const trackedEnvelope = () => readFixture("awslogs-envelope.json");
+
+// envelope wraps any other fixture in that same shape, for the cases the
+// tracked one cannot cover (a CONTROL_MESSAGE is a different payload).
 const envelope = (payload) => ({
   awslogs: { data: gzipSync(Buffer.from(JSON.stringify(payload))).toString("base64") },
 });
@@ -66,7 +72,7 @@ test("decodes the awslogs envelope and POSTs the payload with the bearer key", a
         OBSTACK_INGEST_URL: "https://ingest.example.com/v1/integrations/cloudwatch",
         OBSTACK_API_KEY: "ok_test_forwarder",
       },
-      () => handler(envelope(payload)),
+      () => handler(trackedEnvelope()),
     );
 
     assert.equal(result.forwarded, payload.logEvents.length);
@@ -144,4 +150,39 @@ test("refuses an event that is not a CloudWatch Logs delivery", async () => {
     ),
     /awslogs\.data/,
   );
+});
+
+// The half the stubs cannot prove: this handler against a REAL ingest, over the
+// network, landing rows. It runs when OBSTACK_TEST_INGEST_URL and
+// OBSTACK_TEST_API_KEY are set — CI sets them because the compose stack is
+// already up in that job — and skips otherwise, the standing convention for
+// every integration test in this repo.
+//
+// Without it the two halves of this connector are only ever tested apart: the
+// handler against a stubbed fetch, and the route against a payload some Go test
+// built. This is the one assertion that the artifact an operator deploys
+// actually speaks to the endpoint they point it at.
+test("forwards to a real ingest endpoint", async (t) => {
+  const url = process.env.OBSTACK_TEST_INGEST_URL;
+  const key = process.env.OBSTACK_TEST_API_KEY;
+  if (!url || !key) {
+    t.skip(
+      "set OBSTACK_TEST_INGEST_URL and OBSTACK_TEST_API_KEY (start deploy/compose) to run the live forwarder leg",
+    );
+    return;
+  }
+
+  // The fixture's own timestamps are the vendor's 2019 ones, which ingest's
+  // 90-day retention bound drops while forming the part — the instant moves so
+  // the delivery is one a running deployment would actually keep, and nothing
+  // else does.
+  const payload = readFixture("data-message.json");
+  const now = Date.now();
+  payload.logEvents = payload.logEvents.map((e) => ({ ...e, timestamp: now }));
+
+  const result = await withEnv({ OBSTACK_INGEST_URL: url, OBSTACK_API_KEY: key }, () =>
+    handler(envelope(payload)),
+  );
+
+  assert.equal(result.forwarded, payload.logEvents.length);
 });

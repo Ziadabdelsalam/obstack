@@ -59,6 +59,15 @@ const (
 	// rows on the widest table; this is generous headroom over that, and small
 	// enough that a wedged mutation queue fails the statement loudly rather
 	// than wedging the sweep for a day.
+	//
+	// It is sent to the server as well as held as a context deadline: the
+	// deployed `obstack_ingest` profile caps queries at max_execution_time=60
+	// (deploy/compose/clickhouse/users.d/obstack-users.xml and the chart's copy
+	// of it), a cap sized for the hot path, and a cold-path sweep inheriting it
+	// would abort — loudly and forever, with retention never enforced for that
+	// workspace — the first time one workspace's backlog needs more than a
+	// minute of masking. The profile sets a default, not a constraint, so the
+	// sweep raises it for its own three statements and nothing else.
 	statementTimeout = 15 * time.Minute
 
 	// planQueryTimeout bounds the Postgres read that starts a sweep.
@@ -79,13 +88,19 @@ const plansSQL = `
 // summaries cut on max_seen_date per the retained semantic above. Lightweight
 // DELETE needs no system-table access — deliberate, because the ingest role
 // has none (measured, CH6).
+//
+// spans and logs compare instants, which carry their own timezone; the
+// summaries compare calendar dates, and max_seen_date is max(toDate(start_time))
+// over a UTC column — so its cutoff is computed in UTC too rather than in
+// whatever timezone the server happens to run in, which would move the cutoff a
+// day in either direction, one of which is early deletion.
 var deletes = []struct {
 	table string
 	sql   string
 }{
 	{"spans", `DELETE FROM obstack.spans WHERE workspace_id = ? AND start_time < now() - toIntervalDay(?)`},
 	{"logs", `DELETE FROM obstack.logs WHERE workspace_id = ? AND timestamp < now() - toIntervalDay(?)`},
-	{"trace_summaries", `DELETE FROM obstack.trace_summaries WHERE workspace_id = ? AND max_seen_date < toDate(now() - toIntervalDay(?))`},
+	{"trace_summaries", `DELETE FROM obstack.trace_summaries WHERE workspace_id = ? AND max_seen_date < toDate(now('UTC') - toIntervalDay(?))`},
 }
 
 // Ops-only counters, the metering flusher's split: what a customer sees is the
@@ -169,6 +184,9 @@ func New(ctx context.Context, cfg Config) (*Sweeper, error) {
 	s.del = func(ctx context.Context, table, sql, workspaceID string, days int32) error {
 		ctx, cancel := context.WithTimeout(ctx, statementTimeout)
 		defer cancel()
+		ctx = clickhouse.Context(ctx, clickhouse.WithSettings(clickhouse.Settings{
+			"max_execution_time": int(statementTimeout / time.Second),
+		}))
 		return conn.Exec(ctx, sql, workspaceID, days)
 	}
 	return s, nil
@@ -221,9 +239,6 @@ func (s *Sweeper) Sweep(ctx context.Context) {
 
 	failed := 0
 	for _, w := range workspaces {
-		if ctx.Err() != nil {
-			return
-		}
 		if w.retentionDays <= 0 {
 			// A non-positive tier would delete everything a workspace has ever
 			// sent. No catalog row says that; refuse it loudly rather than
@@ -234,6 +249,13 @@ func (s *Sweeper) Sweep(ctx context.Context) {
 			continue
 		}
 		for _, d := range deletes {
+			// Between statements, not only between workspaces: past a
+			// cancelled context every remaining statement would fail on its
+			// own deadline, counting failures and logging errors that are
+			// shutdown, not retention.
+			if ctx.Err() != nil {
+				return
+			}
 			if err := s.del(ctx, d.table, d.sql, w.workspaceID, w.retentionDays); err != nil {
 				failed++
 				sweepFailures.Inc()

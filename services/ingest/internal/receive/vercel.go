@@ -10,7 +10,6 @@ import (
 	"errors"
 	"io"
 	"net/http"
-	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -48,11 +47,6 @@ const (
 	// documented in their verification example; it is a delivery-integrity
 	// check layered on top of the bearer key, never the authentication itself.
 	vercelSignatureHeader = "X-Vercel-Signature"
-
-	// envVercelDrainSecret enables signature verification when set (D287).
-	// Unset means the bearer key alone authenticates, which is the posture
-	// every other route on this mux runs under.
-	envVercelDrainSecret = "OBSTACK_VERCEL_DRAIN_SECRET"
 
 	// scopeVercel names the instrumentation scope the drain's records land
 	// under, so a query can tell a drain-delivered line from an SDK-emitted one
@@ -124,7 +118,7 @@ func (s *Server) vercelHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if secret := os.Getenv(envVercelDrainSecret); secret != "" {
+	if secret := s.cfg.VercelDrainSecret; secret != "" {
 		if !validVercelSignature(raw, r.Header.Get(vercelSignatureHeader), secret) {
 			// Counted like any other post-auth refusal (D26): this is telemetry
 			// from a known workspace that we would not take.
@@ -202,10 +196,14 @@ func validVercelSignature(body []byte, header, secret string) bool {
 	return hmac.Equal([]byte(want), []byte(header))
 }
 
-// decodeVercelLogs takes both encodings the drain can be configured with: a
-// JSON array of entries, and NDJSON — one entry per line. The vendor's own
-// "JSON" example is a sequence of objects rather than a bracketed array, so the
-// stream decoder below reads both shapes without asking which was configured.
+// decodeVercelLogs takes both encodings the drain can be configured with, and
+// both spellings the vendor's own documentation gives for one of them: its
+// prose calls the JSON format "JSON arrays containing log objects" while the
+// example published under that heading is an unbracketed sequence of objects.
+// Rather than pick a side of that contradiction, the decoder reads a bracketed
+// array when it sees one and otherwise streams objects — which also covers
+// NDJSON, since a newline between objects is whitespace to a JSON stream
+// decoder. Whichever shape the wire actually carries, this route takes it.
 func decodeVercelLogs(body []byte) ([]vercelLog, error) {
 	trimmed := bytes.TrimSpace(body)
 	if len(trimmed) == 0 {

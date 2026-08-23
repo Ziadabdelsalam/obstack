@@ -138,9 +138,14 @@ export const connectors: Connector[] = [
   },
 
   /* ---------- coming soon ---------- */
-  // Vercel and CloudWatch have no receiving component yet (D101/D208): the
-  // cards state that in both modes rather than rendering a connect flow whose
-  // endpoints do not exist. M4 builds the receivers, S5 activates them.
+  // Vercel and CloudWatch now HAVE receivers — routes on ingest, built and
+  // exercised against real requests — and still say "coming soon", which is
+  // the honest state and not a stale card (D101/D208): the hosted endpoint a
+  // drain or a subscription filter would be pointed at is not public until S5
+  // deploys it, and card availability is a product claim in both modes. These
+  // two flip when that endpoint exists, not when their code landed. A
+  // self-hoster can already use both against their own ingest — the connector
+  // docs S4.4 writes say so.
   {
     slug: "vercel",
     name: "Vercel",

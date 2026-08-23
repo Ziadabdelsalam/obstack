@@ -213,16 +213,24 @@ const HEALTH_SQL = `
 /**
  * The windowed counts per key: only COMPLETE minutes, only the last
  * `RATE_WINDOW_MINUTES` of them (D288). The bounds are computed in Postgres off
- * `now()` so the window is the database's clock — the same clock the flusher
- * stamps buckets with — rather than the web tier's, which would drift a bucket
- * either way at the boundary.
+ * `now()` rather than off the web tier's clock, so every reader of the table
+ * cuts the window at the same instant no matter which replica served the page.
+ *
+ * The assumption that leaves, said out loud: `bucket_start` is stamped by the
+ * INGEST process's clock (`metering.go` truncates its own `time.Now()`), not by
+ * Postgres, so the two hosts have to agree to well under a minute — the
+ * ordinary NTP posture, not a guarantee this query can make. The failure is
+ * one-directional: an ingest clock BEHIND Postgres pulls a still-filling bucket
+ * into the window and the rate reads low; an ingest clock AHEAD shifts the five
+ * complete minutes back in time, so the figure stays right and goes stale. It
+ * cannot read high either way.
  *
  * `$2` is the window length, so the SQL states the same number the type
  * exports; nothing here re-derives it.
  */
 const WINDOW_SQL = `
   SELECT w.key_id AS key_id,
-         coalesce(sum(w.accepted), 0) AS accepted
+         sum(w.accepted) AS accepted
     FROM api_key_health_windows w
    WHERE w.workspace_id = $1
      AND w.bucket_start >= date_trunc('minute', now()) - ($2::int * INTERVAL '1 minute')

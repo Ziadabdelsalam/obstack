@@ -135,6 +135,19 @@ spec:
                   key: postgres-password
             - name: OBSTACK_PG_MIGRATE_ON_BOOT
               value: "false"
+            # D287 — the Vercel drain's OPTIONAL signature secret. Rendered
+            # only when the operator set one (values.yaml, `ingest`), because
+            # an env var referencing a Secret key that was never written keeps
+            # the pod in CreateContainerConfigError; unset simply means the
+            # drain route authenticates on its bearer key alone, which ingest
+            # states at boot rather than leaving to be inferred.
+            {{- if or .Values.ingest.vercelDrainSecret .Values.ingest.existingSecret }}
+            - name: OBSTACK_VERCEL_DRAIN_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "obstack.ingest.secretName" . }}
+                  key: vercel-drain-secret
+            {{- end }}
           ports:
             - name: otlp-grpc
               containerPort: 4317

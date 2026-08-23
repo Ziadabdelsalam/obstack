@@ -181,8 +181,16 @@ jobs:
       # It is deliberately NOT an npm workspace member: the artifact has zero
       # dependencies, and adding it to the root workspaces globs would put a
       # deployable into the app's lockfile for nothing.
+      # The two env vars turn on the live leg: this job already has compose
+      # ingest up on 127.0.0.1:4318 with the `ok_dev_local` continuity key the
+      # pg-migrate seed writes, so the handler is exercised against a REAL
+      # endpoint rather than a stubbed fetch. Without them the leg skips, which
+      # is what a laptop with no stack up gets.
       - name: CloudWatch forwarder — harness + zip
         working-directory: deploy/cloudwatch-forwarder
+        env:
+          OBSTACK_TEST_INGEST_URL: http://127.0.0.1:4318/v1/integrations/cloudwatch
+          OBSTACK_TEST_API_KEY: ok_dev_local
         run: |
           node --test
           node package.mjs

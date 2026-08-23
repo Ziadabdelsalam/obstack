@@ -216,6 +216,14 @@ func TestSweepEnforcesBothDirectionsOnTwoTiers(t *testing.T) {
 		"INSERT INTO workspaces (id, org_id) VALUES ($1, 'org_ret'), ($2, 'org_ret')", freeWS, proWS); err != nil {
 		t.Fatalf("seed workspaces: %v", err)
 	}
+	// Every other workspace the embedded schema seeds (ws_demo) is dropped, so
+	// the sweep sees these two and nothing else: Postgres is a throwaway schema
+	// here but ClickHouse is the shared server, and a sweep that saw ws_demo
+	// would mask a local stack's demo telemetry past free's 7 days as a side
+	// effect of running the test suite.
+	if _, err := pool.Exec(ctx, "DELETE FROM workspaces WHERE id NOT IN ($1, $2)", freeWS, proWS); err != nil {
+		t.Fatalf("drop the seeded workspaces: %v", err)
+	}
 	if _, err := pool.Exec(ctx,
 		"INSERT INTO workspace_plans (workspace_id, plan_id) VALUES ($1, 'pro')", proWS); err != nil {
 		t.Fatalf("seed pro plan: %v", err)
@@ -232,9 +240,18 @@ func TestSweepEnforcesBothDirectionsOnTwoTiers(t *testing.T) {
 			seedLog(ctx, t, conn, ws, age)
 		}
 	}
+	// Before the sweep every table holds all three ages. Asserting it on spans
+	// and logs too is what keeps the deleted half of the proof from passing
+	// vacuously: the 45-day rows are only in the tables at all because
+	// migration 0004 widened the table TTL to 90 days, and TTL drops those rows
+	// at insert-time part formation (CH4) — silently, and without stopping the
+	// MV from writing the summary row that would still make a summaries-only
+	// pre-check green.
 	for _, ws := range []string{freeWS, proWS} {
-		if got := countWhere(ctx, t, conn, "trace_summaries", ws); got != 3 {
-			t.Fatalf("MV populated %d summary rows for %s before the sweep, want 3", got, ws)
+		for _, table := range []string{"spans", "logs", "trace_summaries"} {
+			if got := countWhere(ctx, t, conn, table, ws); got != 3 {
+				t.Fatalf("%s/%s holds %d rows before the sweep, want the 3 seeded ages", ws, table, got)
+			}
 		}
 	}
 

@@ -49,9 +49,14 @@ ORDER BY version`
 // Compose has one ingest container; Kubernetes runs `ingest migrate` as a
 // pre-upgrade Job and sets OBSTACK_MIGRATE_ON_BOOT=false on the Deployment, so
 // its replicas only verify (see Pending). Concurrent runners are survivable
-// today only because every shipped statement is CREATE ... IF NOT EXISTS — the
-// first ALTER would end that — which is exactly why the fix is one runner rather
-// than a lock nobody can afford.
+// today because every shipped statement converges on the same end state under
+// repetition: the CREATEs are IF NOT EXISTS, and 0004's ALTER ... MODIFY TTL
+// sets a fixed literal, so two runners applying it reach one answer and the
+// MATERIALIZE TTL it triggers is itself idempotent. That is a property of the
+// statements currently shipped, not a guarantee of the mechanism — a
+// non-convergent ALTER (one computed from the current schema, say) would end
+// it — which is exactly why the fix is one runner rather than a lock nobody
+// can afford.
 func Run(ctx context.Context, dsn string, fsys fs.FS) ([]string, error) {
 	conn, err := connect(dsn)
 	if err != nil {
@@ -103,8 +108,11 @@ func Run(ctx context.Context, dsn string, fsys fs.FS) ([]string, error) {
 //
 // It detects only forward skew: versions this binary carries that the database
 // lacks. A pod running an image older than the schema verifies clean, which is
-// survivable for exactly as long as every migration is additive — the same
-// caveat Run carries, and it expires on the same first ALTER.
+// survivable for exactly as long as an applied migration leaves the older
+// binary's statements valid. 0004 widens a TTL, which no earlier version reads
+// or depends on, so the property still holds — but it now holds per-migration
+// rather than by the blanket "everything is additive" that CREATE-only sets
+// gave for free. The same caveat Run carries.
 func Pending(ctx context.Context, dsn string, fsys fs.FS) ([]string, error) {
 	conn, err := connect(dsn)
 	if err != nil {

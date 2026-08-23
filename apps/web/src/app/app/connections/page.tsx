@@ -16,7 +16,7 @@ import { getSessionContext } from "@/server/session";
 const asMinute = (at: Date): string => `${at.toISOString().slice(0, 16).replace("T", " ")} UTC`;
 
 /**
- * The connections hub's one read.
+ * The connections hub's reads.
  *
  * Mock mode returns FIRST, before `connection()` and before anything
  * session-shaped (D125): the demo deployment has no accounts and no Postgres,
@@ -24,11 +24,13 @@ const asMinute = (at: Date): string => `${at.toISOString().slice(0, 16).replace(
  * component itself imports no `@/mock/*` data, because it also renders for a
  * real workspace (D204/D208; the cards are the same definition in both modes).
  *
- * Live mode reads `getIngestHealth` and nothing else: the D100 `api_key_health`
- * rows are the ONE counter path in the product (S3.3 exit bundle §6.4), so what
- * this page shows per key is what the metering flush wrote, formatted, with the
- * freshest row's `updated_at` carried as the panel's "as of". No span query
- * counts the same events a second way.
+ * Live mode reads the two tables the SAME metering flush writes and nothing
+ * else: `api_key_health` for the lifetime counters and `api_key_health_windows`
+ * for the measured rate (D260). That is still the ONE counter path (D100/D162,
+ * S3.3 exit bundle §6.4) — both reads are the flush's own rows, so what this
+ * page shows per key is what ingest counted, formatted, with the freshest health
+ * row's `updated_at` carried as the panel's "as of". No span query counts the
+ * same events a second way.
  */
 export default async function ConnectionsPage() {
   if (dataMode !== "live") {

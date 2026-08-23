@@ -27,7 +27,7 @@ const origLoad = (Module as unknown as { _load: (r: string, ...a: unknown[]) => 
   return origLoad.call(this, request, ...rest);
 };
 
-const { connectedSourcesOf, liveSourceStatus, sourceErrors } = createRequire(
+const { connectedSourcesOf, formatRate, liveSourceStatus, sourceErrors } = createRequire(
   fileURLToPath(import.meta.url),
 )("./ConnectionsHub.tsx") as typeof import("./ConnectionsHub");
 
@@ -157,10 +157,6 @@ test("the live rate is measured over a stated window, never derived from totals"
 // A key with no bucket in the window reads as an absence, never as a zero
 // nothing measured — the distinction D218 refused to blur.
 test("formatRate distinguishes no measurement from a measured zero", () => {
-  const { formatRate } = createRequire(fileURLToPath(import.meta.url))(
-    "./ConnectionsHub.tsx",
-  ) as typeof import("./ConnectionsHub");
-
   assert.equal(formatRate(null), "—");
   assert.equal(formatRate(0), "0/min");
   assert.equal(formatRate(2.4), "2.4/min");

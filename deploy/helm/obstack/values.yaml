@@ -187,6 +187,18 @@ ingest:
   # No key value here: API keys are Postgres `api_keys` rows (D98), issued in
   # the product and read by ingest through a cached lookup. There is nothing
   # for this chart to configure.
+  #
+  # The Vercel log-drain route's OPTIONAL signature secret (D287). The drain
+  # authenticates with an ordinary obstack ingest key in an `Authorization:
+  # Bearer` custom header, exactly like every other export — this is the
+  # separate per-drain secret Vercel signs the body with, and setting it turns
+  # on `x-vercel-signature` verification. Empty (the default) leaves the bearer
+  # key as that route's only credential; ingest logs which posture it booted in
+  # either way, so this being unset is never a silent non-verification.
+  # `existingSecret` below routes it around this file the same way every other
+  # credential can be (README.md, "Credentials and existingSecret").
+  vercelDrainSecret: ""
+  existingSecret: ""
   # D253 item 5 — see web.resources above for the same reasoning; sized for
   # the OTLP receive + ClickHouse/Postgres write path, not a guess.
   resources:

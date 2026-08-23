@@ -107,9 +107,12 @@ CREATE TABLE IF NOT EXISTS pricing_overrides (
 -- The plan catalog lives here and only here (D163). Go reads it for the quota it
 -- enforces and TypeScript reads it for the quota it displays; a constant in
 -- either language would be the same number defined twice, which is the exact
--- divergence class S2.3 L3 was written about. Retention is sold from
--- retention_days as an entitlement whose enforcement lands at M4 (D105) — the
--- surface states that rather than claiming deletion.
+-- divergence class S2.3 L3 was written about. retention_days is also the number
+-- the retention sweep ENFORCES (D252, internal/retention): it reads each
+-- workspace's current plan on a fixed cadence and deletes its telemetry past
+-- that many days, with a 90-day table TTL behind it as the outer bound. The
+-- surface can therefore state the entitlement plainly — the M4-era disclaimer
+-- that enforcement had not landed came out with the sweep (D105).
 --
 -- The seed is a plain INSERT and not an UPSERT: the runner applies a file once,
 -- so guarding it would be guarding against something that cannot happen. Prices
