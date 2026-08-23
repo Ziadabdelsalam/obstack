@@ -9,8 +9,10 @@ import {
   OVERRIDE_MAX,
   OverrideLimit,
   PRICE_PER_MTOK_MAX,
+  RATE_WINDOW_MINUTES,
   UnknownOverride,
   deletePricingOverride,
+  getAcceptedRates,
   getIngestHealth,
   listPricingOverrides,
   parseOverrideMatch,
@@ -324,4 +326,49 @@ test("the base price list's date and size come from the file ingest embeds", () 
   // the first time the price list is refreshed (D29/S2.3 L3).
   assert.match(BASE_PRICES_AS_OF, /^\d{4}-\d{2}-\d{2}$/, "the price file's as_of is a YYYY-MM-DD date");
   assert.ok(BASE_PRICES_COUNT > 20, `the embedded list priced only ${BASE_PRICES_COUNT} models`);
+});
+
+// ---- the windowed rate (D260/D288) ----
+
+// The measurement D218 refused to invent: buckets summed over complete minutes
+// and divided by the number of them — never a cumulative total divided by an
+// assumed age.
+test("the rate is the window's accepted count over the window's length", async () => {
+  const { query, seen } = recordingQuery([
+    { key_id: "key_busy", accepted: "600" },
+    { key_id: "key_slow", accepted: "3" },
+  ]);
+
+  const rates = await getAcceptedRates("ws_a", query);
+
+  assert.equal(rates.get("key_busy"), 600 / RATE_WINDOW_MINUTES);
+  assert.equal(rates.get("key_slow"), 3 / RATE_WINDOW_MINUTES);
+  // A key with no bucket is ABSENT, not zero: the surface must be able to tell
+  // "measured nothing arriving" from "measured nothing at all".
+  assert.equal(rates.has("key_never"), false);
+
+  assert.equal(seen.length, 1, "the rate is one statement");
+  assert.deepEqual(seen[0].params, ["ws_a", RATE_WINDOW_MINUTES]);
+  assert.match(seen[0].sql, /workspace_id = \$1/);
+});
+
+// The in-progress minute is excluded: a bucket still filling divided by a whole
+// minute would render every workspace as slowing down.
+test("the window covers complete minutes only", async () => {
+  const { query, seen } = recordingQuery([]);
+  await getAcceptedRates("ws_a", query);
+
+  const sql = seen[0].sql;
+  assert.match(sql, /bucket_start\s*>=\s*date_trunc\('minute', now\(\)\)\s*-/);
+  assert.match(sql, /bucket_start\s*<\s*date_trunc\('minute', now\(\)\)/);
+});
+
+// D203: the arrival poll reads the health rows every five seconds per waiting
+// visitor, so the rate must never ride along on that read.
+test("the rate is a separate read from the health rows", async () => {
+  const { query, seen } = recordingQuery([]);
+  await getIngestHealth("ws_a", query);
+
+  assert.equal(seen.length, 1, "getIngestHealth must stay one statement");
+  assert.doesNotMatch(seen[0].sql, /api_key_health_windows/);
 });

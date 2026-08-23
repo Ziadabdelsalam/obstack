@@ -33,9 +33,10 @@ CREATE MATERIALIZED VIEW v TO t AS SELECT c FROM s;
 // would only surface at boot otherwise.
 func TestEmbeddedMigrationsSplitAsExpected(t *testing.T) {
 	counts := map[string]int{
-		"0001_spans.sql":           1,
-		"0002_logs.sql":            1,
-		"0003_trace_summaries.sql": 2,
+		"0001_spans.sql":               1,
+		"0002_logs.sql":                1,
+		"0003_trace_summaries.sql":     2,
+		"0004_retention_outer_ttl.sql": 3,
 	}
 	names, err := migrations.FS.ReadDir(".")
 	if err != nil {

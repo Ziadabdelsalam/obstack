@@ -28,6 +28,29 @@ type httpRequest struct {
 	body        []byte
 	bearer      string
 	gzipped     bool
+
+	// preCompressed sends body as-is under Content-Encoding: gzip — the caller
+	// compressed it themselves, which the drain's signature proofs need in
+	// order to sign the exact bytes the server will read (D287).
+	preCompressed bool
+
+	// headers are extra request headers, e.g. the drain signature.
+	headers map[string]string
+}
+
+// gzipBytes is the compression the harness applies, exposed so a test can
+// compress a payload itself and still send exactly those bytes.
+func gzipBytes(t *testing.T, body []byte) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	if _, err := gz.Write(body); err != nil {
+		t.Fatalf("gzip payload: %v", err)
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatalf("gzip payload: %v", err)
+	}
+	return buf.Bytes()
 }
 
 func post(t *testing.T, srv *receive.Server, req httpRequest) *http.Response {
@@ -35,15 +58,7 @@ func post(t *testing.T, srv *receive.Server, req httpRequest) *http.Response {
 
 	body := req.body
 	if req.gzipped {
-		var buf bytes.Buffer
-		gz := gzip.NewWriter(&buf)
-		if _, err := gz.Write(body); err != nil {
-			t.Fatalf("gzip payload: %v", err)
-		}
-		if err := gz.Close(); err != nil {
-			t.Fatalf("gzip payload: %v", err)
-		}
-		body = buf.Bytes()
+		body = gzipBytes(t, body)
 	}
 
 	httpReq, err := http.NewRequest(http.MethodPost, "http://"+srv.HTTPAddr()+req.path, bytes.NewReader(body))
@@ -56,8 +71,13 @@ func post(t *testing.T, srv *receive.Server, req httpRequest) *http.Response {
 	if req.bearer != "" {
 		httpReq.Header.Set("Authorization", req.bearer)
 	}
-	if req.gzipped {
+	if req.gzipped || req.preCompressed {
 		httpReq.Header.Set("Content-Encoding", "gzip")
+	}
+	for key, value := range req.headers {
+		if value != "" {
+			httpReq.Header.Set(key, value)
+		}
 	}
 
 	resp, err := http.DefaultClient.Do(httpReq)

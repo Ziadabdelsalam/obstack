@@ -31,6 +31,7 @@ import (
 	"github.com/Ziadabdelsalam/observer-stack/services/ingest/internal/pgmigrate"
 	"github.com/Ziadabdelsalam/observer-stack/services/ingest/internal/pricing"
 	"github.com/Ziadabdelsalam/observer-stack/services/ingest/internal/receive"
+	"github.com/Ziadabdelsalam/observer-stack/services/ingest/internal/retention"
 	"github.com/Ziadabdelsalam/observer-stack/services/ingest/internal/write"
 	"github.com/Ziadabdelsalam/observer-stack/services/ingest/migrations"
 	"github.com/Ziadabdelsalam/observer-stack/services/ingest/pgmigrations"
@@ -242,6 +243,29 @@ func run() error {
 		return err
 	}
 
+	// The retention sweep (D252) reads plans from the one pool and deletes past
+	// each tier on its own cold-path ClickHouse connection. It fails boot like
+	// the writer does: a process claiming to own retention must be able to
+	// enforce it.
+	sweeper, err := retention.New(connectCtx, retention.Config{
+		DSN:  cfg.ClickHouseDSN,
+		Pool: pool,
+	})
+	if err != nil {
+		return err
+	}
+	sweepCtx, stopSweep := context.WithCancel(context.Background())
+	sweepStopped := make(chan struct{})
+	go func() {
+		defer close(sweepStopped)
+		sweeper.Run(sweepCtx)
+	}()
+	stopSweeper := func() {
+		stopSweep()
+		<-sweepStopped
+		sweeper.Close()
+	}
+
 	// The meter accumulates in memory and flushes on its own interval; the
 	// receive path only ever adds to a map (D166), so a Postgres that goes away
 	// costs the ledger rows, never an export.
@@ -267,6 +291,7 @@ func run() error {
 	if err := receiver.Start(); err != nil {
 		stopMeter()
 		<-meterStopped
+		stopSweeper()
 		closeCtx, cancelClose := context.WithTimeout(context.Background(), shutdownTimeout)
 		writer.Close(closeCtx)
 		cancelClose()
@@ -311,6 +336,10 @@ func run() error {
 	}
 	stopMeter()
 	<-meterStopped
+	// The sweep stops last of the background loops and holds nothing back: an
+	// in-flight DELETE is abandoned with its context (D252), and retention is
+	// re-established whole on the next process's first sweep.
+	stopSweeper()
 	if err := admin.Shutdown(shutdownCtx); err != nil && runErr == nil {
 		runErr = err
 	}

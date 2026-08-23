@@ -61,6 +61,13 @@ func (s *Server) httpHandler() http.Handler {
 			return plogotlp.NewExportResponse()
 		})
 	})
+	// The launch receivers (D101/D254). They are routes here rather than a
+	// second listener because everything a second listener would need — the
+	// bearer path, metering, health rows, quota, the panic recovery below —
+	// already exists on this one. Their names are stable operator-facing
+	// configuration (D289).
+	mux.HandleFunc("POST /v1/integrations/vercel", s.vercelHandler)
+	mux.HandleFunc("POST /v1/integrations/cloudwatch", s.cloudWatchHandler)
 	return recoverPanics(mux)
 }
 

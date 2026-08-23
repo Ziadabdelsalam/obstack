@@ -376,3 +376,66 @@ func TestRunFlushesOnShutdown(t *testing.T) {
 		t.Fatalf("%d flushes happened, want the one on shutdown", len(flush.batches))
 	}
 }
+
+// The windowed buckets (D260): the same events the cumulative cells count, in
+// the minute they happened in — which is what makes a /min figure computable
+// instead of estimated (D218's refusal answered).
+func TestWindowsBucketByMinute(t *testing.T) {
+	m, flush, clock := newTestMeter(t)
+
+	m.RecordAccepted("ws", "key", 3, 2)
+	clock.advance(90 * time.Second)
+	m.RecordAccepted("ws", "key", 10, 0)
+	m.RecordDropped("ws", "key", DropDecode, 1)
+	mustFlush(t, m)
+
+	b := lastBatch(t, flush)
+	if len(b.windows) != 2 {
+		t.Fatalf("flushed %d minute buckets, want 2", len(b.windows))
+	}
+
+	first := windowKey{workspaceID: "ws", keyID: "key", bucketStart: time.Date(2026, 8, 19, 12, 30, 0, 0, time.UTC)}
+	second := windowKey{workspaceID: "ws", keyID: "key", bucketStart: time.Date(2026, 8, 19, 12, 31, 0, 0, time.UTC)}
+
+	if got := b.windows[first].accepted; got != 5 {
+		t.Errorf("first bucket accepted = %d, want 5", got)
+	}
+	if got := b.windows[second].accepted; got != 10 {
+		t.Errorf("second bucket accepted = %d, want 10", got)
+	}
+	if got := b.windows[second].droppedDecode; got != 1 {
+		t.Errorf("second bucket decode drops = %d, want 1", got)
+	}
+
+	// The cumulative cell counts exactly the same events, once.
+	cell := b.health[healthKey{workspaceID: "ws", keyID: "key"}]
+	if cell.accepted != 15 || cell.droppedDecode != 1 {
+		t.Errorf("cumulative cell = %+v, want 15 accepted / 1 decode drop", cell)
+	}
+}
+
+// A failed flush retains its buckets, but only the ones still inside the stated
+// retention: a long outage must not accumulate buckets nothing will render.
+func TestRetainedWindowsRespectRetention(t *testing.T) {
+	m, flush, clock := newTestMeter(t)
+	flush.err = errors.New("postgres away")
+
+	m.RecordAccepted("ws", "key", 1, 0)
+	if err := m.Flush(context.Background()); err == nil {
+		t.Fatal("Flush succeeded, want the injected failure")
+	}
+	if len(m.windows) != 1 {
+		t.Fatalf("retained %d buckets, want the failed flush's 1", len(m.windows))
+	}
+
+	// Past the retention the same bucket is no longer retained on a retry.
+	m.windows = map[windowKey]healthCell{}
+	m.RecordAccepted("ws", "key", 1, 0)
+	clock.advance(windowRetention + time.Minute)
+	if err := m.Flush(context.Background()); err == nil {
+		t.Fatal("Flush succeeded, want the injected failure")
+	}
+	if len(m.windows) != 0 {
+		t.Errorf("retained %d buckets past the retention, want 0", len(m.windows))
+	}
+}
