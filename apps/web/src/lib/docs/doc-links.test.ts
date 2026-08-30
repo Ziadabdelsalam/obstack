@@ -136,10 +136,13 @@ test("the body's `a` comes from the mount, and the mount is the only thing that 
  * The prerendered HTML for a slug on a mount, or `null` when this tree has not
  * been built.
  *
- * SKIPPED, NOT FAILED, when `.next` is absent: `npm test` does not build, and a
- * fresh checkout running the suite first would otherwise see a red that says
- * nothing about the code. The check is worth having anyway — it is the only one
- * that reads what a reader actually receives — and CI builds before it tests.
+ * Skipped locally, FAILED on CI (S4.4 R1 should-fix A). `npm test` does not
+ * build, so a fresh checkout running the suite first would otherwise see a red
+ * that says nothing about the code — but this arm is the only one that reads
+ * what a reader actually receives, and "it skipped" is indistinguishable from
+ * "it passed" in a green run. It skipped on every CI run of the sprint that
+ * introduced it, because `web.yml` tested before it built. That order is now
+ * the other way round and this is what holds it there.
  */
 function prerendered(mount: "docs" | "app/docs", slug: string[]): string | null {
   const file = path.join(APP_DIR, ".next/server/app", mount + (slug.length ? `/${slug.join("/")}` : "") + ".html");
@@ -148,7 +151,11 @@ function prerendered(mount: "docs" | "app/docs", slug: string[]): string | null 
 
 test("the rendered body links stay on the mount the reader is on", (t) => {
   if (!prerendered("docs", ["quickstart"])) {
-    t.skip("no .next/server/app — run `npm run build` in apps/web for this one (it reads the prerendered HTML)");
+    const why =
+      "no .next/server/app — this arm reads the PRERENDERED docs pages, so `npm run build` (apps/web) " +
+      "must run before `npm test`; .github/workflows/web.yml orders it that way";
+    assert.ok(!process.env.CI, why);
+    t.skip(`${why} — skipped locally, fails on CI`);
     return;
   }
   assert.equal(docsManifest.length, 14);
@@ -188,4 +195,120 @@ test("the rendered body links stay on the mount the reader is on", (t) => {
     }
   }
   assert.equal(checkedBodyLinks, 20, "the corpus's link count changed — update this deliberately");
+});
+
+// ───────────────────────────────────────────────── the fragment half (R1 B)
+
+/**
+ * A heading id the way `rehype-slug` writes one (S4.4 R1 should-fix B).
+ *
+ * The check above resolved a link's PAGE and stopped there, so
+ * `/docs/quickstart#no-such-heading` was as green as a correct one — and five
+ * of the corpus's twenty links carry a fragment, all of them pointing into a
+ * page the reader has not scrolled yet. An anchor that misses lands them at the
+ * top of a long page with no sign anything went wrong.
+ *
+ * The rule: lowercase, whitespace to `-`, drop everything outside
+ * `[a-z0-9_-]`. Runs are NOT collapsed, and that is a measurement rather than a
+ * preference — the arm below re-derives every id in the prerendered HTML from
+ * the heading it was built from, and collapsing them failed on
+ * `/docs/billing-and-plans`: "Over-quota ingestion degrades — it does not stop"
+ * ships as `…degrades--it-does-not-stop`, because github-slugger (which
+ * rehype-slug uses) DELETES the em dash and leaves the two hyphens the spaces
+ * around it became. A rule that tidied that up would have declared the
+ * corpus's own anchors broken.
+ */
+function slugifyHeading(text: string): string {
+  return text
+    .toLowerCase()
+    .replace(/\s+/g, "-")
+    .replace(/[^a-z0-9_-]/g, "");
+}
+
+/**
+ * The ATX headings of an `.mdx` page. Fenced blocks are skipped: the helm
+ * chart's install snippet is shell, and shell comments start with `#`.
+ */
+function headingsOf(source: string): string[] {
+  const out: string[] = [];
+  let fenced = false;
+  for (const line of source.split("\n")) {
+    if (/^\s*(?:```|~~~)/.test(line)) {
+      fenced = !fenced;
+      continue;
+    }
+    if (fenced) continue;
+    const m = /^(#{1,6})\s+(.+?)\s*$/.exec(line);
+    if (m) out.push(m[2]);
+  }
+  return out;
+}
+
+/** The page a `/docs/...` href names, out of the corpus this file already walked. */
+function corpusPageFor(pathname: string) {
+  const segments = pathname.slice(PUBLIC_DOCS_BASE.length).split("/").filter(Boolean);
+  return pages.find((p) => p.slug.join("/") === segments.join("/"));
+}
+
+/** Does this href name a page AND, if it carries one, a heading on that page? */
+function anchorResolves(href: string): boolean {
+  const [pathname, fragment] = href.split("#");
+  const page = corpusPageFor(pathname);
+  if (!page) return false;
+  if (!fragment) return true;
+  return headingsOf(page.source).map(slugifyHeading).includes(fragment);
+}
+
+test("every anchored /docs link points at a heading that is actually on that page", () => {
+  const anchored = pages.flatMap((p) =>
+    p.links.filter((href) => href.includes("#")).map((href) => ({ from: `/${p.slug.join("/")}`, href })),
+  );
+  assert.equal(anchored.length, 5, "the corpus's anchored-link count changed — update this deliberately");
+
+  for (const { from, href } of anchored) {
+    const [pathname] = href.split("#");
+    const page = corpusPageFor(pathname);
+    assert.ok(page, `${from} links to ${href} and no corpus page is mounted at ${pathname}`);
+    assert.ok(
+      anchorResolves(href),
+      `${from} links to ${href}, and ${pathname} carries no such heading — it has ${headingsOf(page.source)
+        .map(slugifyHeading)
+        .join(", ")}`,
+    );
+  }
+
+  // The falsification, on the exact shape R1 named: the page is real, the
+  // heading is not, and this must be the difference between the two.
+  assert.equal(anchorResolves("/docs/quickstart#send-your-first-trace"), true);
+  assert.equal(anchorResolves("/docs/quickstart#no-such-heading"), false);
+  assert.equal(anchorResolves("/docs/no-such-page#send-your-first-trace"), false);
+});
+
+test("the slug rule is the one the renderer actually applied", (t) => {
+  // Not a second implementation trusted to agree with the first: every id in
+  // the prerendered HTML is re-derived from the heading text in the `.mdx` it
+  // was built from. If `rehype-slug` and the rule above ever disagree, the
+  // corpus's own headings say so here.
+  if (!prerendered("docs", ["quickstart"])) {
+    const why =
+      "no .next/server/app — this arm measures the slug rule against the PRERENDERED heading ids, " +
+      "so `npm run build` (apps/web) must run before `npm test`";
+    assert.ok(!process.env.CI, why);
+    t.skip(`${why} — skipped locally, fails on CI`);
+    return;
+  }
+  let checked = 0;
+  for (const p of pages) {
+    const html = prerendered("docs", p.slug);
+    assert.ok(html, `/${p.slug.join("/")}: no prerendered HTML`);
+    // `_R_` is React's own; every other id on a docs page is a heading's.
+    const renderedIds = [...html.matchAll(/<h[1-6][^>]*\bid="([^"]+)"/g)].map((m) => m[1]);
+    assert.deepEqual(
+      renderedIds,
+      headingsOf(p.source).map(slugifyHeading),
+      `/${p.slug.join("/")}: the ids the build wrote are not the ones this file's slug rule derives`,
+    );
+    checked += renderedIds.length;
+  }
+  assert.ok(checked > 40, `only ${checked} heading ids were compared — the extraction is missing some`);
 });

@@ -174,7 +174,7 @@ test("D323: each entry names the merge that made it true", () => {
   }
 });
 
-test("D323: the merge each entry names actually landed on the date it claims", () => {
+test("D323: the merge each entry names actually landed on the date it claims", (t) => {
   // The half the comment above cannot check by itself: a sha, a PR number and
   // a date typed on one line agree with each other by construction. This asks
   // THE REPOSITORY when that commit landed — `git log -1 --format=%cd` on the
@@ -185,7 +185,13 @@ test("D323: the merge each entry names actually landed on the date it claims", (
     // no history to ask, and the entries are still checked against each other
     // above. Nothing about the corpus is skipped — only the question that
     // needs a repository to answer.
-    console.log("# skipped: no .git — the merge dates cannot be checked against history from this copy");
+    //
+    // On CI that is not a condition to tolerate, it is a misconfiguration
+    // (S4.4 R1 should-fix A): a run with no history is a run where the only
+    // check that can catch a mistyped date did not happen.
+    const why = "no .git — the merge dates cannot be checked against history from this copy";
+    assert.ok(!process.env.CI, why);
+    t.skip(`${why} — skipped locally, fails on CI`);
     return;
   }
   for (const entry of onDisk) {
@@ -200,8 +206,15 @@ test("D323: the merge each entry names actually landed on the date it claims", (
       }).trim();
     } catch {
       // A shallow checkout (`fetch-depth: 1`) has the files and not the
-      // commits. Same rule as above: say so, do not invent a pass or a fail.
-      console.log(`# skipped: ${merged.sha} is not in this checkout's object store (shallow clone?)`);
+      // commits. Same rule as above: say so, do not invent a pass or a fail —
+      // and on CI, refuse, because `web.yml` checks out with `fetch-depth: 0`
+      // precisely so this question can be asked. This branch WAS what every CI
+      // run took.
+      const why =
+        `${merged.sha} is not in this checkout's object store (shallow clone?) — ` +
+        "this arm needs full history; .github/workflows/web.yml sets `fetch-depth: 0`";
+      assert.ok(!process.env.CI, why);
+      t.skip(`${why} — skipped locally, fails on CI`);
       return;
     }
     assert.equal(
