@@ -91,11 +91,21 @@ test("/signup renders the honest no-form state in mock mode (D150)", async () =>
   assert.match(copy, /fictional data/);
   assert.match(copy, /host obstack for anyone yet/);
 
-  // Two pointers, both real: the demo this deployment IS, and the waitlist
-  // block on the landing page.
+  // Two pointers, both real and both served by THIS build (D327): the demo
+  // this deployment IS, and the quickstart in the docs corpus D255 added.
+  //
+  // The second used to be `/#waitlist`, an anchor into a landing-page block
+  // that offered a hosted obstack nobody runs and, on this deployment, had no
+  // Blob token to write an address with either. D257 removed the block; this
+  // assertion is why the removal could not quietly leave two dead links behind
+  // (D156 — this file is the shim of record, so the pointers are asserted here
+  // rather than anywhere new). The absence is asserted too: a link that leads
+  // to a fragment no page defines is a door to nowhere, and "the new links are
+  // present" would stay green beside it.
   const links = hrefs(tree);
-  assert.ok(links.includes("/app"), "the live demo");
-  assert.ok(links.includes("/#waitlist"), "the cloud-preview waitlist");
+  assert.ok(links.includes("/app"), "the demo this deployment is");
+  assert.ok(links.includes("/docs/quickstart"), "the quickstart this build serves");
+  assert.ok(!links.includes("/#waitlist"), "the removed cloud-preview anchor is still linked");
 });
 
 test("/login renders the same honest no-form state in mock mode (D150)", async () => {
@@ -113,7 +123,8 @@ test("/login renders the same honest no-form state in mock mode (D150)", async (
 
   const links = hrefs(tree);
   assert.ok(links.includes("/app"));
-  assert.ok(links.includes("/#waitlist"));
+  assert.ok(links.includes("/docs/quickstart"));
+  assert.ok(!links.includes("/#waitlist"), "the removed cloud-preview anchor is still linked");
 });
 
 test("both actions trip rather than reach the auth stack in mock mode", async () => {

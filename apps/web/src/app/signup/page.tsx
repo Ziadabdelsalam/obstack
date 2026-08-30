@@ -53,12 +53,17 @@ export default async function SignupPage({
             one workspace, and your account owns it. We don&apos;t host obstack for anyone yet.
           </p>
 
+          {/* Two pointers, both real and both in this build (D327): the demo
+              this deployment IS, and the documentation it serves. The second
+              used to be a cloud sign-up anchor on the landing page — which
+              offered a hosted obstack that does not exist, and became a dead
+              link the moment D257 removed the block it pointed at. */}
           <div className="mt-7 flex flex-col gap-2.5">
             <Link href="/app" className={POINTER}>
-              Open the live demo
+              Open the demo
             </Link>
-            <Link href="/#waitlist" className={POINTER}>
-              Join the cloud private preview
+            <Link href="/docs/quickstart" className={POINTER}>
+              Read the quickstart
             </Link>
           </div>
         </div>

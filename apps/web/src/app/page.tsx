@@ -5,6 +5,7 @@ import { HeroTrace } from "@/components/marketing/HeroTrace";
 import { ScreensShowcase } from "@/components/marketing/ScreensShowcase";
 import { SampleLabel } from "@/components/marketing/SampleLabel";
 import { SAMPLE_COPY } from "@/components/marketing/sample-copy";
+import { appHref } from "@/lib/app-href";
 import { layerColor } from "@/lib/layers";
 import { connectors } from "@/components/connections/connectors";
 
@@ -83,8 +84,14 @@ export default function Landing() {
             <Link href="/app" className="hidden text-[13px] text-mid hover:text-ink sm:block">
               Open the demo
             </Link>
+            {/* D329/K13 — the one link on this page that must reach the RUNNING
+                app rather than this deployment. On the D262 marketing host a
+                relative `/signup` renders the honest "there is nothing to
+                create here" page, which is a dead end for the button a stranger
+                is most likely to press. `appHref` is empty-by-default, so this
+                is the same relative path everywhere until S5 sets the origin. */}
             <Link
-              href="/signup"
+              href={appHref("/signup")}
               className="rounded-md px-3.5 py-1.5 text-[13px] font-medium text-bg transition-transform hover:scale-[1.03]"
               style={{ background: "var(--color-ink)" }}
             >
@@ -116,7 +123,7 @@ export default function Landing() {
           </p>
           <div className="mt-7 flex flex-wrap items-center gap-3">
             <Link
-              href="/signup"
+              href={appHref("/signup")}
               className="flex items-center gap-2 rounded-md px-4.5 py-2.5 text-[14px] font-medium text-bg transition-transform hover:scale-[1.03]"
               style={{ background: "var(--color-ink)" }}
             >
@@ -524,7 +531,7 @@ export default function Landing() {
             </div>
             <div className="flex flex-wrap items-center gap-3">
               <Link
-                href="/signup"
+                href={appHref("/signup")}
                 className="flex items-center gap-2 rounded-md px-4.5 py-2.5 text-[14px] font-medium text-bg transition-transform hover:scale-[1.03]"
                 style={{ background: "var(--color-ink)" }}
               >
