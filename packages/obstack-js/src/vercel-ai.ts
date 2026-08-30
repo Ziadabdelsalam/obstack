@@ -11,10 +11,17 @@ import {
 import { swallowed } from "./fail-open";
 
 /**
- * The Vercel AI SDK leg. Nothing is patched here: `ai` already emits its own
- * OTel spans when a call passes `experimental_telemetry: { isEnabled: true }`,
- * so the work is translation, not instrumentation — this processor rewrites the
- * provider-call span in `onEnd`, which is before any exporter serialises it.
+ * The Vercel AI SDK leg for `ai` 5 and 6. There are two Vercel-AI paths in this
+ * package and this is the older one: `ai` 5/6 emits OTel spans that get
+ * translated here, while `ai` 7 emits none and is instrumented through its
+ * integration registry in `vercel-ai-v7.ts`. Both are registered by `init()`,
+ * and they never both fire for one call — the processor below keys on
+ * `ai.operationId`, which `ai` 7 never sets.
+ *
+ * Nothing is patched here: `ai` already emits its own OTel spans when a call
+ * passes `experimental_telemetry: { isEnabled: true }`, so the work is
+ * translation, not instrumentation — this processor rewrites the provider-call
+ * span in `onEnd`, which is before any exporter serialises it.
  *
  * What `ai` emits, measured on 5.0.237 and 6.0.256 (`vercel-ai.test.ts` pins
  * every literal below against the installed version, because a silent rename
@@ -56,9 +63,11 @@ import { swallowed } from "./fail-open";
  * translated: the outer `ai.generateText` span gets no `gen_ai.*` attributes and
  * still classifies `other`, but it carries the full input under `ai.prompt`.
  *
- * `ai` 7 is out of scope and out of the supported peer range: it stopped
- * emitting OTel spans altogether in favour of a `node:diagnostics_channel`
- * integration registry, so there is nothing on the wire for this to translate.
+ * `ai` 7 is out of scope for THIS processor and stays that way: it stopped
+ * emitting OTel spans altogether in favour of a public integration registry, so
+ * there is nothing on the wire for this to translate. That version is covered —
+ * see `vercel-ai-v7.ts`, which owns the whole v7 path and shares `bareProvider`
+ * with this file so the two agree on what a provider is called.
  */
 
 /** Upstream's names. Theirs, not ours — hence not in `attributes.ts`. */
@@ -159,8 +168,11 @@ function translate(span: ReadableSpan): void {
   for (const key of AI_CONTENT_ATTRIBUTES) delete mutable.attributes[key];
 }
 
-/** "openai.chat" -> "openai"; "anthropic" -> "anthropic" (D82). */
-function bareProvider(provider: string): string {
+/** "openai.chat" -> "openai"; "anthropic" -> "anthropic" (D82). Exported for
+ *  `vercel-ai-v7.ts`: `ai` 7 reports the provider in exactly the same
+ *  qualified form, and two copies of this rule would be two chances to
+ *  disagree about a value ingest prices on. */
+export function bareProvider(provider: string): string {
   const dot = provider.indexOf(".");
   return dot === -1 ? provider : provider.slice(0, dot);
 }

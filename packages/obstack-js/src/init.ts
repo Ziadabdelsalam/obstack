@@ -8,6 +8,7 @@ import { swallowed } from "./fail-open";
 import { AnthropicInstrumentation } from "./instrumentation/anthropic";
 import { OpenAIInstrumentation } from "./instrumentation/openai";
 import { VercelAiTranslationProcessor } from "./vercel-ai";
+import { registerVercelAiV7Integration } from "./vercel-ai-v7";
 
 /** What `init()` hands back. Holding it is optional; shutting down is not
  *  automatic, because a library that installs process signal handlers behind
@@ -72,6 +73,15 @@ export function init(): ObstackSDK {
     });
 
     node.start();
+
+    // The `ai` 7 leg, and the only door it uses: one integration object pushed
+    // onto `globalThis.AI_SDK_TELEMETRY_INTEGRATIONS`. Not an instrumentation
+    // and not a span processor, because `ai` 7 neither exposes a CJS module to
+    // patch nor emits a span to translate — see vercel-ai-v7.ts. Nothing here
+    // imports `ai`, so this line is inert in an app that does not have it, and
+    // there is no ordering constraint: the array is read per operation, so a
+    // push before `ai` is even loaded still arrives.
+    registerVercelAiV7Integration();
 
     // Measured, not assumed: NodeSDK.shutdown() REJECTS when the final flush
     // cannot reach the endpoint (`connect ECONNREFUSED` straight out of the

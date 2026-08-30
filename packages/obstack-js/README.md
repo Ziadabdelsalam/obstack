@@ -120,17 +120,22 @@ claimed.
 | --- | --- | --- |
 | `openai` `>=4.85 <8` | `chat.completions.create` | streaming (`stream: true`), the Responses API, and `openai` below 4.85 — see below |
 | `@anthropic-ai/sdk` `>=0.50 <1` | `messages.create` | streaming, `messages.stream()` |
-| `ai` (Vercel AI SDK) `>=5 <7` | `generateText` with `experimental_telemetry: { isEnabled: true }` | `streamText`, and `ai` 7 — see below |
+| `ai` (Vercel AI SDK) `>=5 <7` | `generateText`, opted in per call with `experimental_telemetry: { isEnabled: true }` | `streamText` |
+| `ai` (Vercel AI SDK) `>=7 <8` | `generateText`, on by default — no per-call option | `streamText`, and `ai` 7 on node below 22 — see below |
 | `node:http` / `node:https` | server and client spans, always | — |
 
-Streaming calls pass through **uninstrumented**. The token counts arrive inside
-the stream, and an LLM span reporting zero of them would be priced at $0 by
-ingest. A missing span is an honest gap; a wrong cost is not.
+Streaming calls pass through **uninstrumented**, on every library and every
+version in the table — `openai`'s `stream: true`, Anthropic's `messages.stream()`
+and `ai`'s `streamText` alike, `ai` 7 included. The token counts arrive inside the
+stream, and an LLM span reporting zero of them would be priced at $0 by ingest. A
+missing span is an honest gap; a wrong cost is not.
 
 Anthropic's coverage is proven at unit level — the real client against a local
-fake with an in-memory exporter. The end-to-end run this release ships covers the
-`openai` and Vercel-AI legs; Anthropic has no end-to-end evidence yet, and this
-table does not imply parity.
+fake with an in-memory exporter, which is also how the `ai` 7 leg is proven: the
+suite drives the real `ai@7` with a stub model and asserts one complete llm span
+per call. The end-to-end run this release ships covers the `openai` and `ai` 5/6
+legs; Anthropic and `ai` 7 have no end-to-end evidence yet, and this table does
+not imply parity.
 
 **`openai` below 4.85.** The instrumentation patches
 `openai/resources/chat/completions/completions.js`, and that module does not
@@ -139,22 +144,69 @@ exist before 4.85.0 — openai kept chat completions in a flat
 out normally and produces no span and no error. That is why the supported range
 starts at 4.85 rather than at 4.
 
-**Vercel AI SDK.** No patching is involved: `ai` emits its own OpenTelemetry
-spans, and `init()` registers a span processor that rewrites the provider-call
-span (`ai.generateText.doGenerate`) into the attribute names obstack reads. That
-processor also **deletes `ai`'s own content attributes** — `ai.prompt`,
-`ai.prompt.messages`, `ai.response.text` and the tool/structured-output keys
-beside them — from every `ai` span once it has read what it needs. See "Reading
-prompts and completions back" below for why: the content belongs in the dedicated
-columns, and a translation that left the originals in place would be a copy.
-Metadata (`ai.usage.*`, model ids, settings, `ai.operationId`) is untouched.
-`ai` 7 removed OTel span emission in favour of a `node:diagnostics_channel`
-integration registry, so there is nothing left for that processor to translate —
-hence the `<7` bound. Enable telemetry per call:
+**Vercel AI SDK, 5 and 6.** No patching is involved: `ai` emits its own
+OpenTelemetry spans, and `init()` registers a span processor that rewrites the
+provider-call span (`ai.generateText.doGenerate`) into the attribute names
+obstack reads. That processor also **deletes `ai`'s own content attributes** —
+`ai.prompt`, `ai.prompt.messages`, `ai.response.text` and the
+tool/structured-output keys beside them — from every `ai` span once it has read
+what it needs. See "Reading prompts and completions back" below for why: the
+content belongs in the dedicated columns, and a translation that left the
+originals in place would be a copy. Metadata (`ai.usage.*`, model ids, settings,
+`ai.operationId`) is untouched. On these versions telemetry is **opt-in, per
+call**, and stays that way:
 
 ```ts
 await generateText({ model, prompt, experimental_telemetry: { isEnabled: true } });
 ```
+
+**Vercel AI SDK, 7.** A different mechanism, not a wider range on the same one.
+`ai` 7 stopped emitting OpenTelemetry spans altogether — measured on 7.0.85, a
+`generateText` call produces none, with `telemetry: { isEnabled: true }` and with
+the deprecated `experimental_telemetry` alias alike — so there is nothing for the
+processor above to translate. What it offers instead is a public integration
+registry, and `init()` registers one obstack integration on it. Nothing is
+patched, nothing is imported from `ai`, and there is no ordering constraint:
+unlike the `openai` and `@anthropic-ai/sdk` legs, this one works even if `ai` was
+loaded before `init()` ran.
+
+The practical difference for your code is that **telemetry is on by default** on
+7, so the call is just the call:
+
+```ts
+await generateText({ model, prompt });          // ai 7 — llm span, no option needed
+```
+
+To turn it off, use `ai`'s own switch, which silences every telemetry
+integration you have registered rather than obstack alone:
+
+```ts
+await generateText({ model, prompt, telemetry: { isEnabled: false } });
+```
+
+`ai` 7 requires **node 22 or newer** (its own `engines` field). obstack-js stays
+at node 20, because the 5/6 line runs there and raising the floor would drop apps
+this SDK still covers — an app on node 20 simply cannot install `ai` 7 in the
+first place.
+
+**The `ai` 7 floor is 7.0.0** — the whole major is covered. That is measured, not
+assumed: the published 7.0.x line is 80 releases, and 19 of them spread across it
+(7.0.0, .1, .5, .11, .21, .23, .25, .31, .42, .51, .52, .54, .61, .66, .71, .73,
+.79, .82, .85) were each driven with a real `generateText` against a stub model
+and checked for the four things this leg depends on — the integration registry
+being read at dispatch, the model call being wrapped with a call id, the
+operation kind arriving under that same call id, and the result carrying the
+token totals, the finish reason, the content parts and the response model. All
+four hold on all nineteen, none diverged, and so the supported range is one
+unbroken interval rather than one with a hole in it.
+
+**Do not register `@ai-sdk/otel` as well.** It is Vercel's own OpenTelemetry
+integration for `ai` 7 and it emits its own llm span for the same model call;
+registered alongside obstack-js it gives you **two llm spans per call**, which
+doubles the llm layer of every trace and the cost column with it. Pick one.
+obstack-js has no way to detect the other and stand down — that would be a
+promise keyed on a third party's class names across their future releases — so
+this is a documented bound, not a guard.
 
 **Module systems.** The build is CommonJS, and CJS is what the patching is
 verified against. Pure-ESM `import` of `openai` / `@anthropic-ai/sdk` is not
