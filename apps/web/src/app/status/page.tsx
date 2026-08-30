@@ -14,9 +14,13 @@ import { loadIncidents } from "@/lib/docs/incidents-load";
  * resolved incident, and a header crediting the whole thing to an obstack
  * capability that does not exist (an SLO-fed public status page is M6's, if it
  * ever ships). D256 deleted it with no relocation. The phrases it used are
- * never spelled here or anywhere else under `src/`: `status.test.ts` hunts
- * them, assembled from parts so the hunt does not match itself (the D246
- * discipline). What replaced them can only say true things, by construction:
+ * never spelled anywhere under `app/status/` or the incident tree —
+ * `status.test.ts` hunts them there, assembled from parts so the hunt does not
+ * match itself (the D246 discipline). Some of those words do still appear
+ * elsewhere under `src/`, in the M6 demo corpus that legitimately carries a
+ * fictional customer (`src/mock/*`, `SideNav.tsx`): the fiction is not banned
+ * from the product's demo, it is banned from obstack speaking about ITSELF.
+ * What replaced it can only say true things, by construction:
  *
  *  - the components are NAMED AND DESCRIBED, not scored. There is no state
  *    pill, no dot and no percentage anywhere on this page, because obstack
@@ -31,9 +35,11 @@ import { loadIncidents } from "@/lib/docs/incidents-load";
  *    state, not a placeholder.
  *
  * MODE-BLIND and prerendered: it asks no question about which data mode it is
- * in and imports nothing from the demo corpus — the deleted page's seeded
- * generator was that corpus's only consumer outside its own directory — so
- * both images serve the same bytes. The route table prints it `○ (Static)`
+ * in and imports nothing from the demo corpus, so both images serve the same
+ * bytes. (Plenty of `/app` pages do import it — that is what a mock-mode demo
+ * is. The narrower thing that is true, and pinned: `src/mock/rand.ts`, the
+ * seeded PRNG the deleted uptime strip drew its ninety days from, has no
+ * consumer outside `src/mock/` at all.) The route table prints it `○ (Static)`
  * rather than `● (SSG)`: `/status` has no dynamic segment and therefore no
  * `generateStaticParams`, which is the only thing `●` distinguishes. Both mean
  * prerendered at build time, and the notices are pulled in there, not per
@@ -63,7 +69,8 @@ export const metadata: Metadata = {
  */
 const componentIs: Record<StatusComponentId, string> = {
   app: "The web application — the demo today, and your workspace once it exists.",
-  ingest: "The OTLP endpoint your telemetry is sent to.",
+  ingest:
+    "The OTLP endpoint your self-hosted stack runs today — and the hosted one at launch.",
   docs: "This site's documentation.",
 };
 
@@ -105,7 +112,7 @@ export default async function StatusPage() {
       <main className="mx-auto w-full max-w-3xl flex-1 px-5 py-12">
         <h1 className="font-display text-[28px] font-bold text-ink">Status</h1>
         <p className="mt-1 text-[14px] text-mid">
-          The components obstack runs, and the incident notices it has published.
+          The components an obstack deployment runs, and the incident notices it has published.
         </p>
 
         <section className="mt-10">

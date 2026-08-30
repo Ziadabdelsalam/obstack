@@ -74,11 +74,21 @@ test("D324: the manifest and the incident directory are the same set, both ways"
     manifested,
     "src/content/status/incidents/** and its manifest.ts disagree — every notice needs exactly one entry",
   );
+});
 
-  // The launch state, asserted rather than assumed: obstack has published no
-  // incident notice, so the page says "No incidents recorded." because that is
-  // true, not because a file is missing.
+test("the shipped manifest is empty at launch; publishing a notice means updating this pin deliberately", () => {
+  // THE LAUNCH STATE, in ONE place. Both halves of it were previously asserted
+  // inside tests about other things — the mirror above, and the sort below —
+  // where a perfectly valid first notice would have turned two unrelated tests
+  // red with messages about mirrors and sorting. Here the red says what it
+  // means: obstack has published no incident notice yet, so `/status` reads
+  // "No incidents recorded." because that is TRUE, not because a file is
+  // missing. When the first notice ships, this test is the one line to change,
+  // and changing it is a decision somebody makes on purpose.
   assert.deepEqual(manifested, [], "a notice was published — check the page's empty state is still right");
+  // The same state as the loader sees it: an empty manifest resolves to an
+  // empty list, so the page's `notices.length === 0` arm is the one that runs.
+  assert.deepEqual(sortIncidents(incidentsManifest.map((e) => notice(e.file, "2026-01-01"))), []);
 });
 
 test("the mirror would go red on a notice with no manifest entry", () => {
@@ -87,14 +97,20 @@ test("the mirror would go red on a notice with no manifest entry", () => {
   // exercised against a directory that DOES hold a notice. Built in a temp
   // directory — never in the real tree, which stays empty.
   const dir = mkdtempSync(path.join(tmpdir(), "obstack-incidents-"));
+  // A name no manifest will ever carry, so this stays a check on the MIRROR
+  // after the first real notice ships: with a plausible fixture name, the day
+  // somebody published a notice of that name this test would go red saying
+  // "the mirror is hollow", which is not what would have happened.
+  const stray = "2999-12-31-not-a-real-notice";
+  assert.equal(manifested.includes(stray), false, `${stray} is in the manifest — pick another fixture name`);
   try {
     writeFileSync(
-      path.join(dir, "2026-09-14-ingest-backlog.mdx"),
-      'export const frontmatter = {\n  date: "2026-09-14",\n  title: "A notice",\n  status: "resolved",\n  components: ["ingest"],\n};\n\nWhat happened.\n',
+      path.join(dir, `${stray}.mdx`),
+      'export const frontmatter = {\n  date: "2999-12-31",\n  title: "A notice",\n  status: "resolved",\n  components: ["ingest"],\n};\n\nWhat happened.\n',
     );
     // Non-`.mdx` neighbours are not notices — the real directory holds two.
     writeFileSync(path.join(dir, "README.md"), "not a notice\n");
-    assert.deepEqual(noticeFilesIn(dir), ["2026-09-14-ingest-backlog"]);
+    assert.deepEqual(noticeFilesIn(dir), [stray]);
     assert.notDeepEqual(
       noticeFilesIn(dir),
       manifested,
@@ -182,9 +198,11 @@ test("notices render newest first, by the date each one carries", () => {
   assert.deepEqual(sorted[0].frontmatter.components, ["ingest"]);
 });
 
-test("the empty manifest resolves to an empty list, and sorting does not invent one", () => {
+test("sorting an empty list does not invent one", () => {
+  // The pure half of the empty state: nothing about the shipped manifest, so
+  // this stays green on the day a notice is published (the launch-state pin
+  // above is the one that must be updated then).
   assert.deepEqual(sortIncidents([]), [], "the empty state must stay empty");
-  assert.deepEqual(sortIncidents(incidentsManifest.map((e) => notice(e.file, "2026-01-01"))), []);
 });
 
 test("two notices dated the same day keep the manifest's order, and the input is not mutated", () => {
