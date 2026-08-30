@@ -129,7 +129,7 @@ wait_http() { # wait_http <url> <timeout-seconds>
 }
 
 # The count of traces this service has landed that are an actual agent turn:
-# both samples are health-checked every five seconds, and each probe lands its
+# every sample is health-checked every five seconds, and each probe lands its
 # own small api trace. Counting agent spans instead of traces is what keeps the
 # checks below about /chat requests rather than about the healthcheck interval.
 agent_traces() { # agent_traces <service>
@@ -224,9 +224,9 @@ printf '   py:  %s\n   ts:  %s\n   ai7: %s\n' \
   "$(printf '%s' "$ai7_answer" | cut -c1-96)"
 
 # The evidence trace, selected by SHAPE and asserted unique. Recency alone would
-# be wrong: both samples call their own fake model endpoint over HTTP, the ts
-# sample's calls come back through its own server as ordinary requests (T4), and
-# compose health-checks both containers every five seconds — each of those lands
+# be wrong: every sample calls its own fake model endpoint over HTTP, the ts
+# samples' calls come back through their own server as ordinary requests (T4),
+# and compose health-checks each container every five seconds — each of those lands
 # a truthful little api trace of its own. The agent span is the exact
 # discriminator: only a /chat request has one. Requiring EXACTLY one match turns
 # the selection into an assertion rather than a guess — after a clean boot and
