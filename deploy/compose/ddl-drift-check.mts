@@ -15,8 +15,10 @@
  * and dropped around the capture, on the compose Postgres (D112(b)) rather
  * than any product database.
  *
- * Invoked by .github/workflows/stack.yml; standalone, from the repo root
- * against a running compose stack:
+ * Invoked by .github/workflows/e2e.yml — moved there from stack.yml in S4.3
+ * (D298/D306: this guard's failure source is app code ordinary web PRs touch,
+ * and `stack` no longer gates a merge, so it runs on the PR critical path).
+ * Standalone, from the repo root against a running compose stack:
  *   BETTER_AUTH_SECRET=ddl-drift-check-dummy-secret-not-a-real-one \
  *     npx tsx --tsconfig apps/web/tsconfig.json --conditions react-server \
  *     deploy/compose/ddl-drift-check.mts
