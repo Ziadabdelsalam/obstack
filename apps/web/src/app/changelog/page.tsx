@@ -1,56 +1,42 @@
 import Link from "next/link";
 import { ArrowRight } from "lucide-react";
 import { Wordmark } from "@/components/shell/Wordmark";
+import { formatEntryDate, type ChangelogKind } from "@/lib/docs/changelog";
+import { loadChangelog } from "@/lib/docs/changelog-load";
 
 /**
- * Every entry names something the product does when you run it (D229). The four
- * that announced surfaces which exist only as demo content — the service map,
- * Issues/Incidents/SLOs, trace diff, Pipelines, the customizable Overview, the
- * infra track — are deleted rather than softened: an entry with no true
- * referent has nothing to reword into. The rest were rewritten down to what
- * actually shipped, which is why the two-word streaming-tail claim the D60
- * sweep in `components/shell/TourGuide.test.ts` bans — never spelled here, so
- * that sweep now covers this file too (D246) — and the "at launch" Vercel and
- * CloudWatch claims are gone (the connections hub itself marks both
- * coming-soon, D208).
+ * The public changelog — one release note per file under
+ * `src/content/changelog/**`, on the same MDX pipeline as the docs (D255/D323).
+ *
+ * This page used to BE the changelog: a hardcoded array of four entries plus a
+ * docblock explaining what they were allowed to say. Both moved into the
+ * content tree — the entries to dated `.mdx` files, the editorial posture to
+ * `src/content/changelog/README.md` — so a release note is now content that
+ * the repo-wide D246 sweep walks and that `src/lib/docs/changelog.test.ts`
+ * pins, instead of source that only a reviewer would ever read.
+ *
+ * Mode-blind, like the docs renderer: this route imports no mock module and
+ * asks nothing about the data mode. The `live` and `mock` images are one build
+ * (D251/D267) and must serve the same words. Pinned by `changelog.test.ts`,
+ * which reads this file as text — which is also why neither the banned import
+ * path nor the mode helper's name is spelled out anywhere above (D246
+ * discipline: a file that names the thing it bans becomes a hit).
  */
-const entries = [
-  // Dated for the real ship, not the date the entry used to carry: Explain
-  // exists as of today, so this is the one entry written the day its feature
-  // landed (D229 rewrite-to-truth, D232's W4 follow-up).
-  {
-    date: "Aug 20, 2026",
-    tag: "new",
-    title: "Explain this trace",
-    body: "One click on a failed trace streams a root-cause summary built from that trace's own spans and the log lines on its timeline — the ones carrying its trace id and the nearby lines from the same window. Each piece of evidence links back to the span or log line it came from, and a reference the trace does not contain is dropped, with the drop stated rather than linked. The summary comes from Claude, or from whichever Anthropic-compatible endpoint a self-hosted install is pointed at; with no model configured the panel says so instead of guessing. Runs are metered per plan — 20 a month on Free, 200 on Pro.",
-  },
-  {
-    date: "Aug 8, 2026",
-    tag: "new",
-    title: "Logs explorer",
-    body: "Search log bodies, and filter by minimum severity, pod and time range. Any line carrying a trace id is one click from its trace. Nothing tails: refreshing is a button.",
-  },
-  {
-    date: "Aug 6, 2026",
-    tag: "improved",
-    title: "Traces carry their logs",
-    body: "A trace opens as its spans across every service that took part, with the log lines that share its trace id on the same timeline — plus the nearby lines from the same window, marked as nearby rather than claimed as correlated.",
-  },
-  {
-    date: "Jul 28, 2026",
-    tag: "new",
-    title: "Connections hub",
-    body: "OpenTelemetry, Kubernetes and Docker as guided connections, each with the ingest health of the source it set up. The rest of the catalog is listed as coming soon, because that is what it is.",
-  },
-];
 
-const tagStyle: Record<string, { color: string }> = {
-  new: { color: "var(--color-api)" },
-  improved: { color: "var(--color-agent)" },
-  fixed: { color: "var(--color-ok)" },
+/**
+ * The badge, per `frontmatter.kind`. Exhaustive over the union by type, so
+ * widening `ChangelogKind` without picking a colour does not compile — the
+ * failure mode this replaces was a `Record<string, …>` lookup that returned
+ * `undefined` and crashed the page on an unknown kind.
+ */
+const KIND_COLOR: Record<ChangelogKind, string> = {
+  new: "var(--color-api)",
+  improved: "var(--color-agent)",
 };
 
-export default function ChangelogPage() {
+export default async function ChangelogPage() {
+  const entries = await loadChangelog();
+
   return (
     <div className="min-h-screen bg-bg">
       <header className="sticky top-0 z-40 border-b border-line bg-bg/85 backdrop-blur">
@@ -73,26 +59,38 @@ export default function ChangelogPage() {
         <p className="mt-1 text-[14px] text-mid">What shipped, when.</p>
 
         <div className="mt-8 border-l border-line-strong">
-          {entries.map((e) => (
-            <article key={e.title} className="relative pb-8 pl-7 last:pb-0">
+          {entries.map(({ slug, frontmatter, Body }) => (
+            <article key={slug} className="relative pb-8 pl-7 last:pb-0">
               <span
                 className="absolute top-1.5 -left-[5px] h-[9px] w-[9px] rounded-full border-2 border-bg"
-                style={{ background: tagStyle[e.tag].color }}
+                style={{ background: KIND_COLOR[frontmatter.kind] }}
               />
               <div className="flex flex-wrap items-center gap-2.5">
-                <time className="font-mono text-[11px] text-faint">{e.date}</time>
+                <time dateTime={frontmatter.date} className="font-mono text-[11px] text-faint">
+                  {formatEntryDate(frontmatter.date)}
+                </time>
                 <span
                   className="rounded-[3px] px-1.5 py-px font-mono text-[9.5px] tracking-wide uppercase"
                   style={{
-                    color: tagStyle[e.tag].color,
-                    background: `color-mix(in srgb, ${tagStyle[e.tag].color} 12%, transparent)`,
+                    color: KIND_COLOR[frontmatter.kind],
+                    background: `color-mix(in srgb, ${KIND_COLOR[frontmatter.kind]} 12%, transparent)`,
                   }}
                 >
-                  {e.tag}
+                  {frontmatter.kind}
                 </span>
               </div>
-              <h2 className="mt-1.5 text-[16px] font-semibold text-ink">{e.title}</h2>
-              <p className="mt-1 text-[13.5px] leading-relaxed text-mid">{e.body}</p>
+              <h2 className="mt-1.5 text-[16px] font-semibold text-ink">{frontmatter.title}</h2>
+              {/*
+                The note's body, rendered through `src/mdx-components.tsx` like
+                every other MDX body in the app. Its `p` override carries the
+                docs' paragraph rhythm (`mt-3.5`); an entry's first paragraph
+                sits directly under its own title, so it takes the tighter gap
+                the array-driven page used — the same shape `Prose` uses to
+                open a docs page.
+              */}
+              <div className="[&>p:first-child]:mt-1">
+                <Body />
+              </div>
             </article>
           ))}
         </div>
