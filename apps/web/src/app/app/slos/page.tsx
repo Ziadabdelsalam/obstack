@@ -15,12 +15,15 @@ export default function SlosPage() {
       <div className="mb-4 flex items-center justify-between">
         <h1 className="font-display text-[19px] font-semibold text-ink">SLOs</h1>
         <div className="flex items-center gap-2">
-          <Link
-            href="/status"
-            className="flex items-center gap-1.5 rounded-md border border-line bg-surface px-2.5 py-1.5 font-mono text-[11px] text-mid hover:border-line-strong hover:text-ink"
-          >
-            public status page <ArrowUpRight className="h-3 w-3" />
-          </Link>
+          {/*
+            D256/D324: the link to obstack's public availability page is gone,
+            removed rather than repointed. These SLOs are demo data (M6), and a
+            link from them to that page implied the page was fed by them — the
+            exact capability D256 deleted the old page for claiming. The
+            implication travelled with the link, not with its href, so there
+            was nothing to repoint. `src/app/status/status.test.ts` keeps it
+            gone.
+          */}
           <TerraformExport kind="slos" />
           <button
             type="button"
