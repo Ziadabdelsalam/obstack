@@ -266,7 +266,18 @@ test("the version fences match package.json and name what each SDK needs", () =>
   assert.ok(fences.includes("on ai@7 telemetry is on by default"), "the ai@7 default is not stated");
   assert.ok(fences.includes("on ai@5 and 6 pass"), "the ai 5/6 opt-in is not stated");
   assert.ok(fences.includes("experimental_telemetry: { isEnabled: true }"), "the opt-in option is not named");
-  assert.ok(fences.includes("streaming calls are not instrumented in either SDK"));
+  // "either" for three libraries was a miscount, not a nuance: the fence names
+  // openai, @anthropic-ai/sdk and ai, and streaming is uninstrumented on all of
+  // them. The wording moved here with the sentence.
+  assert.ok(
+    fences.includes("streaming calls are not instrumented for any of the three"),
+    "the streaming sentence does not cover every library the fence names",
+  );
+  assert.equal(
+    fences.includes("in either SDK"),
+    false,
+    "the fence still counts three libraries as two",
+  );
   assert.equal(
     fences.includes("not yet supported"),
     false,

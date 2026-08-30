@@ -96,11 +96,38 @@ import { bareProvider } from "./vercel-ai";
  */
 const INTEGRATIONS_KEY = "AI_SDK_TELEMETRY_INTEGRATIONS";
 
-/** `onStart.operationId` for the streaming operations — `ai.streamText` and
- *  `ai.streamObject`. A prefix rather than a list because the marker is which
- *  family the operation belongs to, and a new streaming entry point upstream
- *  should default to "no span", not to a span with no tokens in it. */
+/**
+ * `onStart.operationId` for the streaming operations. A prefix rather than a
+ * list because the marker is which FAMILY the operation belongs to, and a new
+ * streaming entry point upstream should default to "no span", not to a span
+ * with no tokens in it.
+ *
+ * In practice today only `ai.streamText` ever reaches the wrapper with this
+ * prefix: `generateObject` and `streamObject` call the language model directly
+ * rather than through `executeLanguageModelCall`, so neither draws an llm span
+ * on this leg at all — measured, and symmetric with the v5/6 leg, which draws
+ * none for `generateObject` either. So the `ai.streamObject` arm is unreachable
+ * as upstream stands. It stays, because the value of a prefix test is exactly
+ * that it is right about the entry point nobody has written yet.
+ */
 const STREAM_OPERATION_PREFIX = "ai.stream";
+
+/**
+ * The `callId` map's ceiling. Entries are released by `onEnd`/`onError`/
+ * `onAbort` — but ONLY for an operation that actually terminates, and a stream
+ * that the consumer abandons never does: for `streamText` the terminal hooks
+ * are dispatched from inside the stream's own `TransformStream` flush/pull
+ * (`stream-text.ts:1468,1571-1607`), so a stream nobody drains — a client that
+ * disconnects mid-answer, which is routine — leaves its entry behind, and
+ * `stream-object.ts:891` never dispatches `onAbort` at all. An unbounded map
+ * keyed on that is a leak with a customer's traffic as the input.
+ *
+ * 1024 in-flight operations is far past any real concurrency for one process,
+ * and the eviction is insertion-order (the oldest entry, which is the one least
+ * likely to still be running). Evicting costs the evicted call its span, never
+ * its result — see the wrapper's rule below.
+ */
+const MAX_TRACKED_OPERATIONS = 1024;
 
 /**
  * The event fields obstack reads, declared structurally so this file compiles
@@ -134,13 +161,31 @@ interface LanguageModelCallOptions<T> {
  * dispatcher and awaits the callbacks, so no method may throw or be slow: a
  * telemetry integration that can fail an application's model call is the exact
  * thing D83 exists to prevent. Every body below is wrapped accordingly.
+ *
+ * The try/catch in `executeLanguageModelCall` is the load-bearing one. `ai`
+ * error-isolates the notification hooks — `onStart`, `onEnd`, `onError`,
+ * `onAbort` all go through `util/notify.ts` / `merge-callbacks.ts`, which
+ * swallow what an integration throws — but the wrapper is awaited RAW
+ * (`generate-text.ts:~1025`). An exception thrown out of it is an exception the
+ * application sees instead of its answer. So the guards there are not belt and
+ * braces; they are the only thing between a bug in this file and a broken model
+ * call.
  */
 export class ObstackVercelAiIntegration {
   /**
    * `callId` -> the operation's `operationId`, recorded in `onStart` because the
-   * wrapper is not told which operation it belongs to. One entry per in-flight
-   * operation, released by whichever of `onEnd`/`onError`/`onAbort` fires —
-   * measured: exactly one of them always does, and all three carry the `callId`.
+   * wrapper is not told which operation it belongs to. All three of
+   * `onEnd`/`onError`/`onAbort` carry the `callId` and release the entry.
+   *
+   * What is NOT true — and was written here before it was measured — is that one
+   * of them always fires. For the streaming operations they fire from inside the
+   * stream's own machinery, so they fire only if the CONSUMER drains the stream:
+   * `stream-text.ts:1468,1571-1607` dispatches from the `TransformStream`
+   * flush/pull path, and `stream-object.ts:891` dispatches no `onAbort` at all.
+   * An abandoned stream therefore leaves its entry here forever. That is why the
+   * map is bounded (`MAX_TRACKED_OPERATIONS`) rather than merely tidy: bounded
+   * state is the honest cost of hooks whose completion is conditional on
+   * somebody else's behaviour.
    */
   private readonly operations = new Map<string, string>();
 
@@ -148,6 +193,13 @@ export class ObstackVercelAiIntegration {
     try {
       const { callId, operationId } = event ?? {};
       if (typeof callId === "string" && typeof operationId === "string") {
+        // Insertion order is `Map`'s own iteration order, so the first key is the
+        // oldest entry. Evicting it costs that operation its span and nothing
+        // else; keeping every entry ever seen would cost the process its memory.
+        if (this.operations.size >= MAX_TRACKED_OPERATIONS) {
+          const oldest = this.operations.keys().next().value;
+          if (oldest !== undefined) this.operations.delete(oldest);
+        }
         this.operations.set(callId, operationId);
       }
     } catch (error) {
@@ -230,13 +282,19 @@ export class ObstackVercelAiIntegration {
   private start<T>(
     options: LanguageModelCallOptions<T>,
   ): { span: Span; requestModel: string } | undefined {
+    // The rule, D314, in one sentence: a span only when the `callId` entry
+    // EXISTS and its `operationId` does not start with `ai.stream`. A missing or
+    // evicted entry takes the same exit as a streaming one — the call runs
+    // exactly as `ai` would have run it unwrapped.
+    //
+    // Missing is the safe default rather than the cautious one. Without the
+    // entry this code cannot tell a `generateText` from a `streamText`, and
+    // guessing "not streaming" would put a zero-token llm span on the wire for a
+    // stream, which ingest prices at $0. A missing span is an honest gap; a
+    // wrong cost is not.
     const operationId = this.operations.get(options.callId);
-    // Streaming: no span at all, ever — not a span with zero tokens on it. The
-    // token counts arrive inside the stream, and ingest would price a zero-token
-    // llm span at $0. A missing span is an honest gap; a wrong cost is not.
-    if (typeof operationId === "string" && operationId.startsWith(STREAM_OPERATION_PREFIX)) {
-      return undefined;
-    }
+    if (typeof operationId !== "string") return undefined;
+    if (operationId.startsWith(STREAM_OPERATION_PREFIX)) return undefined;
 
     // Without a model there is no `gen_ai.request.model`, no span name and no
     // cost — the span would land in ClickHouse classified as llm and carry none

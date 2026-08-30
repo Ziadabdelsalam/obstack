@@ -125,6 +125,15 @@ claimed.
 | `ai` (Vercel AI SDK) `>=7 <8` | `generateText`, on by default — no per-call option | `streamText`, and `ai` 7 on node below 22 — see below |
 | `node:http` / `node:https` | server and client spans, always | — |
 
+The optional peer ranges obstack-js actually declares are
+`@anthropic-ai/sdk >=0.50 <1`, `ai >=5 <8` and `openai >=4.85 <8`. The table
+splits some of them: `ai` gets a row per mechanism, because one range is covered
+two different ways, and the Responses API gets its own floor inside `openai`'s
+range. The package advertises the interval; the rows say what is true inside it.
+(A test in this package reads those three ranges out of `package.json` and
+requires them to appear here word for word, so this paragraph cannot drift away
+from what npm installs.)
+
 Streaming calls pass through **uninstrumented**, on every library and every
 version in the table — `openai`'s `stream: true`, Anthropic's `messages.stream()`
 and `ai`'s `streamText` alike, `ai` 7 included. The token counts arrive inside the
@@ -154,6 +163,17 @@ reason `stream: true` is — the tokens are in the stream. The neighbours that
 build a response *without* going through `create()` are not covered at all:
 `client.beta.responses` (a different class), `responses.compact()` and
 `responses.retrieve(id, { stream: true })`.
+
+Both are proven against the real client on **two** versions in one suite —
+`openai` 4.87.0, the Responses floor, and 7.8.0, the current release — because
+the way the instrumentation reads the response body has to be right on both.
+`create()` hands back a promise DERIVED from the raw HTTP response and
+`parse()` derives a second from it, and an HTTP body can be read once, so
+obstack never reads the one your code reads: it takes a `Response.clone()`
+before anything else touches it. If a future `openai` keeps that raw response
+somewhere else, obstack draws no span for the call and says so through
+`diag` — the call itself is untouched either way, which is the only promise
+that matters here (D83).
 
 One difference is worth knowing before you read a trace: the Responses API has
 no finish_reason; obstack records the response `status` (`completed`,
@@ -209,12 +229,26 @@ integration you have registered rather than obstack alone:
 await generateText({ model, prompt, telemetry: { isEnabled: false } });
 ```
 
+One more thing about "on by default", because it is the one way to have obstack
+installed, `init()` called, and still get no span for a call: `ai` 7's per-call
+`telemetry.integrations` **replaces** the global registry for that call rather
+than adding to it (`create-telemetry-dispatcher.ts:79-83`). So
+
+```ts
+await generateText({ model, prompt, telemetry: { integrations: [somethingElse] } });
+```
+
+draws nothing from obstack — not because obstack was disabled, but because that
+call is dispatching to a different list. If you pass `integrations` per call and
+still want obstack's span, include the object `init()` registered
+(`globalThis.AI_SDK_TELEMETRY_INTEGRATIONS`) in the array you pass.
+
 `ai` 7 requires **node 22 or newer** (its own `engines` field). obstack-js stays
 at node 20, because the 5/6 line runs there and raising the floor would drop apps
 this SDK still covers — an app on node 20 simply cannot install `ai` 7 in the
 first place.
 
-**The `ai` 7 floor is 7.0.0** — the whole major is covered. That is measured, not
+**The `ai` 7 floor is 7.0.0.** That is measured, not
 assumed: the published 7.0.x line is 80 releases, and 19 of them spread across it
 (7.0.0, .1, .5, .11, .21, .23, .25, .31, .42, .51, .52, .54, .61, .66, .71, .73,
 .79, .82, .85) were each driven with a real `generateText` against a stub model

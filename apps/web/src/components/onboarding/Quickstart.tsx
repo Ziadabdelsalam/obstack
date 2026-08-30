@@ -346,7 +346,7 @@ export function Quickstart(props: QuickstartProps) {
         auto-instrumented, measured: openai &gt;=4.85 &lt;8 (the Responses API from 4.87) ·
         @anthropic-ai/sdk &gt;=0.50 &lt;1 · ai &gt;=5 &lt;8 — on ai@7 telemetry is on by
         default, on ai@5 and 6 pass {"experimental_telemetry: { isEnabled: true }"}; streaming calls
-        are not instrumented in either SDK
+        are not instrumented for any of the three
       </p>
 
       {/* waiting → first trace */}

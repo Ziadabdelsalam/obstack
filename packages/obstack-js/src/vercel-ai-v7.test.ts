@@ -130,6 +130,16 @@ test("a v7 generateText produces exactly one complete llm span", async () => {
     1,
     `ai ${ai7Version} produced ${found.length} llm spans (saw: ${fresh.map((s) => s.name).join(", ") || "none"}). ai 7 emits no OTel spans of its own, so this span exists only if the integration registered by init() was actually called.`,
   );
+  // And exactly one span in TOTAL, not just one carrying `gen_ai.*`. The README
+  // says `ai` 7 "produces no OpenTelemetry spans of its own" and that obstack
+  // adds one; counting only the llm layer would leave a second span of any other
+  // shape — upstream's, or a duplicate of obstack's under a different name —
+  // free to appear here without a word.
+  assert.equal(
+    fresh.length,
+    1,
+    `one generateText produced ${fresh.length} spans (${fresh.map((s) => s.name).join(", ")}); exactly one is the claim`,
+  );
   const span = found[0]!;
 
   const missing = D8_LLM_ATTRIBUTES.filter((name) => span.attributes[name] === undefined);
@@ -409,4 +419,122 @@ test("the integration is on the global registry ai 7 reads, exactly once", () =>
     (entry) => (entry as { constructor?: { name?: string } })?.constructor?.name === "ObstackVercelAiIntegration",
   );
   assert.equal(ours.length, 1, "obstack registered its v7 integration more or less than once");
+});
+
+/**
+ * The integration object `init()` pushed onto the registry — the same instance
+ * every test above has been driving through `ai`'s dispatcher. Reached here so
+ * the bound below is asserted on the real map rather than on a copy of the
+ * logic. `private` is a compile-time word; the field is an ordinary `Map`.
+ */
+const integration = (): { operations: Map<string, string> } => {
+  const registry = (globalThis as unknown as Record<string, unknown>)[
+    "AI_SDK_TELEMETRY_INTEGRATIONS"
+  ] as unknown[];
+  const ours = registry.find(
+    (entry) => (entry as { constructor?: { name?: string } })?.constructor?.name === "ObstackVercelAiIntegration",
+  );
+  assert.ok(ours, "obstack's integration is not on the registry");
+  return ours as { operations: Map<string, string> };
+};
+
+test("D314: abandoned streams cannot grow the callId map without bound", async () => {
+  // The leak this bound exists for, reproduced rather than argued. `streamText`
+  // records its `callId` in `onStart` and releases it from inside the stream's
+  // own flush/pull path — so a stream the consumer never drains never releases
+  // anything. A client disconnecting mid-answer is exactly this shape, and it is
+  // routine traffic, not an edge case.
+  const operations = integration().operations;
+  const before = operations.size;
+
+  const abandoned: Array<{ textStream: AsyncIterable<string> }> = [];
+  for (let i = 0; i < 1025; i += 1) {
+    abandoned.push(ai7.streamText({ model, prompt: QUESTION }));
+  }
+  // Let ai dispatch every onStart before the map is read.
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.ok(
+    before + 1025 > 1024,
+    "the loop is too small to reach the bound; this test would pass on an unbounded map",
+  );
+  assert.equal(
+    operations.size,
+    1024,
+    `1025 abandoned streams left ${operations.size} entries; unbounded, this map grows with a customer's disconnects`,
+  );
+
+  // And the bound costs the NEXT call nothing: eviction is insertion-order, so
+  // what it drops is the oldest abandoned stream, never the operation starting
+  // now. A bound that silently stopped instrumenting a healthy process would be
+  // a worse bug than the leak.
+  since();
+  const result = await ai7.generateText({ model, system: SYSTEM_PROMPT, prompt: QUESTION });
+  assert.equal(result.text, ANSWER);
+  const found = llmSpans(since());
+  assert.equal(found.length, 1, "a generateText after the bound was reached drew no span");
+  assert.equal(found[0]!.attributes[D8.completion], ANSWER);
+});
+
+test("D314: a call whose onStart was never seen runs untouched, with no span", async () => {
+  // The other half of the same rule: no entry, no span. It is reachable in
+  // production two ways — the entry was evicted by the bound above, or obstack
+  // was registered between an operation's `onStart` and its model call — and the
+  // wrapper cannot tell a generateText from a streamText without it. Guessing
+  // "not streaming" would put a zero-token span on the wire for a stream, which
+  // ingest prices at $0.
+  const wrapper = integration() as unknown as {
+    executeLanguageModelCall<T>(options: Record<string, unknown>): PromiseLike<T>;
+  };
+  const sentinel = { content: [{ type: "text", text: ANSWER }] };
+  let ran = false;
+
+  const value = await wrapper.executeLanguageModelCall({
+    callId: "a-callId-onStart-never-saw",
+    provider: "openai.chat",
+    modelId: MODEL_ID,
+    messages: [],
+    execute: async () => {
+      ran = true;
+      return sentinel;
+    },
+  });
+
+  assert.equal(ran, true, "the model call did not run — a missing entry must never cost the call");
+  assert.equal(value, sentinel, "the wrapper replaced the provider's own result");
+  assert.deepEqual(
+    llmSpans(since()).map((span) => span.name),
+    [],
+    "a call with no recorded operation drew a span anyway; it could just as easily have been a stream",
+  );
+});
+
+test("D315: a per-call telemetry.integrations list REPLACES the global registry", async () => {
+  // The one way to have obstack installed, init() called, and still get no span
+  // — and the README now says so, which is why it is pinned here. `ai` reads
+  // `telemetry.integrations` INSTEAD of the global array when the caller passes
+  // one (`create-telemetry-dispatcher.ts`: `localIntegrations != null ?
+  // asArray(localIntegrations) : getGlobalTelemetryIntegrations()`), so obstack
+  // is not disabled, it is simply not on the list this call dispatches to.
+  let sawStart = false;
+  const somebodyElse = {
+    onStart() {
+      sawStart = true;
+    },
+  };
+
+  const result = await ai7.generateText({
+    model,
+    system: SYSTEM_PROMPT,
+    prompt: QUESTION,
+    telemetry: { integrations: [somebodyElse] },
+  });
+  assert.equal(result.text, ANSWER);
+  assert.equal(sawStart, true, "ai never dispatched to the per-call integration; the case is not reproduced");
+
+  assert.deepEqual(
+    llmSpans(since()).map((span) => span.name),
+    [],
+    "obstack drew a span for a call whose integrations list did not include it",
+  );
 });
