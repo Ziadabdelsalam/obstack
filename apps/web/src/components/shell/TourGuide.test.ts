@@ -42,9 +42,14 @@ const NEEDLES = [CLAIM.join(" "), CLAIM.join("-")];
 /**
  * The one surviving marketing fiction, M3-deferred (the widened D63 item): a
  * landing-page screenshot blurb that annotates no wired surface. The changelog
- * left this list when its copy was repaired (D246) — its remaining comment
- * describes the claim instead of spelling it, so the sweep guards that file
- * like any other. Every OTHER hit in the repo is a regression.
+ * left this list when its copy was repaired (D246); its release notes are now
+ * `.mdx` under `src/content/changelog/`, and the prose that explains what they
+ * may not claim (`src/content/changelog/README.md`) describes the claim
+ * instead of spelling it, so the sweep guards those files like any other.
+ * Every OTHER hit in the repo is a regression.
+ *
+ * This list empties in S4.4 T5, and nothing below fails when it does — see the
+ * fold proof at the end of the sweep, which is synthetic for that reason.
  */
 const ALLOWED = ["apps/web/src/components/marketing/ScreensShowcase.tsx"];
 
@@ -77,6 +82,22 @@ test("D60 sweep: the tail claim survives only in the one named marketing file", 
   const rel = (file: string) => path.relative(REPO_ROOT, file).split(path.sep).join("/");
   const matches = (text: string) => NEEDLES.some((needle) => text.includes(needle));
 
+  // D323 — the coverage survived the move. The changelog's four entries were a
+  // hardcoded array in `app/changelog/page.tsx` and the docs were a module
+  // under `src/mock/`; both are now `.mdx` under `src/content/**`. That tree is
+  // swept for one reason only: it is not on SKIP_DIRS. Which is a property of
+  // THIS file, not of the corpus — a `content` entry added to the skip list, or
+  // a corpus moved under a generated directory, would silently take the
+  // product's most public prose out of the sweep's reach. So the sweep is made
+  // to prove it read that prose before its silence means anything.
+  const scannedRel = scanned.map(rel);
+  for (const dir of ["apps/web/src/content/changelog/", "apps/web/src/content/docs/"]) {
+    assert.ok(
+      scannedRel.some((file) => file.startsWith(dir)),
+      `the sweep read no file under ${dir} — the corpus that makes this product's claims to strangers is outside its coverage`,
+    );
+  }
+
   const hits = scanned
     .filter((file) => matches(readFileSync(file, "utf8").toLowerCase()))
     .map(rel)
@@ -88,16 +109,42 @@ test("D60 sweep: the tail claim survives only in the one named marketing file", 
     "the tail claim appeared somewhere new (or a named exception was repaired without updating this list) — nothing that describes a wired surface may claim a tail (D48/D60)",
   );
 
-  // D67(ii): the fold is not cosmetic. A case-SENSITIVE sweep of the same tree
-  // sees strictly fewer files than the one above, so it would report a repo
-  // already clean of a claim that is still on a page — this asserts the gap
-  // exists rather than trusting the `.toLowerCase()` call to matter.
+  // D67(ii), reshaped by D323: the fold is not cosmetic, and here is the proof
+  // — built, not found.
+  //
+  // This used to assert that the case-SENSITIVE hit set differed from the
+  // case-insensitive one, which said something real only while some file in
+  // the repo happened to spell the claim with a capital letter. The last such
+  // file is the one entry in ALLOWED, and it goes in S4.4 T5: with an empty
+  // allowlist both sets are empty and `notDeepEqual([], [])` fails BY
+  // CONSTRUCTION. The guard against a hollow guard would then have to be
+  // deleted at exactly the moment the sweep first had nothing to find, which
+  // is the wrong direction for a test to move.
+  //
+  // So the fixture is synthetic: the claim, upper-cased at run time — never
+  // spelled in this file, which the sweep also reads — is INVISIBLE to the raw
+  // predicate and VISIBLE once folded, in both of its spellings. That is
+  // precisely what the `.toLowerCase()` above buys, asserted directly, and it
+  // holds whether the allowlist has one entry or none.
+  for (const needle of NEEDLES) {
+    const shouted = `## ${needle.toUpperCase()} — the way UI copy actually gets written`;
+    assert.equal(
+      matches(shouted.toLowerCase()),
+      true,
+      "the folded sweep no longer sees a shouted spelling of the claim — the fold has stopped doing anything",
+    );
+    assert.equal(
+      matches(shouted),
+      false,
+      "the raw predicate already sees a shouted spelling — the needles are no longer lower-case, so the fold above is silently doing nothing",
+    );
+  }
+
+  // The other half of D67(ii): whatever a case-sensitive sweep of the real tree
+  // finds must be a subset of what the folded one found. Vacuous on a clean
+  // repo, and correct on a dirty one — the assertion that would catch a fold
+  // that had somehow started HIDING files.
   const caseSensitiveHits = scanned.filter((file) => matches(readFileSync(file, "utf8"))).map(rel).sort();
-  assert.notDeepEqual(
-    caseSensitiveHits,
-    hits,
-    "a case-sensitive sweep found the same set — the case-insensitivity D67(ii) requires is no longer being exercised by any fixture, so this guard has gone hollow",
-  );
   for (const hit of caseSensitiveHits) {
     assert.ok(hits.includes(hit), `${hit} matched case-sensitively but not case-insensitively — impossible`);
   }
