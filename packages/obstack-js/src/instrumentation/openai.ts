@@ -92,7 +92,7 @@ export class OpenAIInstrumentation extends InstrumentationBase {
           return moduleExports;
         }
         if (isWrapped(prototype.create)) this._unwrap(prototype, "create");
-        this._wrap(prototype, "create", this.patchCreate(RESPONSES_SHAPE, shareOneParse));
+        this._wrap(prototype, "create", this.patchCreate(RESPONSES_SHAPE, observeResponsesBody));
         return moduleExports;
       },
       (moduleExports: { Responses?: { prototype: Record<string, unknown> } } | undefined) => {
@@ -110,12 +110,12 @@ export class OpenAIInstrumentation extends InstrumentationBase {
     );
   }
 
-  private patchCreate(shape: LlmShape, adapt: (create: Create) => Create = (create) => create) {
+  private patchCreate(shape: LlmShape, observe?: Observe) {
     const instrumentation = this;
     return (original: unknown) => {
-      const create = adapt(original as Create);
+      const create = original as Create;
       return function patchedCreate(this: unknown, ...args: unknown[]): unknown {
-        return traceLlmCall(instrumentation.tracer, shape, create, this, args);
+        return traceLlmCall(instrumentation.tracer, shape, create, this, args, observe);
       };
     };
   }
@@ -124,53 +124,91 @@ export class OpenAIInstrumentation extends InstrumentationBase {
 type Create = (...args: unknown[]) => unknown;
 
 /**
- * The one thing the Responses patch needs that the chat patch does not, and the
- * reason it is here rather than in `llm-span.ts`: it is an `openai` quirk, not a
- * fact about LLM spans.
+ * How the Responses span gets the response body, and the one thing this patch
+ * needs that the chat patch does not: it is an `openai` quirk, not a fact about
+ * LLM spans, so it lives here rather than in `llm-span.ts`.
  *
- * An HTTP body can be read exactly once. `APIPromise` knows that and memoises
- * its parse — but `_thenUnwrap()`, which derives a new APIPromise from an
- * existing one, calls the parent's `parseResponse` **directly**, bypassing that
- * memo (`core/api-promise.js` on 5.x–7.x, `core.js` on 4.87.x — identical in
- * both). Every read after the first then throws `TypeError: Body is unusable`.
+ * An HTTP body can be read exactly once. `chat.completions.create` hands back
+ * the base `APIPromise`, which memoises its own parse, so simply watching that
+ * promise costs nothing. `responses.create` does not: it returns a promise
+ * DERIVED from the base one (`_thenUnwrap`, to attach `output_text`), and
+ * `responses.parse()` derives a second from that. Every derivation re-parses
+ * the same raw `Response`, so whoever reads first wins and every later read
+ * throws `TypeError: Body is unusable: Body has already been read`.
  *
- * `responses.create()` returns such a derived promise (it unwraps to attach
- * `output_text`), and `responses.parse()` derives a second one from THAT. With
- * no instrumentation there is still only one consumer, so nothing breaks. But
- * this instrumentation observes the promise `create()` returned — that is one
- * read — and `parse()`'s own unwrap is then the second: **measured, an
- * uninstrumented `responses.parse()` succeeds and an instrumented one throws.**
- * Telemetry that breaks the call it is watching is the one outcome fail-open
- * exists to prevent (D83), and no span is worth it.
+ * Two approaches were measured and both are wrong:
  *
- * So the parse is memoised on the promise before anything observes it, and the
- * two consumers share one read of the body — the same thing `APIPromise.parse()`
- * already does for its own callers. `chat.completions.create` needs none of
- * this: it returns the base promise, with nothing derived from it.
+ * - **Watching the returned promise** (`p.then(...)`, what every other patch
+ *   here does) makes the instrumentation the FIRST reader. Uninstrumented,
+ *   `responses.parse()` succeeds; instrumented that way it throws — measured on
+ *   4.87.0 and 7.8.0. Telemetry that breaks the call it is watching is the one
+ *   outcome fail-open exists to prevent (D83), and no span is worth it.
+ *
+ * - **Memoising `parseResponse` on the promise** works on 4.87.0 and 7.4.0 and
+ *   is a silent no-op from 7.5.0: `client.js:508` (`client.ts:989` in the
+ *   sources) installs a PER-INSTANCE `_thenUnwrap` that closes over the
+ *   module-local `parse` and never calls `this.parseResponse`, so the memo is
+ *   simply not on the path any more. Same throw, inside the advertised peer
+ *   range, invisible to a suite pinned below 7.5.
+ *
+ * So the observer never reads the original body at all. `APIPromise` keeps the
+ * in-flight request on a public field named `responsePromise` — measured on
+ * 4.87.0 (`core.js:77`), 7.4.0 and 7.8.0 (`core/api-promise.js`, the
+ * constructor; on 7.5+ `client.responsePromise()` builds the same object) — and
+ * that promise resolves to `{ response, ... }` WITHOUT reading the body;
+ * `defaultParseResponse` is what calls `response.text()`, later. Registering
+ * here, synchronously, before the promise is handed back to the application,
+ * makes obstack the first REACTION on it and `response.clone()` the first thing
+ * that happens to it. Cloning a `Response` before its body is read is ordinary
+ * fetch semantics — it tees the stream — so the application's own derivations
+ * then read the original exactly once, exactly as they do uninstrumented.
+ *
+ * The cost of the clone is a tee of one response body, paid only on a
+ * non-streaming Responses call that this SDK is drawing a span for — streaming
+ * requests never reach here, because the shape declines them before the call is
+ * made.
+ *
+ * Every exit below is the fail-open one: no `responsePromise` to watch, or a
+ * `Response` that cannot be cloned, or a body that is not JSON, and the span
+ * simply ends without its response half. The application's promise is returned
+ * untouched in every case and nothing here can throw into it — this function's
+ * result is fully handled by `traceLlmCall`, so a rejection lands on the span's
+ * error path and never as an unhandled rejection in the app.
  */
-function shareOneParse(create: Create): Create {
-  return function sharedParse(this: unknown, ...args: unknown[]): unknown {
-    const promise = create.apply(this, args);
-    try {
-      const target = promise as { parseResponse?: unknown };
-      const parseResponse = target?.parseResponse;
-      if (typeof parseResponse !== "function") return promise;
-      let parsed: unknown;
-      let read = false;
-      target.parseResponse = (...props: unknown[]): unknown => {
-        if (!read) {
-          read = true;
-          parsed = (parseResponse as Create).apply(promise, props);
-        }
-        return parsed;
-      };
-    } catch (error) {
-      // A frozen promise, or a version that keeps the parse somewhere else.
-      // The call itself is unaffected; say so and let it through (D83).
-      swallowed("sharing one parse of an openai response", error);
+type Observe = (result: unknown) => PromiseLike<unknown> | undefined;
+
+function observeResponsesBody(result: unknown): PromiseLike<unknown> | undefined {
+  const inFlight = (result as { responsePromise?: unknown } | undefined)?.responsePromise;
+  if (typeof (inFlight as PromiseLike<unknown> | undefined)?.then !== "function") {
+    // A version that keeps the raw response somewhere else. Say so once and
+    // leave the call completely alone (D83).
+    swallowed(
+      "observing an openai Responses call",
+      new Error("the APIPromise has no responsePromise to watch"),
+    );
+    return undefined;
+  }
+
+  return (inFlight as PromiseLike<{ response?: { clone?: unknown } }>).then((props) => {
+    const response = props?.response;
+    if (typeof response?.clone !== "function") {
+      swallowed(
+        "observing an openai Responses call",
+        new Error("the raw Response cannot be cloned"),
+      );
+      return undefined;
     }
-    return promise;
-  };
+    // The clone is taken here, in the first reaction on `responsePromise`,
+    // before anything has read the original.
+    return (response.clone as () => { json(): Promise<unknown> })()
+      .json()
+      .catch((error: unknown) => {
+        // A 204, an empty body, a non-JSON error page. The application's call is
+        // unaffected; the span ends with its request half and no completion.
+        swallowed("reading an openai Responses body", error);
+        return undefined;
+      });
+  });
 }
 
 /**

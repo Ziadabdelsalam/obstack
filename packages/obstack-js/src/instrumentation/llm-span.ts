@@ -61,12 +61,31 @@ export interface LlmShape {
 type Create = (...args: unknown[]) => unknown;
 
 /**
+ * Turns the value `create()` returned into the thenable the span should watch.
+ * Returns undefined when it cannot watch this value at all, having said so
+ * itself through `swallowed()` — the caller then leaves the application's value
+ * completely alone.
+ *
+ * This exists because on one path — `openai`'s Responses API — watching the
+ * returned promise is exactly the wrong thing to do: reading it first breaks the
+ * application's own read (see `observeResponsesBody` in `openai.ts`). The span
+ * has to be fed from a different thenable than the one handed back. That is an
+ * `openai` fact, so the knowledge lives there; only the ability to watch
+ * something else lives here.
+ */
+type Observe = (result: unknown) => PromiseLike<unknown> | undefined;
+
+/**
  * Wraps one `create()` call in an LLM span. The provider's own return value is
  * what comes back — deliberately the *same object*, not a promise chained off
  * it: `openai` and `@anthropic-ai/sdk` both return an `APIPromise`, whose
- * `.withResponse()` / `.asResponse()` an application may be using. The span
- * observes that promise instead of replacing it (`APIPromise.then()` parses
- * once and memoises, so watching it costs nothing and consumes nothing).
+ * `.withResponse()` / `.asResponse()` an application may be using.
+ *
+ * By default the span observes that promise directly, which is safe for
+ * `chat.completions.create` and `messages.create`: both hand back the base
+ * `APIPromise`, whose `.then()` parses once and memoises, so watching it costs
+ * nothing and consumes nothing. Callers whose promise does not behave that way
+ * pass `observe` and the span watches whatever that returns instead.
  */
 export function traceLlmCall(
   tracer: Tracer,
@@ -74,6 +93,7 @@ export function traceLlmCall(
   original: Create,
   thisArg: unknown,
   args: unknown[],
+  observe?: Observe,
 ): unknown {
   let request: LlmRequest | undefined;
   try {
@@ -111,14 +131,28 @@ export function traceLlmCall(
     throw error;
   }
 
-  if (!isThenable(result)) {
-    // Not what either client does today; ending here beats leaking the span.
+  let observed: PromiseLike<unknown> | undefined;
+  if (observe) {
+    // Says so itself when it cannot watch this value — one `swallowed()`, not a
+    // second one here.
+    observed = observe(result);
+  } else if (isThenable(result)) {
+    observed = result;
+  } else {
     swallowed("observing an LLM call", new Error("create() did not return a promise"));
+  }
+
+  if (!observed) {
+    // Nothing to watch. The span cannot be un-started — it has to exist BEFORE
+    // the call so the provider's HTTP span nests under it — so it is ended here
+    // carrying the request half only, rather than left open forever. The
+    // application's own value is returned untouched, which is the part that
+    // matters: the call itself is unaffected either way (D83).
     endSpan(span);
     return result;
   }
 
-  result.then(
+  observed.then(
     (body: unknown) => {
       finish(span, shape, request, body);
     },

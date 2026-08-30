@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { cpSync, existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
+import path from "node:path";
 import test, { after, before } from "node:test";
 import { SpanKind } from "@opentelemetry/api";
 import type { ReadableSpan } from "@opentelemetry/sdk-trace";
@@ -23,11 +25,16 @@ instrumentation.enable();
 const INSTRUCTIONS = "You are the obstack test agent.";
 const INPUT = "What should I try first?";
 
-/** A complete turn, `object: "response"` included so the client's own
- *  `addOutputText` really runs and `output_text` is a decorated string. */
+/** A complete turn, carrying the key the client's own `addOutputText` triggers
+ *  on so `output_text` is really a decorated string — BOTH spellings of it,
+ *  because the trigger moved: 4.87.0 tests `rsp.type === "response"` and every
+ *  5.x/6.x/7.x tests `rsp.object === "response"` (measured in both
+ *  `resources/responses/responses.js`). One fixture decorates on both majors;
+ *  the mapper reads neither key, so this changes nothing it is asked. */
 const COMPLETED = {
   id: "resp_obstack_test",
   object: "response",
+  type: "response",
   created_at: 1735689600,
   status: "completed",
   error: null,
@@ -267,13 +274,11 @@ test("parse() still works, and draws exactly one span", async () => {
   // The count: `responses.parse()` dispatches through `responses.create()`, so
   // it is covered for free — and a second patch site would double-count it.
   //
-  // The result: PROVEN RED FIRST. `create()` hands back a derived APIPromise
-  // and `parse()` derives another from it, and `_thenUnwrap` bypasses the
-  // parent's parse memo — so observing the call read the HTTP body first and
-  // the application's own `parse()` then threw `TypeError: Body is unusable:
-  // Body has already been read`. Uninstrumented it succeeds; instrumented it
-  // did not. `shareOneParse` in `openai.ts` is the fix, and this line is the
-  // pin: telemetry that breaks the call it watches is worse than no telemetry.
+  // The result: PROVEN RED TWICE, and the second time is why `openai.ts` reads
+  // the body through `responsePromise` and a `Response.clone()` rather than by
+  // watching the promise it hands back. See the version matrix at the bottom of
+  // this file for both reds and the mechanism. This line is the pin: telemetry
+  // that breaks the call it watches is worse than no telemetry.
   const seen = llmSpans().length;
   const parsed = await client.responses.parse({ model: "gpt-4o-mini", input: INPUT });
   assert.equal(parsed.output_text, "Restart the ingest pod.");
@@ -295,4 +300,232 @@ test("an array input is serialised untouched, after the system element", async (
   assert.equal(prompt.length, 3, "the array input was rewritten rather than passed through");
   assert.deepEqual(prompt[0], { role: "system", content: INSTRUCTIONS });
   assert.deepEqual(prompt.slice(1), items);
+});
+
+test("responses.stream() passes through with no span and still reaches the provider", async () => {
+  // The other streaming entry point, and the one the coverage table names
+  // separately. `stream()` does not take `stream: true` from the caller —
+  // `ResponseStream.createResponse` sets it on the way into this same patched
+  // `create`, which is exactly why one guard covers both. Asserted here rather
+  // than reasoned about, because "covered by the same guard" is a claim about
+  // upstream's code that upstream is free to change.
+  const spansBefore = spans.finishedSpans().length;
+  const requestsBefore = completed.requests.length;
+
+  const stream = client.responses.stream({ model: "gpt-4o-mini", input: INPUT });
+  // The fake answers one JSON body rather than an SSE stream, so the helper
+  // fails as soon as it tries to parse events. That is not what is under test;
+  // what is under test is that the request went out and drew nothing.
+  stream.on("error", () => {});
+  try {
+    await stream.done();
+  } catch {
+    // Expected: a JSON body is not an event stream.
+  }
+
+  assert.equal(
+    completed.requests.length,
+    requestsBefore + 1,
+    "responses.stream() never reached the provider, so 'no span' proves nothing",
+  );
+  assert.equal(spans.finishedSpans().length, spansBefore, "responses.stream() produced a span");
+});
+
+/**
+ * ## The version matrix: 4.87.0 and 7.8.0, in this one process
+ *
+ * Everything above runs against the `openai` in devDependencies, now `^7.8.0`.
+ * That is not enough on its own, and the reason is the whole point of this
+ * block.
+ *
+ * **A** — uninstrumented, `create()` followed by `parse()` succeeds. The
+ * baseline: whatever instrumentation does, this must keep working.
+ *
+ * **B** — the historical failure, red twice, not shipped as a failing test
+ * because a red test is not a suite. Both reds were measured here:
+ *
+ *   1. Observing the promise `create()` returns makes obstack the FIRST reader
+ *      of the HTTP body, and the application's `parse()` then throws
+ *      `TypeError: Body is unusable: Body has already been read` — on 4.87.0
+ *      and on 7.8.0 alike.
+ *   2. Memoising `parseResponse` on that promise (the first fix, `shareOneParse`)
+ *      cured 4.87.0 and 7.4.0 and did nothing at all from 7.5.0: with it in
+ *      place and `openai` at 7.8.0, this file failed with exactly the same
+ *      throw, at `internal/parse.ts:65` → `client.ts:973` → `client.ts:989`
+ *      (`client.js:508` in the shipped build) — the per-instance `_thenUnwrap`
+ *      that closes over the module-local `parse` and never consults the memo.
+ *      7.4.0 was the pinned devDependency, so CI was green while the CURRENT
+ *      `openai` was broken inside the advertised peer range.
+ *
+ * **C** — with the shipped mechanism, on BOTH versions: the instrumentation
+ * reads the body first (through `responsePromise` and a `Response.clone()`,
+ * never the original), and the application's `parse()` still succeeds and still
+ * yields `output_text`, and awaiting the promise `create()` returned still
+ * succeeds, and each call draws exactly one span.
+ *
+ * One suite, two real clients, because B is a difference BETWEEN versions and a
+ * suite that can only see one of them is how B shipped in the first place.
+ */
+
+/**
+ * `openai` 4.87.0, loaded under its real name.
+ *
+ * It is installed as an npm alias (`openai487`: a package.json cannot name the
+ * same dependency twice), and that is not enough by itself: require-in-the-middle
+ * derives the module name from the PATH (`module-details-from-path` reads the
+ * segment after `node_modules/`), so nothing under `node_modules/openai487/` is
+ * ever matched by a module definition named `openai`. Measured — its
+ * `Responses.prototype.create` comes back unpatched.
+ *
+ * Copying the package once into `node_modules/.obstack-openai487/node_modules/openai`
+ * restores the one thing the matcher reads, the directory name, and nothing
+ * else: it is the tree npm already resolved, copied inside this package so its
+ * own dependencies (node-fetch, agentkeepalive, …) still resolve upward from the
+ * installed tree. Nothing is downloaded, nothing is mutated, and the copy lands
+ * in `node_modules`, which is not tracked. The version is asserted below so a
+ * lockfile drift is loud rather than silently re-testing 7.8.0 twice.
+ */
+function loadOpenAI487(): { OpenAI: typeof import("openai").OpenAI; version: string } {
+  const alias = path.dirname(require.resolve("openai487"));
+  const home = path.join(
+    __dirname,
+    "..",
+    "..",
+    "node_modules",
+    ".obstack-openai487",
+    "node_modules",
+    "openai",
+  );
+  if (!existsSync(path.join(home, "package.json"))) {
+    rmSync(home, { recursive: true, force: true });
+    mkdirSync(path.dirname(home), { recursive: true });
+    cpSync(alias, home, { recursive: true });
+  }
+  const version = JSON.parse(readFileSync(path.join(home, "package.json"), "utf8")).version as string;
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  return { OpenAI: (require(home) as typeof import("openai")).OpenAI, version };
+}
+
+interface Leg {
+  readonly version: string;
+  readonly client: Client;
+  readonly fake: Fake;
+}
+
+let legacy: Fake;
+let legacyClient: Client;
+let legacyVersion = "";
+let currentVersion = "";
+
+before(async () => {
+  legacy = await fakeProvider(COMPLETED);
+  const old = loadOpenAI487();
+  legacyVersion = old.version;
+  assert.equal(legacyVersion, "4.87.0", "the openai487 alias no longer resolves 4.87.0");
+  legacyClient = new old.OpenAI({
+    apiKey: "not-a-real-key",
+    baseURL: `${legacy.baseURL}/v1`,
+    maxRetries: 0,
+  });
+  currentVersion = JSON.parse(
+    readFileSync(path.join(path.dirname(require.resolve("openai")), "package.json"), "utf8"),
+  ).version as string;
+  assert.ok(
+    currentVersion.startsWith("7."),
+    `the devDependency resolved openai ${currentVersion}; the 7.5+ shape this file exists for is not under test`,
+  );
+});
+
+/** Built on use rather than in a hook, so the two `before()`s above cannot
+ *  order themselves into a leg whose client is not up yet. */
+const matrixLegs = (): Leg[] => [
+  { version: currentVersion, client, fake: completed },
+  { version: legacyVersion, client: legacyClient, fake: legacy },
+];
+
+after(async () => {
+  await legacy?.close();
+});
+
+/**
+ * Runs `body` with the patch lifted off every leg, then puts it back.
+ *
+ * `instrumentation.disable()` alone is not enough HERE, and only here: the
+ * definition holds one `InstrumentationNodeModuleFile` per module path, whose
+ * recorded exports are the last copy required — and this file deliberately has
+ * two copies of `openai` loaded at once, which no application does. So
+ * `disable()` unwraps one of them and leaves the other patched (measured: the
+ * baseline below drew two spans). Restoring the function shimmer saved on
+ * `__original` lifts it off both, which is what "uninstrumented" has to mean for
+ * a baseline to be worth anything.
+ */
+async function uninstrumented<T>(clients: readonly Client[], body: () => Promise<T>): Promise<T> {
+  const restore: Array<() => void> = [];
+  for (const each of clients) {
+    const prototype = Object.getPrototypeOf(each.responses) as Record<string, unknown>;
+    const wrapped = prototype.create as { __original?: unknown } | undefined;
+    if (typeof wrapped?.__original === "function") {
+      restore.push(() => {
+        prototype.create = wrapped;
+      });
+      prototype.create = wrapped.__original;
+    }
+  }
+  assert.equal(restore.length, clients.length, "a leg was not patched to begin with");
+  try {
+    return await body();
+  } finally {
+    for (const put of restore) put();
+  }
+}
+
+test("A — uninstrumented, create() then parse() succeeds on both versions", async () => {
+  // The baseline the whole fix is judged against: this is the client an
+  // application without obstack has, and it must keep working exactly as it is.
+  const seen = llmSpans().length;
+  const all = matrixLegs();
+  await uninstrumented(
+    all.map((leg) => leg.client),
+    async () => {
+      for (const leg of all) {
+        const created = await leg.client.responses.create({ model: "gpt-4o-mini", input: INPUT });
+        assert.equal(created.output_text, "Restart the ingest pod.", `create() failed on ${leg.version}`);
+        const parsed = await leg.client.responses.parse({ model: "gpt-4o-mini", input: INPUT });
+        assert.equal(parsed.output_text, "Restart the ingest pod.", `parse() failed on ${leg.version}`);
+      }
+    },
+  );
+  assert.equal(llmSpans().length, seen, "a span was drawn with the patch lifted off");
+});
+
+test("C — instrumented, parse() and create() both survive on both versions", async () => {
+  for (const leg of matrixLegs()) {
+    // The observer reads the body first, by construction: it registers on
+    // `responsePromise` inside the patched `create`, before the promise is
+    // handed back. If that read consumed the original body, this is where it
+    // shows — this is exactly the call that threw before.
+    const beforeParse = llmSpans().length;
+    const parsed = await leg.client.responses.parse({ model: "gpt-4o-mini", input: INPUT });
+    assert.equal(
+      parsed.output_text,
+      "Restart the ingest pod.",
+      `instrumented parse() lost its body on openai ${leg.version}`,
+    );
+    const parseSpan = oneNewLlmSpan(beforeParse);
+    assert.equal(parseSpan.attributes[D8.completion], "Restart the ingest pod.");
+    assert.equal(parseSpan.attributes[D8.requestModel], "gpt-4o-mini");
+
+    // And the plain call, awaited by the application itself.
+    const beforeCreate = llmSpans().length;
+    const created = await leg.client.responses.create({ model: "gpt-4o-mini", input: INPUT });
+    assert.equal(
+      created.output_text,
+      "Restart the ingest pod.",
+      `instrumented create() lost its body on openai ${leg.version}`,
+    );
+    const createSpan = oneNewLlmSpan(beforeCreate);
+    assert.equal(createSpan.attributes[D8.completion], "Restart the ingest pod.");
+    assert.equal(createSpan.attributes[D8.inputTokens], 29);
+    assert.equal(createSpan.attributes[D8.outputTokens], 7);
+  }
 });
