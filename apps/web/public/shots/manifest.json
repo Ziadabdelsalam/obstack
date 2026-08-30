@@ -4,31 +4,31 @@
     "sha256": "4e6986f547f1ec81cbbb5808ba2d606d93a12cf3963ca70f8db4d735429b2604",
     "width": 1440,
     "height": 900,
-    "capturedAt": "2026-08-30T17:27:27.316Z",
-    "commit": "4c7e5821db12b7566e7ef2bc95c725e0cb3e8f34"
+    "capturedAt": "2026-08-30T17:40:50.081Z",
+    "commit": "d8d5b41151f4c2053a55913cba7b0965e7aa2f8b"
   },
   {
     "file": "dashboard-widgets.png",
-    "sha256": "5f39890c33d0b466b48aecd4f5ec2538802ca05ba845f098d4c850f9f3b9069a",
+    "sha256": "4a0701acb275c0446b7ed7d97f8f381655ce4e502ee3dd6d29cdbc810d320022",
     "width": 1440,
     "height": 900,
-    "capturedAt": "2026-08-30T17:27:27.316Z",
-    "commit": "4c7e5821db12b7566e7ef2bc95c725e0cb3e8f34"
+    "capturedAt": "2026-08-30T17:40:50.081Z",
+    "commit": "d8d5b41151f4c2053a55913cba7b0965e7aa2f8b"
   },
   {
     "file": "logs-explorer.png",
     "sha256": "4a9579a4cd2cc760a8f3272ef115381b97b07bf49863fdac8369400bb1f9ddd6",
     "width": 1440,
     "height": 900,
-    "capturedAt": "2026-08-30T17:27:27.316Z",
-    "commit": "4c7e5821db12b7566e7ef2bc95c725e0cb3e8f34"
+    "capturedAt": "2026-08-30T17:40:50.081Z",
+    "commit": "d8d5b41151f4c2053a55913cba7b0965e7aa2f8b"
   },
   {
     "file": "trace-pipeline.png",
-    "sha256": "01213dda6d07e823c549e81897533428db8cdd87ae51a27dde8640d6b77f0ff8",
+    "sha256": "c5c348e4ec8edef1cc3cae94aebf44ff3378287d88845de4ab658791d9e2ef44",
     "width": 1440,
     "height": 900,
-    "capturedAt": "2026-08-30T17:27:27.316Z",
-    "commit": "4c7e5821db12b7566e7ef2bc95c725e0cb3e8f34"
+    "capturedAt": "2026-08-30T17:40:50.081Z",
+    "commit": "d8d5b41151f4c2053a55913cba7b0965e7aa2f8b"
   }
 ]
