@@ -118,7 +118,8 @@ claimed.
 
 | | Auto-instrumented | Not covered |
 | --- | --- | --- |
-| `openai` `>=4.85 <8` | `chat.completions.create` | streaming (`stream: true`), the Responses API, and `openai` below 4.85 — see below |
+| `openai` `>=4.85 <8` | `chat.completions.create` | streaming (`stream: true`), and `openai` below 4.85 — see below |
+| `openai` `>=4.87 <8` | `responses.create`, and `responses.parse()` through it | streaming (`stream: true`, `responses.stream()`), `beta.responses`, `responses.compact()`, `responses.retrieve(id, { stream: true })`, and the Responses API below 4.87 — see below |
 | `@anthropic-ai/sdk` `>=0.50 <1` | `messages.create` | streaming, `messages.stream()` |
 | `ai` (Vercel AI SDK) `>=5 <7` | `generateText`, opted in per call with `experimental_telemetry: { isEnabled: true }` | `streamText` |
 | `ai` (Vercel AI SDK) `>=7 <8` | `generateText`, on by default — no per-call option | `streamText`, and `ai` 7 on node below 22 — see below |
@@ -143,6 +144,30 @@ exist before 4.85.0 — openai kept chat completions in a flat
 `resources/chat/completions.js` through 4.84.1. Measured on 4.84.1: the call goes
 out normally and produces no span and no error. That is why the supported range
 starts at 4.85 rather than at 4.
+
+**The OpenAI Responses API.** A second patch, on
+`openai/resources/responses/responses.js`, with the same span shape as the chat
+one: `chat <model>`, the same D8 attributes, no new names. `responses.parse()`
+dispatches through `responses.create()`, so it is covered by the same patch and
+counted once. `responses.stream()` does the same and is refused for the same
+reason `stream: true` is — the tokens are in the stream. The neighbours that
+build a response *without* going through `create()` are not covered at all:
+`client.beta.responses` (a different class), `responses.compact()` and
+`responses.retrieve(id, { stream: true })`.
+
+One difference is worth knowing before you read a trace: the Responses API has
+no finish_reason; obstack records the response `status` (`completed`,
+`incomplete`, `failed`, …). The system prompt is folded into `gen_ai.prompt` as
+a leading `{"role":"system"}` message when you send it as `instructions`, and a
+bare-string `input` is captured as one `{"role":"user"}` message, so the same
+conversation serialises the same way here as on the chat and `ai` legs.
+
+**The Responses API below 4.87.** That module does not exist before 4.87.0:
+measured on 4.85.4 and 4.86.2, `client.responses` is `undefined` and there is no
+Responses call to make in the first place — the file matcher never fires, and
+nothing here throws. The package range stays `>=4.85 <8` rather than moving up,
+because chat coverage on 4.85 and 4.86 is real; the Responses row above carries
+its own floor instead of the package advertising a narrower one than it has.
 
 **Vercel AI SDK, 5 and 6.** No patching is involved: `ai` emits its own
 OpenTelemetry spans, and `init()` registers a span processor that rewrites the
