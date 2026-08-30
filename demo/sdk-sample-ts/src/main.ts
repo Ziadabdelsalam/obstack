@@ -9,7 +9,8 @@
  *     └─ agent.answer_question          agent  (obstack.agent.step)
  *        ├─ tool.knowledge_lookup       tool   (obstack.tool.name)
  *        ├─ chat gpt-4o-mini            llm    (Vercel AI SDK, translated)
- *        └─ chat gpt-4o-mini            llm    (openai client, patched)
+ *        ├─ chat gpt-4o-mini            llm    (openai chat completions, patched)
+ *        └─ chat gpt-4o-mini            llm    (openai Responses API, patched)
  *
  * Nothing here imports @opentelemetry/*: `init()` registers the HTTP, OpenAI
  * and Vercel-AI instrumentation, and the api and llm layers follow from that

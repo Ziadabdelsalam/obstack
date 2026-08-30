@@ -7,9 +7,12 @@
  * parse a response, and the instrumentation really observes them. A test that
  * bypassed the client would prove nothing about auto-instrumentation.
  *
- * The response is an OpenAI chat completion, so one endpoint serves both legs,
- * and it reports `gpt-4o-mini` — a model obstack's ingest prices, so `cost_usd`
- * comes out non-zero on the fake path too.
+ * Two response shapes, because the app calls two OpenAI surfaces: a chat
+ * completion for `chat.completions.create` (which the Vercel AI SDK leg also
+ * speaks) and a Response object for `responses.create`. Both report
+ * `gpt-4o-mini` — a model obstack's ingest prices, so `cost_usd` comes out
+ * non-zero on the fake path too — and both carry real token counts, so every
+ * llm span on the trace is a complete one.
  */
 
 const DEFAULT_MODEL = "gpt-4o-mini";
@@ -67,6 +70,76 @@ function promptText(messages: unknown): string {
   return messages
     .map((message: unknown) => {
       const content = (message as { content?: unknown })?.content;
+      if (typeof content === "string") return content;
+      if (!Array.isArray(content)) return "";
+      return content
+        .map((part: unknown) => {
+          const text = (part as { text?: unknown })?.text;
+          return typeof text === "string" ? text : "";
+        })
+        .join(" ");
+    })
+    .join("\n");
+}
+
+/**
+ * The Responses API's answer (D308). The three fields below are load-bearing
+ * rather than decoration: the `openai` client only attaches `output_text` when
+ * `object` is `"response"`, and obstack-js records the response `status`
+ * verbatim as the span's finish reason (D301) — provider-native, because the
+ * Responses API has no `finish_reason` of its own. `status` is therefore also
+ * what tells the Responses span apart from the two chat spans in the evidence
+ * harness, and a body without it would land an llm span with no finish reason
+ * at all.
+ */
+export function responsesCreate(request: Record<string, unknown>): unknown {
+  const model = typeof request.model === "string" ? request.model : DEFAULT_MODEL;
+  const prompt = inputText(request.input);
+  const text = actionLine(prompt);
+
+  return {
+    id: "resp-obstack-sample",
+    object: "response",
+    created_at: Math.floor(Date.now() / 1000),
+    status: "completed",
+    model,
+    output: [
+      {
+        type: "message",
+        id: "msg-obstack-sample",
+        status: "completed",
+        role: "assistant",
+        content: [{ type: "output_text", text, annotations: [] }],
+      },
+    ],
+    usage: {
+      input_tokens: tokens(prompt),
+      output_tokens: tokens(text),
+      total_tokens: tokens(prompt) + tokens(text),
+    },
+  };
+}
+
+/** The same deterministic-by-construction reply as `reply()` above, in the one
+ *  sentence the Responses leg is asked for. */
+function actionLine(prompt: string): string {
+  return (
+    `Act on the agent step's own duration first, ${tokens(prompt)} tokens of context in: ` +
+    "the tool call and the model calls are all inside it."
+  );
+}
+
+/**
+ * The Responses API takes `input` as either a plain string or an array of
+ * items, and this app sends the string form — the array branch is here so the
+ * fake answers the documented surface rather than only the call next door.
+ */
+function inputText(input: unknown): string {
+  if (typeof input === "string") return input;
+  if (!Array.isArray(input)) return "";
+  return input
+    .map((item: unknown) => {
+      const content = (item as { content?: unknown })?.content;
       if (typeof content === "string") return content;
       if (!Array.isArray(content)) return "";
       return content

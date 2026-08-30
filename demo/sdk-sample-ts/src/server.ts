@@ -10,7 +10,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { answer } from "./agent";
 import { PORT } from "./config";
-import { chatCompletion } from "./fake-openai";
+import { chatCompletion, responsesCreate } from "./fake-openai";
 
 const DEFAULT_QUESTION = "Why did checkout p99 latency jump this afternoon?";
 
@@ -40,12 +40,17 @@ async function route(request: IncomingMessage, response: ServerResponse): Promis
     return send(response, 200, await answer(message));
   }
 
-  // The deterministic model provider. Both LLM legs are real client calls over
-  // real HTTP with `baseURL` pointed here (D77(d)), so the instrumentation
+  // The deterministic model provider. All three LLM legs are real client calls
+  // over real HTTP with `baseURL` pointed here (D77(d)), so the instrumentation
   // observes the libraries doing their actual work — no API key, no network,
-  // and the same answer every run.
+  // and the same answer every run. Two OpenAI surfaces, because obstack-js
+  // patches two modules: chat completions and the Responses API (D308).
   if (request.method === "POST" && path === "/v1/chat/completions") {
     return send(response, 200, chatCompletion(await readJson(request)));
+  }
+
+  if (request.method === "POST" && path === "/v1/responses") {
+    return send(response, 200, responsesCreate(await readJson(request)));
   }
 
   send(response, 404, { error: `no route for ${request.method} ${path}` });

@@ -89,18 +89,20 @@ POST /chat                     api    node:http server span (http.request.method
    ├─ tool.knowledge_lookup    tool   obstack.tool.name="knowledge_lookup"
    ├─ ai.generateText          other  the Vercel AI SDK's outer span, no gen_ai.* on it
    │  └─ chat gpt-4o-mini      llm    translated from ai.generateText.doGenerate
-   └─ chat gpt-4o-mini         llm    the openai client, patched at require time
+   ├─ chat gpt-4o-mini         llm    the openai client's chat completions, patched
+   └─ chat gpt-4o-mini         llm    the same client's Responses API, patched
 ```
 
-Two llm spans, because obstack-js covers the two Node paths by two different
-mechanisms and both are worth proving end to end:
+Three llm spans, because obstack-js covers three Node paths by three different
+patches and each is worth proving end to end:
 
 | Leg | Library | How the span happens |
 | --- | --- | --- |
 | draft | `ai` 6 `generateText`, `experimental_telemetry: { isEnabled: true }` | `ai` emits its own span; obstack-js's span processor rewrites it into the attributes ingest reads |
 | condense | `openai` 7 `chat.completions.create` | `openai/resources/chat/completions/completions.js` is patched when it is required |
+| actionable | `openai` 7 `responses.create` | `openai/resources/responses/responses.js` is patched the same way; its finish reason is the response `status`, because the Responses API has no `finish_reason` |
 
-Both spans carry the full GenAI set — `gen_ai.system`, request and response
+All three spans carry the full GenAI set — `gen_ai.system`, request and response
 model, input and output tokens, finish reason — and their prompt and completion.
 Ingest moves those two into the dedicated `prompt` / `completion` columns and
 removes them from the attributes map, so read them from the columns.
@@ -115,17 +117,18 @@ vanish.
 
 ## The model provider is this app
 
-Both legs point their `baseURL` at `http://127.0.0.1:<PORT>/v1`, which this same
-process serves: `POST /v1/chat/completions` returns a deterministic OpenAI chat
-completion (`src/fake-openai.ts`). No API key, no network, same trace every run —
+All three legs point their `baseURL` at `http://127.0.0.1:<PORT>/v1`, which this
+same process serves: `POST /v1/chat/completions` returns a deterministic OpenAI
+chat completion and `POST /v1/responses` a deterministic Response object
+(`src/fake-openai.ts`). No API key, no network, same trace every run —
 and the real clients still do all of their real work, which is the only way the
 instrumentation is being tested at all. The fake reports `gpt-4o-mini`, a model
 obstack prices, so `cost_usd` lands non-zero exactly as it would for a live
 provider.
 
-Those two self-calls arrive back at this server as ordinary HTTP requests, so
+Those three self-calls arrive back at this server as ordinary HTTP requests, so
 each one also produces its own single-span `api` trace. They are separate traces
-rather than part of the agent's, because both clients use `fetch`, which the
+rather than part of the agent's, because the clients use `fetch`, which the
 SDK's HTTP instrumentation does not patch — no trace context goes out on those
 requests. Nothing is lost from the agent trace; there is simply a small,
 truthful trace beside it.

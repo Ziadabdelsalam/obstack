@@ -1,19 +1,23 @@
 /**
  * The agent turn. Every telemetry line in this file is an obstack-js call —
- * `traceAgent` and `traceTool` — and the two model calls are ordinary client
+ * `traceAgent` and `traceTool` — and the three model calls are ordinary client
  * code: the LLM spans, their prompts, completions and token counts come from
  * the instrumentation `init()` registered, not from anything written here.
  *
- * Two LLM legs on purpose, because obstack-js covers the two Node paths by two
- * different mechanisms and both deserve an end-to-end trace (D77(e)):
+ * Three LLM legs on purpose, because obstack-js covers three Node paths and
+ * each deserves an end-to-end trace (D77(e), D308):
  *
  *   1. `generateText` from the Vercel AI SDK, with `experimental_telemetry`
  *      enabled — `ai` emits its own span and obstack-js's span processor
  *      rewrites it into the attributes ingest reads.
  *   2. `openai`'s `chat.completions.create` — patched at require time, so the
  *      span is obstack-js's own.
+ *   3. `openai`'s `responses.create` — the newer OpenAI surface, a second patch
+ *      on a second module, and the one whose finish reason is the response
+ *      `status` rather than a `finish_reason` (D301).
  *
- * Both talk to the fake model endpoint this same app serves (see server.ts).
+ * All three talk to the fake model endpoint this same app serves (see
+ * server.ts).
  *
  * This module is loaded by main.ts *after* `init()` has run, which is what
  * makes plain imports safe here.
@@ -61,7 +65,8 @@ export async function answer(question: string): Promise<Answer> {
   return traceAgent("answer_question", async () => {
     const facts = await traceTool("knowledge_lookup", () => lookup(question));
     const draft = await draftAnswer(question, facts);
-    const final = await condense(draft);
+    const condensed = await condense(draft);
+    const final = await makeActionable(condensed);
     console.log(`agent answered in ${final.length} characters`);
     return { answer: final, draft, model: MODEL, facts };
   });
@@ -79,7 +84,8 @@ async function draftAnswer(question: string, facts: string[]): Promise<string> {
   return result.text;
 }
 
-/** Leg 2 — the openai client, called exactly as an application would. */
+/** Leg 2 — the openai client's chat completions, called exactly as an
+ *  application would. */
 async function condense(draft: string): Promise<string> {
   const completion = await openai.chat.completions.create({
     model: MODEL,
@@ -89,6 +95,17 @@ async function condense(draft: string): Promise<string> {
     ],
   });
   return completion.choices[0]?.message.content ?? "";
+}
+
+/** Leg 3 — the same client's Responses API (D308). A different module inside
+ *  `openai`, so a different obstack-js patch: this call is what proves that one
+ *  end to end, and `output_text` is read the way an application reads it. */
+async function makeActionable(sentence: string): Promise<string> {
+  const response = await openai.responses.create({
+    model: MODEL,
+    input: `Turn this into the single line an on-call engineer should act on now:\n${sentence}`,
+  });
+  return response.output_text;
 }
 
 /** The tool leg: a plain local lookup, wrapped so the trace shows which tool
