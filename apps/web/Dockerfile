@@ -45,7 +45,7 @@ ENV OBSTACK_DATA_MODE=${OBSTACK_DATA_MODE}
 # prerendered, so `lib/app-href.ts` reads this while `next build` renders the
 # landing page and the origin is BAKED into the static HTML — there is no
 # runtime override here either. Unset, which is the default and every
-# deployment before S5, leaves the two "Create your workspace" buttons as
+# deployment before S5, leaves the three "Create your workspace" buttons as
 # same-host paths; the D262 marketing image sets it to the live app's origin so
 # that button leaves the demo host instead of landing on a page that says there
 # is no workspace to create.

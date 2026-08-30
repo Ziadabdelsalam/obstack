@@ -1,34 +1,34 @@
 [
   {
     "file": "connections.png",
-    "sha256": "4e6986f547f1ec81cbbb5808ba2d606d93a12cf3963ca70f8db4d735429b2604",
+    "sha256": "a94709d29075e8da13c27744934110e9be9246bf4568ea4e44c4f56bf848811a",
     "width": 1440,
     "height": 900,
-    "capturedAt": "2026-08-30T17:40:50.081Z",
-    "commit": "d8d5b41151f4c2053a55913cba7b0965e7aa2f8b"
+    "capturedAt": "2026-08-30T18:11:17.933Z",
+    "commit": "3888da5eccdd081f51e2c025e5f89074d06a877f"
   },
   {
     "file": "dashboard-widgets.png",
-    "sha256": "4a0701acb275c0446b7ed7d97f8f381655ce4e502ee3dd6d29cdbc810d320022",
+    "sha256": "6ef7045fb7010a60242868fc07957c31233ca0bf37f1b714c51b74381e21078e",
     "width": 1440,
     "height": 900,
-    "capturedAt": "2026-08-30T17:40:50.081Z",
-    "commit": "d8d5b41151f4c2053a55913cba7b0965e7aa2f8b"
+    "capturedAt": "2026-08-30T18:11:17.933Z",
+    "commit": "3888da5eccdd081f51e2c025e5f89074d06a877f"
   },
   {
     "file": "logs-explorer.png",
-    "sha256": "4a9579a4cd2cc760a8f3272ef115381b97b07bf49863fdac8369400bb1f9ddd6",
+    "sha256": "7bcae3ce17d18fc6a755d3b97c15775407f83c1ec51653d7a98b8fa29a23fee5",
     "width": 1440,
     "height": 900,
-    "capturedAt": "2026-08-30T17:40:50.081Z",
-    "commit": "d8d5b41151f4c2053a55913cba7b0965e7aa2f8b"
+    "capturedAt": "2026-08-30T18:11:17.933Z",
+    "commit": "3888da5eccdd081f51e2c025e5f89074d06a877f"
   },
   {
     "file": "trace-pipeline.png",
-    "sha256": "c5c348e4ec8edef1cc3cae94aebf44ff3378287d88845de4ab658791d9e2ef44",
+    "sha256": "1f57ad59490c984b31ab77c6fea14e7a67e52c29ac78db12d70542cf181dd68c",
     "width": 1440,
     "height": 900,
-    "capturedAt": "2026-08-30T17:40:50.081Z",
-    "commit": "d8d5b41151f4c2053a55913cba7b0965e7aa2f8b"
+    "capturedAt": "2026-08-30T18:11:17.933Z",
+    "commit": "3888da5eccdd081f51e2c025e5f89074d06a877f"
   }
 ]

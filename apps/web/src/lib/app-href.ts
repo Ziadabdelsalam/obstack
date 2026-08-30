@@ -23,7 +23,10 @@ import "server-only";
  * Unset — the default, and every deployment before S5 — yields the path
  * unchanged, so a single-host obstack links to itself exactly as it always did.
  *
- * Scope is two buttons, deliberately (D329). The auth pages' own prose stays
+ * Scope is the three "Create your workspace" buttons, deliberately (D329) —
+ * the nav's, the hero's and the closing CTA's; `app-href.test.ts` counts them
+ * against the page so this sentence cannot drift again (it said "two" for a
+ * sprint after the hero grew its own). The auth pages' own prose stays
  * same-host because it is about THIS deployment ("there is nothing here to sign
  * in to"), and it is the sentence that turns false the day S5 gives obstack a
  * hosted home — which is an S5-GATE item, not something a helper can paper over.

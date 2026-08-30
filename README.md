@@ -202,7 +202,10 @@ docker build -t obstack-ingest:ci services/ingest
 docker run --rm -e OBSTACK_DATA_MODE=live -e BETTER_AUTH_SECRET=probe obstack-web:mock  # exit 1, names both modes
 docker run --rm -e OBSTACK_DATA_MODE=live obstack-web:live  # exit 1, names BETTER_AUTH_SECRET and openssl
 docker run -d --name demo-probe -p 127.0.0.1:3100:3000 -e OBSTACK_DATA_MODE=mock obstack-web:mock
-curl -fsS -o /dev/null http://127.0.0.1:3100/app; docker rm -f demo-probe
+# the container is still booting when `docker run -d` returns — the same 30x2s
+# wait the job uses, so a cold start reads as slow rather than as broken
+for _ in $(seq 1 30); do curl -fsS -o /dev/null http://127.0.0.1:3100/app && break; sleep 2; done
+docker rm -f demo-probe
 OBSTACK_BETTER_AUTH_SECRET=images-ci-run-secret \
   docker compose -f deploy/compose/docker-compose.yml up -d --build --wait --wait-timeout 300
 curl -fsS -o /dev/null http://127.0.0.1:3000/login
