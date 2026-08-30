@@ -75,6 +75,36 @@ test("init() is idempotent and hands back the same handle", () => {
   assert.equal(first, second, "a second init() built a second SDK; the app would export everything twice");
 });
 
+test("init() opens the ai 7 door — the integration is on the global registry", () => {
+  // PROVEN RED FIRST, and the reason it exists: with `registerVercelAiV7Integration()`
+  // deleted from `init.ts` the package suite stayed completely green. The v7
+  // leg's own tests call that function themselves — they prove the integration
+  // works, not that `init()` installs it — so the one line that gives a real
+  // application its ai@7 spans was asserted by nothing. Deleting it ships an SDK
+  // that is silently span-less on ai 7, which is the launch claim this sprint
+  // exists for. With this test, deleting it goes red here.
+  process.env.OTEL_EXPORTER_OTLP_ENDPOINT = DEAD_ENDPOINT;
+  init();
+
+  const registry = (globalThis as unknown as Record<string, unknown>)[
+    "AI_SDK_TELEMETRY_INTEGRATIONS"
+  ];
+  assert.ok(
+    Array.isArray(registry),
+    "init() left ai 7's integration registry unset; an ai@7 app gets no llm spans and no error",
+  );
+  const ours = registry.filter(
+    (entry) =>
+      (entry as { constructor?: { name?: string } })?.constructor?.name === "ObstackVercelAiIntegration",
+  );
+  assert.equal(ours.length, 1, `init() registered obstack's v7 integration ${ours.length} times`);
+  assert.equal(
+    typeof (ours[0] as { executeLanguageModelCall?: unknown }).executeLanguageModelCall,
+    "function",
+    "the registered object is not the hook shape ai 7 dispatches to",
+  );
+});
+
 test("shutdown() resolves even though the endpoint is dead", async () => {
   // NodeSDK.shutdown() rejects with the raw socket error when the final flush
   // cannot connect. An app awaiting it on the way out would die of an unhandled

@@ -340,12 +340,13 @@ export function Quickstart(props: QuickstartProps) {
       </p>
 
       {/* The measured fence, not a promise (D88/D101): these are the ranges the
-          auto-instrumentation is verified against, and `ai` 7 is named absent
-          rather than left to be discovered. */}
+          auto-instrumentation is verified against, and what each SDK needs from
+          the caller is named rather than left to be discovered. */}
       <p className="mt-2 font-mono text-[10.5px] text-faint">
-        auto-instrumented, measured: openai &gt;=4.85 &lt;8 · @anthropic-ai/sdk &gt;=0.50 &lt;1 ·
-        ai &gt;=5 &lt;7 — ai@7 is not yet supported (it emits no OTel span); streaming calls are not
-        instrumented in either SDK
+        auto-instrumented, measured: openai &gt;=4.85 &lt;8 (the Responses API from 4.87) ·
+        @anthropic-ai/sdk &gt;=0.50 &lt;1 · ai &gt;=5 &lt;8 — on ai@7 telemetry is on by
+        default, on ai@5 and 6 pass {"experimental_telemetry: { isEnabled: true }"}; streaming calls
+        are not instrumented for any of the three
       </p>
 
       {/* waiting → first trace */}

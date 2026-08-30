@@ -7,9 +7,9 @@
  * Three LLM legs on purpose, because obstack-js covers three Node paths and
  * each deserves an end-to-end trace (D77(e), D308):
  *
- *   1. `generateText` from the Vercel AI SDK, with `experimental_telemetry`
- *      enabled — `ai` emits its own span and obstack-js's span processor
- *      rewrites it into the attributes ingest reads.
+ *   1. `generateText` from the Vercel AI SDK — with no telemetry option of any
+ *      kind, because on `ai` 7 obstack-js registers an integration that `ai`'s
+ *      own dispatcher hands every model call to, and the span is on by default.
  *   2. `openai`'s `chat.completions.create` — patched at require time, so the
  *      span is obstack-js's own.
  *   3. `openai`'s `responses.create` — the newer OpenAI surface, a second patch
@@ -72,14 +72,18 @@ export async function answer(question: string): Promise<Answer> {
   });
 }
 
-/** Leg 1 — the Vercel AI SDK. `experimental_telemetry` is what makes `ai` emit
- *  the span obstack-js translates; without it the call is invisible. */
+/** Leg 1 — the Vercel AI SDK, on `ai` 7. The absence below is the point: there
+ *  is no `experimental_telemetry`, no `telemetry`, no obstack option — an
+ *  ordinary `generateText` call, and the llm span happens anyway. On `ai` 5 and
+ *  6 (the sibling app) the same call needs `experimental_telemetry:
+ *  { isEnabled: true }`, because there the span is `ai`'s own and obstack-js
+ *  only rewrites it. Adding the option here would hide the very default this
+ *  app is evidence for. */
 async function draftAnswer(question: string, facts: string[]): Promise<string> {
   const result = await generateText({
     model: vercelModel,
     system: SYSTEM_PROMPT,
     prompt: `Retrieved facts:\n${facts.map((fact) => `- ${fact}`).join("\n")}\n\nQuestion: ${question}`,
-    experimental_telemetry: { isEnabled: true },
   });
   return result.text;
 }

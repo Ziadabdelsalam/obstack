@@ -1,4 +1,4 @@
-# obstack-js sample (TypeScript)
+# obstack-js sample (TypeScript, `ai` 7)
 
 A small Node service whose entire telemetry setup is the two lines the
 `obstack-js` README documents:
@@ -14,6 +14,16 @@ llm layers come out of the instrumentation `init()` registers, and the only
 other telemetry calls in the app are the `traceAgent` / `traceTool` pair around
 the two things no library can infer.
 
+This app is a copy of `../sdk-sample-ts` on the `ai` 7 line, and the whole
+reason it exists separately is one absence: its `generateText` call passes **no
+telemetry option at all**. On `ai` 5 and 6 the sibling has to pass
+`experimental_telemetry: { isEnabled: true }`, because there the span is `ai`'s
+own and obstack-js rewrites it. On `ai` 7 `ai` emits no OpenTelemetry span,
+obstack-js registers an integration with `ai`'s own dispatcher instead, and
+telemetry is on by default. The complete list of differences between the two
+apps is the `//twin` note in `package.json`; everything not in that list is the
+same code.
+
 Where `demo/agent-app` is the bring-your-own-OpenTelemetry proof, this is the
 SDK proof: same trace, ~40 lines less wiring.
 
@@ -24,14 +34,14 @@ An obstack ingest has to be reachable at `:4318` — from `deploy/compose`,
 
 ```bash
 # from the repository root: build the SDK tarball a customer would install
-npm pack ./packages/obstack-js --pack-destination ./demo/sdk-sample-ts
+npm pack ./packages/obstack-js --pack-destination ./demo/sdk-sample-ts-ai7
 
-cd demo/sdk-sample-ts
+cd demo/sdk-sample-ts-ai7
 npm install ./obstack-js-0.1.0.tgz   # already recorded in package.json; plain `npm install` does the same
 npm install
 npm run build
 
-export OTEL_SERVICE_NAME=sdk-sample-ts
+export OTEL_SERVICE_NAME=sdk-sample-ts-ai7
 export OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318
 export OTEL_EXPORTER_OTLP_HEADERS=Authorization=Bearer%20ok_dev_local
 npm start
@@ -56,7 +66,7 @@ the trace by service name instead —
 ```bash
 docker exec obstack-clickhouse clickhouse-client --query "
 SELECT trace_id, count(), groupArray(layer), groupArray(name)
-FROM obstack.spans WHERE service='sdk-sample-ts'
+FROM obstack.spans WHERE service='sdk-sample-ts-ai7'
 GROUP BY trace_id HAVING count() >= 4
 ORDER BY max(start_time) DESC LIMIT 1 FORMAT Vertical"
 ```
@@ -79,7 +89,8 @@ around them into `src/`. `package.json` records it as
 `"obstack-js": "file:obstack-js-0.1.0.tgz"`; the tarball itself is a build
 product and is gitignored, along with the lockfile it would pin by integrity
 hash. Everything else is exact-pinned — this is an app, and an app that resolves
-a different `ai` tomorrow stops being evidence.
+a different `ai` tomorrow stops being evidence. `ai` 7 requires Node >= 22; the
+`Dockerfile` already runs on `node:22.23.1-slim`.
 
 ## What one `/chat` emits
 
@@ -87,8 +98,7 @@ a different `ai` tomorrow stops being evidence.
 POST /chat                     api    node:http server span (http.request.method)
 └─ agent.answer_question       agent  obstack.agent.step="answer_question"
    ├─ tool.knowledge_lookup    tool   obstack.tool.name="knowledge_lookup"
-   ├─ ai.generateText          other  the Vercel AI SDK's outer span, no gen_ai.* on it
-   │  └─ chat gpt-4o-mini      llm    translated from ai.generateText.doGenerate
+   ├─ chat gpt-4o-mini         llm    the Vercel AI SDK leg, no option asked for
    ├─ chat gpt-4o-mini         llm    the openai client's chat completions, patched
    └─ chat gpt-4o-mini         llm    the same client's Responses API, patched
 ```
@@ -98,16 +108,18 @@ mechanisms and each is worth proving end to end:
 
 | Leg | Library | How the span happens |
 | --- | --- | --- |
-| draft | `ai` 6 `generateText`, `experimental_telemetry: { isEnabled: true }` | `ai` emits its own span; obstack-js's span processor rewrites it into the attributes ingest reads |
+| draft | `ai` 7 `generateText`, **no telemetry option** | `ai` 7 emits no span of its own; `init()` pushes an obstack integration onto `ai`'s telemetry registry and `ai`'s dispatcher hands it every model call, so the span is obstack-js's own and it is on by default |
 | condense | `openai` 7 `chat.completions.create` | `openai/resources/chat/completions/completions.js` is patched when it is required |
 | actionable | `openai` 7 `responses.create` | `openai/resources/responses/responses.js` is patched the same way; its finish reason is the response `status`, because the Responses API has no `finish_reason` |
 
 All three spans carry the full GenAI set — `gen_ai.system`, request and response
 model, input and output tokens, finish reason — and their prompt and completion.
 Ingest moves those two into the dedicated `prompt` / `completion` columns and
-removes them from the attributes map, so read them from the columns.
-`ai.generateText`, the outer span, deliberately gets no `gen_ai.*` attributes:
-one model call must not count as two llm spans.
+removes them from the attributes map, so read them from the columns. There is no
+`ai.generateText` span on this trace and no `ai.*` attribute anywhere on it: `ai`
+7 emits neither, so the D92 content perimeter the sibling's translation step has
+to enforce has nothing to strip here. The evidence run asserts that absence
+against the sibling's presence rather than taking it on trust.
 
 `init()` must run before anything it patches is loaded, which is why `main.ts`
 imports `obstack-js` and nothing else, and `require`s the server only after
@@ -158,7 +170,7 @@ App-specific, optional:
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `PORT` | `8100` | the port the app listens on, and therefore where its own fake model endpoint lives |
+| `PORT` | `8100` | the port the app listens on, and therefore where its own fake model endpoint lives — the same default as the sibling, because the two never run in one process; compose publishes this one on host `8110` instead |
 
 ## Container
 
@@ -167,7 +179,7 @@ App-specific, optional:
 the same way the instructions above are run:
 
 ```bash
-docker build -f demo/sdk-sample-ts/Dockerfile -t sdk-sample-ts .
+docker build -f demo/sdk-sample-ts-ai7/Dockerfile -t sdk-sample-ts-ai7 .
 ```
 
 The compose service that uses it lives in `deploy/compose/docker-compose.yml`.

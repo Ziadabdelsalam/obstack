@@ -8,7 +8,7 @@
  *     POST /chat                        api    (node:http server span, auto)
  *     └─ agent.answer_question          agent  (obstack.agent.step)
  *        ├─ tool.knowledge_lookup       tool   (obstack.tool.name)
- *        ├─ chat gpt-4o-mini            llm    (Vercel AI SDK, translated)
+ *        ├─ chat gpt-4o-mini            llm    (Vercel AI SDK 7, on by default)
  *        ├─ chat gpt-4o-mini            llm    (openai chat completions, patched)
  *        └─ chat gpt-4o-mini            llm    (openai Responses API, patched)
  *

@@ -240,15 +240,49 @@ test("the issued token never leaves client state", () => {
   );
 });
 
-// D88/D101: the ranges the auto-instrumentation is measured against, and the
-// absence stated rather than left to be discovered.
-test("the version fences match package.json and ai@7 is named absent", () => {
-  assert.equal(jsPackage.peerDependencies.ai, ">=5 <7");
-  const fences = source.replace(/&gt;/g, ">").replace(/&lt;/g, "<");
+// D88/D101: the ranges the auto-instrumentation is measured against, and what
+// each SDK asks of the caller, stated rather than left to be discovered.
+test("the version fences match package.json and name what each SDK needs", () => {
+  // Entities decoded, then whitespace collapsed: the fence renders as one
+  // sentence however the JSX happens to wrap, so these assertions are about its
+  // wording and not about where the lines break.
+  const fences = source.replace(/&gt;/g, ">").replace(/&lt;/g, "<").replace(/\s+/g, " ");
+
+  // D311: every range is READ from package.json rather than restated here. A
+  // second hand-typed copy would pin this file against itself, and the drift
+  // this guard exists to catch is between the copy and the package — which is
+  // exactly how it caught the `ai` fence going stale when the range widened.
   for (const [name, range] of Object.entries(jsPackage.peerDependencies)) {
     assert.ok(fences.includes(`${name} ${range}`), `the fence for ${name} is not ${range}`);
   }
-  assert.ok(fences.includes("ai@7 is not yet supported"));
+
+  // The three things a range alone cannot say, each measured this sprint: the
+  // Responses API has a floor inside the openai range, and telemetry is on by
+  // default on ai 7 but opt-in per call on 5 and 6.
+  assert.ok(
+    fences.includes("the Responses API from 4.87"),
+    "the openai fence hides the Responses floor inside its range",
+  );
+  assert.ok(fences.includes("on ai@7 telemetry is on by default"), "the ai@7 default is not stated");
+  assert.ok(fences.includes("on ai@5 and 6 pass"), "the ai 5/6 opt-in is not stated");
+  assert.ok(fences.includes("experimental_telemetry: { isEnabled: true }"), "the opt-in option is not named");
+  // "either" for three libraries was a miscount, not a nuance: the fence names
+  // openai, @anthropic-ai/sdk and ai, and streaming is uninstrumented on all of
+  // them. The wording moved here with the sentence.
+  assert.ok(
+    fences.includes("streaming calls are not instrumented for any of the three"),
+    "the streaming sentence does not cover every library the fence names",
+  );
+  assert.equal(
+    fences.includes("in either SDK"),
+    false,
+    "the fence still counts three libraries as two",
+  );
+  assert.equal(
+    fences.includes("not yet supported"),
+    false,
+    "the fence still names ai@7 absent, and it is not — an absence outliving the support is the D101 failure again",
+  );
 });
 
 // D277's display rule, on the ONE tab that ever names gRPC. `tabCode` builds

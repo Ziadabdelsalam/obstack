@@ -1,7 +1,15 @@
 #!/usr/bin/env bash
-# The S2.4 exit criterion in one command (T5/D80): two sample apps instrumented
+# The S2.4 exit criterion in one command (T5/D80): three sample apps instrumented
 # with nothing but an obstack SDK install and the documented two lines, each
 # landing the same four-layer trace with the D8 GenAI attributes.
+#
+# The third is S4.3's (D307): demo/sdk-sample-ts-ai7, the TypeScript sample
+# copied onto the `ai` 7 line, whose `generateText` call passes no telemetry
+# option of any kind. On `ai` 5 and 6 that call is invisible without
+# `experimental_telemetry: { isEnabled: true }`; on `ai` 7 obstack-js's span is
+# on by default, and an app carrying no obstack option at all landing the same
+# four layers is the only way to prove it. It gets every leg its sibling gets,
+# OTLP and fail-open included.
 #
 #   bash deploy/compose/sdk-evidence.sh
 #
@@ -10,14 +18,18 @@
 # CI (S2.1 L3). It destroys the compose volumes first, because it is the
 # evidence run and starting from nothing is the point, then proves, in order:
 #
-#   - both samples land ONE trace of >= 4 spans with layers api/agent/tool/llm
+#   - every sample lands ONE trace of >= 4 spans with layers api/agent/tool/llm
 #     and the full D8 attribute set, asserted in SQL against ClickHouse;
 #   - prompt and completion live in the dedicated columns, and the attributes
 #     Map holds neither the two keys NOR the content under any other key —
 #     D92's two-part assertion, each half with a positive control so an absence
 #     cannot be a mistyped token;
-#   - both traces render through the shipped query layer (deploy/compose/
-#     sdk-checks.ts, the D17 facade the product itself reads from);
+#   - the ai@7 sample's trace additionally carries no `ai.*` attribute key at
+#     all, against the ai@6 sample's, which does — D92's perimeter with its own
+#     positive control rather than an absence taken on trust;
+#   - every trace renders through the shipped query layer (deploy/compose/
+#     sdk-checks.ts, the D17 facade the product itself reads from), which also
+#     pins the Responses-API llm span on both TypeScript samples (D308/D301);
 #   - standard OTLP on the wire: each sample once against the stock upstream
 #     collector image with a file exporter, its output asserted to carry the
 #     sample's span names and gen_ai.* attributes — the exit clause's "any OTLP
@@ -50,15 +62,22 @@ ARRIVAL_TIMEOUT_S="${ARRIVAL_TIMEOUT_S:-60}"
 OUT="${OUT_DIR:-$(mktemp -d)}"
 mkdir -p "$OUT" || { printf 'sdk-evidence: FAIL — cannot create OUT_DIR %s\n' "$OUT"; exit 1; }
 
-# The ports: the two the compose services publish (each sample's README runs it
-# on the same one), plus one per one-off probe container so a probe never
-# collides with the sample it is a variant of.
+# The ports: the three the compose services publish (each sample's README runs
+# it on the same one), plus one per one-off probe container so a probe never
+# collides with the sample it is a variant of. The ai@7 twin listens on 8100
+# inside its container exactly like its sibling — they never share a network
+# namespace — so only the host side moves, here and in docker-compose.yml.
 PY_PORT=8010
 TS_PORT=8100
+AI7_PORT=8110
 PY_FAILOPEN_PORT=8011
 TS_FAILOPEN_PORT=8101
+AI7_FAILOPEN_PORT=8111
 PY_OTLP_PORT=8012
 TS_OTLP_PORT=8102
+AI7_OTLP_PORT=8112
+# The container port every TypeScript sample listens on, sibling and twin alike.
+TS_CONTAINER_PORT=8100
 
 # The stock upstream collector, pinned to the same image tag the repo already
 # runs (deploy/compose/docker-compose.yml's collector service, D14 unmodified
@@ -78,6 +97,9 @@ PY_PROMPT_TOKEN='obstack sample agent'
 PY_COMPLETION_TOKEN='Based on the retrieved facts'
 TS_PROMPT_TOKEN='obstack sample agent'
 TS_COMPLETION_TOKEN='not automatically a slow model'
+# The twin is a copy of the ts sample, so its fake produces the same strings.
+AI7_PROMPT_TOKEN="$TS_PROMPT_TOKEN"
+AI7_COMPLETION_TOKEN="$TS_COMPLETION_TOKEN"
 
 pass=0; fail=0
 step() { printf '\n== %s\n' "$1"; }
@@ -107,7 +129,7 @@ wait_http() { # wait_http <url> <timeout-seconds>
 }
 
 # The count of traces this service has landed that are an actual agent turn:
-# both samples are health-checked every five seconds, and each probe lands its
+# every sample is health-checked every five seconds, and each probe lands its
 # own small api trace. Counting agent spans instead of traces is what keeps the
 # checks below about /chat requests rather than about the healthcheck interval.
 agent_traces() { # agent_traces <service>
@@ -117,7 +139,8 @@ agent_traces() { # agent_traces <service>
 
 # Every container this run creates outside the compose profile, by name, so the
 # cleanup below removes exactly what it started and nothing else.
-probe_containers=(obstack-sdk-failopen-py obstack-sdk-failopen-ts obstack-sdk-otlp-py obstack-sdk-otlp-ts "$OTLP_PROBE")
+probe_containers=(obstack-sdk-failopen-py obstack-sdk-failopen-ts obstack-sdk-failopen-ai7 \
+  obstack-sdk-otlp-py obstack-sdk-otlp-ts obstack-sdk-otlp-ai7 "$OTLP_PROBE")
 cleanup() {
   for name in "${probe_containers[@]}"; do docker rm -f "$name" >/dev/null 2>&1; done
   docker volume rm "$OTLP_VOLUME" >/dev/null 2>&1
@@ -145,7 +168,9 @@ fi
 # Nothing of this project listens now, so anything still answering on one of
 # these ports belongs to somebody else, and every assertion below reads HTTP and
 # cannot tell one server from another.
-for port in "$PY_PORT" "$TS_PORT" "$PY_FAILOPEN_PORT" "$TS_FAILOPEN_PORT" "$PY_OTLP_PORT" "$TS_OTLP_PORT"; do
+ports=("$PY_PORT" "$TS_PORT" "$AI7_PORT" "$PY_FAILOPEN_PORT" "$TS_FAILOPEN_PORT" "$AI7_FAILOPEN_PORT" \
+  "$PY_OTLP_PORT" "$TS_OTLP_PORT" "$AI7_OTLP_PORT")
+for port in "${ports[@]}"; do
   if curl -s -m 2 -o /dev/null "http://127.0.0.1:$port/healthz"; then
     refuse "something already answers on 127.0.0.1:$port and this project just stopped everything it owns — stop it first"
   fi
@@ -155,7 +180,7 @@ for name in "${probe_containers[@]}"; do
     refuse "a container named $name already exists — a previous run was killed before its cleanup; remove it (docker rm -f $name) and start again"
   fi
 done
-printf '   no foreign project container, 6 ports free, %s probe container names free\n' "${#probe_containers[@]}"
+printf '   no foreign project container, %s ports free, %s probe container names free\n' "${#ports[@]}" "${#probe_containers[@]}"
 
 # Armed only now, past the refusals: the cleanup removes probe containers by
 # name, and arming it earlier made a refusal delete the very leftover it had
@@ -163,13 +188,14 @@ printf '   no foreign project container, 6 ports free, %s probe container names 
 # declared was not its to touch.
 trap cleanup EXIT
 
-step "building and booting clickhouse + ingest + both samples"
-# Named services, not the default profile: sdk-sample-py and sdk-sample-ts,
-# with clickhouse/postgres/ingest pulled in by their own depends_on chain
+step "building and booting clickhouse + ingest + all three samples"
+# Named services, not the default profile: sdk-sample-py, sdk-sample-ts and the
+# ai@7 twin, with clickhouse/postgres/ingest pulled in by their own depends_on chain
 # (D271). web is not this harness's claim (D265(a1)) — naming it here would
 # both build its image and start it for a process this harness never reaches;
 # the `images` job and the self-hosted user boot it instead.
-if ! "${compose[@]}" up -d --build --wait --wait-timeout "$HEALTH_TIMEOUT_S" sdk-sample-py sdk-sample-ts > "$OUT/up.log" 2>&1; then
+if ! "${compose[@]}" up -d --build --wait --wait-timeout "$HEALTH_TIMEOUT_S" \
+     sdk-sample-py sdk-sample-ts sdk-sample-ts-ai7 > "$OUT/up.log" 2>&1; then
   "${compose[@]}" ps
   refuse "the stack did not come up healthy within ${HEALTH_TIMEOUT_S}s — see $OUT/up.log"
 fi
@@ -188,12 +214,19 @@ ts_answer="$(curl -s -X POST "http://127.0.0.1:$TS_PORT/chat" \
   -H 'Content-Type: application/json' \
   -d '{"message":"Why did checkout p99 latency jump this afternoon?"}')" \
   || refuse "POST http://127.0.0.1:$TS_PORT/chat failed"
-printf '   py: %s\n   ts: %s\n' "$(printf '%s' "$py_answer" | cut -c1-96)" "$(printf '%s' "$ts_answer" | cut -c1-96)"
+ai7_answer="$(curl -s -X POST "http://127.0.0.1:$AI7_PORT/chat" \
+  -H 'Content-Type: application/json' \
+  -d '{"message":"Why did checkout p99 latency jump this afternoon?"}')" \
+  || refuse "POST http://127.0.0.1:$AI7_PORT/chat failed"
+printf '   py:  %s\n   ts:  %s\n   ai7: %s\n' \
+  "$(printf '%s' "$py_answer" | cut -c1-96)" \
+  "$(printf '%s' "$ts_answer" | cut -c1-96)" \
+  "$(printf '%s' "$ai7_answer" | cut -c1-96)"
 
 # The evidence trace, selected by SHAPE and asserted unique. Recency alone would
-# be wrong: both samples call their own fake model endpoint over HTTP, the ts
-# sample's calls come back through its own server as ordinary requests (T4), and
-# compose health-checks both containers every five seconds — each of those lands
+# be wrong: every sample calls its own fake model endpoint over HTTP, the ts
+# samples' calls come back through their own server as ordinary requests (T4),
+# and compose health-checks each container every five seconds — each of those lands
 # a truthful little api trace of its own. The agent span is the exact
 # discriminator: only a /chat request has one. Requiring EXACTLY one match turns
 # the selection into an assertion rather than a guess — after a clean boot and
@@ -217,7 +250,9 @@ select_trace() { # select_trace <service>
 step "selecting each sample's evidence trace in ClickHouse"
 py_trace="$(select_trace sdk-sample-py)" || exit 1
 ts_trace="$(select_trace sdk-sample-ts)" || exit 1
-printf '   sdk-sample-py %s\n   sdk-sample-ts %s\n' "$py_trace" "$ts_trace"
+ai7_trace="$(select_trace sdk-sample-ts-ai7)" || exit 1
+printf '   sdk-sample-py     %s\n   sdk-sample-ts     %s\n   sdk-sample-ts-ai7 %s\n' \
+  "$py_trace" "$ts_trace" "$ai7_trace"
 
 # Everything the exit clause claims about one sample's trace, in SQL. Each
 # number is read out of ClickHouse and compared here, so a failure names the
@@ -288,12 +323,33 @@ assert_trace() { # assert_trace <label> <trace_id> <prompt-token> <completion-to
 step "the four-layer trace, the D8 attributes, and D92's two-part Map assertion"
 assert_trace sdk-sample-py "$py_trace" "$PY_PROMPT_TOKEN" "$PY_COMPLETION_TOKEN"
 assert_trace sdk-sample-ts "$ts_trace" "$TS_PROMPT_TOKEN" "$TS_COMPLETION_TOKEN"
+assert_trace sdk-sample-ts-ai7 "$ai7_trace" "$AI7_PROMPT_TOKEN" "$AI7_COMPLETION_TOKEN"
 
-step "rendering both traces through the shipped query layer (D17 facade)"
+# The D92 perimeter on the ai@7 leg, with the ai@6 leg as its positive control.
+# `ai` 7 emits no OpenTelemetry span and therefore no `ai.*` attribute, so
+# obstack-js's v7 integration has nothing to strip — the claim is that the
+# perimeter holds trivially, and trivially is still worth measuring. On its own
+# the absence would be indistinguishable from a query that matches nothing,
+# which is what the sibling's count is here to rule out: the ai@6 sample really
+# does carry `ai.*` keys on its `ai.generateText` span, in this same run, read
+# by this same SQL.
+step "the ai@7 trace carries no ai.* attribute key at all (D92 perimeter, controlled)"
+ai_keys_in() { # ai_keys_in <trace_id>
+  q "SELECT countIf(arrayExists(k -> startsWith(k, 'ai.'), mapKeys(attributes)))
+     FROM obstack.spans WHERE trace_id='$1'"
+}
+ai7_ai_keys="$(ai_keys_in "$ai7_trace")"
+ts_ai_keys="$(ai_keys_in "$ts_trace")"
+claim "sdk-sample-ts: the ai@6 trace does carry ai.* keys (positive control for the claim below)" \
+  "$([ "${ts_ai_keys:-0}" -ge 1 ] && echo 0 || echo 1)" "$ts_ai_keys span(s) carry one — the query matches nothing at all"
+claim "sdk-sample-ts-ai7: no span carries an ai.* attribute key (ai@7 emits none)" \
+  "$([ "$ai7_ai_keys" = 0 ] && echo 0 || echo 1)" "$ai7_ai_keys span(s) carry one"
+
+step "rendering all three traces through the shipped query layer (D17 facade)"
 if ( cd "$repo_root" && npx tsx --tsconfig apps/web/tsconfig.json --conditions react-server \
-       "$compose_dir/sdk-checks.ts" "$py_trace" "$ts_trace" > "$OUT/sdk-checks.log" 2>&1 ); then
+       "$compose_dir/sdk-checks.ts" "$py_trace" "$ts_trace" "$ai7_trace" > "$OUT/sdk-checks.log" 2>&1 ); then
   grep '^sdk-checks:' "$OUT/sdk-checks.log"
-  ok "sdk-checks.ts PASS (four layers, llm detail, cost, correlated logs for py — D84)"
+  ok "sdk-checks.ts PASS (four layers, llm detail, the Responses span, cost, correlated logs for py — D84/D308)"
 else
   grep '^sdk-checks:' "$OUT/sdk-checks.log"
   no "sdk-checks.ts" "see $OUT/sdk-checks.log"
@@ -406,7 +462,8 @@ YAML
 
 step "standard OTLP on the wire: each sample against a stock upstream collector"
 otlp_leg sdk-sample-py sdk-sample-py "$PY_OTLP_PORT" 8010
-otlp_leg sdk-sample-ts sdk-sample-ts "$TS_OTLP_PORT" 8100
+otlp_leg sdk-sample-ts sdk-sample-ts "$TS_OTLP_PORT" "$TS_CONTAINER_PORT"
+otlp_leg sdk-sample-ts-ai7 sdk-sample-ts-ai7 "$AI7_OTLP_PORT" "$TS_CONTAINER_PORT"
 
 # PRD §9 / D83, as app-observable behaviour: a broken endpoint never breaks the
 # app. The dead port is the assembled whole — init(), the instrumentations, the
@@ -448,8 +505,10 @@ failopen_leg() { # failopen_leg <label> <compose-service> <host-port> <container
 step "fail open: a dead endpoint never breaks the sample app (PRD §9 / D83)"
 py_traces_before="$(agent_traces sdk-sample-py)"
 ts_traces_before="$(agent_traces sdk-sample-ts)"
+ai7_traces_before="$(agent_traces sdk-sample-ts-ai7)"
 failopen_leg sdk-sample-py sdk-sample-py "$PY_FAILOPEN_PORT" 8010 "$py_traces_before"
-failopen_leg sdk-sample-ts sdk-sample-ts "$TS_FAILOPEN_PORT" 8100 "$ts_traces_before"
+failopen_leg sdk-sample-ts sdk-sample-ts "$TS_FAILOPEN_PORT" "$TS_CONTAINER_PORT" "$ts_traces_before"
+failopen_leg sdk-sample-ts-ai7 sdk-sample-ts-ai7 "$AI7_FAILOPEN_PORT" "$TS_CONTAINER_PORT" "$ai7_traces_before"
 
 step "the D15 regression floor: demo/agent-app/ is what it was"
 floor="$(cd "$repo_root" && git diff --stat -- demo/agent-app/)"
