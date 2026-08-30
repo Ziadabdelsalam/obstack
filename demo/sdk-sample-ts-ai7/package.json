@@ -1,0 +1,28 @@
+{
+  "name": "sdk-sample-ts-ai7",
+  "version": "0.1.0",
+  "private": true,
+  "description": "The obstack-js sample on ai@7 — two lines of setup, no telemetry option, and the four-layer trace",
+  "license": "UNLICENSED",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/main.js"
+  },
+  "//": "Not a workspace member (D76): demo/ stays outside the product build, exactly like demo/agent-app. That is also why the versions below are exact rather than ranges — a sample app is an app, and an app that resolves a different provider version tomorrow stops being evidence of anything.",
+  "//twin": "This app is a COPY of ../sdk-sample-ts on the ai@7 line (D307), and the complete list of how it differs from its sibling is this note. TWO differences of substance: (1) the three pins below — ai 7.0.85, @ai-sdk/openai 4.0.52, openai 7.4.0 (the last identical to the sibling's) — and, following from the first of them, engines.node >=22 instead of >=20, which is ai@7's own floor and not a choice made here; (2) src/agent.ts calls generateText with NO telemetry option at all — no experimental_telemetry, no telemetry — because on ai@7 obstack-js's telemetry is on by DEFAULT, and that default is the thing this app exists to prove (AI3). Everything else about the two apps is the same code: the same traceAgent/traceTool structure, the same fake provider serving the same two OpenAI surfaces, the same requests, the same node:22.23.1-slim base and the same byte-identical obstack-js pack stage in the Dockerfile, so BuildKit builds that layer once for both images. The ai@7 API needed NO code change: createOpenAI({baseURL,apiKey}).chat(model) and generateText({model,system,prompt}).text are unchanged from the ai@6 line, measured on 7.0.85 before this app was written. The remainder of the diff is what a copy costs and nothing more — this package name, the demo/sdk-sample-ts-ai7 paths in Dockerfile and Dockerfile.dockerignore, and the prose in README.md and the doc comments naming ai 7 and the integration-registry mechanism instead of ai 6 and the span-translation one. The container still listens on 8100; compose publishes it on a different host port, so config.ts is byte-identical too.",
+  "//dependencies": "obstack-js comes from the tarball `npm pack packages/obstack-js` produces (D79) — the packaged artifact, so `files`/`exports`/types are exercised the way a customer would hit them rather than short-circuited by a workspace symlink; see README. openai 7.4.0: the real client the SDK's instrumentation patches, inside the supported >=4.85 <8 range — the same pin as the sibling, because the openai leg is not what differs here. ai 7.0.85: the version obstack-js's integration-registry door is pinned against, and the same version its own v7 suite drives; ai 7 emits no OpenTelemetry span of its own, so nothing here would work by accident. @ai-sdk/openai 4.0.52: the `ai`-7 line of the OpenAI provider (@ai-sdk/provider 4.0.9), used only to point `generateText` at this app's own fake endpoint. Exact, never a range and never `latest` (D76). ai 7 requires node >=22, which the Dockerfile's node:22.23.1-slim already satisfies.",
+  "dependencies": {
+    "@ai-sdk/openai": "4.0.52",
+    "ai": "7.0.85",
+    "obstack-js": "file:obstack-js-0.1.0.tgz",
+    "openai": "7.4.0"
+  },
+  "//devDependencies": "The compiler and the Node types, at the versions the rest of the repo already resolves. No test framework: this sample IS the test — its evidence is the trace it lands in ClickHouse.",
+  "devDependencies": {
+    "@types/node": "20.19.43",
+    "typescript": "5.9.3"
+  }
+}

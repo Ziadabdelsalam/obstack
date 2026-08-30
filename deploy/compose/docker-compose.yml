@@ -306,6 +306,42 @@ services:
     stop_grace_period: 20s
     restart: unless-stopped
 
+  # The same sample on the `ai` 7 line (D307). It is a copy of the service above
+  # in every respect that matters to compose, because the app is a copy — the
+  # one thing it proves that its sibling cannot is that `generateText` needs no
+  # telemetry option on `ai` 7: the span is on by default, and a trace that
+  # comes out of an app carrying no obstack option at all is the only way to
+  # show it. The two Dockerfiles share the `obstack-js` pack stage byte for
+  # byte, so BuildKit builds and caches that layer once for both images.
+  #
+  # It listens on 8100 inside the container exactly like the sibling — the two
+  # never share a network namespace — and is published on a different host port
+  # so both can be up at once for one evidence run.
+  sdk-sample-ts-ai7:
+    build:
+      context: ../..
+      dockerfile: demo/sdk-sample-ts-ai7/Dockerfile
+    container_name: obstack-sdk-sample-ts-ai7
+    profiles: [sdk]
+    depends_on:
+      ingest:
+        condition: service_healthy
+    environment:
+      OTEL_SERVICE_NAME: sdk-sample-ts-ai7
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://ingest:4318
+      OTEL_EXPORTER_OTLP_HEADERS: Authorization=Bearer%20${OBSTACK_SDK_API_KEY:-ok_dev_local}
+    ports:
+      - "127.0.0.1:8110:8100" # POST /chat, GET /healthz
+    healthcheck:
+      # The image is node with no curl; node's own fetch is the probe.
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8100/healthz').then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 5s
+    stop_grace_period: 20s
+    restart: unless-stopped
+
   # Not started by a plain `docker compose up`, and not part of the default
   # `demo` path either — it is a second, opt-in ingest route (D39/Q2): apps
   # can still point straight at `ingest:4318` (M1's signed `smoke.sh` does,
