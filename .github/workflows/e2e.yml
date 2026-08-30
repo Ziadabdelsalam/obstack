@@ -62,6 +62,28 @@
 # ~6 min, switch to a `ci:e2e` label + workflow_dispatch + always on push to
 # master, and drop `e2e` from the required set; never leave it
 # required-but-conditional.
+#
+# S4.3 — the real numbers exist, and TWO things follow (D298, implemented as
+# restated by D306). First, THE LINE IS HELD. `e2e`'s last eleven successes
+# band 5m28–6m02, and the worst point in the whole recorded window is 6m44s
+# (run 32269078423, S3.3), one run outside that eleven. The ~6-minute line is
+# HELD rather than re-based to the band's top (D306(d)) — and it is a line
+# with teeth, because D207's reclaim (the drive's metering propagation wait,
+# a drive-time TTL/flush override) is PRE-AUTHORIZED: it executes on the
+# first measured number over the line, immediately, with no return trip to
+# the advisor (D261). Still unconsumed.
+#
+# Second, `e2e` IS NOW THE PR CRITICAL PATH: `stack` left the PR required set
+# on its own K5 breach (D298), so this is the longest check a merge waits on.
+# One step came with it — the D122 captured-DDL drift guard, D298's single
+# carve-out and load-bearing. That guard's failure source is app code
+# ordinary web PRs touch (`authConfig()` in apps/web/src/server/auth.ts), so
+# leaving it on a job that now only gates master would have turned its exact
+# designed catch into a post-merge stop-the-line. It costs +4s measured and
+# needs nothing new here: the compose Postgres it creates its throwaway
+# scratch database on is already up from the step above, and the root
+# `npm ci` it runs under already ran. The chart-Postgres schema step stayed
+# in `stack` — that one is a chart assertion and needs the cluster.
 name: e2e
 
 on:
@@ -111,6 +133,39 @@ jobs:
       # serves the app itself.
       - name: Compose stack (deploy/compose/README.md, "The e2e drive")
         run: docker compose -f deploy/compose/docker-compose.yml up -d --wait --wait-timeout 240 clickhouse postgres ingest
+
+      # D298's one carve-out, moved here from `stack` in S4.3 (D306(d)).
+      # S3.1 D122: better-auth's own tables are CAPTURED, never migrated by the
+      # library (D95/D117) — services/ingest/pgmigrations/0003_auth.sql is the
+      # verbatim output of the generate path run against `authConfig()`
+      # (apps/web/src/server/auth.ts). Nothing re-checks that pair, so a plugin
+      # or a field changed in the config without a re-capture desyncs the app
+      # from the migration the ingest binary applies, silently and only in
+      # production shapes. The step regenerates the DDL from the config the app
+      # runs and diffs it against the file; any difference fails it, naming both
+      # sides and the re-capture recipe.
+      #
+      # The generator emits only what its target database is MISSING, so it
+      # needs an empty one — a scratch database the script creates and drops on
+      # the compose Postgres the step above just brought up (D112(b), one
+      # definition of the dev Postgres). It writes nothing to a database the
+      # product reads, and the signups below are indifferent to it.
+      #
+      # HERE, before the smoke floor, on purpose: it is seconds and it fails
+      # fast, so a config/capture desync is reported as itself rather than as a
+      # floor or drive failure downstream of a schema nobody re-checked.
+      #
+      # The secret is inline and disposable: `authConfig()` requires one and the
+      # schema does not depend on its value, so it is a CI-local literal — not a
+      # secret, and not a service env (D112(b) keeps BETTER_AUTH_* out of the
+      # compose services and the chart; this is neither). BETTER_AUTH_URL is set
+      # nowhere — not here, not anywhere in the repo — and that is D119, not an
+      # omission.
+      - name: Captured-DDL drift guard (deploy/compose/ddl-drift-check.mts)
+        run: |
+          BETTER_AUTH_SECRET=ddl-drift-check-dummy-secret-not-a-real-one \
+            npx tsx --tsconfig apps/web/tsconfig.json --conditions react-server \
+            deploy/compose/ddl-drift-check.mts
 
       # M1's signed exit criterion as this job's regression floor (D136): the
       # demo agent's trace lands whole — api, agent, tool and llm under one
