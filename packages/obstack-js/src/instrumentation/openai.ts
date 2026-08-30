@@ -170,8 +170,13 @@ type Create = (...args: unknown[]) => unknown;
  *
  * Every exit below is the fail-open one: no `responsePromise` to watch, or a
  * `Response` that cannot be cloned, or a body that is not JSON, and the span
- * simply ends without its response half. The application's promise is returned
- * untouched in every case and nothing here can throw into it — this function's
+ * ends carrying its REQUEST half only — it cannot be withheld, because it is
+ * started before the call so the provider's HTTP span nests under it. All
+ * three exits are defensive: `responsePromise` is present on every version in
+ * the patched range, measured on 4.87.0, 7.4.0 and 7.8.0, so the first is
+ * unreachable across 4.87–7.8 by measurement rather than by hope. The
+ * application's promise is returned untouched in every case and nothing here
+ * can throw into it — this function's
  * result is fully handled by `traceLlmCall`, so a rejection lands on the span's
  * error path and never as an unhandled rejection in the app.
  */

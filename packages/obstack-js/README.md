@@ -171,9 +171,11 @@ the way the instrumentation reads the response body has to be right on both.
 `parse()` derives a second from it, and an HTTP body can be read once, so
 obstack never reads the one your code reads: it takes a `Response.clone()`
 before anything else touches it. If a future `openai` keeps that raw response
-somewhere else, obstack draws no span for the call and says so through
-`diag` — the call itself is untouched either way, which is the only promise
-that matters here (D83).
+somewhere else, the span for that call carries its request attributes only —
+no completion, no token counts — and obstack says so through `diag`. The span
+cannot be withheld: it is started before the call so the HTTP span nests under
+it. The call itself is untouched either way, which is the only promise that
+matters here (D83).
 
 One difference is worth knowing before you read a trace: the Responses API has
 no finish_reason; obstack records the response `status` (`completed`,
