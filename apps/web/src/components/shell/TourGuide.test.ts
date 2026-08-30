@@ -84,6 +84,15 @@ test("D60 sweep: the tail claim survives only in the one named marketing file", 
 
   const rel = (file: string) => path.relative(REPO_ROOT, file).split(path.sep).join("/");
   const matches = (text: string) => NEEDLES.some((needle) => text.includes(needle));
+  /**
+   * THE folded predicate — one definition, used by the sweep below AND by the
+   * fold proof at the end of this test. Two spellings of "fold the text, then
+   * look" is how a guard comes to guard nothing: written inline at each call
+   * site, the proof exercised `String.prototype.toLowerCase` and said nothing
+   * whatever about whether the SWEEP still folded. Deleting the fold here now
+   * turns the proof red, which is the only arrangement in which it is a proof.
+   */
+  const foldedMatches = (text: string) => matches(text.toLowerCase());
 
   // D323 — the coverage survived the move. The changelog's four entries were a
   // hardcoded array in `app/changelog/page.tsx` and the docs were a module
@@ -102,7 +111,7 @@ test("D60 sweep: the tail claim survives only in the one named marketing file", 
   }
 
   const hits = scanned
-    .filter((file) => matches(readFileSync(file, "utf8").toLowerCase()))
+    .filter((file) => foldedMatches(readFileSync(file, "utf8")))
     .map(rel)
     .sort();
 
@@ -127,12 +136,19 @@ test("D60 sweep: the tail claim survives only in the one named marketing file", 
   // So the fixture is synthetic: the claim, upper-cased at run time — never
   // spelled in this file, which the sweep also reads — is INVISIBLE to the raw
   // predicate and VISIBLE once folded, in both of its spellings. That is
-  // precisely what the `.toLowerCase()` above buys, asserted directly, and it
-  // holds whether the allowlist has one entry or none.
+  // precisely what `foldedMatches` above buys, asserted directly, and it holds
+  // whether the allowlist has one entry or none.
+  //
+  // It is asserted THROUGH `foldedMatches`, the same function the sweep filters
+  // with, and that is the whole of the guard: an inline `.toLowerCase()` here
+  // would fold the fixture with the language's own method and pass no matter
+  // what the sweep did — green with the sweep's fold deleted and a shouted
+  // spelling of the claim planted in the tree, which is exactly the failure
+  // this test exists to make impossible.
   for (const needle of NEEDLES) {
     const shouted = `## ${needle.toUpperCase()} — the way UI copy actually gets written`;
     assert.equal(
-      matches(shouted.toLowerCase()),
+      foldedMatches(shouted),
       true,
       "the folded sweep no longer sees a shouted spelling of the claim — the fold has stopped doing anything",
     );
