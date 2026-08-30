@@ -1,34 +1,50 @@
 import Link from "next/link";
-import { ArrowRight, Check, Minus, X } from "lucide-react";
+import { ArrowRight, Check } from "lucide-react";
 import { Wordmark } from "@/components/shell/Wordmark";
 import { HeroTrace } from "@/components/marketing/HeroTrace";
 import { ScreensShowcase } from "@/components/marketing/ScreensShowcase";
-import { WaitlistForm } from "@/components/marketing/WaitlistForm";
+import { SampleLabel } from "@/components/marketing/SampleLabel";
+import { SAMPLE_COPY } from "@/components/marketing/sample-copy";
 import { layerColor } from "@/lib/layers";
 import { connectors } from "@/components/connections/connectors";
 
-const comparisonRows: { capability: string; obstack: "yes" | "partial" | "no"; apm: "yes" | "partial" | "no"; llm: "yes" | "partial" | "no" }[] = [
-  { capability: "One trace across API, agents, LLM calls and pods", obstack: "yes", apm: "no", llm: "no" },
-  { capability: "Prompts & completions inline in the trace", obstack: "yes", apm: "no", llm: "yes" },
-  { capability: "Container logs joined to the exact request", obstack: "yes", apm: "partial", llm: "no" },
-  { capability: "Agent steps, tool calls & retries as first-class spans", obstack: "yes", apm: "no", llm: "partial" },
-  { capability: "Async queue hops inside the same trace", obstack: "yes", apm: "partial", llm: "no" },
-  { capability: "Token cost attribution per request & feature", obstack: "yes", apm: "no", llm: "yes" },
-  { capability: "K8s events on the trace timeline", obstack: "yes", apm: "partial", llm: "no" },
+/**
+ * What obstack does, as nine sentences a reader can check against the product.
+ *
+ * D325 - this used to be a comparison table: the same nine rows, plus two
+ * columns of ticks and dashes headed "Infra APM (Datadog / Grafana)" and "LLM
+ * obs tool (Langfuse / Helicone)". Eighteen cells of believed-but-never-measured
+ * claims about four named vendors, at least one of them false on its face, on
+ * the most public page this product has. Nothing measured them and nothing
+ * could keep them true, so the columns are cut rather than hedged and the rows
+ * stay as what they always were on obstack's side: a capability list.
+ *
+ * Three of the nine were false about obstack too and are repaired here - no
+ * retry concept exists anywhere in the schema, cost has no feature dimension,
+ * and Kubernetes events are set only by the mock generator
+ * (`mock/generate.ts:69`), never by the real adapters.
+ * `app/landing-fence.test.ts` sweeps this file for the phrasings that went.
+ */
+const capabilityRows: string[] = [
+  "One trace across API, agents, LLM calls and pods",
+  "Prompts & completions inline in the trace",
+  "Container logs joined to the exact request",
+  "Agent steps and tool calls as first-class spans",
+  "Async queue hops inside the same trace",
+  "Token cost attribution per request and model",
+  // What the wire actually carries: `0001_spans.sql:34-37` and
+  // `0002_logs.sql:23-25` give every span and log line pod, namespace and
+  // container identity. Cluster events were never ingested at all.
+  "Pod and container identity on every span and log line",
   // True as of this sprint, and verified against what ships rather than left
   // as the promise it used to be: Explain assembles a failed trace's spans and
   // its correlated logs into a structured summary whose evidence items link
   // back to the span or log line each one came from (D229/D232 — the row went
   // true only once the surface landed).
-  { capability: "Root-cause explanation from correlated evidence", obstack: "yes", apm: "no", llm: "no" },
-  { capability: "One env var to try with existing OTel", obstack: "yes", apm: "partial", llm: "partial" },
+  "Root-cause explanation from correlated evidence",
+  // `connectors.ts:83` is the count: endpoint, protocol, headers.
+  "Three OTEL_* variables to try with existing OTel",
 ];
-
-function Mark({ v }: { v: "yes" | "partial" | "no" }) {
-  if (v === "yes") return <Check className="mx-auto h-4 w-4" style={{ color: "var(--color-ok)" }} aria-label="yes" />;
-  if (v === "partial") return <Minus className="mx-auto h-4 w-4" style={{ color: "var(--color-warn)" }} aria-label="partial" />;
-  return <X className="mx-auto h-4 w-4 text-faint" aria-label="no" />;
-}
 
 const layers = [
   { key: "api", label: "API" },
@@ -56,7 +72,12 @@ export default function Landing() {
             <a href="#product" className="hover:text-ink">Product</a>
             <a href="#connections" className="hover:text-ink">Connections</a>
             <a href="#pricing" className="hover:text-ink">Pricing</a>
+            {/* D257: the two surfaces a stranger most needs and could not reach
+                from here - the documentation this build serves, and the page
+                that says what is running. Both are real routes in this image. */}
+            <Link href="/docs" className="hover:text-ink">Docs</Link>
             <Link href="/changelog" className="hover:text-ink">Changelog</Link>
+            <Link href="/status" className="hover:text-ink">Status</Link>
           </nav>
           <div className="flex items-center gap-4">
             <Link href="/app" className="hidden text-[13px] text-mid hover:text-ink sm:block">
@@ -105,52 +126,50 @@ export default function Landing() {
               href="/app"
               className="rounded-md border border-line bg-raised px-4.5 py-2.5 text-[14px] font-medium text-ink hover:border-line-strong"
             >
-              Open the live demo
+              Open the demo
             </Link>
             <span className="font-mono text-[12px] text-faint">
-              OTel-native · one env var to try it
+              OTel-native · three env vars to try it
             </span>
           </div>
-          {/* The two calls to action are two different products, and the page
-              says which is which (D106/D140): signing up is obstack you run —
-              the whole thing, today — and the waitlist below is for the hosted
-              one, which we do not run for anyone yet. Present tense only. */}
+          {/* One product, in the present tense (D106/D140): signing up is
+              obstack you run - the whole thing, today. The block that used to
+              sit below this offered to take an email address for a hosted
+              obstack that does not exist, and on this deployment had nowhere to
+              write it either (D257/D327), so it is gone rather than reworded. */}
           <p className="mt-3.5 max-w-lg text-[13px] leading-relaxed text-mid">
             Signing up creates your workspace on an obstack you run — the one you
             started yourself. Issue an API key in settings, point your OpenTelemetry
             exporter at it, and those traces land in that workspace.
           </p>
-
-          <div id="waitlist" className="mt-8 max-w-md">
-            <p className="mb-1.5 font-mono text-[11px] uppercase tracking-[0.2em] text-faint">
-              cloud is in private preview
-            </p>
-            <p className="mb-3 text-[13px] leading-relaxed text-mid">
-              We don&apos;t host obstack for you yet. Leave your email and we&apos;ll
-              write when we do.
-            </p>
-            <WaitlistForm />
-          </div>
         </div>
 
-        <div className="mt-12">
+        {/* D326 - the sting animates a trace that never happened, and until
+            this sprint the only thing on the page that said so was a footer line
+            covering it, the hero trace and four screenshots at once. It is its
+            own surface, so it carries its own label. */}
+        <figure className="mt-12">
           <video
             src="/hero-sting.mp4"
             autoPlay
             muted
             loop
             playsInline
+            aria-label="an animated illustration of a joined trace"
             className="mx-auto w-full max-w-[960px] rounded-xl border border-line"
           />
-        </div>
+          <figcaption className="mx-auto mt-3 max-w-[960px] text-center">
+            <SampleLabel>a scripted illustration — {SAMPLE_COPY}</SampleLabel>
+          </figcaption>
+        </figure>
       </section>
 
       {/* the joined trace */}
       <section className="mx-auto w-full max-w-[1400px] px-5 pb-16">
+        {/* The caption lives inside the component (D326): the fabricated widget
+            and the label that says it is fabricated are one thing now, and
+            cannot be composed apart. */}
         <HeroTrace />
-        <p className="mt-3 text-center font-mono text-[11px] text-faint">
-          a real failure, joined: pod OOM-kill → truncated completion → failed agent step → 502
-        </p>
       </section>
 
       {/* problem */}
@@ -204,7 +223,7 @@ export default function Landing() {
             {
               color: "var(--color-infra)",
               title: "Connections for every source",
-              body: "Cloud, PaaS, Kubernetes, databases, LLM gateways, CI — every place your system writes a log becomes a connection, not a silo.",
+              body: "Kubernetes, Docker and any OpenTelemetry source today; the rest of the catalog is listed as coming soon.",
             },
             {
               color: "var(--color-llm)",
@@ -226,7 +245,7 @@ export default function Landing() {
         <div className="mx-auto w-full max-w-[1400px] px-5 py-16">
           <SectionLabel>connections</SectionLabel>
           <h2 className="max-w-2xl font-display text-[26px] leading-tight font-semibold text-ink">
-            If it writes a log, it plugs in.
+            If it speaks OTel, it plugs in today.
           </h2>
           <div className="mt-8 flex flex-wrap gap-2">
             {connectors.map((c) => (
@@ -245,7 +264,7 @@ export default function Landing() {
             ))}
           </div>
           <p className="mt-6 text-[13px] text-faint">
-            Already on OpenTelemetry? You&apos;re one environment variable away.
+            Already on OpenTelemetry? You&apos;re three environment variables away.
           </p>
         </div>
       </section>
@@ -254,7 +273,7 @@ export default function Landing() {
       <section className="mx-auto w-full max-w-[1400px] px-5 py-16">
         <SectionLabel>see it</SectionLabel>
         <h2 className="mb-8 max-w-2xl font-display text-[26px] leading-tight font-semibold text-ink">
-          A full observability platform — not just a trace viewer.
+          One trace across your whole stack — not a trace viewer bolted onto a log store.
         </h2>
         <ScreensShowcase />
       </section>
@@ -266,42 +285,26 @@ export default function Landing() {
           <h2 className="max-w-2xl font-display text-[26px] leading-tight font-semibold text-ink">
             The join is the product. You can&apos;t bolt it on.
           </h2>
-          <div className="mt-8 overflow-x-auto rounded-lg border border-line">
-            <table className="w-full min-w-[640px] border-collapse bg-raised">
-              <thead>
-                <tr className="border-b border-line text-left">
-                  <th className="px-4 py-3 text-[12px] font-medium text-faint">Capability</th>
-                  <th className="w-[120px] px-2 py-3 text-center">
-                    <span className="font-mono text-[12px] font-semibold text-ink">obstack</span>
-                  </th>
-                  <th className="w-[140px] px-2 py-3 text-center text-[11px] font-medium text-faint">
-                    Infra APM
-                    <span className="block font-mono text-[9px]">Datadog · Grafana</span>
-                  </th>
-                  <th className="w-[140px] px-2 py-3 text-center text-[11px] font-medium text-faint">
-                    LLM obs tool
-                    <span className="block font-mono text-[9px]">Langfuse · Helicone</span>
-                  </th>
-                </tr>
-              </thead>
-              <tbody>
-                {comparisonRows.map((r) => (
-                  <tr key={r.capability} className="border-b border-line/60 last:border-0">
-                    <td className="px-4 py-2.5 text-[13px] text-mid">{r.capability}</td>
-                    <td className="px-2 py-2.5" style={{ background: "color-mix(in srgb, var(--color-api) 4%, transparent)" }}>
-                      <Mark v={r.obstack} />
-                    </td>
-                    <td className="px-2 py-2.5"><Mark v={r.apm} /></td>
-                    <td className="px-2 py-2.5"><Mark v={r.llm} /></td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+          <div className="mt-8 overflow-hidden rounded-lg border border-line bg-raised">
+            <p className="border-b border-line px-4 py-3 font-mono text-[12px] font-semibold text-ink">
+              obstack
+            </p>
+            <ul>
+              {capabilityRows.map((c) => (
+                <li
+                  key={c}
+                  className="flex items-start gap-3 border-b border-line/60 px-4 py-2.5 last:border-0"
+                >
+                  <Check
+                    className="mt-0.5 h-4 w-4 shrink-0"
+                    style={{ color: "var(--color-ok)" }}
+                    aria-hidden
+                  />
+                  <span className="text-[13px] text-mid">{c}</span>
+                </li>
+              ))}
+            </ul>
           </div>
-          <p className="mt-3 font-mono text-[10.5px] text-faint">
-            <Minus className="mr-1 inline h-3 w-3" style={{ color: "var(--color-warn)" }} />
-            partial = possible with significant setup, or without cross-layer correlation
-          </p>
 
           {/* assembled vs joined */}
           <div className="mt-12">
@@ -323,7 +326,7 @@ export default function Landing() {
                 <ul className="mt-4 space-y-1.5 font-mono text-[11px] leading-relaxed text-faint">
                   <li>· four backends to deploy, scale and upgrade</li>
                   <li>· correlation is configuration: derived fields, label matching, exemplars</li>
-                  <li>· joins break silently when labels drift</li>
+                  <li>· correlation holds only while labels match</li>
                   <li>· prompts, agents and tokens: not a concept</li>
                 </ul>
               </div>
@@ -339,22 +342,22 @@ export default function Landing() {
                 </p>
                 <div className="mt-4">
                   <span className="rounded-md border border-line bg-surface px-2.5 py-1.5 font-mono text-[11px] text-ink">
-                    obstack — one store, one data model
+                    obstack — one telemetry store, one data model
                   </span>
                 </div>
                 <ul className="mt-4 space-y-1.5 font-mono text-[11px] leading-relaxed text-mid">
-                  <li>· traces, logs, k8s events and cost share one trace_id by construction</li>
+                  <li>· traces, logs and cost share one trace_id by construction</li>
                   <li>· correlation is the default, not a config file</li>
                   <li>· prompts, agent steps, tokens and cost are first-class columns</li>
-                  <li>· one env var to try · one container to self-host</li>
+                  <li>· three env vars to try · one compose file to self-host</li>
                 </ul>
               </div>
             </div>
             <p className="mt-5 max-w-3xl text-[13.5px] leading-relaxed text-mid">
               A platform team can wire Grafana into something close — for the infra half. The AI
-              half (agent runs, prompts, cost per customer, quality regressions) has no home in the
-              LGTM data model, and the join between the halves is exactly what breaks. obstack is
-              for teams who want the joined view without building it.
+              half (agent runs, prompts, token cost) has no home in the LGTM data model, and the
+              join between the halves is exactly what breaks. obstack is for teams who want the
+              joined view without building it.
             </p>
           </div>
         </div>
@@ -367,8 +370,8 @@ export default function Landing() {
           {[
             {
               n: "01",
-              title: "Point your OTel at us",
-              body: "Or add our 2-line SDK for Python / TypeScript with LLM and agent capture built in.",
+              title: "Point your OTel at your obstack",
+              body: "Or add our two-line SDK for Python / TypeScript — installed from this repo today.",
             },
             {
               n: "02",
@@ -428,7 +431,9 @@ export default function Landing() {
                 price: "Planned",
                 per: "",
                 soon: true,
-                items: ["Higher event volume", "Longer retention", "Priority support"],
+                // Two items, not three: a support commitment is not something
+                // this product has anywhere to make (D325).
+                items: ["Higher event volume", "Longer retention"],
               },
               {
                 name: "Self-hosted",
@@ -514,12 +519,8 @@ export default function Landing() {
                 The demo runs on sample data — no signup, no setup.
               </p>
               <p className="mt-1 text-[13.5px] text-mid">
-                Signing up creates your own workspace on an obstack you run. The
-                hosted one is in private preview:
+                Signing up creates your own workspace on an obstack you run.
               </p>
-              <div className="mt-4">
-                <WaitlistForm />
-              </div>
             </div>
             <div className="flex flex-wrap items-center gap-3">
               <Link
@@ -533,19 +534,29 @@ export default function Landing() {
                 href="/app"
                 className="rounded-md border border-line bg-raised px-4.5 py-2.5 text-[14px] font-medium text-ink hover:border-line-strong"
               >
-                Open the live demo
+                Open the demo
               </Link>
             </div>
           </div>
           <div className="mt-12 flex flex-wrap items-center justify-between gap-4 border-t border-line pt-6">
             <Wordmark />
-            <div className="flex items-center gap-5">
+            <div className="flex flex-wrap items-center gap-5">
+              <Link href="/docs" className="text-[12px] text-mid hover:text-ink">
+                Docs
+              </Link>
               <Link href="/changelog" className="text-[12px] text-mid hover:text-ink">
                 Changelog
               </Link>
-              <p className="font-mono text-[11px] text-faint">
-                © 2026 obstack · prototype — all data on this site is fictional
-              </p>
+              <Link href="/status" className="text-[12px] text-mid hover:text-ink">
+                Status
+              </Link>
+              {/* This line used to carry a clause calling the whole site a
+                  prototype whose data is fictional, and it was - as the fence
+                  found - the ONLY label over the hero trace, the hero video and
+                  the four screenshots. It could only go once each of those
+                  carried its own (D326/K9), which is what `SampleLabel` and the
+                  invariant in `app/landing-fence.test.ts` now guarantee. */}
+              <p className="font-mono text-[11px] text-faint">© 2026 obstack</p>
             </div>
           </div>
         </div>

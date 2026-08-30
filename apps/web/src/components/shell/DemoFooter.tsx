@@ -1,6 +1,7 @@
 "use client";
 
 import { usePathname } from "next/navigation";
+import { SAMPLE_COPY } from "@/components/marketing/sample-copy";
 import { isProductChromeRoute } from "@/lib/live-routes";
 
 /**
@@ -30,6 +31,13 @@ import { isProductChromeRoute } from "@/lib/live-routes";
  *
  * The wording is unchanged from the layout's copy, character for character; it
  * is pinned by `shell-honesty.test.ts`.
+ *
+ * D326 — the middle of that sentence is now the ONE definition of the words
+ * this product uses to say "none of this happened" (`SAMPLE_COPY`), shared with
+ * the landing page's per-surface labels. The rendered sentence is byte-identical
+ * to the one this file spelled out before; the pin follows it across the two
+ * files (`shell-honesty.test.ts` asserts the halves either side, the constant's
+ * own module and `landing-fence.test.ts` assert the middle).
  */
 export function DemoFooter() {
   const pathname = usePathname();
@@ -46,7 +54,7 @@ export function DemoFooter() {
         DEMO WORKSPACE
       </span>
       <span className="font-mono text-[11px] text-faint">
-        every screen here is sample data from a fictional company — nothing is being ingested
+        every screen here is {SAMPLE_COPY} — nothing is being ingested
       </span>
     </div>
   );

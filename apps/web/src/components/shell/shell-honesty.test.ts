@@ -101,11 +101,29 @@ test("D134/D228: the demo says it is a demo, from the shell, on every screen", (
   // it — and must not render there at all.
   assert.ok(!LAYOUT.includes("SAMPLE DATA"), "the footer borrowed the live badge's wording");
   assert.ok(!DEMO_FOOTER.includes("SAMPLE DATA"), "the footer borrowed the live badge's wording");
-  // The sentence itself is the claim, so it is pinned character for character
-  // where it now lives: soften it and this goes red rather than the demo
-  // quietly getting vaguer about being a demo.
+  // The sentence itself is the claim, so it is pinned character for character:
+  // soften it and this goes red rather than the demo quietly getting vaguer
+  // about being a demo.
+  //
+  // D326 — the middle of it is now `SAMPLE_COPY`, the ONE definition of the
+  // words this product uses to say "none of this happened", shared with the
+  // landing page's per-surface labels (`components/marketing/sample-copy.ts`).
+  // The pin follows: the two halves are asserted in the file that renders them,
+  // the middle in the module that defines it, and the reassembly is asserted to
+  // be the same string this test has always demanded.
+  const SAMPLE_COPY_MODULE = readFileSync(
+    path.join(HERE, "../marketing/sample-copy.ts"),
+    "utf8",
+  );
+  const middle = SAMPLE_COPY_MODULE.match(/export const SAMPLE_COPY = "([^"]+)";/)?.[1];
+  assert.ok(middle, "the shared sample-data wording is no longer a single string literal");
   assert.ok(
-    DEMO_FOOTER.includes("every screen here is sample data from a fictional company — nothing is being ingested"),
+    DEMO_FOOTER.includes("every screen here is {SAMPLE_COPY} — nothing is being ingested"),
+    "the demo footer's sentence changed",
+  );
+  assert.equal(
+    `every screen here is ${middle} — nothing is being ingested`,
+    "every screen here is sample data from a fictional company — nothing is being ingested",
     "the demo footer's sentence changed",
   );
   assert.ok(DEMO_FOOTER.includes("DEMO WORKSPACE"), "the demo footer lost its label");

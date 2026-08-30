@@ -40,18 +40,21 @@ const CLAIM = ["live", "tail"];
 const NEEDLES = [CLAIM.join(" "), CLAIM.join("-")];
 
 /**
- * The one surviving marketing fiction, M3-deferred (the widened D63 item): a
- * landing-page screenshot blurb that annotates no wired surface. The changelog
- * left this list when its copy was repaired (D246); its release notes are now
- * `.mdx` under `src/content/changelog/`, and the prose that explains what they
- * may not claim (`src/content/changelog/README.md`) describes the claim
- * instead of spelling it, so the sweep guards those files like any other.
- * Every OTHER hit in the repo is a regression.
+ * EMPTY, as of S4.4 T5 (D325 class 6). The last entry was a landing-page
+ * screenshot blurb that annotated no wired surface — M3-deferred under the
+ * widened D63 item, and the one file that pinned the claim in place rather than
+ * banning it. Its copy now describes the search the surface performs, so the
+ * sweep has nothing left to excuse: EVERY hit in the repo is a regression.
  *
- * This list empties in S4.4 T5, and nothing below fails when it does — see the
- * fold proof at the end of the sweep, which is synthetic for that reason.
+ * The changelog left this list when its copy was repaired (D246); its release
+ * notes are `.mdx` under `src/content/changelog/`, and the prose that explains
+ * what they may not claim (`src/content/changelog/README.md`) describes the
+ * claim instead of spelling it, so the sweep guards those files like any other.
+ *
+ * Nothing below fails on an empty list — see the fold proof at the end of the
+ * sweep, which was made synthetic (D323) for exactly this moment.
  */
-const ALLOWED = ["apps/web/src/components/marketing/ScreensShowcase.tsx"];
+const ALLOWED: string[] = [];
 
 /**
  * Generated or vendored trees, plus `.planning`: the planning record quotes the

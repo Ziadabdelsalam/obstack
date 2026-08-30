@@ -3,6 +3,8 @@
 import { useState } from "react";
 import { Sparkles } from "lucide-react";
 import { Waterfall } from "@/components/trace/Waterfall";
+import { SampleLabel } from "@/components/marketing/SampleLabel";
+import { SAMPLE_COPY } from "@/components/marketing/sample-copy";
 import { oomTrace } from "@/mock/stories";
 
 const heroLogs = [
@@ -16,9 +18,22 @@ const heroLogs = [
   { at: "+4.23s", sev: "error", body: "draft_reply: stream aborted — connection reset by peer", solid: true },
 ];
 
+/**
+ * The landing's hero widget: `mock/stories.ts`'s OOM story, rendered by the
+ * product's real `Waterfall`.
+ *
+ * D326 — every span, log line and trace id below is fabricated, and the caption
+ * this component now renders BELOW itself is the only thing that says so. It
+ * used to be a `<p>` in `app/page.tsx`, covered by a blanket footer line that
+ * is gone; the label moved in here so the fabricated thing and its label are
+ * one component and cannot be composed apart. The wording is D325's class 3,
+ * and the shared half comes from `SAMPLE_COPY`: the caption called this an
+ * actual incident until this sprint, and `sample` is the word that replaced it.
+ */
 export function HeroTrace() {
   const [selected, setSelected] = useState<string | null>(null);
   return (
+    <>
     <div className="overflow-hidden rounded-xl border border-line-strong bg-surface shadow-2xl">
       {/* window chrome */}
       <div className="flex items-center gap-2 border-b border-line px-3.5 py-2.5">
@@ -94,5 +109,10 @@ export function HeroTrace() {
         </p>
       </div>
     </div>
+    <SampleLabel className="mt-3 text-center">
+      a sample failure, joined — {SAMPLE_COPY}: pod OOM-kill → truncated
+      completion → failed agent step → 502
+    </SampleLabel>
+    </>
   );
 }
