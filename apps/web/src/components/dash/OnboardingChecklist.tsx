@@ -28,16 +28,32 @@ export const DEMO_CHECKLIST_FLAGS: ChecklistFlags = {
 
 /**
  * The one row definition for both modes. The last two rows are `false` and stay
- * `false`: SLOs and alert routing are unbuilt surfaces (M5), and a tick beside
+ * `false` — no flag reaches them, so no input can tick them, and a tick beside
  * them would be the same lie the first three just stopped telling.
+ *
+ * S4.4 R2 should-fix 3: those two rows used to read "Create an SLO"
+ * (`/app/slos`) and "Route alerts to Slack" (`/app/alerts`). Both are M5
+ * surfaces that render sample content, and Slack is not in the connector
+ * catalog at all — so the product's own setup checklist was telling a new
+ * workspace to go and do two things it cannot do, on the dashboard the landing
+ * page ships as a screenshot. D211 took the false ticks off the first three
+ * rows; this takes the false ERRANDS off the last two. What replaces them is
+ * shipped and live-wired (`lib/live-routes.ts`): the Explain run on a trace and
+ * the logs explorer.
+ *
+ * Neither replacement can be derived from the three flags, deliberately. "Issue
+ * an API key" would have been the obvious fourth row and is the wrong one: a
+ * source can only have connected on a key this workspace already issued, so an
+ * unticked key row beside a ticked `sourceConnected` would be a fresh
+ * contradiction in the place the last one was just removed from.
  */
 export function checklistSteps(flags: ChecklistFlags) {
   return [
     { label: "Connect a source", done: flags.sourceConnected, href: "/app/connections" },
     { label: "See your first trace", done: flags.firstTrace, href: "/app/traces" },
     { label: "Invite your team", done: flags.teamInvited, href: "/app/settings" },
-    { label: "Create an SLO", done: false, href: "/app/slos" },
-    { label: "Route alerts to Slack", done: false, href: "/app/alerts" },
+    { label: "Explain a trace", done: false, href: "/app/traces" },
+    { label: "Search your logs", done: false, href: "/app/logs" },
   ];
 }
 

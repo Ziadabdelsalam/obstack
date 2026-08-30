@@ -26,6 +26,7 @@ import test from "node:test";
 //
 //   (a) pricing        page numbers  <->  the plans seed in Postgres migrations
 //   (b) banned phrases page + components  ->  EMPTY allowlist
+//   (b') banned phrases the PRERENDERED html  ->  the same EMPTY allowlist
 //   (c) sample labels  fabricated content  ->  the one SAMPLE_COPY definition
 //   (d) connectors     the breadth sentence  <->  connectors.ts
 //   (e) links          every href  ->  a route or an anchor that exists
@@ -192,6 +193,14 @@ const BANNED: string[] = [
  */
 const ALLOWED: string[] = [];
 
+/**
+ * The fold, defined ONCE and used by the source sweep, the rendered sweep and
+ * the proof that either works. An inline `.toLowerCase()` per call site is the
+ * exact shape of the R1 finding on `TourGuide.test.ts`: the guard folded, the
+ * sweep had stopped, and a Title-Cased claim shipped green.
+ */
+const foldedHits = (text: string) => BANNED.filter((needle) => text.toLowerCase().includes(needle));
+
 test("(b) the public marketing surface makes none of the claims the product cannot keep", () => {
   const sources: [string, string][] = [
     ["app/page.tsx", PAGE],
@@ -204,11 +213,6 @@ test("(b) the public marketing surface makes none of the claims the product cann
   // The sweep has to have read something before its silence means anything
   // (S2.0 L1): the landing's three pages plus every marketing component.
   assert.ok(sources.length >= 6, `the sweep only found ${sources.length} sources`);
-
-  // Folded once, by one function, used by the sweep AND by the proof below —
-  // an inline `.toLowerCase()` at each call site would let the proof pass while
-  // the sweep had stopped folding (the R1 finding on TourGuide.test.ts).
-  const foldedHits = (text: string) => BANNED.filter((needle) => text.toLowerCase().includes(needle));
 
   const hits = sources
     .flatMap(([name, text]) => foldedHits(text).map((needle) => `${name}: ${needle}`))
@@ -223,6 +227,102 @@ test("(b) the public marketing surface makes none of the claims the product cann
     assert.deepEqual(foldedHits(shouted), [needle], "the sweep stopped folding case");
     assert.deepEqual(BANNED.filter((n) => shouted.includes(n)), [], "the needles are no longer lower-case");
   }
+});
+
+// ──────────────────────────────────── (b') the same sweep, on the rendered page
+
+const PRERENDER = path.join(WEB, ".next/server/app");
+const PUBLIC_HTML = ["index.html", "login.html", "signup.html"];
+
+/**
+ * HTML entities, undone — in ONE pass, so `&amp;lt;` decodes to `&lt;` and not
+ * to `<`. The sweep needs this because the prerenderer escapes as it writes:
+ * the phrase that made this arm exist reached the landing page as
+ * `pods &amp;#x27;…` — an ampersand the needle does not contain, sitting in the
+ * middle of it. A raw `includes` over the HTML would have read straight past
+ * the claim it was looking for.
+ */
+const NAMED_ENTITIES: Record<string, string> = {
+  amp: "&",
+  lt: "<",
+  gt: ">",
+  quot: '"',
+  apos: "'",
+  nbsp: " ",
+};
+function decodeEntities(html: string): string {
+  return html.replace(/&(?:#x([0-9a-fA-F]+)|#(\d+)|([a-zA-Z]+));/g, (whole, hex, dec, name) => {
+    if (hex) return String.fromCodePoint(Number.parseInt(hex, 16));
+    if (dec) return String.fromCodePoint(Number(dec));
+    return NAMED_ENTITIES[String(name).toLowerCase()] ?? whole;
+  });
+}
+
+/**
+ * The three public pages as `next build` wrote them, or `null` when this tree
+ * carries no build.
+ */
+function prerenderedPublicPages(): [string, string][] | null {
+  if (!PUBLIC_HTML.every((f) => existsSync(path.join(PRERENDER, f)))) return null;
+  return PUBLIC_HTML.map(
+    (f) => [`.next/server/app/${f}`, decodeEntities(read(path.join(PRERENDER, f)))] as [string, string],
+  );
+}
+
+/**
+ * WHY THIS ARM EXISTS (R2 must-fix 1).
+ *
+ * Check (b) above reads `page.tsx`, the two auth pages and
+ * `components/marketing/**` — the files a person editing the landing page
+ * touches. It cannot read what those files RENDER. `HeroTrace` mounts the
+ * product's own `Waterfall` on a mock story, and the waterfall's infra heading
+ * is computed in `lib/infra-track.ts` from the story's cluster events: a banned
+ * phrase was therefore printed onto `/` for a whole sprint, by a module in
+ * neither swept directory, while (b) stayed green with an empty allowlist.
+ *
+ * So the same needles are applied to the artifact a stranger actually receives.
+ * Anything the page composes — a shared component, a helper, a constant three
+ * imports away — is in scope by construction, because the scope is the bytes.
+ *
+ * The precondition is a build, and `npm test` does not build. That is a CI
+ * ordering fact, not a property of the code, so it is enforced where the
+ * ordering is guaranteed: under `CI` a missing `.next` FAILS and says which
+ * step has to run first, and locally it skips with the reason stated (S2.0 L1 —
+ * a silent skip is how the two arms in `docs/` went a sprint without running).
+ */
+test("(b') the rendered public pages carry none of them either", (t) => {
+  const rendered = prerenderedPublicPages();
+  if (!rendered) {
+    const why =
+      `no ${PUBLIC_HTML.join(", ")} under apps/web/.next/server/app — this arm reads the PRERENDERED ` +
+      "landing page, so `npm run build` (apps/web) must run before `npm test`";
+    // `.github/workflows/web.yml` orders build before test for exactly this
+    // reason. If that order is ever undone, this is the red that says so.
+    assert.ok(!process.env.CI, why);
+    t.skip(`${why} — skipped locally, fails on CI`);
+    return;
+  }
+
+  const hits = rendered
+    .flatMap(([name, html]) => foldedHits(html).map((needle) => `${name}: ${needle}`))
+    .sort();
+  assert.deepEqual(hits, [...ALLOWED].sort(), "a claim the product cannot keep is RENDERED on a public page");
+
+  // Not vacuous, in both of the ways this arm can quietly stop working: the
+  // pages have to have been read, and the decode has to have run.
+  for (const [name, html] of rendered) {
+    assert.ok(html.length > 2000, `${name} is too small to be the rendered page`);
+  }
+  // One pass, hex and decimal included — `&amp;amp;` must come back as
+  // `&amp;`, not as `&`, or a second-order escape decodes into a phrase nobody
+  // wrote.
+  assert.equal(decodeEntities("pods &amp; events &#x26; more &#38; &amp;amp;"), "pods & events & more & &amp;");
+  // And the decode is load-bearing rather than decorative: every needle is
+  // words separated by spaces, and a space is one of the characters UI copy
+  // escapes. Title-cased too, so this proves the fold and the decode together.
+  const planted = `<h2 class="x">${BANNED[2].toUpperCase().split(" ").join("&nbsp;")}</h2>`;
+  assert.deepEqual(foldedHits(planted), [], "the needle survived escaping — nothing to decode");
+  assert.deepEqual(foldedHits(decodeEntities(planted)), [BANNED[2]], "the decode no longer exposes an escaped claim");
 });
 
 // ────────────────────────────────────────────── (c) the sample-label invariant

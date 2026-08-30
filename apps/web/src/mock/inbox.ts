@@ -80,7 +80,7 @@ export const auditLog: AuditEntry[] = [
   { who: "system", action: "alert triggered: Error rate > 5% (POST /v1/tickets/bulk)", when: "today 13:06", ip: "—" },
   { who: "omar@loopwork.ai", action: "enabled alert rule “Review confidence drop”", when: "yesterday 16:20", ip: "203.0.113.88" },
   { who: "salma@loopwork.ai", action: "invited dina@loopwork.ai (member)", when: "yesterday 11:02", ip: "203.0.113.7" },
-  { who: "nour@loopwork.ai", action: "connected source “Vercel · loopwork-web”", when: "Aug 6 09:41", ip: "203.0.113.19" },
+  { who: "nour@loopwork.ai", action: "connected source “Docker · loopwork-web”", when: "Aug 6 09:41", ip: "203.0.113.19" },
   { who: "salma@loopwork.ai", action: "changed retention 3d → 7d", when: "Aug 5 18:12", ip: "203.0.113.7" },
   { who: "nour@loopwork.ai", action: "signed in (google oauth)", when: "Aug 5 09:00", ip: "203.0.113.19" },
 ];

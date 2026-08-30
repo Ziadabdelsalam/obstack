@@ -58,7 +58,21 @@ export function HeroTrace() {
 
       <div className="p-3">
         <Waterfall
-          trace={oomTrace}
+          // R2 must-fix 1: the hero renders the OOM story WITHOUT its cluster
+          // events. `oomTrace` carries them (`mock/stories.ts`), and
+          // `infraTrackHeading` earns the second half of its heading from them
+          // — so the real `Waterfall`, rendered here, printed that heading onto
+          // the landing page transitively, past a sweep that reads this
+          // directory's SOURCE and never the page a stranger receives. Nothing
+          // in the live pipeline sets the field (`server/adapters.ts`), so a
+          // marketing page whose heading names it is the capability claim D208
+          // refuses; the fence's check (b) now reads the RENDERED html too, so
+          // the next transitive one cannot hide the same way.
+          //
+          // The story itself is untouched: `/app/traces/*` still shows the
+          // events, and the OOM evidence a stranger reads here is the pod row's
+          // own marker and the three correlated log lines below.
+          trace={{ ...oomTrace, k8sEvents: [] }}
           selectedId={selected}
           onSelect={setSelected}
           animate

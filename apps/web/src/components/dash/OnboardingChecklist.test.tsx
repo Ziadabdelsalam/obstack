@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import Module, { createRequire } from "node:module";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { isLiveWiredRoute } from "@/lib/live-routes";
 
 // run with: npm test --workspace apps/web
 //
@@ -61,8 +62,9 @@ test("arrived-but-not-yet-queryable ticks the source row only", () => {
   assert.equal(steps[1].done, false);
 });
 
-// Unbuilt surfaces (M5): no flag reaches them, so no input can tick them.
-test("SLO and alert rows are false whatever the flags say", () => {
+// No flag reaches the last two rows, so no input can tick them (R2 should-fix
+// 3 replaced their labels; the invariant is unchanged).
+test("the last two rows are false whatever the flags say", () => {
   for (const flags of [
     { sourceConnected: true, firstTrace: true, teamInvited: true },
     { sourceConnected: false, firstTrace: false, teamInvited: false },
@@ -71,8 +73,8 @@ test("SLO and alert rows are false whatever the flags say", () => {
     assert.deepEqual(
       steps.slice(3).map((s) => [s.label, s.done]),
       [
-        ["Create an SLO", false],
-        ["Route alerts to Slack", false],
+        ["Explain a trace", false],
+        ["Search your logs", false],
       ],
     );
   }
@@ -87,8 +89,30 @@ test("the demo flags reproduce today's mock render", () => {
       ["Connect a source", true, "/app/connections"],
       ["See your first trace", true, "/app/traces"],
       ["Invite your team", true, "/app/settings"],
-      ["Create an SLO", false, "/app/slos"],
-      ["Route alerts to Slack", false, "/app/alerts"],
+      ["Explain a trace", false, "/app/traces"],
+      ["Search your logs", false, "/app/logs"],
     ],
   );
+});
+
+// R2 should-fix 3, as an invariant rather than a set of pinned strings: the two
+// replaced rows were not wrong because of how they were worded, they were wrong
+// because they pointed at surfaces that render sample content in a live
+// workspace. `lib/live-routes.ts` is the product's own answer to which routes
+// read real data (D21), so the checklist is checked against it — a sixth row
+// added next sprint joins this by existing.
+test("every row sends the reader somewhere the product actually wired", () => {
+  const steps = checklistSteps(DEMO_CHECKLIST_FLAGS);
+  assert.equal(steps.length, 5, "the checklist's shape changed — the dashboard reads `setup · N/5`");
+  for (const s of steps) {
+    assert.equal(
+      isLiveWiredRoute(s.href),
+      true,
+      `"${s.label}" points at ${s.href}, which is not a live-wired route — an unbuilt errand on the setup checklist`,
+    );
+  }
+  // Not vacuous: the two routes this replaced are exactly what the predicate
+  // refuses, which is the reason the rows changed.
+  assert.equal(isLiveWiredRoute("/app/slos"), false);
+  assert.equal(isLiveWiredRoute("/app/alerts"), false);
 });
