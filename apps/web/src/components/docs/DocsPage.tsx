@@ -1,4 +1,5 @@
 import { DocsNav } from "./DocsNav";
+import { docLinkFor } from "./DocLink";
 import { Prose } from "./Prose";
 import { loadDoc, loadDocsNav } from "@/lib/docs/load";
 
@@ -11,6 +12,15 @@ import { loadDoc, loadDocsNav } from "@/lib/docs/load";
  * difference between them. Two renderers would be two answers to "what do the
  * docs say", which is the divergence the whole manifest arrangement exists to
  * prevent.
+ *
+ * `basePath` reaches TWO things, and it has to reach both: the nav, and the
+ * links inside the prose. The corpus authors absolute `/docs/...` hrefs, so
+ * before `DocLink` existed a body link rendered as itself on `/app/docs/*` and
+ * dropped a signed-in reader onto the marketing site mid-sentence — measured in
+ * the prerendered HTML, twenty links across the corpus. The MDX `components`
+ * prop is the seam (`mdx.md:414-435`: it merges with and overrides the global
+ * map in `src/mdx-components.tsx`), so one line here fixes every page and no
+ * page has to know which mount it is on.
  *
  * MODE-BLIND by construction: this file and everything it pulls in branch on
  * no data mode and import nothing from the demo corpus. The `live` and `mock`
@@ -35,6 +45,7 @@ export async function DocsPage({
   // `loadDoc` first: an off-manifest slug 404s before the nav is built.
   const { frontmatter, Body } = await loadDoc(slug);
   const sections = await loadDocsNav();
+  const DocLink = docLinkFor(basePath);
   return (
     <div className="mx-auto flex w-full max-w-6xl gap-10 px-5 py-8">
       <aside className="hidden w-52 shrink-0 md:block">
@@ -47,7 +58,7 @@ export async function DocsPage({
           <p className="mb-1 font-mono text-[11px] text-faint">{frontmatter.description}</p>
         ) : null}
         <Prose>
-          <Body />
+          <Body components={{ a: DocLink }} />
         </Prose>
       </article>
     </div>

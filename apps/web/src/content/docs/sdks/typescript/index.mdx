@@ -53,7 +53,7 @@ export async function answer(question: string) {
     const facts = traceTool("knowledge_lookup", () => lookup(question));
     const completion = await openai.chat.completions.create({
       model: "gpt-4o-mini",
-      messages: [{ role: "user", content: question }],
+      messages: [{ role: "user", content: question + "\n\n" + facts.join("\n") }],
     });
     return completion.choices[0]?.message.content;
   });
@@ -133,8 +133,8 @@ call is dispatching to a different list. Include the object `init()` registered
 (`globalThis.AI_SDK_TELEMETRY_INTEGRATIONS`) in the array you pass if you want
 obstack's span too.
 
-**The `ai` 7 floor is 7.0.0, and that is measured, not assumed:** 19 releases
-spread across the published 7.0.x line were each driven with a real
+**The `ai` 7 floor is 7.0.0, and that is measured, not assumed:** 19 of the 80
+published 7.0.x releases, spread across the line, were each driven with a real
 `generateText` against a stub model and checked for the four things this leg
 depends on. All four hold on all nineteen, so the supported range is one
 unbroken interval.

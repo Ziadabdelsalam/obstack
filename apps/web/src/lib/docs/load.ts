@@ -1,4 +1,5 @@
 import type { ComponentType } from "react";
+import type { MDXComponents } from "mdx/types";
 import { notFound } from "next/navigation";
 import {
   contentPathFor,
@@ -26,10 +27,20 @@ export interface DocsFrontmatter {
   readonly description?: string;
 }
 
+/**
+ * A compiled MDX body. The `components` prop is the MDX runtime's own
+ * (`node_modules/next/dist/docs/01-app/02-guides/mdx.md:414-435`): what is
+ * passed there merges with and overrides `src/mdx-components.tsx`'s map for
+ * that render. `DocsPage` uses it for exactly one element — the `a`, so a body
+ * link lands on the mount it was clicked from — and typing it here is what
+ * makes that a checked call rather than a prop React would silently ignore.
+ */
+export type DocsBody = ComponentType<{ components?: MDXComponents }>;
+
 export interface LoadedDoc {
   readonly entry: DocsManifestEntry;
   readonly frontmatter: DocsFrontmatter;
-  readonly Body: ComponentType;
+  readonly Body: DocsBody;
 }
 
 /**
@@ -51,7 +62,7 @@ export interface LoadedDoc {
 async function importPage(entry: DocsManifestEntry): Promise<Omit<LoadedDoc, "entry">> {
   const contentPath = contentPathFor(entry.slug);
   const mod = (await import(`@/content/docs/${contentPath}.mdx`)) as {
-    default: ComponentType;
+    default: DocsBody;
     frontmatter?: DocsFrontmatter;
   };
   const frontmatter = mod.frontmatter;

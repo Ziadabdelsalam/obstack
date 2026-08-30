@@ -25,6 +25,15 @@ import type { MDXComponents } from "mdx/types";
  * place that decides what each one looks like. `Prose` around the body only
  * sets measure and rhythm.
  */
+/**
+ * What a link looks like, defined once. `@/components/docs/DocLink` needs it
+ * too: `DocsPage` passes an `a` through the MDX `components` prop, and that
+ * prop OVERRIDES this map's entry rather than wrapping it (`mdx.md:414-435`),
+ * so the override has to carry the styling itself or a rebased link would be
+ * the one link on the page that is not underlined.
+ */
+export const MDX_ANCHOR_CLASS = "underline decoration-line-strong underline-offset-2 hover:text-ink";
+
 const components: MDXComponents = {
   h1: (props) => (
     <h1
@@ -52,9 +61,7 @@ const components: MDXComponents = {
     <ol className="mt-3.5 flex list-decimal flex-col gap-1.5 pl-5 text-[13.5px] leading-relaxed text-mid" {...props} />
   ),
   li: (props) => <li className="pl-1" {...props} />,
-  a: (props) => (
-    <a className="underline decoration-line-strong underline-offset-2 hover:text-ink" {...props} />
-  ),
+  a: (props) => <a className={MDX_ANCHOR_CLASS} {...props} />,
   strong: (props) => <strong className="font-semibold text-ink" {...props} />,
   blockquote: (props) => (
     <blockquote

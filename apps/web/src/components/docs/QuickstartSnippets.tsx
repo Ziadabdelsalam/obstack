@@ -25,6 +25,9 @@ const PRE =
   "mt-4 overflow-x-auto rounded-md border border-line bg-raised p-3 font-mono text-[11.5px] leading-relaxed text-ink";
 const P = "mt-3.5 text-[13.5px] leading-relaxed text-mid";
 const H3 = "mt-7 scroll-mt-24 text-[15px] font-semibold text-ink";
+const QUOTE =
+  "mt-4 border-l-2 border-line-strong pl-4 text-[13.5px] leading-relaxed text-mid italic";
+const CODE = "rounded-[3px] font-mono text-[12px] text-ink";
 
 /**
  * The three tabs, stacked — the docs have no tab bar because a reader who
@@ -68,11 +71,23 @@ export function QuickstartSnippets() {
       <h3 className={H3}>If your deployment publishes gRPC only</h3>
       <p className={P}>
         Both SDKs export OTLP over HTTP. Where an operator has published the gRPC port and not the
-        HTTP one, the Python and TypeScript snippets above are not shown at all — the in-app
-        quickstart puts this in their place, and the third snippet still works as written with the
-        protocol set to <code className="rounded-[3px] font-mono text-[12px] text-ink">grpc</code>:
+        HTTP one, the Python and TypeScript snippets above are not shown at all — on a gRPC-only
+        deployment the in-app quickstart shows:
       </p>
-      <p className={P}>{httpAbsence}</p>
+      {/*
+        QUOTED, not asserted. The sentence is the in-app quickstart's, about a
+        deployment that is not the one this page is written for: the snippets
+        above export the compose default's HTTP endpoint, so rendering that
+        text as a paragraph of this page made it say something false about the
+        page it was on. A blockquote is what it always was — an example of what
+        another deployment shows.
+      */}
+      <blockquote className={QUOTE}>{httpAbsence}</blockquote>
+      <p className={P}>
+        The third snippet is the one that still applies there, with the endpoint and protocol from
+        its own <code className={CODE}>{"# gRPC instead:"}</code> line — not the ones printed above:
+        the gRPC port is a different address, not the same one spoken to differently.
+      </p>
     </>
   );
 }

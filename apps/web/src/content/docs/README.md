@@ -8,8 +8,20 @@ Everything under `src/content/docs/**` is rendered by ONE component
 | `/docs/*` | `src/app/docs/[[...slug]]/page.tsx` | public, unauthenticated, `● SSG` |
 | `/app/docs/*` | `src/app/app/docs/[[...slug]]/page.tsx` | inside the app shell |
 
-The two differ by exactly one prop (`basePath`, which the nav links against).
-Nothing else about a page may depend on where it is mounted.
+The two differ by exactly one prop (`basePath`), and nothing else about a page
+may depend on where it is mounted.
+
+`basePath` reaches two things. The nav builds its hrefs from it, and so do the
+links inside the prose: a page is authored with absolute `/docs/...` hrefs, and
+`DocsPage` passes an `a` component to the compiled MDX body
+(`components={{ a: DocLink }}` — the MDX `components` prop merges with and
+overrides `src/mdx-components.tsx`, `mdx.md:414-435`) which rebases those hrefs
+onto the mount being rendered. So a body link opened from `/app/docs/quickstart`
+keeps a signed-in reader in the shell, while the same link on `/docs/quickstart`
+renders unchanged. Write `/docs/...` and nothing else — an in-app URL written
+into a page would be wrong on the public mount, and `doc-links.test.ts` fails on
+one. It also checks every such link against the manifest, and checks the
+rendered result on both mounts against the prerendered HTML.
 
 ## One page = one directory + one `index.mdx`
 

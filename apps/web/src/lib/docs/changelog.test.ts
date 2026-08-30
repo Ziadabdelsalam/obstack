@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { readFileSync, readdirSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import {
@@ -32,6 +33,7 @@ import {
 
 const HERE = path.dirname(import.meta.filename);
 const WEB_SRC = path.resolve(HERE, "../..");
+const REPO_ROOT = path.resolve(WEB_SRC, "../../..");
 const CONTENT = path.join(WEB_SRC, "content/changelog");
 const read = (p: string) => readFileSync(path.join(WEB_SRC, p), "utf8");
 
@@ -151,18 +153,63 @@ test("D323: frontmatter is complete, literal, and agrees with the file name", ()
   }
 });
 
+/** The merge evidence beside an entry's body: its sha, its PR number, its date. */
+function mergeEvidence(source: string): { sha: string; pr: string; date: string } | null {
+  const m = /\{\/\* merged: ([0-9a-f]{7,40}) PR #(\d+), (\d{4}-\d{2}-\d{2}) \*\/\}/.exec(source);
+  return m ? { sha: m[1], pr: m[2], date: m[3] } : null;
+}
+
 test("D323: each entry names the merge that made it true", () => {
   // The date rule is "the master merge date of the PR that made the entry
   // true" (`src/content/changelog/README.md`). A date with no evidence beside
   // it is a number somebody typed; this is the evidence.
   for (const entry of onDisk) {
-    const merged = /\{\/\* merged: ([0-9a-f]{7,40}) PR #(\d+), (\d{4}-\d{2}-\d{2}) \*\/\}/.exec(entry.source);
+    const merged = mergeEvidence(entry.source);
     assert.ok(merged, `${entry.slug}: no \`{/* merged: <sha> PR #<n>, <date> */}\` comment`);
     assert.equal(
-      merged[3],
+      merged.date,
       slugDate(entry.slug),
       `${entry.slug}: the merge date in the comment is not the date the entry carries`,
     );
+  }
+});
+
+test("D323: the merge each entry names actually landed on the date it claims", () => {
+  // The half the comment above cannot check by itself: a sha, a PR number and
+  // a date typed on one line agree with each other by construction. This asks
+  // THE REPOSITORY when that commit landed — `git log -1 --format=%cd` on the
+  // sha — so a date copied from the wrong row, or a sha that never existed, is
+  // caught here rather than believed forever.
+  if (!existsSync(path.join(REPO_ROOT, ".git"))) {
+    // Stated rather than silent: an exported or vendored copy of this tree has
+    // no history to ask, and the entries are still checked against each other
+    // above. Nothing about the corpus is skipped — only the question that
+    // needs a repository to answer.
+    console.log("# skipped: no .git — the merge dates cannot be checked against history from this copy");
+    return;
+  }
+  for (const entry of onDisk) {
+    const merged = mergeEvidence(entry.source);
+    assert.ok(merged, `${entry.slug}: no merge evidence`);
+    let landed: string;
+    try {
+      landed = execFileSync("git", ["log", "-1", "--format=%cd", "--date=short", merged.sha], {
+        cwd: REPO_ROOT,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+      }).trim();
+    } catch {
+      // A shallow checkout (`fetch-depth: 1`) has the files and not the
+      // commits. Same rule as above: say so, do not invent a pass or a fail.
+      console.log(`# skipped: ${merged.sha} is not in this checkout's object store (shallow clone?)`);
+      return;
+    }
+    assert.equal(
+      landed,
+      merged.date,
+      `${entry.slug}: the comment says ${merged.sha} landed ${merged.date}, but it landed ${landed}`,
+    );
+    assert.equal(landed, slugDate(entry.slug), `${entry.slug}: the entry is filed under a different date`);
   }
 });
 
@@ -189,22 +236,51 @@ test("D323: the four migrated bodies are byte-equal to the text they had at 3edc
   }
 });
 
+/** Every ordering of a list — 4 entries is 24 of them, which is the point. */
+function permutations<T>(items: readonly T[]): T[][] {
+  if (items.length <= 1) return [[...items]];
+  return items.flatMap((item, i) =>
+    permutations([...items.slice(0, i), ...items.slice(i + 1)]).map((rest) => [item, ...rest]),
+  );
+}
+
 test("D323: the page renders newest first, and the manifest is not what orders it", () => {
   // The dates come from the files, so this is the real corpus being sorted,
   // not a fixture: `sortNewestFirst` is what `loadChangelog` calls.
-  const dated = onDisk.map((e) => ({
-    slug: e.slug,
-    frontmatter: { date: slugDate(e.slug) ?? "" },
-  }));
+  //
+  // The key is `frontmatter.date` READ OUT OF THE FILE, not `slugDate(slug)`.
+  // The two agree — the test above requires it — but the page prints the
+  // frontmatter and the loader sorts on the frontmatter, so a fixture keyed on
+  // the file name would be checking the comparator against a value the product
+  // never passes it (D323: the sort key is the value the page prints).
+  const dated = onDisk.map((e) => {
+    const date = /date:\s*"(\d{4}-\d{2}-\d{2})"/.exec(frontmatterBlock(e.source))?.[1];
+    assert.ok(date, `${e.slug}: no frontmatter.date to sort on`);
+    return { slug: e.slug, frontmatter: { date } };
+  });
   assert.deepEqual(sortNewestFirst(dated).map((e) => e.slug), RENDER_ORDER);
 
-  // 2026-08-20 merged two entries, so the comparator needs a total order or
+  // 2026-08-20 merged two entries, so the comparator needs a TOTAL order or
   // the page's order depends on the manifest's — which the manifest does not
-  // promise. Both same-day entries, and the tie-break, in one check:
+  // promise.
   const sameDay = RENDER_ORDER.filter((slug) => slug.startsWith("2026-08-20"));
   assert.equal(sameDay.length, 2, "the same-date tie-break is no longer exercised by the corpus");
-  assert.deepEqual(sortNewestFirst([...dated].reverse()).map((e) => e.slug), RENDER_ORDER,
-    "the sort is not stable against its input order — a same-day tie is being broken by the array, not by the comparator");
+
+  // EVERY input order, not one. Sorting the reversed input was vacuous: the
+  // directory listing is slug-ascending, so its reverse IS the render order
+  // already, and a comparator that returned 0 for every pair would have passed
+  // it on a stable sort. Twenty-four orderings of four entries have no such
+  // hiding place — the same answer from all of them is what "total order"
+  // means.
+  const orderings = permutations(dated);
+  assert.equal(orderings.length, 24, "four entries have 24 orderings — the corpus changed size");
+  for (const ordering of orderings) {
+    assert.deepEqual(
+      sortNewestFirst(ordering).map((e) => e.slug),
+      RENDER_ORDER,
+      `the sort depends on its input order: ${ordering.map((e) => e.slug).join(", ")} came out wrong`,
+    );
+  }
 
   // And the manifest is deliberately NOT in render order: if it were, a broken
   // comparator would still produce the right page.
