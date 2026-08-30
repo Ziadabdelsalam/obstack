@@ -14,11 +14,14 @@
 # `sdk-e2e`. A type error would otherwise reach master through whichever of
 # those two jobs is not looking.
 #
-# Trigger policy (K5/D41): every PR. Measured on an Apple M4 (10 cores, 16 GB,
-# Node 22.23.1) with node_modules already installed: `npm test` 11.8s over 42
-# tests, `npm run build` 1.2s. The job's own cost on a runner is dominated by
-# `npm ci` (the root workspace install), which the `web` job already pays on
-# every PR — nowhere near the ~6-minute line, so this joins the every-PR set.
+# Trigger policy (K5/D41): every PR. Measured on an Apple M4 (10 cores, 16 GB)
+# with node_modules already installed: `npm test` 11.8s over 42 tests and
+# `npm run build` 1.2s when the policy was set (Node 22.23.1); 17.5s over 68
+# tests and 0.8s for the build after S4.3 added the `ai` 7 and Responses legs,
+# which drive two more real clients (the `ai7` and `openai487` aliases). The
+# job's own cost on a runner is dominated by `npm ci` (the root workspace
+# install), which the `web` job already pays on every PR — nowhere near the
+# ~6-minute line either way, so this stays in the every-PR set.
 name: sdk-js
 
 on:
