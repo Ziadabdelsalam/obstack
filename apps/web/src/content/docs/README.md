@@ -73,16 +73,19 @@ finds later.
   endpoints and SDK versions are interpolated from their one definition — the
   quickstart's tabs come from the shared snippet module (D322, T2's boundary),
   the OTLP endpoints from `@/lib/ingest-endpoint`. A second copy in prose is a
-  second definition that goes stale silently.
+  second definition that goes stale silently. Enforced:
+  `components/onboarding/Quickstart.test.ts` reads every `.mdx` page in this
+  tree and fails on any line carrying one of the three install/exporter forms it
+  names — deliberately not spelled here, the D246 discipline that keeps a
+  sweep's needles out of the files it sweeps. An install command or an OTLP
+  exporter variable reaches a page through
+  `@/components/docs/QuickstartSnippets` or not at all.
 - **No fabricated host, credential or command.** `src/mock/corpus-honesty.test.ts`
   reads this whole tree as text and bans them.
 
-<!-- T2: helm command pending -->
-
-The marker above is load-bearing, not a note. `corpus-honesty.test.ts`'s helm
-assertion ("every helm command in the docs installs a chart that exists
-in-repo") cannot pass vacuously on a corpus that has no helm command yet: with
-zero `helm install` lines in the tree it asserts this marker is present, so the
-obligation is visible instead of silently satisfied by an empty corpus. When
-T2 writes the self-hosting page with the real command, the assertion switches
-to its strict branch on its own — delete the marker line then.
+`corpus-honesty.test.ts`'s helm assertion — "every helm command in the docs
+installs a chart that exists in-repo" — is on its **strict branch** now: the
+self-hosting page carries the real `helm install` line, so the test resolves
+every chart path in the corpus against the repository. The fail-closed marker
+that stood here while the corpus had no helm command at all is gone with the
+command's arrival, which is the transition it was written for.

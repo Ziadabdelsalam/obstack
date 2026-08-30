@@ -34,5 +34,17 @@ export interface DocsManifestEntry {
 
 export const docsManifest: readonly DocsManifestEntry[] = [
   { slug: [], section: "Start here" },
-  { slug: ["quickstart"], section: "Start here" },
+  { slug: ["quickstart"], section: "Quickstart" },
+  { slug: ["sdks", "typescript"], section: "SDKs" },
+  { slug: ["sdks", "python"], section: "SDKs" },
+  { slug: ["sdks", "bring-your-own-otel"], section: "SDKs" },
+  { slug: ["self-hosting", "docker-compose"], section: "Self-hosting" },
+  { slug: ["self-hosting", "helm-chart"], section: "Self-hosting" },
+  { slug: ["connectors", "overview"], section: "Connectors" },
+  { slug: ["connectors", "vercel-log-drains"], section: "Connectors" },
+  { slug: ["connectors", "aws-cloudwatch"], section: "Connectors" },
+  { slug: ["explain"], section: "Features" },
+  { slug: ["retention"], section: "Features" },
+  { slug: ["billing-and-plans"], section: "Plans" },
+  { slug: ["what-obstack-does-not-do"], section: "Absences" },
 ];

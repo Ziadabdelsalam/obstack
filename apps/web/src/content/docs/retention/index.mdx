@@ -1,0 +1,64 @@
+export const frontmatter = {
+  title: "Retention",
+  description: "How old telemetry goes away, when disk actually shrinks, and the stated bound.",
+};
+
+# Retention
+
+Your plan's `retention_days` is what obstack keeps. A sweep runs **every 24
+hours**, reads each workspace's current plan from Postgres, and deletes that
+workspace's rows past the cutoff from spans, logs and trace summaries.
+
+Behind it, the tables carry a **90-day TTL** as an outer bound. That ordering
+matters: a sweep that stops running degrades to keeping data *longer* than the
+plan says — the benign direction — never to unbounded growth.
+
+## "Deleted" means two different things at two different times
+
+Both halves, because only stating one of them would be misleading:
+
+- **Gone from every product read the moment the statement returns.** The delete
+  masks the rows immediately, so nothing in the product can see them from that
+  instant on.
+- **Disk shrinks in the background.** Bytes are reclaimed when the storage engine
+  merges the affected parts, which is later and is not something the sweep waits
+  for.
+
+## The current plan decides, not the plan at write time
+
+The sweep reads the plan at sweep time. An upgrade therefore **extends** the
+retention of rows that were already written, and a downgrade **shortens** it: a
+row's lifetime is a function of today's plan. A workspace with no plan row is on
+free.
+
+## A trace that straddles the cutoff
+
+Trace summaries expire on the last date the trace was seen, while spans expire on
+their own timestamps. **A trace straddling the cutoff loses its older spans while
+its summary survives to its own expiry.** The trace still lists; opening it shows
+the spans that remain.
+
+## The bound, stated rather than engineered around
+
+One workspace-table delete gets a bounded statement timeout. At the measured
+rate — about 8.4 seconds per million rows on the widest table — that is on the
+order of a hundred million past-cutoff rows in a single workspace before a
+statement cannot finish.
+
+Past that point the sweep does **not** chunk and does **not** fall back to a
+heavyweight mutation. It fails that statement **loudly, counts it, moves on to
+the next workspace, and retries the whole thing tomorrow** — the log line names
+the workspace and the table.
+
+The consequence is bounded and benign: **that workspace over-retains until the
+90-day table TTL takes the rows.** Retention is late, never absent, and never at
+the cost of the sweep for every other workspace.
+
+## Operational notes
+
+Every ingest replica runs the sweep. The deletes are idempotent by construction —
+two replicas masking the same rows converge on the same state — so there is no
+leader, no lease and no jitter to configure.
+
+The sweep deletes telemetry rows and never workspaces. Deleting a workspace is a
+separate thing this sweep does not do.

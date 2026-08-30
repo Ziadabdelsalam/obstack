@@ -1,0 +1,151 @@
+export const frontmatter = {
+  title: "What obstack does not do",
+  description: "The twenty-one absences, written down so you do not have to discover them.",
+};
+
+# What obstack does not do
+
+Everything on this page is a real gap. It is here so you can plan around it
+instead of finding it in production.
+
+## The SDKs
+
+{/* D259 */}
+
+**There is no logging-framework bridge in obstack-js:** it registers an
+OpenTelemetry `LoggerProvider`, but there is no bridge from `console`, `pino` or
+`winston`, so ordinary log calls are not captured.
+
+{/* D259 */}
+
+**Streaming calls are not instrumented on any of the three libraries** — no span
+at all for `openai`'s `stream: true`, Anthropic's `messages.stream()` or `ai`'s
+`streamText`, because the token counts arrive inside the stream and a span
+reporting zero of them would be priced at $0.
+
+{/* D308 */}
+
+**The OpenAI Responses API is covered only through `responses.create()` and the
+`responses.parse()` that dispatches into it:** `responses.stream()`,
+`client.beta.responses`, `responses.compact()` and
+`responses.retrieve(id, { stream: true })` are not covered, and below `openai`
+4.87 the Responses module does not exist at all.
+
+{/* D302 */}
+
+**Register obstack-js or `@ai-sdk/otel`, not both.** Both emit an llm span for
+the same `ai` 7 model call, so registering them together doubles the llm layer
+of every trace and the cost column with it; obstack-js has no way to detect the
+other and stand down.
+
+{/* D316 */}
+
+**If a future `openai` release keeps its raw response where the instrumentation
+cannot read it, that call's span carries its request attributes only** — no
+completion and no token counts. The span is never withheld, and obstack says so
+through `diag`.
+
+{/* D87 */}
+
+**obstack-py instruments the chat-completions API and FastAPI, and nothing
+else:** the Responses API is not covered on Python, and any web framework other
+than FastAPI needs the stock OpenTelemetry instrumentation for it.
+
+{/* D78 */}
+
+**`traceAgent` and `traceTool` — and their Python decorators — capture no
+arguments and no return values.** What flows through an agent step is arbitrary
+application data, and sending it to a telemetry backend is not a decision the
+SDK makes for you.
+
+## Connectors
+
+{/* D101/D208 */}
+
+**The Vercel and CloudWatch receivers are built and CI-exercised but marked
+coming soon**, because the hosted endpoint a drain or a subscription filter
+would point at is not public until launch — self-hosters can use both today,
+against their own ingest.
+
+{/* D254 */}
+
+**Log-drain and CloudWatch records carry no trace context of their own** — apart
+from the measured Vercel tracing fields — and obstack invents none: nothing is
+parsed out of message text to manufacture a correlation.
+
+{/* D264b */}
+
+**Ingest receives OTLP and those two integration routes, and nothing else:**
+there is no Pub/Sub or Event Hub receiver, no Heroku, Fly or Railway drain, no
+syslog listener, and no Loki or Elasticsearch compatibility endpoint.
+
+{/* D264a */}
+
+**There is no MCP server, no agent skill and no CLI** — obstack has no vehicle
+for reaching your telemetry other than the product's own surfaces and the
+database underneath them.
+
+## The product
+
+{/* D264c */}
+
+**The dashboards, trace diff, explore, infra, map, services, users and cost
+surfaces render sample data and save nothing** — there is no persistence behind
+any of them, in either mode.
+
+{/* M6 */}
+
+**There are no alerts, no on-call rotations, no SLOs, no incident management, no
+issues and no change tracking** — those surfaces render sample data, and the
+public status page is deliberately not fed by SLOs.
+
+{/* M7 */}
+
+**There is no Ask, no evals, no security redaction, no pipelines, no SSO and no
+SOC 2** — the same applies: what you see on those surfaces is sample data.
+
+{/* D226/D163 */}
+
+**Exactly two plans exist, `free` and `pro`:** there is no Scale tier, no
+per-event overage and no seat count in the catalog.
+
+{/* D273 */}
+
+**Nothing tails or streams.** No data surface updates by itself; refreshing is a
+button you press. The one exception is the quickstart's first-trace panel, which
+polls a status route until your first trace links and then stops.
+
+{/* D153 */}
+
+**Expired invitations are never reaped.** The rows stay in the table and are
+filtered out of the pending list; an expired invitation grants nothing and its
+link cannot be used.
+
+## Operations
+
+{/* D294 */}
+
+**Retention is enforced by a daily sweep with a stated bound:** past roughly a
+hundred million past-cutoff rows in one workspace a delete statement cannot
+finish, and the sweep fails it loudly, counts it, moves to the next workspace,
+and retries tomorrow — that workspace over-retains until the 90-day table TTL
+takes the rows.
+
+{/* D292 */}
+
+**Deleted telemetry is gone from every product read the moment the statement
+returns, but disk shrinks only at merge** — the space is not reclaimed
+synchronously.
+
+{/* D256 */}
+
+**There is no external uptime monitoring yet.** It begins at launch, which is
+why the status page carries no uptime numbers rather than numbers nothing
+measured.
+
+{/* D284 */}
+
+**Managed Postgres is verified in kind only.** The chart's managed-Postgres path
+has been exercised against an out-of-release Postgres simulating a brought DSN;
+verification against a real managed provider — TLS and `sslmode`, provider auth
+— has not been done.

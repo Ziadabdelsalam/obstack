@@ -1,0 +1,151 @@
+export const frontmatter = {
+  title: "Docker Compose",
+  description: "The whole stack on one machine: boot, the one required secret, and what refuses.",
+};
+
+# Self-hosting with Docker Compose
+
+The compose bundle is the whole self-hosted stack: ClickHouse, Postgres, the
+ingest service and the web app. A clean checkout of it is the product you
+install.
+
+## Boot
+
+```bash
+cd deploy/compose
+cp .env.example .env   # then set OBSTACK_BETTER_AUTH_SECRET — see the file
+docker compose up -d --wait
+```
+
+Ingest applies the schema at boot, so a clean checkout needs nothing else
+besides that one secret. Once every container reports healthy, open
+`http://localhost:3000`.
+
+To also generate traffic, add the demo agent — a FastAPI service instrumented
+with plain OpenTelemetry that emits a full four-layer trace per request:
+
+```bash
+docker compose --profile demo up -d --build
+```
+
+## The one required setting
+
+`web` is the one service in the file with a required setting: the key that signs
+session cookies. There is deliberately **no default value** — a cookie-signing
+secret shipped inside a distributable bundle is a vulnerability every install
+would share. Set it before you bring the stack up:
+
+```bash
+export OBSTACK_BETTER_AUTH_SECRET=$(openssl rand -base64 32)
+```
+
+or put it in `deploy/compose/.env`. The operator value is
+`OBSTACK_BETTER_AUTH_SECRET`; the container reads it as `BETTER_AUTH_SECRET`.
+
+Left unset or empty, `web` starts, notices, prints the exact `openssl` command
+above, and exits 1 — loudly, not a hang and not a silent 500. The service
+carries `restart: unless-stopped` like every other one, so what you *see* is a
+container that never reaches healthy and keeps coming back: the restart loop is
+the operator symptom. Nothing else in the file reads it — ClickHouse, Postgres,
+ingest, the demo agent and the SDK samples have no auth of their own to sign.
+
+## The artifact refuses to serve in the wrong mode
+
+The web image is built with `OBSTACK_DATA_MODE` baked in, and the value is
+stamped into the artifact at build time. At boot the process compares the stamp
+against the runtime environment and refuses on any disagreement:
+
+- stamp present, `OBSTACK_DATA_MODE` unset at runtime → refuses, naming the
+  stamped value and telling you to set it explicitly;
+- stamp and runtime value disagree → refuses, **naming both values** — a
+  live-stamped artifact will not serve as mock, and a mock-stamped one will not
+  serve as live;
+- live-stamped with no signing secret → refuses, with the generate instruction.
+
+A refusal exits the process. Build in the mode you will serve.
+
+## Cookies and the origin
+
+`OBSTACK_BETTER_AUTH_URL` is optional and defaults to `http://localhost:3000`,
+the origin this bundle serves over. Point it at a real `https://` origin the
+moment the stack sits behind TLS: that is what upgrades the session cookie to
+the `__Secure-` name. **An `http://` origin downgrades the session cookie away
+from that name** — unavoidable over plain http, the correct tradeoff for a
+loopback-only install and the wrong one past it. The same value is the origin
+the invite and verification links in your users' mail are written against.
+
+## Keys
+
+An API key names the workspace every record in a request is written into. Keys
+are rows in Postgres, issued in the product's settings surface; ingest resolves
+a token by looking up the SHA-256 of the exact string it received. There is no
+key variable to set on the ingest container.
+
+Only the hash is stored, so a key is shown once at issue time and is not
+recoverable afterwards. Ingest caches lookups for 30 seconds, positive and
+negative, which is also how long a revoked key can keep working.
+
+The dev key every harness and sample in this repository uses, `ok_dev_local`, is
+a row like any other, seeded against workspace `ws_demo` when the Postgres
+migration set is applied. It is a public credential by design — it is printed in
+the repository — so a clean boot authenticates with no setup. Override it per
+container with `OBSTACK_DEMO_API_KEY`, `OBSTACK_SDK_API_KEY` or
+`OBSTACK_COLLECTOR_API_KEY` to send under a key you issued instead.
+
+## Ports and users
+
+Every port is published on `127.0.0.1` only — the dev passwords live in the
+repository, so nothing is exposed to the network. Services inside compose reach
+each other by service name instead.
+
+| Port | Protocol | Used by |
+|------|----------|---------|
+| 3000 | HTTP | the web app |
+| 4317 | OTLP/gRPC | your exporters |
+| 4318 | OTLP/HTTP | your exporters |
+| 8123 | HTTP | the web app's ClickHouse client, from the host |
+| 9000 | native | `clickhouse-client` from the host |
+| 5432 | Postgres | the web app and `psql` from the host |
+
+ClickHouse has two users, defined in a config file rather than created at
+runtime, so read-only is enforced by the server rather than by discipline in the
+query layer: `obstack_ingest` owns the `obstack` database and its DDL, and
+`obstack_web` holds `GRANT SELECT` under a `readonly=2` profile. An `INSERT` or
+any DDL as `obstack_web` is rejected with `ACCESS_DENIED`.
+
+Passwords are read from the environment, so no secret is in the XML. Override
+the dev defaults with `OBSTACK_CLICKHOUSE_INGEST_PASSWORD`,
+`OBSTACK_CLICKHOUSE_WEB_PASSWORD` and `OBSTACK_POSTGRES_PASSWORD` — and change
+Postgres's from `down -v`, never on a live volume: the image reads
+`POSTGRES_PASSWORD` at initdb time only, so editing it against an existing
+volume rotates nothing and only breaks the DSNs.
+
+## Shutdown
+
+`ingest` runs with `stop_grace_period: 45s`. The shutdown ladder's stated worst
+case is the write deadline (10s) plus one in-flight retry attempt (up to 30s),
+so 45s leaves margin for the receiver and admin server to unwind on top of that.
+A batch still unwritten when the deadline runs out is **counted as dropped under
+the `shutdown` reason** rather than disappearing silently.
+
+## Upgrades and volumes
+
+Pre-release migrations are edited in place rather than superseded, and
+migrations are tracked by filename, not by checksum. A volume created before a
+schema change keeps the old tables, so run `docker compose down -v` before `up`
+after pulling one. A clean checkout never needs this.
+
+ClickHouse data lives in the named volume `obstack_clickhouse-data` and Postgres
+data in `obstack_postgres-data`; both survive `docker compose down`.
+
+**Exactly one process applies migrations per upgrade.** There is no lock around
+them and there is deliberately never going to be one, so the rule is structural.
+Compose gets it for free — one `ingest` container, applying both sets at boot.
+The one way to break it here is `docker compose up --scale ingest=2`; don't.
+
+## Version pins
+
+`clickhouse/clickhouse-server` is pinned to the exact patch `26.3.17.110`, and
+`postgres` to `17.11` — the same tag the [Helm chart](/docs/self-hosting/helm-chart)
+runs, so local and cluster are never two different databases. Bump either pin
+deliberately, never to a floating tag.

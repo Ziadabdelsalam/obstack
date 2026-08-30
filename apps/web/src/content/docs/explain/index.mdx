@@ -1,0 +1,95 @@
+export const frontmatter = {
+  title: "Explain",
+  description: "What Explain reads, what it never sends, and the two ways it refuses.",
+};
+
+# Explain
+
+**Explain this trace** hands one trace to a model and asks why it failed. The
+answer comes back as labelled lines — what failed, where, what went wrong, the
+evidence, and what to do next — with every citation resolving to a span or log
+id that is actually on that trace.
+
+## What it reads
+
+That trace's spans and its correlated logs, and nothing else.
+
+Two things are deliberately withheld from the provider:
+
+- **The LLM spans' prompts and completions.** The *shape* of an LLM span — model,
+  tokens, cost, finish reason — is what a root cause is read from; the contents
+  are your customers' data, and sending them to a third party is not something
+  an Explain click consented to.
+- **Anything that is not on the trace.** No workspace name, no account, no other
+  trace. A summary is about the thing you opened.
+
+The prompt is capped — at most 200 spans, 60 log lines, and 300 characters of
+each log body — because a 4,000-span trace is a bill, not an input. When a cap
+bites it is stated in the prompt, so the answer can say it saw a slice rather
+than quietly summarising one.
+
+The model is asked to ground every claim in the spans and logs it was given, to
+say so when the trace does not show why something failed, and to cite evidence
+only by the exact id it was handed. An invented id is not rendered as a link.
+
+## Runs are metered
+
+Each press is one run, counted against your plan's monthly Explain allowance:
+**20 runs on free, 200 on pro**, resetting at the start of the calendar month in
+UTC. Those two numbers live in the plan catalog in Postgres, which is the same
+place the panel's counter, the settings meter and the enforcement all read from
+— there is no second copy of them anywhere in the product.
+
+Enforcement and the increment are one database statement, so two runs that both
+start at 19 used cannot both spend the 20th.
+
+## The two refusals
+
+Both are honest product outcomes, not faults. A refusal arrives as a normal
+answer on the stream with a sentence you can act on, and nothing is spent.
+
+**No model configured.** The deployment has no model behind Explain:
+
+> No Explain model is configured for this deployment, so nothing analysed this
+> trace. Set ANTHROPIC_API_KEY, or OBSTACK_EXPLAIN_API_KEY with
+> OBSTACK_EXPLAIN_BASE_URL and OBSTACK_EXPLAIN_MODEL for a self-hosted endpoint.
+
+**Over quota.** The plan's allowance is spent for the month:
+
+> This workspace has used all 20 Explain runs its plan includes this month, so
+> no run was made. The allowance resets at the start of next month; a larger
+> plan raises it.
+
+## Configuring it on a self-hosted deployment
+
+`OBSTACK_EXPLAIN_MODE` decides which provider the process talks to, and it
+**defaults to `fake`**. That default is deliberate: a deployment that means to
+call a model has to say so, and `anthropic` with no key refuses in the surface
+instead of quietly falling back to the fake. A fallback there would show
+somebody a restatement of their own trace as though a model had read it. The
+fake says so in its own answer.
+
+| variable | what it does |
+|---|---|
+| `OBSTACK_EXPLAIN_MODE` | `fake` (default) or `anthropic` |
+| `ANTHROPIC_API_KEY` | the cloud path: Anthropic's own endpoint and obstack's default model |
+| `OBSTACK_EXPLAIN_API_KEY` | the self-hosted path: any Anthropic-compatible endpoint |
+| `OBSTACK_EXPLAIN_BASE_URL` | that endpoint's base URL |
+| `OBSTACK_EXPLAIN_MODEL` | **required** once a base URL is set |
+
+The model name is required rather than defaulted on the self-hosted path,
+because obstack's default is an Anthropic model name and sending it to somebody
+else's gateway would be a guess about what they serve. A guess about which model
+answered is exactly the kind of claim this product does not make.
+
+The Helm chart carries the key as `web.explainApiKey`, resolved through the same
+Secret as every other credential — see [the chart](/docs/self-hosting/helm-chart#credentials-and-rotation).
+
+## The stream
+
+A run answers as newline-delimited JSON: zero or more `delta` events followed by
+exactly **one** terminal event, either a `result` or a `refusal`. A stream that
+ends without a terminal event is a failure — the model or the process died
+mid-run — and a reader must say so rather than render a partial summary as if it
+were an answer. It is not Server-Sent Events on purpose: a run is a spend, and a
+transport that silently re-runs it is wrong.

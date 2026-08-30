@@ -1,0 +1,215 @@
+export const frontmatter = {
+  title: "TypeScript",
+  description: "obstack-js: two lines, and what they actually cover.",
+};
+
+# obstack-js
+
+The obstack SDK for Node.js. Two lines of setup, and an agent service produces
+the four-layer trace obstack renders: an **api** span, an **agent** step, a
+**tool** call and an **llm** span carrying the model, the token counts, the
+prompt and the completion.
+
+It is thin on purpose. Underneath it is the stock OpenTelemetry Node SDK talking
+standard OTLP over HTTP, configured entirely from the standard `OTEL_*`
+environment — so it points at obstack, at a stock OpenTelemetry Collector, or at
+anything else that speaks OTLP, with no obstack-specific setting anywhere.
+
+## Install
+
+npm holds `obstack-js 0.0.1` — a name-hold placeholder marked do-not-use, not
+this code. The real release publishes at launch; until then it installs from
+this repository, and the exact two lines are in the
+[quickstart](/docs/quickstart#send-your-first-trace) — the same lines the
+product's own quickstart renders, so there is only ever one copy of them.
+
+Both paths need the leading `./`. Without it npm reads a bare `a/b` as a GitHub
+shorthand and tries to clone a repository that does not exist, failing with an
+unhelpful git error 128.
+
+## The two lines
+
+```ts
+import { init } from "obstack-js";
+init();
+```
+
+`init()` must run **before** the libraries it instruments are imported —
+`openai`, `@anthropic-ai/sdk` and `node:http` are patched as they are required,
+and a module loaded earlier keeps its unpatched copy. In practice that means
+these two lines are the first thing your entry point does.
+
+Then wrap the steps worth seeing:
+
+```ts
+import { init, traceAgent, traceTool } from "obstack-js";
+init();
+
+const OpenAI = require("openai").OpenAI;      // after init()
+const openai = new OpenAI();
+
+export async function answer(question: string) {
+  return traceAgent("answer_question", async () => {
+    const facts = traceTool("knowledge_lookup", () => lookup(question));
+    const completion = await openai.chat.completions.create({
+      model: "gpt-4o-mini",
+      messages: [{ role: "user", content: question }],
+    });
+    return completion.choices[0]?.message.content;
+  });
+}
+```
+
+`traceAgent` and `traceTool` capture **no arguments and no return values**. What
+an agent step receives is arbitrary application data, and shipping it to a
+telemetry backend is a decision this SDK does not make on your behalf.
+
+`init()` is idempotent — a second call returns the first handle — and never
+throws. `sdk.shutdown()` flushes and stops the exporters and is **not** called
+for you: this library installs no process signal handlers, so await it yourself
+before a deliberate exit.
+
+## What is actually covered
+
+Everything in this table was measured against the version named. Nothing else is
+claimed.
+
+| | Auto-instrumented | Not covered |
+| --- | --- | --- |
+| `openai >=4.85 <8` | `chat.completions.create` | streaming (`stream: true`), and `openai` below 4.85 |
+| `openai` from 4.87 | `responses.create`, and `responses.parse()` through it | streaming (`stream: true`, `responses.stream()`), `beta.responses`, `responses.compact()`, `responses.retrieve(id, { stream: true })`, and the Responses API below 4.87 |
+| `@anthropic-ai/sdk >=0.50 <1` | `messages.create` | streaming, `messages.stream()` |
+| `ai >=5 <8`, on 5 and 6 | `generateText`, opted in per call | `streamText` |
+| `ai >=5 <8`, on 7 | `generateText`, on by default — no per-call option | `streamText`, and `ai` 7 on node below 22 |
+| `node:http` / `node:https` | server and client spans, always | — |
+
+The optional peer ranges obstack-js declares are `@anthropic-ai/sdk >=0.50 <1`,
+`ai >=5 <8` and `openai >=4.85 <8`. The table splits some of them: `ai` gets a
+row per mechanism, because one range is covered two different ways, and the
+Responses API gets its own floor inside `openai`'s range.
+
+Below `openai` 4.85 the module obstack-js patches does not exist — measured on
+4.84.1, the call goes out normally and produces no span and no error. That is
+why the range starts at 4.85 rather than at 4.
+
+## The Vercel AI SDK, in two mechanisms
+
+`ai` 5 and 6 emit their own OpenTelemetry spans, and `init()` registers a span
+processor that rewrites the provider-call span into the attribute names obstack
+reads. On these versions telemetry is **opt-in, per call**:
+
+```ts
+await generateText({ model, prompt, experimental_telemetry: { isEnabled: true } });
+```
+
+`ai` 7 is a different mechanism, not a wider range on the same one. It stopped
+emitting OpenTelemetry spans altogether — measured on 7.0.85 — and offers a
+public integration registry instead, which `init()` registers one obstack
+integration on. Nothing is patched and there is no ordering constraint: this leg
+works even if `ai` was loaded before `init()` ran. **Telemetry is on by default
+on 7**, so the call is just the call:
+
+```ts
+await generateText({ model, prompt });          // ai 7 — llm span, no option needed
+```
+
+To turn it off, use `ai`'s own switch, which silences every telemetry
+integration you have registered rather than obstack alone:
+
+```ts
+await generateText({ model, prompt, telemetry: { isEnabled: false } });
+```
+
+One way to have obstack installed, `init()` called, and still get no span for a
+call: `ai` 7's per-call `telemetry.integrations` **replaces** the global
+registry for that call rather than adding to it. So
+
+```ts
+await generateText({ model, prompt, telemetry: { integrations: [somethingElse] } });
+```
+
+draws nothing from obstack — not because obstack was disabled, but because that
+call is dispatching to a different list. Include the object `init()` registered
+(`globalThis.AI_SDK_TELEMETRY_INTEGRATIONS`) in the array you pass if you want
+obstack's span too.
+
+**The `ai` 7 floor is 7.0.0, and that is measured, not assumed:** 19 releases
+spread across the published 7.0.x line were each driven with a real
+`generateText` against a stub model and checked for the four things this leg
+depends on. All four hold on all nineteen, so the supported range is one
+unbroken interval.
+
+`ai` 7 requires **node 22 or newer** (its own `engines` field). obstack-js stays
+at node 20, because the 5/6 line runs there and raising the floor would drop apps
+this SDK still covers — an app on node 20 simply cannot install `ai` 7 in the
+first place.
+
+**Do not register `@ai-sdk/otel` as well.** It is Vercel's own OpenTelemetry
+integration for `ai` 7 and it emits its own llm span for the same model call;
+registered alongside obstack-js it gives you **two llm spans per call**, which
+doubles the llm layer of every trace and the cost column with it. Pick one.
+obstack-js has no way to detect the other and stand down, so this is a
+documented bound, not a guard.
+
+## The OpenAI Responses API
+
+Covered from `openai` 4.87, with the same span shape as the chat one.
+`responses.parse()` dispatches through `responses.create()`, so it is covered by
+the same patch and counted once. The neighbours that build a response *without*
+going through `create()` are not covered at all: `client.beta.responses`,
+`responses.compact()` and `responses.retrieve(id, { stream: true })`.
+`responses.stream()` is refused for the same reason `stream: true` is — the
+tokens are in the stream.
+
+One difference is worth knowing before you read a trace: **the Responses API has
+no finish_reason**, so obstack records the response `status` instead
+(`completed`, `incomplete`, `failed`, …).
+
+Below 4.87 the Responses module does not exist: `client.responses` is
+`undefined`, there is no Responses call to make, and nothing throws.
+
+## Streaming, and logs
+
+**Streaming calls pass through uninstrumented**, on every library and every
+version in the table — `openai`'s `stream: true`, Anthropic's `messages.stream()`
+and `ai`'s `streamText` alike, `ai` 7 included. The token counts arrive inside
+the stream, and an LLM span reporting zero of them would be priced at $0 by
+ingest. A missing span is an honest gap; a wrong cost is not.
+
+`init()` registers an OpenTelemetry `LoggerProvider` with an OTLP exporter, so
+anything using the OpenTelemetry logs API is exported and correlated. There is
+**no bridge from `console`, `pino` or `winston`** in this release — ordinary log
+calls are not captured.
+
+## Failing open
+
+A broken telemetry endpoint never breaks the application.
+
+- `init()` never throws. If setup fails it prints one warning and returns a
+  handle that does nothing.
+- `traceAgent` / `traceTool` call your function directly if a span cannot be
+  started, and hand back its value even if the span cannot be ended.
+- Your exceptions propagate exactly as thrown. They are recorded on the span and
+  set its status to ERROR as they go past.
+- If a future `openai` release keeps its raw response somewhere the
+  instrumentation cannot read, **the span for that call carries its request
+  attributes only** — no completion, no token counts — and obstack says so
+  through `diag`. The span is never withheld, and the call itself is untouched.
+
+## Prompts and completions
+
+The SDK sets `gen_ai.prompt` and `gen_ai.completion` as span attributes on the
+wire. obstack's ingest moves both into dedicated columns and removes them from
+the attributes map, so anything reading obstack's data takes them from the
+`prompt` and `completion` columns and never from the map.
+
+Content capture is on, in full, and has no off switch in this release. Cost is
+not computed here: obstack derives it at ingest from the token counts and the
+model name, so the SDK carries no price list to go stale.
+
+## Module systems
+
+The build is CommonJS, and CJS is what the patching is verified against.
+Pure-ESM `import` of `openai` / `@anthropic-ai/sdk` is not claimed to be
+instrumented this release. The Vercel-AI path patches nothing and therefore
+works under ESM either way.

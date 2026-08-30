@@ -1,0 +1,65 @@
+export const frontmatter = {
+  title: "Vercel log drains",
+  description: "The drain receiver: route, credentials, grouping, and what it will not invent.",
+};
+
+# Vercel log drains
+
+**Status, stated plainly.** The receiver is built and CI-exercised against the
+vendor's own published payloads. It is still marked *coming soon* in the product
+because the hosted endpoint a drain would be pointed at is not public until
+launch. **A self-hoster can use it today**, against their own ingest.
+
+## The route
+
+Point the drain at `POST /v1/integrations/vercel` on your ingest.
+
+Authentication is an ordinary obstack ingest key, sent as a custom header:
+
+```
+Authorization: Bearer <your obstack ingest key>
+```
+
+That is the same key path every other export authenticates through, which is why
+no second credential concept exists here. Issue the key in the product, exactly
+as you would for an SDK.
+
+The route is on the same mux as OTLP and hands its records to the same consume
+path, so metering, the per-key health rows, quota degradation and the drop
+counters apply to drain traffic without being re-implemented beside it.
+
+## The optional signature
+
+Vercel signs the delivery body and sends the digest in an `x-vercel-signature`
+header — an HMAC-SHA1 hex digest of the raw body, under the secret shown beside
+the drain in its settings. SHA-1 is the vendor's choice, documented in their
+verification example; it is a delivery-integrity check layered on top of the
+bearer key, never the authentication itself.
+
+Set `OBSTACK_VERCEL_DRAIN_SECRET` on ingest (or `ingest.vercelDrainSecret` in
+the chart) and every delivery is verified. Leave it unset and the bearer key is
+the route's only credential. **Either way ingest logs which posture it started
+in at boot** — an unset secret is never silent non-verification.
+
+The body is read raw and capped before anything decompresses it, because the
+signature is computed over the bytes as received: gunzipping first would verify
+a digest of something the sender never signed.
+
+## Grouping
+
+A delivery can span deployments, so records are grouped by the resource identity
+each entry carries rather than one resource for the whole batch.
+
+**The grouping identity is the project id.** `projectName` is per-entry optional
+and can be absent, so keying on it would split one project into two sources; it
+rides along as the `vercel.project.name` attribute instead, and the id is what
+groups.
+
+## Trace context
+
+Vercel entries carry trace context when Vercel Tracing is on, in `traceId` and
+`spanId` (with the dotted spellings read as a fallback). **Those measured fields
+are the only source of trace context.** Nothing else is inferred into it — no
+trace id is parsed out of message text, and no correlation is guessed. A log
+that arrives without trace context joins by time and service as the *nearby*
+class, which is honest; a log joined to an invented trace is not.

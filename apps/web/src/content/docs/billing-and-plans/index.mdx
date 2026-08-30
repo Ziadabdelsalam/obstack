@@ -1,0 +1,58 @@
+export const frontmatter = {
+  title: "Plans and billing",
+  description: "The two plans that exist, what an event is, and what happens over quota.",
+};
+
+# Plans and billing
+
+Two plans exist. These four columns are the whole catalog — every number below
+is a column in the product's own plan table, and nothing in the product defines
+a plan anywhere else.
+
+| | Free | Pro |
+|---|---|---|
+| Price | $0 | $49 / month |
+| Events per month | 50,000 | 1,000,000 |
+| Retention | 7 days | 30 days |
+| Explain runs per month | 20 | 200 |
+
+A workspace that has never touched billing is on free, with no row having to
+exist for it.
+
+**There is no Scale plan, no per-event overage and no seat count in the catalog
+today.** If you have seen a third tier, a price per additional block of events,
+or a seat limit quoted anywhere, it is not something this product charges or
+enforces.
+
+## What counts as an event
+
+Spans and log records. The usage meter on the **Billing & usage** tab in
+settings shows exactly that pair against your plan's quota, and the billing
+period is the UTC calendar month.
+
+## Over quota, ingestion degrades — it does not stop
+
+Crossing the event quota is deliberately **not** a refusal. An over-quota
+workspace keeps getting `200`s and keeps seeing a tenth of its traffic, whole
+traces at a time: obstack head-samples, one trace in ten survives, and **a
+sampled-out trace is dropped whole while every trace that survives stays
+complete**. Nothing is truncated mid-trace.
+
+A hard cut-off would make the product go dark exactly when someone is trying to
+work out why it is busy. What the degradation costs is counted — in the
+operator's metrics, and in the per-key health rows the product shows, where it
+reads as sampling rather than as errors.
+
+[Retention](/docs/retention) is enforced separately, by a daily sweep against
+the same plan column.
+
+## Payment
+
+**Polar is the merchant of record.** Checkout, payment and invoices are handled
+by Polar; obstack stores which plan you are on, never a card. There is no
+invoice list in the product, because it would either be empty forever or be a
+second copy of Polar's.
+
+The upgrade form names a plan and nothing else — the workspace comes from your
+session on the server and the price comes from Polar's own checkout, so neither
+is forgeable from the page.
