@@ -24,6 +24,7 @@ const TOUR = read("TourGuide.tsx");
 const BADGE = read("SampleDataBadge.tsx");
 const DEMO_FOOTER = read("DemoFooter.tsx");
 const LAYOUT = readFileSync(path.join(HERE, "../../app/app/layout.tsx"), "utf8");
+const OVERVIEW = readFileSync(path.join(HERE, "../../app/app/page.tsx"), "utf8");
 
 test("TopBar makes no claim about the running system", () => {
   // A throughput reading and a deployment region in the status strip: mock-mode
@@ -32,6 +33,31 @@ test("TopBar makes no claim about the running system", () => {
   for (const claim of ["9.4k", "events/min", "EU-CENTRAL", "ingesting"]) {
     assert.ok(!TOP_BAR.includes(claim), `TopBar claims "${claim}" — the bar carries no system status`);
   }
+});
+
+test("F2: the demo's overview status row does not claim the demo is ingesting", () => {
+  // The TopBar ban above is a ban on a WORD, and the word was living one
+  // component over: `/app`'s own status strip rendered "ingesting ·
+  // loopwork-prod · last 6h" on the mock branch — under a footer saying nothing
+  // is being ingested, and in the pixels of the landing page's screenshot,
+  // where no text sweep could reach it.
+  //
+  // It is banned on the MOCK branch only. In live mode the row is backed by
+  // ingested telemetry and the word is true there, so this reads the mode
+  // ternary rather than the file: collapse the two branches into one literal
+  // and the parse below fails rather than passing by finding nothing.
+  const start = OVERVIEW.indexOf("pulse-dot");
+  assert.ok(start > 0, "the overview status strip is gone — this guard reads its mode ternary");
+  const strip = OVERVIEW.slice(start, OVERVIEW.indexOf("</div>", start));
+  const halves = strip.split(") : (");
+  assert.equal(halves.length, 2, "the status strip no longer branches on mode — both halves must be readable");
+  const [liveHalf, mockHalf] = halves;
+  assert.ok(liveHalf.includes("{data.workspaceId}"), "the live half stopped naming the session's workspace");
+  assert.ok(
+    !mockHalf.includes("ingesting"),
+    "the demo's overview claims it is ingesting — this deployment ingests nothing (D228)",
+  );
+  assert.ok(mockHalf.trim().length > 10, "the mock half parsed empty — the guard is reading nothing");
 });
 
 test("TopBar names a real operator or none at all", () => {

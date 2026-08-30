@@ -25,16 +25,17 @@ const LOGS_EXPLORER = path.join(HERE, "../logs/LogsExplorer.tsx");
 /**
  * The claim, never written out as a literal in this file: the sweep below reads
  * every checked-in source, INCLUDING this one, so a spelled-out needle would
- * match itself and make the exception list a lie (S2.2 L4 — a sweep is only as
- * good as its own text-ness). Both spellings are hunted.
+ * match itself and make the result a lie (S2.2 L4 — a sweep is only as good as
+ * its own text-ness). Both spellings are hunted.
  *
  * Matching is CASE-INSENSITIVE and that is load-bearing, not tidiness (D67(ii)):
- * the one surviving hit spells the claim with a capital L, so a
- * case-sensitive sweep silently misses it — and would then also miss the claim
- * coming back as a Title-Cased heading, which is exactly how UI copy gets
- * written. `caseSensitiveHits` below proves that difference is real rather than
- * trusting the fold to matter. (This paragraph must never spell the phrase out:
- * the sweep reads this file too.)
+ * UI copy arrives Title-Cased, so a case-sensitive sweep would miss the claim
+ * the moment it came back as a heading — which is how it survived the first
+ * time. Until S4.4 the file that proved this was a real hit in the tree with a
+ * capital letter in it; there is no such file any more, so the proof is BUILT
+ * instead, at the end of the sweep, and it runs through `foldedMatches` — the
+ * same function the sweep filters with (R1). (This paragraph must never spell
+ * the phrase out: the sweep reads this file too.)
  */
 const CLAIM = ["live", "tail"];
 const NEEDLES = [CLAIM.join(" "), CLAIM.join("-")];
@@ -75,7 +76,7 @@ function walk(dir: string, out: string[] = []): string[] {
   return out;
 }
 
-test("D60 sweep: the tail claim survives only in the one named marketing file", () => {
+test("D60 sweep: the tail claim survives nowhere in the repo", () => {
   const scanned = walk(REPO_ROOT);
   // If the walk ever breaks early the assertion below would pass by finding
   // nothing, so the file count is asserted too — the sweep has to have read a

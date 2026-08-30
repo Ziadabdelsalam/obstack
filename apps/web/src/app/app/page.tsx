@@ -143,6 +143,15 @@ export default async function OverviewPage() {
     <div className="px-5 py-4">
       <div className="mb-4 flex items-center justify-between">
         <h1 className="font-display text-[19px] font-semibold text-ink">Overview</h1>
+        {/* F2 — the mock half of this row said "ingesting", which is the exact
+            claim `shell-honesty.test.ts` bans from the TopBar one component
+            over, and the exact opposite of what the demo footer says on the
+            same screen: this deployment ingests nothing (D228). The workspace
+            NAME is demo content and stays (D208); the verb is a claim about the
+            running system and does not. The live half is unchanged — there the
+            row IS backed by ingested telemetry. The mode seam is the one this
+            page already holds; `app/app/page.tsx` joins the honesty test's
+            reach so the word cannot come back. */}
         <span className="flex items-center gap-2 font-mono text-[11px] text-faint">
           <span className="pulse-dot inline-block h-1.5 w-1.5 rounded-full" style={{ background: "var(--color-ok)" }} />
           {live ? (
@@ -150,7 +159,7 @@ export default async function OverviewPage() {
               ingesting <SampleMark title={SAMPLE_TITLE} /> · {data.workspaceId} · last 6h
             </>
           ) : (
-            <>ingesting · loopwork-prod · last 6h</>
+            <>sample data · loopwork-prod · last 6h</>
           )}
         </span>
       </div>

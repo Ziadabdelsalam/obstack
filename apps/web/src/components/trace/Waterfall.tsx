@@ -2,6 +2,7 @@
 
 import { layerColor } from "@/lib/layers";
 import { fmtMs } from "@/lib/format";
+import { infraTrackHeading } from "@/lib/infra-track";
 import { LayerChip } from "@/components/ui/LayerChip";
 import type { K8sEvent, Span, Trace } from "@/lib/types";
 import { AlertCircle } from "lucide-react";
@@ -181,7 +182,12 @@ export function Waterfall({
             );
           })}
 
-          {/* infra track — pods & kubernetes events on the same timeline */}
+          {/* infra track — the pods this trace ran on, and any cluster events
+              that landed on them. The heading earns its second half rather
+              than asserting it: nothing in the live pipeline sets `k8sEvents`
+              (`server/adapters.ts`), and half the demo's own stories carry
+              none, so the unconditional wording named a data type the timeline
+              below it did not contain (F2). */}
           {podTracks.length > 0 && (
             <>
               <div className="mt-1 flex items-center border-t border-line pt-1.5 pb-0.5">
@@ -189,7 +195,7 @@ export function Waterfall({
                   className="pl-2 font-mono text-[9.5px] uppercase tracking-widest"
                   style={{ color: "var(--color-infra)" }}
                 >
-                  infra · pods & k8s events
+                  {infraTrackHeading(podTracks)}
                 </span>
               </div>
               {podTracks.map((t) => (
