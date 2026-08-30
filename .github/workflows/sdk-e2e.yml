@@ -28,18 +28,22 @@
 # BUDGET, re-based for the third sample (S4.3/D307). The base is the WORST
 # measured point of the recent window, not its best: **4m04s** (run 32668332270;
 # the last three were 3m46s / 3m59s / 4m04s, and a budget set from the 3m46s
-# would be a budget that has already been exceeded). The twin adds, measured in
-# CI9: ~45s for its image with the shared `obstack-js` pack stage already cached
-# (`npm install` 28.4s + `npm run build` ~5s + layers), ~8s for its boot and
-# trace selection, and ~24s for its OTLP and fail-open legs, which are IN by
-# D307 — OTLP because it is the exit clause's literal wording on new emission
-# code, fail-open because D26's promise is made per sample and an unmeasured
-# sample has not made it. Projected worst point: **~4m59s–5m23s**, still under
-# the ~6-minute line, and the 30-minute timeout below is unchanged.
+# would be a budget that has already been exceeded). What the twin adds: CI9
+# MEASURED its image at **38s** with the shared `obstack-js` pack stage already
+# cached (`npm install` 28.4s + `npm run build` ~5s + layers), and T3's local
+# build of it came in at 32.4s — the **~45s carried here is the allowance, not
+# a measurement**. On top of that, ~8s for its boot and trace selection, and
+# ~24s for its OTLP and fail-open legs, which are IN by D307 — OTLP because it
+# is the exit clause's literal wording on new emission code, fail-open because
+# D26's promise is made per sample and an unmeasured sample has not made it.
+# With those legs IN, which is what this job runs, the projected worst point is
+# a single number: **~5m23s** (4m59s is the same projection with the legs OUT,
+# and they are not out). Still under the ~6-minute line, and the 30-minute
+# timeout below is unchanged.
 #
 # The `obstack-js` pack stage is byte-identical between the two TypeScript
-# Dockerfiles on purpose — that is what keeps the twin at ~45s instead of paying
-# the SDK build twice.
+# Dockerfiles on purpose — that is what keeps the twin's image at the measured
+# 38s, inside its ~45s allowance, instead of paying the SDK build twice.
 #
 # This replaces a first policy set from a local number, and the reason it
 # changed is worth keeping: the local measurement was 6m01s from destroyed

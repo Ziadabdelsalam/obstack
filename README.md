@@ -83,40 +83,48 @@ library and the resulting span was read back out of ClickHouse.
 
 | | `obstack-py` | `obstack-js` |
 |---|---|---|
-| OpenAI `chat.completions.create` | e2e (`demo/sdk-sample-py`), sync + async | e2e (`demo/sdk-sample-ts`), `openai >=4.85 <8` |
+| OpenAI `chat.completions.create` | e2e (`demo/sdk-sample-py`), sync + async | e2e (`demo/sdk-sample-ts`), `openai >=4.85 <8`; the Responses API (`responses.create`, and `responses.parse()` through it) e2e too, covered from 4.87 |
 | Anthropic `messages.create` | unit-level: real client, local fake, in-memory exporter | unit-level, `@anthropic-ai/sdk >=0.50 <1` |
-| Vercel AI SDK `generateText` | — | e2e, via `experimental_telemetry` + an `ai.*`→`gen_ai.*` span processor, `ai >=5 <7` |
+| Vercel AI SDK `generateText` | — | e2e, `ai >=5 <8` — on 5 and 6 opt in per call with `experimental_telemetry: { isEnabled: true }` and an `ai.*`→`gen_ai.*` span processor (`demo/sdk-sample-ts`); on 7 telemetry is **on by default**, no per-call option, through `ai`'s own integration registry (`demo/sdk-sample-ts-ai7`) |
 | `api` layer | FastAPI, via the `obstack-py[fastapi]` extra | `@opentelemetry/instrumentation-http` (hard dependency) |
 | correlated logs | yes — root-logger bridge installed by `init()` | no logging-framework bridge this release; the LoggerProvider is registered |
 
 Bounds in that table are measurements, not guesses: below `openai` 4.85 the
 module obstack-js patches does not exist and the same call produces no span at
-all, and `ai` 7 emits no OpenTelemetry span (it moved to a
-`node:diagnostics_channel` registry). The package READMEs give the numbers.
+all; the Responses module does not exist below 4.87, where `client.responses` is
+`undefined` and there is no call to make; and the `ai` 7 leg's floor is **7.0.0,
+measured** — 19 releases spread across the published 7.0.x line were each driven
+and checked, rather than a whole major assumed. `ai` 7 emits no OpenTelemetry
+span of its own — it moved to a `node:diagnostics_channel` integration registry,
+which is the separate mechanism obstack-js registers on there. The package
+READMEs give the numbers.
 
 Common to both, and equally deliberate: **streaming calls pass through
 uninstrumented** — a GenAI span with zero tokens would price to $0, and an
-absent span is the honest form; only the chat-completions/messages APIs are
-covered, not the Responses API; prompt and completion are read from the
+absent span is the honest form — `openai`'s `stream: true` and
+`responses.stream()`, Anthropic's `messages.stream()` and `ai`'s `streamText`
+alike; the Responses API is covered on the JS side only, and on `obstack-py`
+only the chat-completions API is; prompt and completion are read from the
 dedicated ClickHouse columns, never from a span's attribute map; and a broken
 endpoint never breaks the app (PRD §9) — the SDK logs a warning and the request
 still answers.
 
-The two sample apps are the proof, each instrumented with nothing but the two
-lines: `demo/sdk-sample-py/` and `demo/sdk-sample-ts/`, both runnable standalone
-against the compose stack. One command asserts the whole claim from destroyed
-volumes:
+The three sample apps are the proof, each instrumented with nothing but the two
+lines: `demo/sdk-sample-py/`, `demo/sdk-sample-ts/` and `demo/sdk-sample-ts-ai7/`
+— the TypeScript sample copied onto `ai` 7, where the span arrives with no
+telemetry option at all — all three runnable standalone against the compose
+stack. One command asserts the whole claim from destroyed volumes:
 
 ```bash
 bash deploy/compose/sdk-evidence.sh
 ```
 
-That boots ClickHouse, ingest and both samples, sends each one request, and
-asserts in SQL that both landed one ≥4-span trace with all four layers and the
-full GenAI attribute set; that both render through the app's own query facade;
-that a stock upstream OTel Collector — no obstack config anywhere — receives the
-same trace over standard OTLP; and that each sample still answers `200` with its
-endpoint pointed at a dead port.
+That boots ClickHouse, ingest and all three samples, sends each one request, and
+asserts in SQL that each landed one ≥4-span trace with all four layers and the
+full GenAI attribute set; that all three render through the app's own query
+facade; that a stock upstream OTel Collector — no obstack config anywhere —
+receives the same trace over standard OTLP; and that each sample still answers
+`200` with its endpoint pointed at a dead port.
 
 ## What's real vs. mock
 
@@ -130,11 +138,11 @@ Nine checks run on every pull request against `master`: `web`, `go`, `lint`, `ki
 - **`go`** (`.github/workflows/go.yml`) — Go 1.25.4 (pinned in `services/ingest/go.mod`), anchored on `services/ingest`. Brings up ClickHouse via the same compose service local dev uses and Postgres as a service container (it needs nothing but environment, where ClickHouse needs `deploy/compose`'s `users.d` — which a container starting before checkout cannot mount), then runs `gofmt -l`, `go vet ./...` and `go test -v -count=1 ./...` against both, carrying the two D11 ClickHouse users (`obstack_ingest` write, `obstack_web` readonly) and the Postgres DSN the migration set's integration tests need. `-count=1` is load-bearing — without it, Go can replay a cached package result from `GOCACHE` and report "PASS" without ever contacting ClickHouse. Any `--- SKIP` in the test output fails the job: a ClickHouse-dependent test that can't reach a server errors instead of silently skipping and reading as coverage it doesn't have.
 - **`kind`** (`.github/workflows/kind.yml`) — builds the demo agent image (`demo/agent-app/Dockerfile`) tagged with the commit SHA, creates a kind cluster, loads that image in (`imagePullPolicy: Never` makes a registry fallback impossible), and applies the proof workload (`.github/ci/kind-proof-workload.yaml`). After the pod reports Ready, the job waits for it to emit real telemetry against a deliberately black-holed OTLP endpoint and confirms it stayed `Running`/`Ready` anyway — proving the OpenTelemetry SDK's fail-open property, not just that the container started. **Trigger policy**: runs on every PR, same as `web` and `go` — there is no label or manual trigger, so opening a PR or pushing to its branch is what fires it. Measured end-to-end wall-clock (job start to cluster teardown) is ~1m37s (run [31933353051](https://github.com/Ziadabdelsalam/obstack/actions/runs/31933353051)), well under the ~6-minute line the trigger policy is decided on — past that line the job would move to a `ci:kind` label + push-to-`master` + `workflow_dispatch` trigger and drop out of the required-checks set rather than leave a required check some PRs never fire.
 - **`stack`** (`.github/workflows/stack.yml`) — stands the whole stack up on a kind cluster through the real Helm chart (`deploy/helm/obstack/`, the only kind path — D35) by running `deploy/helm/obstack/acceptance.sh`, the exact script the chart README tells a human to run. It drives one `POST /chat` at the demo app and asserts the sprint's correlation evidence through the tsx facade harness against the cluster's ClickHouse: the four-layer waterfall, ≥1 solid log row with pod metadata, ≥1 nearby row from the uninstrumented sidecar, and zero duplicated bodies. **Trigger policy**: the job crossed the ~6-minute line and stayed there — 5m58s–7m17s across its runs since S4.1 — so the pre-committed over-branch fired and `stack` **left the every-PR set**. On pull requests it now runs only when the change touches what `acceptance.sh` actually builds (`deploy/**`, `services/ingest/**`, `demo/agent-app/**`, `apps/web/**`, `package.json`, `package-lock.json`, `packages/obstack-js/package.json`, and the workflow file itself); it runs on **every push to `master`**; and `workflow_dispatch` is there to force it by hand. Because `apps/web/**` is on that list it still fires on most pull requests — the time reclaimed comes from `stack` no longer gating a merge, not from the filter. The backstop is that a red `stack` on `master` is stop-the-line for the next PR.
-- **`e2e`** (`.github/workflows/e2e.yml`) — the tenancy exit assertion as a check (D107): it brings the compose stack up, runs `bash deploy/compose/smoke.sh` as the pipeline floor (D136 — that harness had no CI run of record before this), and then runs `deploy/compose/e2e-drive.mjs`, the promoted CDP drive, in the three lines `deploy/compose/README.md` tells a human to run. Two strangers sign up through the real form in two fresh throwaway Chrome profiles, each lands in the organization and workspace their own signup created, each gets telemetry seeded for exactly the workspace id the product rendered for them, and the drive then asserts strict disjointness plus the cross-tenant negative probe — one workspace asking for the other's trace id — through the product's own surfaces rather than a query written for the test. It refuses loudly rather than clean up after anything it did not start. **Trigger policy**: every PR **provisionally**, pending the advisor's ruling on the first real-runner numbers, which are the only ones a trigger policy is decided on (`sdk-e2e`'s local 6m01s versus its real 3m43s is the standing warning); the local composite is **84s** — 13s boot + 17s smoke + 54s drive, twice — and excludes what the runner pays most for (`npm ci`, the ingest image build), so it is a floor, not an estimate. Past the ~6-minute line the job moves to a `ci:e2e` label + push-to-`master` + `workflow_dispatch` and drops out of the required-checks set.
+- **`e2e`** (`.github/workflows/e2e.yml`) — the tenancy exit assertion as a check (D107): it brings the compose stack up, runs `bash deploy/compose/smoke.sh` as the pipeline floor (D136 — that harness had no CI run of record before this), and then runs `deploy/compose/e2e-drive.mjs`, the promoted CDP drive, in the three lines `deploy/compose/README.md` tells a human to run. Two strangers sign up through the real form in two fresh throwaway Chrome profiles, each lands in the organization and workspace their own signup created, each gets telemetry seeded for exactly the workspace id the product rendered for them, and the drive then asserts strict disjointness plus the cross-tenant negative probe — one workspace asking for the other's trace id — through the product's own surfaces rather than a query written for the test. It refuses loudly rather than clean up after anything it did not start. **Trigger policy**: every PR — and since S4.3 this job *is* the PR critical path, because `stack` left the every-PR set and the D122 captured-DDL guard moved in here (D298/D306(d)). Recorded band **5m28s–6m02s** across the last 11 successful runs, with the window's worst point **6m44s** (run [32269078423](https://github.com/Ziadabdelsalam/obstack/actions/runs/32269078423)). The ~6-minute line is **held**, not re-based to that band: D207's reclaim — the move to a `ci:e2e` label + push-to-`master` + `workflow_dispatch` and the drop out of the required-checks set — is pre-authorized and executes on the first number over the line, with no return trip for a ruling (D306(d)). The local composite is **84s** — 13s boot + 17s smoke + 54s drive, twice — and excludes both the guard step and what the runner pays most for (`npm ci`, the ingest image build), so it is a floor, not an estimate.
 
 - **`sdk-py`** (`.github/workflows/sdk-py.yml`) — Python 3.14; runs `packages/obstack-py`'s "Development" block verbatim: a venv, one editable install with the `[fastapi]` extra plus the exactly-pinned `requirements-dev.txt`, then `pytest packages/obstack-py`. Split from `sdk-js` rather than combined so a red check names the language at fault. It does not build a wheel — `sdk-e2e` does, because the sample's image installs the package for real. **Trigger policy**: every PR; measured 18.0s with a warm pip cache and 34.8s with an empty one (Apple M4, 10 cores, Python 3.14.6), far under the ~6-minute line.
 - **`sdk-js`** (`.github/workflows/sdk-js.yml`) — Node 24; `npm ci`, then `npm test --workspace packages/obstack-js` (the repo's `tsx --test` / `node:test` runner, 42 tests driving the real `openai`, `@anthropic-ai/sdk` and `ai` clients against local fakes) and `npm run build --workspace packages/obstack-js`. The build step is not decoration: `tsx` strips types without checking them, so nothing in the test command would notice a type error. **Trigger policy**: every PR; measured 11.8s for the suite and 1.2s for the build with dependencies installed.
-- **`sdk-e2e`** (`.github/workflows/sdk-e2e.yml`) — runs `bash deploy/compose/sdk-evidence.sh` and nothing else: the SDK exit evidence, one command, from destroyed compose volumes (see "The SDKs" above for what it asserts). **Trigger policy**: every PR, same as every other check here, plus `workflow_dispatch`. Measured end to end on real runs of the job — ~3m43s (run [32050575928](https://github.com/Ziadabdelsalam/obstack/actions/runs/32050575928)) and ~3m44s (run [32052107372](https://github.com/Ziadabdelsalam/obstack/actions/runs/32052107372)) — comfortably under the ~6-minute line. A first policy set from a local 6m01s (destroyed volumes *and* an empty docker builder cache, on the machine described above) was corrected once the runner's own numbers existed: the deciding machine for a trigger policy is the runner. The `stack` job was left alone rather than extended, so no signed job's trigger policy depends on this one.
+- **`sdk-e2e`** (`.github/workflows/sdk-e2e.yml`) — runs `bash deploy/compose/sdk-evidence.sh` and nothing else: the SDK exit evidence, one command, from destroyed compose volumes (see "The SDKs" above for what it asserts). **Trigger policy**: every PR, same as every other check here, plus `workflow_dispatch`. Measured end to end on real runs of the job — ~3m43s (run [32050575928](https://github.com/Ziadabdelsalam/obstack/actions/runs/32050575928)) and ~3m44s (run [32052107372](https://github.com/Ziadabdelsalam/obstack/actions/runs/32052107372)) — comfortably under the ~6-minute line. Those numbers measured a **two-sample** job; since S4.3 it boots three (`demo/sdk-sample-ts-ai7` joined it, D307). The recorded worst point of the two-sample job was **4m04s** (run [32668332270](https://github.com/Ziadabdelsalam/obstack/actions/runs/32668332270)), and the projected worst point with the twin is **~5m23s** — a ~45s allowance for its image over CI9's measured 38s, ~8s for its boot and trace selection, ~24s for its OTLP and fail-open legs — still under the ~6-minute line. The real number returns with the first runner. A first policy set from a local 6m01s (destroyed volumes *and* an empty docker builder cache, on the machine described above) was corrected once the runner's own numbers existed: the deciding machine for a trigger policy is the runner. The `stack` job was left alone rather than extended, so no signed job's trigger policy depends on this one.
 
 ### Reproducing each check locally
 

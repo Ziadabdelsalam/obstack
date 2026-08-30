@@ -57,9 +57,12 @@
 # `package-lock.json`, `packages/obstack-js/package.json`), the chart and the
 # compose definitions (`deploy/**`), and this file. `apps/web/**` in that
 # list means the filter fires on most PRs, and a narrower list would be a lie
-# about what this job's evidence depends on. The PR critical path drops to
-# `e2e`'s band because `stack` stopped gating a merge, not because it stopped
-# running.
+# about what this job's evidence depends on. `deploy/**` is wider than what
+# this job now reads — `deploy/compose/**` sits inside it and `stack` stopped
+# reading compose when the D122 guard left — so those paths over-fire; for a
+# filter whose failure mode is a build that never ran, over-firing is the
+# safe direction. The PR critical path drops to `e2e`'s band because `stack`
+# stopped gating a merge, not because it stopped running.
 #
 # THE BACKSTOP is D41's rider, promoted to primary: a red `stack` on master
 # is stop-the-line for the next PR. That is what makes the drop safe, which
@@ -70,11 +73,12 @@
 # henceforth. No master-push run has ever existed in this repo, so the watch
 # opens on the FIRST master-push number; the 5m58–7m17 band above is the
 # PR-run prior, not the new baseline. Moving the D122 guard out removes a
-# measured ~10s (guard 4s + its compose start 6s), which against the last PR
-# run leaves ≈6m56 — still over the K5 line, exactly as D298 accepted when it
-# chose the branch instead of a re-base (D306(e)). That number is not a
-# regression and re-fires nothing. `stack` is a K3-stable name from its first
-# run; `web`/`go`/`kind` are untouched.
+# measured ~10s (guard 4s + its compose start 6s). Subtract that from the
+# **S4.2 PR run's 7m06** — the run those 4s were measured on, not the list's
+# last entry (7m02) — and ≈6m56 is what is left: still over the K5 line,
+# exactly as D298 accepted when it chose the branch instead of a re-base
+# (D306(e)). That number is not a regression and re-fires nothing. `stack`
+# is a K3-stable name from its first run; `web`/`go`/`kind` are untouched.
 name: stack
 
 on:
@@ -99,7 +103,12 @@ concurrency:
   # `stack-refs/heads/master`, so `cancel-in-progress: true` would let a
   # second merge CANCEL the first merge's run — a hole in the D41 backstop
   # that is now this job's whole reason to run on master. PR runs are still
-  # superseded by the next push to their branch; master runs never are.
+  # superseded by the next push to their branch. An IN-PROGRESS master run is
+  # never cancelled — `cancel-in-progress` is PR-only. GitHub does still cancel
+  # a PENDING run when a newer one queues into the same group, so on a rapid
+  # double-merge the middle commit's `stack` run can be superseded while it is
+  # still queued: the backstop D41 buys is therefore "every merge that reaches
+  # the head of the queue", not literally every merge.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:

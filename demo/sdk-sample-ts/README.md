@@ -94,7 +94,7 @@ POST /chat                     api    node:http server span (http.request.method
 ```
 
 Three llm spans, because obstack-js covers three Node paths by three different
-patches and each is worth proving end to end:
+mechanisms and each is worth proving end to end:
 
 | Leg | Library | How the span happens |
 | --- | --- | --- |

@@ -373,8 +373,11 @@ generate path run against `authConfig()` (`apps/web/src/server/auth.ts`), and
 nothing in the library re-checks that pair. This is the question that keeps them
 one definition — it regenerates the DDL from the config the app runs and diffs
 it against the checked-in file, failing on any difference and naming both sides
-and the re-capture recipe. It is a standing `stack` step (D122), and the same
-line by hand, from the repo root against a running compose stack:
+and the re-capture recipe. It is a standing `e2e` step (D122; it moved out of
+`stack` in S4.3 — D298/D306(d) — because its failure source is app code ordinary
+web PRs touch, and `stack` no longer gates a merge, so a guard left there would
+first go red only after the merge). The same line by hand, from the repo root
+against a running compose stack:
 
 ```bash
 BETTER_AUTH_SECRET=ddl-drift-check-dummy-secret-not-a-real-one \
