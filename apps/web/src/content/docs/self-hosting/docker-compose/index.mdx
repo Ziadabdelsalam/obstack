@@ -42,8 +42,9 @@ export OBSTACK_BETTER_AUTH_SECRET=$(openssl rand -base64 32)
 or put it in `deploy/compose/.env`. The operator value is
 `OBSTACK_BETTER_AUTH_SECRET`; the container reads it as `BETTER_AUTH_SECRET`.
 
-Left unset or empty, `web` starts, notices, prints the exact `openssl` command
-above, and exits 1 — loudly, not a hang and not a silent 500. The service
+Left unset or empty, `web` starts, notices, prints an `openssl` one-liner to
+generate it (naming the in-container `BETTER_AUTH_SECRET`), and exits 1 —
+loudly, not a hang and not a silent 500. The service
 carries `restart: unless-stopped` like every other one, so what you *see* is a
 container that never reaches healthy and keeps coming back: the restart loop is
 the operator symptom. Nothing else in the file reads it — ClickHouse, Postgres,

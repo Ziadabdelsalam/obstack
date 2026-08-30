@@ -101,7 +101,8 @@ export OTEL_EXPORTER_OTLP_HEADERS=Authorization=Bearer%20${key}
     sdkTab(
       "typescript",
       "TypeScript",
-      `npm pack ./packages/obstack-js        # -> obstack-js-${OBSTACK_JS_VERSION}.tgz
+      `# pack from the obstack repo root; install from your app's directory
+npm pack ./packages/obstack-js        # -> obstack-js-${OBSTACK_JS_VERSION}.tgz
 npm install ./obstack-js-${OBSTACK_JS_VERSION}.tgz
 
 // instrumentation.ts — before the libraries it instruments are imported

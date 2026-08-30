@@ -17,6 +17,7 @@ anything else that speaks OTLP, with no obstack-specific setting anywhere.
 ## Install
 
 ```bash
+# pack from the obstack repo root; install from your app's directory
 npm pack ./packages/obstack-js        # -> obstack-js-0.1.0.tgz
 npm install ./obstack-js-0.1.0.tgz
 ```
