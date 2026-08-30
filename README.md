@@ -176,6 +176,13 @@ OBSTACK_TEST_POSTGRES_DSN=postgres://obstack:obstack_postgres_dev@127.0.0.1:5432
 cd -
 docker compose -f deploy/compose/docker-compose.yml down -v
 
+# lint — from apps/web, where eslint.config lives; a repo-root invocation
+# finds no flat config and dies before linting anything
+npm ci
+cd apps/web
+npx eslint src --max-warnings 0
+cd -
+
 # kind — needs Docker and a local `kind` + `kubectl`
 docker build -t demo-agent:local demo/agent-app
 kind create cluster --name kind-proof
@@ -183,6 +190,23 @@ kind load docker-image demo-agent:local --name kind-proof
 sed 's#IMAGE_PLACEHOLDER#demo-agent:local#' .github/ci/kind-proof-workload.yaml | kubectl apply -f -
 kubectl wait --for=condition=Ready pod/kind-proof-workload --timeout=120s
 kind delete cluster --name kind-proof
+
+# images — needs Docker, from the repo root. The two refusal runs are the
+# point of the job: each container must exit 1 AND say why, so read the
+# message, not just the code. CI wraps both in `timeout 60` and greps the
+# text — a refusal that instead boots and serves forever is the failure being
+# ruled out, and locally that shows up as a container that never exits.
+docker build -t obstack-web:live -f apps/web/Dockerfile --build-arg OBSTACK_DATA_MODE=live .
+docker build -t obstack-web:mock -f apps/web/Dockerfile --build-arg OBSTACK_DATA_MODE=mock .
+docker build -t obstack-ingest:ci services/ingest
+docker run --rm -e OBSTACK_DATA_MODE=live -e BETTER_AUTH_SECRET=probe obstack-web:mock  # exit 1, names both modes
+docker run --rm -e OBSTACK_DATA_MODE=live obstack-web:live  # exit 1, names BETTER_AUTH_SECRET and openssl
+docker run -d --name demo-probe -p 127.0.0.1:3100:3000 -e OBSTACK_DATA_MODE=mock obstack-web:mock
+curl -fsS -o /dev/null http://127.0.0.1:3100/app; docker rm -f demo-probe
+OBSTACK_BETTER_AUTH_SECRET=images-ci-run-secret \
+  docker compose -f deploy/compose/docker-compose.yml up -d --build --wait --wait-timeout 300
+curl -fsS -o /dev/null http://127.0.0.1:3000/login
+docker compose -f deploy/compose/docker-compose.yml down -v
 
 # stack — needs Docker, kind, helm, kubectl, curl, and `npm ci` run once
 kind create cluster --name obstack-stack
