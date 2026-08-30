@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { cpSync, existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync } from "node:fs";
 import path from "node:path";
 import test, { after, before } from "node:test";
 import { SpanKind } from "@opentelemetry/api";
@@ -332,6 +332,104 @@ test("responses.stream() passes through with no span and still reaches the provi
 });
 
 /**
+ * ## The fail-open exit: a body the observer cannot read (D316)
+ *
+ * `observeResponsesBody` returns undefined when there is no `responsePromise`
+ * to watch, and `traceLlmCall` then ends the span carrying its REQUEST half
+ * only — it cannot withhold the span, because the span is started before the
+ * call so the provider's HTTP span nests under it. That is what the README
+ * promises for a future `openai` that keeps the raw response somewhere else:
+ * request attributes only, no completion, no token counts, and the
+ * application's own value untouched.
+ *
+ * Nothing above reaches that branch, and nothing above can: `responsePromise`
+ * is present on every version in the patched range (measured on 4.87.0, 7.4.0
+ * and 7.8.0). So the branch is reached the one honest way — by calling the
+ * PATCHED `Responses.prototype.create` with a stand-in `this` whose transport
+ * hands back a value without one, which is exactly the shape the future client
+ * this exit exists for would return. Everything else on the path is the real
+ * thing: the real patch, the real `RESPONSES_SHAPE`, the real
+ * `observeResponsesBody`, the real span lifecycle. No production code is
+ * touched, and no test-only seam exists in `openai.ts` for this.
+ */
+const createWithTransport = (handedBack: unknown): unknown => {
+  const prototype = Object.getPrototypeOf(client.responses) as {
+    create: (this: unknown, ...args: unknown[]) => unknown;
+  };
+  // `create()` is `this._client.post(...)._thenUnwrap(...)` on every version in
+  // the range, and it is the `_thenUnwrap` result — the value the APPLICATION
+  // holds — that the observer is handed.
+  const transport = { _client: { post: () => ({ _thenUnwrap: () => handedBack }) } };
+  return prototype.create.call(transport, {
+    model: "gpt-4o-mini",
+    instructions: INSTRUCTIONS,
+    input: INPUT,
+  });
+};
+
+/** The half of D8 that only a read response body can fill in. */
+const RESPONSE_HALF = [
+  D8.responseModel,
+  D8.completion,
+  D8.inputTokens,
+  D8.outputTokens,
+  D8.finishReasons,
+] as const;
+
+/** The whole request half is there, and not one attribute of the response half:
+ *  a span that guessed a completion or a zero token count would be worse than
+ *  the missing half, because ingest prices what it is given. */
+const assertRequestHalfOnly = (span: ReadableSpan): void => {
+  assert.equal(span.name, "chat gpt-4o-mini");
+  assert.equal(span.kind, SpanKind.CLIENT);
+  assert.equal(span.attributes[D8.system], "openai");
+  assert.equal(span.attributes[D8.requestModel], "gpt-4o-mini");
+  assert.deepEqual(JSON.parse(String(span.attributes[D8.prompt])), [
+    { role: "system", content: INSTRUCTIONS },
+    { role: "user", content: INPUT },
+  ]);
+  for (const name of RESPONSE_HALF) {
+    assert.equal(
+      span.attributes[name],
+      undefined,
+      `${name} was set on a span whose response body was never read; the README promises request attributes only — no completion, no token counts`,
+    );
+  }
+};
+
+test("a promise with no responsePromise still ends one request-half span", () => {
+  const seen = llmSpans().length;
+  // The object the application is handed back, and the identity the assertion
+  // below is about.
+  const handedBack = { output_text: "the application's own value" };
+
+  const returned = createWithTransport(handedBack);
+
+  assert.equal(
+    returned,
+    handedBack,
+    "the call did not get its own value back — fail-open means the application is unaffected, not chained off (D83)",
+  );
+  // Reached synchronously: the exit is taken before `create()` returns, and the
+  // span is already in the exporter, which is what "ended, not left open" means.
+  assertRequestHalfOnly(oneNewLlmSpan(seen));
+});
+
+test("a raw Response that cannot be cloned ends the same request-half span", async () => {
+  // The second of the three fail-open exits, and the async one: there IS a
+  // `responsePromise`, it resolves, and what it resolves to has no cloneable
+  // `Response`. The span still ends with its request half and nothing invented.
+  const seen = llmSpans().length;
+  const handedBack = { responsePromise: Promise.resolve({ response: {} }) };
+
+  const returned = createWithTransport(handedBack);
+  assert.equal(returned, handedBack, "the application's value was replaced on the way out");
+
+  await new Promise((resolve) => setImmediate(resolve));
+  assertRequestHalfOnly(oneNewLlmSpan(seen));
+});
+
+/**
  * ## The version matrix: 4.87.0 and 7.8.0, in this one process
  *
  * Everything above runs against the `openai` in devDependencies, now `^7.8.0`.
@@ -384,6 +482,15 @@ test("responses.stream() passes through with no span and still reaches the provi
  * installed tree. Nothing is downloaded, nothing is mutated, and the copy lands
  * in `node_modules`, which is not tracked. The version is asserted below so a
  * lockfile drift is loud rather than silently re-testing 7.8.0 twice.
+ *
+ * The copy is PUBLISHED BY RENAME rather than written into place. A `cpSync`
+ * straight into `home` is not atomic: a Ctrl-C or a full disk mid-copy leaves a
+ * half-copied tree that the reuse gate then accepts forever, and every later
+ * run silently re-tests a truncated `openai` instead of 4.87.0. A rename within
+ * one filesystem is atomic, so nothing partial is ever published under that
+ * name; the gate still reads `package.json` rather than the directory, so a
+ * partial tree left by an older run of this function is rebuilt rather than
+ * trusted.
  */
 function loadOpenAI487(): { OpenAI: typeof import("openai").OpenAI; version: string } {
   const alias = path.dirname(require.resolve("openai487"));
@@ -396,12 +503,28 @@ function loadOpenAI487(): { OpenAI: typeof import("openai").OpenAI; version: str
     "node_modules",
     "openai",
   );
-  if (!existsSync(path.join(home, "package.json"))) {
-    rmSync(home, { recursive: true, force: true });
+  const marker = path.join(home, "package.json");
+  if (!existsSync(marker)) {
+    // Per-pid, because `node:test` runs each test FILE in its own process and
+    // two of them may reach this line at once.
+    const staging = `${home}.tmp-${process.pid}`;
+    rmSync(staging, { recursive: true, force: true });
     mkdirSync(path.dirname(home), { recursive: true });
-    cpSync(alias, home, { recursive: true });
+    cpSync(alias, staging, { recursive: true });
+    // Only a half-copied tree from a run of the OLDER, non-atomic version of
+    // this function can be here; a rename never leaves one.
+    rmSync(home, { recursive: true, force: true });
+    try {
+      renameSync(staging, home);
+    } catch (error) {
+      // Renaming onto a non-empty directory fails: another process published
+      // first. Its copy is as good as this one, so drop the staging tree and
+      // use the winner — but only if there really is one.
+      rmSync(staging, { recursive: true, force: true });
+      if (!existsSync(marker)) throw error;
+    }
   }
-  const version = JSON.parse(readFileSync(path.join(home, "package.json"), "utf8")).version as string;
+  const version = JSON.parse(readFileSync(marker, "utf8")).version as string;
   // eslint-disable-next-line @typescript-eslint/no-var-requires
   return { OpenAI: (require(home) as typeof import("openai")).OpenAI, version };
 }
@@ -430,9 +553,15 @@ before(async () => {
   currentVersion = JSON.parse(
     readFileSync(path.join(path.dirname(require.resolve("openai")), "package.json"), "utf8"),
   ).version as string;
+  // The major alone is not the claim. `7.x` is satisfied by 7.4.0, which is
+  // precisely the version CI was pinned to while the CURRENT `openai` was
+  // broken (B.2 above): the per-instance `_thenUnwrap` that defeated the first
+  // fix arrives in 7.5.0, so 7.0–7.4 would pass a major-only guard and prove
+  // nothing about the shape this file exists to cover.
+  const [major, minor] = currentVersion.split(".").map((part) => Number.parseInt(part, 10));
   assert.ok(
-    currentVersion.startsWith("7."),
-    `the devDependency resolved openai ${currentVersion}; the 7.5+ shape this file exists for is not under test`,
+    major === 7 && (minor ?? -1) >= 5,
+    `the devDependency resolved openai ${currentVersion}; the 7.5+ per-instance \`_thenUnwrap\` shape is what this file exists for, and 7.0–7.4 would pass a major-only guard and prove nothing`,
   );
 });
 

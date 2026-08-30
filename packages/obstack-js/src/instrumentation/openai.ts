@@ -297,10 +297,14 @@ const RESPONSES_SHAPE: LlmShape = {
     return {
       model: typeof body.model === "string" ? body.model : request.model,
       // `output_text` is a convenience the CLIENT adds, not a wire field: the
-      // SDK only decorates the object when the payload says `object:"response"`
-      // (`lib/ResponsesParser.js`), so trusting it alone would silently lose
-      // the completion on any response that omits it. It is used when present
-      // and recomputed from `output[]` when it is not.
+      // SDK only decorates a payload that identifies itself as a response, and
+      // the key it reads moved — 4.87.0 tests `rsp.type === "response"`, 5.x
+      // and up test `rsp.object === "response"` (both measured in
+      // `resources/responses/responses.js`, which is where the decorate call
+      // sits; `addOutputText` itself lives in `lib/ResponsesParser.js`). So
+      // trusting it alone would silently lose the completion on any response
+      // that omits whichever key its client version reads. It is used when
+      // present and recomputed from `output[]` when it is not.
       completion: typeof body.output_text === "string" ? body.output_text : outputText(body.output),
       inputTokens: asCount(usage?.input_tokens),
       outputTokens: asCount(usage?.output_tokens),
