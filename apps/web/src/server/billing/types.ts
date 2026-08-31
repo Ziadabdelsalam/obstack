@@ -2,7 +2,7 @@ import "server-only";
 
 /**
  * The billing contract, stated once (D168). Everything below is the shape both
- * implementations answer in — `polar.ts` against Polar's sandbox, `fake.ts`
+ * implementations answer in — `polar.ts` against Polar, `fake.ts`
  * against a Map — so nothing outside this directory ever learns what a Polar
  * object looks like, and no second copy of "what a checkout is" exists.
  *
@@ -13,12 +13,18 @@ import "server-only";
  */
 
 /**
- * Which implementation answers. `fake` is the default through M3 and the only
- * one CI ever runs — no Polar secret enters GitHub Actions this milestone
- * (D168). `polar-sandbox` is the sandbox rail; the production flip is the
- * registered S5-GATE and nothing in this module promotes it.
+ * Which implementation answers. `fake` is the default and the only one CI ever
+ * runs — no Polar secret enters GitHub Actions (D168). The other two are one
+ * implementation against two Polar environments (D338): `polar-sandbox` is the
+ * sandbox rail the D194 evidence run measured, `polar` is the production rail a
+ * hosted deployment bills on. Production runs `polar` and nothing else (D344) —
+ * `fake` would hand out Pro for free and `polar-sandbox` would take a checkout
+ * no card ever paid.
  */
-export type BillingMode = "fake" | "polar-sandbox";
+export type BillingMode = "fake" | "polar-sandbox" | "polar";
+
+/** The modes that talk to Polar — both of them, narrowed by `isPolar`. */
+export type PolarMode = Exclude<BillingMode, "fake">;
 
 /**
  * The plan ids the billing rail names, and the ONLY plan facts that live in

@@ -15,13 +15,13 @@ import {
 } from "./types";
 
 /**
- * The default implementation through M3 (D168) and the only one CI ever runs.
+ * The default implementation (D168) and the only one CI ever runs.
  * It is not a stub: it is the billing rail with the third party removed, so
  * every path the product takes in production is a path the tests and the e2e
  * drive take here — a checkout is created, the browser returns to OUR return
  * path with a real id, `reconcileCheckout` reads it back and writes the plan
  * row, and a webhook is signed, verified and dispatched through the same
- * `normalizeWebhook` the sandbox client uses.
+ * `normalizeWebhook` the Polar client uses.
  *
  * Two behaviours are honest rather than convenient, because a test that leans
  * on them is otherwise proving nothing:
@@ -44,7 +44,7 @@ import {
 /**
  * The fake's signing secret, a constant on purpose: it is checked in, it is not
  * a credential, and it lets the e2e drive sign a webhook without provisioning
- * anything. `polar-sandbox` uses `POLAR_WEBHOOK_SECRET` from the environment
+ * anything. Both Polar rails use `POLAR_WEBHOOK_SECRET` from the environment
  * and this value has no meaning there.
  */
 export const FAKE_WEBHOOK_SECRET = "obstack-fake-webhook-secret";

@@ -12,16 +12,19 @@ import {
   type CreatedCheckout,
   type SubscriptionState,
   type UsageEvent,
+  type PolarMode,
   type UsageIngestResult,
   type WebhookEvent,
 } from "./types";
 
 /**
- * The sandbox rail — the ONLY module in the product that calls Polar (D110).
- * Sandbox is the whole of M3: `server: "sandbox"` targets
- * `https://sandbox-api.polar.sh`, tokens are environment-separate (a production
- * token is refused there and vice versa, MEASURED), and promoting this to
- * production is the registered S5-GATE.
+ * The Polar rail — the ONLY module in the product that calls Polar (D110). One
+ * implementation, two environments, chosen by the mode it is built with (D338):
+ * `polar-sandbox` gives `server: "sandbox"`, which targets
+ * `https://sandbox-api.polar.sh`, and `polar` gives `server: "production"`,
+ * which targets `https://api.polar.sh`. Everything below is the same code on
+ * both — the environments differ only in which Polar organisation, catalog and
+ * money they are.
  *
  * Four environment values, none of them ever written to git, a log or CI:
  *
@@ -34,21 +37,32 @@ import {
  *  - `POLAR_PRODUCT_<PLAN>` — the Polar product behind a plan id, e.g.
  *    `POLAR_PRODUCT_PRO`. The product lives in Polar's catalog, our plan lives
  *    in `plans` (D163), and this mapping is the seam between them; it is env
- *    rather than a column because the two sides of it differ per environment
- *    (a sandbox product id means nothing in production).
+ *    rather than a column because the two sides of it differ per environment.
+ *
+ * The two Polar environments share no state: a sandbox product id or access
+ * token means nothing in production and a production one means nothing in
+ * sandbox (tokens are refused across the boundary, MEASURED), so every one of
+ * the four values above is per-environment and switching the mode without
+ * switching them is a configuration error, not a migration.
  *
  * Each is demanded at the moment it is needed and the failure names the missing
  * variable and nothing else — a message that echoed a token would put it in the
  * log the failure produces.
  */
 
-/** Missing configuration is loud, immediate, and never a fallback to the fake. */
-function required(name: string): string {
-  const value = process.env[name];
-  if (!value) {
-    throw new Error(`${name} is required when OBSTACK_BILLING_MODE=polar-sandbox`);
-  }
-  return value;
+/**
+ * Missing configuration is loud, immediate, and never a fallback to the fake.
+ * The message names the CONFIGURED mode, so an operator reads which rail asked
+ * for the variable rather than a mode they are not running (D338).
+ */
+function requiring(mode: PolarMode) {
+  return function required(name: string): string {
+    const value = process.env[name];
+    if (!value) {
+      throw new Error(`${name} is required when OBSTACK_BILLING_MODE=${mode}`);
+    }
+    return value;
+  };
 }
 
 /**
@@ -78,11 +92,15 @@ const ENTITLED_STATUS = new Set(["active", "trialing", "past_due"]);
  * fake-mode deployment that has no token still compiles and boots this file
  * (D114's rule, the same one `getPool` follows).
  */
-export function createPolarBilling(): BillingClient {
-  const client = new Polar({ accessToken: required("POLAR_ACCESS_TOKEN"), server: "sandbox" });
+export function createPolarBilling(mode: PolarMode): BillingClient {
+  const required = requiring(mode);
+  const client = new Polar({
+    accessToken: required("POLAR_ACCESS_TOKEN"),
+    server: mode === "polar" ? "production" : "sandbox",
+  });
 
   return {
-    mode: "polar-sandbox",
+    mode,
 
     async createCheckout(request: CheckoutRequest): Promise<CreatedCheckout> {
       const product = required(`POLAR_PRODUCT_${request.planId.toUpperCase()}`);

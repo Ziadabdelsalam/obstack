@@ -3,7 +3,7 @@ import test from "node:test";
 import { fakeBilling, signFakeWebhook, FAKE_SIGNATURE_HEADER, setFakeSubscription } from "./fake";
 import { normalizeWebhook } from "./webhook";
 import { applyWebhook, reconcileCheckout, syncPlanFromRail, type ReconcileResult } from "./reconcile";
-import { billingMode, createBillingClient } from "./client";
+import { billingMode, createBillingClient, isPolar } from "./client";
 import {
   CHECKOUT_RETURN_PARAM,
   UnknownCheckout,
@@ -81,28 +81,90 @@ test("the default mode is the fake, and it never needs a Polar secret (D168)", (
   assert.equal(createBillingClient("fake").mode, "fake");
 });
 
-test("polar-sandbox without a token refuses loudly rather than falling back (D168)", () => {
-  // The failure that must NOT be possible is a silent fall-through to the fake:
-  // it would take a plan change nobody was ever charged for. The message names
-  // the missing variable — and nothing else, because an error message is a log
-  // line and a token in a log line is a leaked token.
-  assert.throws(
-    () => createBillingClient("polar-sandbox"),
-    (error: Error) => {
-      assert.match(error.message, /POLAR_ACCESS_TOKEN is required/);
-      assert.ok(!/polar_oat_/.test(error.message), "no credential shape in the message");
-      return true;
-    },
-  );
-});
+// Both Polar rails, run through every mode-seam assertion below (D338): the
+// production rail is the same code as the measured sandbox one, so anything
+// proven for one and not the other is a place production could differ silently.
+const POLAR_MODES = ["polar-sandbox", "polar"] as const;
+
+for (const mode of POLAR_MODES) {
+  test(`${mode} without a token refuses loudly rather than falling back (D168)`, () => {
+    // The failure that must NOT be possible is a silent fall-through to the
+    // fake: it would take a plan change nobody was ever charged for. The
+    // message names the missing variable and the CONFIGURED mode — and nothing
+    // else, because an error message is a log line and a token in a log line is
+    // a leaked token.
+    assert.throws(
+      () => createBillingClient(mode),
+      (error: Error) => {
+        assert.match(error.message, /POLAR_ACCESS_TOKEN is required/);
+        assert.match(error.message, new RegExp(`OBSTACK_BILLING_MODE=${mode}$`));
+        assert.ok(!/polar_oat_/.test(error.message), "no credential shape in the message");
+        return true;
+      },
+    );
+  });
+}
 
 test("an unknown OBSTACK_BILLING_MODE is refused, not guessed at", () => {
-  process.env.OBSTACK_BILLING_MODE = "polar";
+  // A near-miss, not nonsense: `polar` and `polar-sandbox` are both real now,
+  // so the value most likely to be typed is a third spelling of one of them.
+  process.env.OBSTACK_BILLING_MODE = "polar-production";
   try {
-    assert.throws(billingMode, /must be "fake" or "polar-sandbox"/);
+    assert.throws(billingMode, /must be "fake", "polar-sandbox" or "polar"/);
   } finally {
     delete process.env.OBSTACK_BILLING_MODE;
   }
+});
+
+test("isPolar is the one question about the rail, and it is true of BOTH (D338)", () => {
+  // The predicate exists because the comparison it replaced named a single
+  // rail: `!== "polar-sandbox"` read as "not metering" for production.
+  for (const mode of POLAR_MODES) assert.equal(isPolar(mode), true, mode);
+  assert.equal(isPolar("fake"), false);
+});
+
+/**
+ * Which Polar the client would actually talk to, taken from the request it
+ * makes rather than from the option we passed — the option is only worth
+ * asserting through the host it resolves to. `fetch` is stubbed and throws, so
+ * nothing leaves this process; the URL it was called with is the evidence, and
+ * the token is a placeholder string that is not a credential in any
+ * environment.
+ */
+async function polarHostFor(mode: (typeof POLAR_MODES)[number]): Promise<string> {
+  process.env.POLAR_ACCESS_TOKEN = "test-token-not-a-credential";
+  process.env.OBSTACK_APP_URL = "https://app.invalid";
+  process.env.POLAR_PRODUCT_PRO = "prod_placeholder";
+  const realFetch = globalThis.fetch;
+  const urls: string[] = [];
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    urls.push(input instanceof Request ? input.url : String(input));
+    throw new Error("no network in this test");
+  }) as typeof fetch;
+  try {
+    const client = createBillingClient(mode);
+    assert.equal(client.mode, mode, "the client reports the mode it was built with");
+    await assert.rejects(
+      client.createCheckout({ workspaceId: "ws_alpha", planId: "pro", returnPath: "/app/settings" }),
+    );
+  } finally {
+    globalThis.fetch = realFetch;
+    delete process.env.POLAR_ACCESS_TOKEN;
+    delete process.env.OBSTACK_APP_URL;
+    delete process.env.POLAR_PRODUCT_PRO;
+  }
+  assert.ok(urls.length > 0, "the client attempted a request");
+  return new URL(urls[0]).host;
+}
+
+test("polar-sandbox talks to Polar's sandbox and says so", async () => {
+  assert.equal(await polarHostFor("polar-sandbox"), "sandbox-api.polar.sh");
+});
+
+test("polar talks to Polar's PRODUCTION api and says so (D338/D344)", async () => {
+  // The whole point of the mode: production bills against real money, and the
+  // only thing that selects it is `OBSTACK_BILLING_MODE=polar`.
+  assert.equal(await polarHostFor("polar"), "api.polar.sh");
 });
 
 test("a fake checkout returns to OUR return path carrying its id", async () => {

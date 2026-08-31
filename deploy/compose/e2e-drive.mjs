@@ -145,9 +145,10 @@
  * THE BILLING RAIL HERE IS THE FAKE, ALWAYS (D168). It is not a stub: a checkout
  * is created, the browser is redirected to OUR return path with a real id, the
  * settings page reads it back and writes the plan row, so the whole return
- * reconciliation the sandbox exercises is exercised here with no third party in
- * it. `polar-sandbox` is for the evidence run and the drive refuses to run under
- * it rather than quietly billing against someone's sandbox organisation.
+ * reconciliation the Polar rails exercise is exercised here with no third party
+ * in it. The Polar modes are elsewhere — `polar-sandbox` for the evidence run,
+ * `polar` for a production deployment (D338) — and the drive refuses to run
+ * under EITHER rather than quietly billing against a real Polar organisation.
  *
  * LEGS CARRIED FORWARD (L5) from the two deleted harnesses, whose covered logic
  * still exists on the wired surfaces: page-1/page-2 totals and page-2
