@@ -42,6 +42,21 @@ Not deployed: the collector (customers export from their side; the D101 endpoint
 - **M11 — the ingest listens on `:4317` gRPC, `:4318` HTTP, `:8080` admin** (`config.go:70-72`, env-overridable); `/ingest healthcheck` subcommand probes admin `/healthz` (`main.go:45-51`); distroless image has no shell/curl. Web has no `/healthz` route — CI probes `GET /login` (`images.yml:106`), the mock probe `GET /app` (`:89`).
 - **M12 — Railway platform facts:** in `<scratchpad>/railway-facts.md` (research agent, official docs only, quoted) — folded into R1–R14 below when it lands; **nothing in the tasks may rest on a Railway behaviour that file marks "not documented".**
 
+## Railway facts (R1–R14 — official docs only, quoted in `<scratchpad>/railway-facts.md`; copied to `.planning/2026-08-31-s5-railway-facts.md`)
+- **R1 multi-port domains: YES** — one service, many custom domains, each with its own Target Port (`railway domain <host> --port <n>`). `ingest.obstack.dev→4318` + `ingest-grpc.obstack.dev→4317` is expressible.
+- **R2 gRPC/HTTP2 through the edge proxy: NOT DOCUMENTED** either way; the only documented protocol-agnostic path is the TCP Proxy, which yields `*.proxy.rlwy.net:PORT`, not a custom domain. → gRPC on a custom domain must be proven live on staging or the launch is HTTP-only with `OBSTACK_PUBLIC_OTLP_GRPC_ENDPOINT` unset (K4).
+- **R3 private networking:** `<service>.railway.internal`; **unavailable during builds**; environments created after 2025-10-16 are dual-stack (older: IPv6-only).
+- **R4 volumes:** one per service; **a volume-backed service cannot run replicas**; mount path configurable; redeploys preserving data is implied, not stated (Unknown 3).
+- **R5 private registry (GHCR): supported, PRO-PLAN-GATED** ("Private registry credentials are available on the Pro plan"); a PAT with `read:packages`. `railway redeploy` re-pulls the configured reference → deploy by changing the image reference to the new immutable `sha-` tag, never by moving a mutable tag. **Rollback is dashboard-only** (no CLI command documented, Unknown 7); retention window unnumbered (Unknown 8).
+- **R6 Dockerfile builds:** `RAILWAY_DOCKERFILE_PATH` + Root Directory per service; service variables are exposed as build ARGs. (Fallback to K1(b) if GHCR is refused.)
+- **R7 CLI:** Homebrew install; browser login or `RAILWAY_TOKEN` (project) vs `RAILWAY_API_TOKEN` (account); `railway link`, `railway variable set` (Unknown 6: `variables --set` spelling), `railway domain`, `railway up`/`redeploy`, `railway logs`.
+- **R8 config-as-code:** `railway.json`/`.toml` per service via an absolute repo path in service settings; fields: builder, dockerfilePath, startCommand, healthcheckPath/Timeout, restartPolicy, numReplicas, region.
+- **R9 healthchecks:** `healthcheckPath` on the service's port; new deployment must pass before the old is retired (zero-downtime shape as documented).
+- **R10 DNS/TLS:** automatic certificates; subdomains via CNAME; apex needs ALIAS/ANAME or flattening — **Squarespace's apex support is Unknown 5** (verify at T0; fallback: apex → Squarespace forward to `www`, or move DNS to a flattening provider — user's call).
+- **R11 pricing (fetched 2026-08-31, page undated):** Hobby $5/mo, Pro $20/mo; **Hobby custom-domain support not stated (Unknown 4)**; Pro required for R5 regardless.
+- **R12 datastores:** ClickHouse = marketplace template (not officially maintained); Postgres docs bless running your own image instead of the managed template → own pinned images (K7) is doc-sanctioned.
+- **R13 regions:** four, per-service (EU present). **R14 sleeping:** only if a service opts into "Serverless" — always-on by default (ingest safe).
+
 ## Advisor decisions
 <!-- filled at kickoff (Step 2); D-numbers continue the project ledger from D331 -->
 
@@ -180,4 +195,4 @@ Not deployed: the collector (customers export from their side; the D101 endpoint
 - lesson: —
 
 ## Run log
-- 2026-08-31 — intake (Step 1): M1–M12 measured; topology drafted; Railway facts researched from official docs (agent); Step 0 confirmed (defaults, limit 3). Advisor kickoff next.
+- 2026-08-31 — intake (Step 1): M1–M12 measured; topology drafted; Railway facts R1–R14 from official docs (agent, 49 tool calls); Step 0 confirmed (defaults, limit 3) + user round (K0/T4/K5/K9). Advisor kickoff dispatched.
