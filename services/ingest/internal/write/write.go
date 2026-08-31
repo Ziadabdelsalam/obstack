@@ -94,6 +94,13 @@ type Config struct {
 	// SeriesCap bounds the per-workspace active-series count
 	// mapping.NewSeriesCache admits (D376). Defaults to DefaultSeriesCap; tests
 	// lower it to prove the cap without generating 25,000 series.
+	//
+	// TEST SEAM ONLY (D385): the cap is a product constant, cross-pinned to
+	// the web's SERIES_CAP by a parity test — never wire this to an env var,
+	// a flag, or chart values. Making it deployment-configurable is a
+	// pre-registered advisor escalation whose precondition is a web-visible
+	// source of the effective value (D13): a cap the product cannot state is
+	// not one an operator should be able to move.
 	SeriesCap int
 
 	// Prices resolves the price table a workspace's spans are costed with: the
