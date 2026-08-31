@@ -60,7 +60,7 @@ instead of OTLP. Every domain below is created with its port:
 | `obstack.dev`, `www.obstack.dev` | `marketing` | `3000` |
 | `app.obstack.dev` | `web` | `3000` |
 | `ingest.obstack.dev` | `ingest` | `4318` (OTLP/HTTP + `/v1/integrations/{vercel,cloudwatch}`) |
-| `ingest-grpc.obstack.dev` | `ingest` | `4317` — **only** if the D336 staging gRPC proof passes (one span exported over TLS via the vendored `@opentelemetry/exporter-trace-otlp-grpc`, arrival confirmed in the UI by the K0 walker). If it fails, this domain is never created and `OBSTACK_PUBLIC_OTLP_GRPC_ENDPOINT` stays unset. Record the verdict here: `gRPC staging proof: PASS / FAIL — date, evidence link ___` |
+| `ingest-grpc.obstack.dev` | `ingest` | **never created.** D336 verdict: **gRPC: FAIL, measured 2026-08-31** — Railway's edge 502s h2 to the container on the domain (the vendored `@opentelemetry/exporter-trace-otlp-grpc` returned `14 UNAVAILABLE: Received HTTP status code 502`, 3/3 attempts; a raw h2 POST also 502). The second domain does not exist and `OBSTACK_PUBLIC_OTLP_GRPC_ENDPOINT` stays unset **everywhere** (staging and production). Re-litigate only with new platform facts — this is not a retry-until-it-works situation. |
 | — | `ingest` admin (`:8080`, `/healthz` `/metrics`) | **never public** — private networking / healthcheck routing only |
 | — | `clickhouse`, `postgres` | **never public** — reached only over `<service>.railway.internal` from `web` and `ingest` |
 
@@ -178,6 +178,14 @@ workaround (e.g. never hand-editing the Dockerfile to hardcode a value).
   that commit are green. Absent → staging deploys are **manual redeploys**
   triggered by the operator after `master`'s CI run is green (never
   auto-deploy on red).
+- **W4 checklist — D336 propagation.** Production `web` sets
+  `OBSTACK_PUBLIC_OTLP_HTTP_ENDPOINT=https://ingest.obstack.dev` and leaves
+  `OBSTACK_PUBLIC_OTLP_GRPC_ENDPOINT` unset (the gRPC verdict above is FAIL
+  everywhere, not staging-only). The post-cut-over smoke run (§8) includes
+  the D277 rendering arm (`OBSTACK_SMOKE_APP_SESSION_COOKIE` +
+  `OBSTACK_SMOKE_EXPECTED_OTLP_HTTP=https://ingest.obstack.dev`) — this is
+  what actually proves the onboarding page shows the real endpoint and never
+  a loopback address in production, not just that the variable is set.
 
 ## 2. Variable names per service (names only — see `.env.example`)
 
@@ -456,13 +464,21 @@ OBSTACK_SMOKE_APP_URL=https://app.obstack.dev \
 OBSTACK_SMOKE_INGEST_URL=https://ingest.obstack.dev \
 OBSTACK_SMOKE_INGEST_GRPC_URL=https://ingest-grpc.obstack.dev \
 OBSTACK_SMOKE_API_KEY=<operator-issued key, revoked after use> \
+OBSTACK_SMOKE_APP_SESSION_COOKIE=<a signed-in session cookie, revoked after use> \
+OBSTACK_SMOKE_EXPECTED_OTLP_HTTP=https://ingest.obstack.dev \
 npx tsx deploy/railway/smoke.ts
 ```
 
 Any URL left unset skips that host's probes with a printed `SKIPPED (unset)`
 line — never silently. `OBSTACK_SMOKE_INGEST_GRPC_URL` and
 `OBSTACK_SMOKE_API_KEY` are optional; the gRPC leg only runs when both a
-gRPC URL and an API key are set. Exit code is non-zero if any probe fails.
-Run this against `staging` before the K0 qa-team pass, and again against
-`production` after each cut-over step in §5 and after every deploy/rollback
-in §3.
+gRPC URL and an API key are set — moot at launch (D336 FAIL, above).
+`OBSTACK_SMOKE_APP_SESSION_COOKIE` and `OBSTACK_SMOKE_EXPECTED_OTLP_HTTP`
+are optional; the D277 rendering arm (`/app/onboarding`) only runs when the
+app URL, the cookie and the expected endpoint are all set — it asserts the
+real HTTP endpoint renders, no loopback address appears, and gRPC is
+structurally absent from the page (see the arm's own comment in
+`smoke.ts` for why that stands in for a literal absence sentence there).
+Exit code is non-zero if any probe fails. Run this against `staging` before
+the K0 qa-team pass, and again against `production` after each cut-over
+step in §5 and after every deploy/rollback in §3.
