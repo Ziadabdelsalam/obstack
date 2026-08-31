@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import { API_KEY_PLACEHOLDER } from "@/components/connections/connectors";
@@ -25,6 +25,12 @@ const HERE = import.meta.dirname;
 const REPO_ROOT = path.resolve(HERE, "../../../../..");
 
 const source = readFileSync(path.join(HERE, "Quickstart.tsx"), "utf8");
+// D322: the three snippet functions moved out of the component verbatim, so the
+// byte-check follows them. `Quickstart.tsx` keeps the tabs' CHROME (the tab bar,
+// the copy button, the arrival panel) and this file still reads it for those;
+// every assertion about what a snippet SAYS reads `snippets.ts`, which is now
+// the one definition the docs corpus renders from too.
+const snippets = readFileSync(path.join(HERE, "snippets.ts"), "utf8");
 const pyReadme = readFileSync(path.join(REPO_ROOT, "packages/obstack-py/README.md"), "utf8");
 const jsReadme = readFileSync(path.join(REPO_ROOT, "packages/obstack-js/README.md"), "utf8");
 const jsPackage = JSON.parse(
@@ -39,10 +45,10 @@ const jsPackage = JSON.parse(
  * render's wording drift while this suite stayed green.
  */
 const GRPC_LINE_TEMPLATE = (() => {
-  const open = source.indexOf("? `\\n\\n# gRPC instead:");
+  const open = snippets.indexOf("? `\\n\\n# gRPC instead:");
   assert.ok(open > 0, "no gRPC line template in snippetsFor");
   const start = open + "? `".length;
-  return source.slice(start, source.indexOf("`", start)).replace(/\\n/g, "\n");
+  return snippets.slice(start, snippets.indexOf("`", start)).replace(/\\n/g, "\n");
 })();
 
 /**
@@ -58,14 +64,15 @@ function tabCode(id: string, endpoints: { http: string | null; grpc: string | nu
   // now a conditional with TWO literals — http-branch first, gRPC-only branch
   // second. Backtick-scan from the id string; neither label nor literal
   // contains a backtick, so the nth backtick pair is the nth literal.
-  const idIdx = source.indexOf(`"${id}"`);
+  const idIdx = snippets.indexOf(`"${id}"`);
   assert.ok(idIdx > 0, `no ${id} tab in the file`);
   const literalAt = (which: number): string => {
-    let open = source.indexOf("`", idIdx);
-    for (let i = 0; i < which; i++) open = source.indexOf("`", source.indexOf("`", open + 1) + 1);
-    const close = source.indexOf("`", open + 1);
+    let open = snippets.indexOf("`", idIdx);
+    for (let i = 0; i < which; i++)
+      open = snippets.indexOf("`", snippets.indexOf("`", open + 1) + 1);
+    const close = snippets.indexOf("`", open + 1);
     assert.ok(open > idIdx && close > open, `no code literal ${which} on the ${id} tab`);
-    return source.slice(open + 1, close);
+    return snippets.slice(open + 1, close);
   };
   let code = literalAt(id === "otel" && !endpoints.http ? 1 : 0);
   const grpcLine = endpoints.grpc
@@ -83,6 +90,13 @@ function tabCode(id: string, endpoints: { http: string | null; grpc: string | nu
   return code;
 }
 
+/**
+ * D101's four defects as literals — the list the component, the moved snippet
+ * module and now the docs corpus are all checked against. One array, because
+ * three copies of a ban list is how one of them quietly loses an entry.
+ */
+const BANNED_LITERALS = ["x-obstack-key", "ingest.obstack.dev", "obstack.dev", "ok_live_9f2e"];
+
 /** No override (D266/D277): both loopback defaults, same as every checkout. */
 const DEFAULT_ENDPOINTS = { http: OTLP_HTTP_ENDPOINT, grpc: OTLP_GRPC_ENDPOINT };
 
@@ -98,13 +112,19 @@ test("install lines are the READMEs' verbatim, naming the held package names", (
   assert.ok(pyReadme.includes(pipLine), "the Python README no longer documents that install");
   assert.ok(python.includes(pipLine), "the Python tab must render the README's install line");
 
-  const pack = `npm pack ./packages/obstack-js        # -> obstack-js-${jsPackage.version}.tgz`;
+  // `--pack-destination` is load-bearing, not decoration: without it the
+  // tarball lands in the CWD of the pack (the obstack repo root) while the line
+  // below installs it from the app's directory — the two lines could not both
+  // be run as printed, which is the copy-that-harms D331 refused to defer.
+  const pack =
+    "npm pack ./packages/obstack-js --pack-destination /path/to/your-app" +
+    `   # -> obstack-js-${jsPackage.version}.tgz`;
   const install = `npm install ./obstack-js-${jsPackage.version}.tgz`;
   assert.ok(jsReadme.includes(pack) && jsReadme.includes(install), "the JS README's install moved");
   assert.ok(typescript.includes(pack), "the TypeScript tab must render the README's pack line");
   assert.ok(typescript.includes(install), "the tgz literal must match package.json's version");
   assert.ok(
-    source.includes(`OBSTACK_JS_VERSION = "${jsPackage.version}"`),
+    snippets.includes(`OBSTACK_JS_VERSION = "${jsPackage.version}"`),
     "the mirrored pack version drifted from packages/obstack-js/package.json",
   );
 });
@@ -170,16 +190,26 @@ test("the SEMCONV note is Python's only, and PROTOCOL follows the same rule", ()
 // D101 defect 4: the wire contract is `Authorization: Bearer` (D4/D6), and
 // D101 defect 3 + U1: the endpoint is this environment's, from the one constant.
 test("no forbidden literal survives anywhere in the file", () => {
-  for (const lie of ["x-obstack-key", "ingest.obstack.dev", "obstack.dev", "ok_live_9f2e"]) {
-    assert.equal(source.includes(lie), false, `${lie} is back in the quickstart`);
+  for (const lie of BANNED_LITERALS) {
+    for (const [name, text] of [
+      ["Quickstart.tsx", source],
+      ["snippets.ts", snippets],
+    ] as const) {
+      assert.equal(text.includes(lie), false, `${lie} is back in ${name}`);
+    }
   }
   // The endpoints are interpolated, never spelled: one definition (D215), and
   // the identifiers below appear only as the demo/no-override FALLBACK
   // (D266/D277) — the snippets themselves interpolate `endpoints.http` /
   // `endpoints.grpc`, never the constants directly.
   assert.ok(source.includes("OTLP_HTTP_ENDPOINT") && source.includes("OTLP_GRPC_ENDPOINT"));
-  assert.equal(source.includes(OTLP_HTTP_ENDPOINT), false, "the endpoint is hardcoded again");
-  assert.equal(source.includes(OTLP_GRPC_ENDPOINT), false, "the gRPC endpoint is hardcoded again");
+  for (const [name, text] of [
+    ["Quickstart.tsx", source],
+    ["snippets.ts", snippets],
+  ] as const) {
+    assert.equal(text.includes(OTLP_HTTP_ENDPOINT), false, `${name}: the endpoint is hardcoded again`);
+    assert.equal(text.includes(OTLP_GRPC_ENDPOINT), false, `${name}: the gRPC endpoint is hardcoded again`);
+  }
 });
 
 // D277: D215 deleted the `endpoint` prop when there was nothing to configure;
@@ -215,8 +245,13 @@ test("live arrival is polled, never timed", () => {
 // refactor to re-reach it (S1 L2 / D125/D158). The demo panel is a prop now, so
 // this file must name no mock module in any form.
 test("the live surface has no edge to @/mock/*", () => {
-  assert.equal(/from "@\/mock\//.test(source), false, "Quickstart.tsx imports a mock module again");
-  assert.equal(source.includes("@/mock/"), false, "no mock module is named in this file at all");
+  for (const [name, text] of [
+    ["Quickstart.tsx", source],
+    ["snippets.ts", snippets],
+  ] as const) {
+    assert.equal(/from "@\/mock\//.test(text), false, `${name} imports a mock module again`);
+    assert.equal(text.includes("@/mock/"), false, `${name} names a mock module at all`);
+  }
   assert.equal(source.includes("allTraces"), false, "the mock rows are reachable from the live file");
   assert.ok(source.includes("demoArrival"), "the demo panel arrives as a prop from the mock caller");
 });
@@ -232,7 +267,7 @@ test("the issued token never leaves client state", () => {
   // string the connector steps interpolate against (D204/D210).
   assert.equal(API_KEY_PLACEHOLDER, "<OBSTACK_API_KEY>");
   assert.ok(source.includes("token ?? API_KEY_PLACEHOLDER"));
-  assert.ok(source.includes("Bearer%20${key}"), "one token slot, filled in one place");
+  assert.ok(snippets.includes("Bearer%20${key}"), "one token slot, filled in one place");
   assert.equal(
     allCode.split(API_KEY_PLACEHOLDER).length - 1,
     3,
@@ -322,9 +357,9 @@ test("display rule — gRPC override alone (D282): SDK tabs go absent with the r
   const grpcOnly = { http: null, grpc: "https://ingest.example.com:4317" };
   // The absence path: sdkTab drops the code and carries httpAbsence, whose
   // template must name the remedy variable and point at the working tab.
-  const absenceIdx = source.indexOf("const httpAbsence =");
+  const absenceIdx = snippets.indexOf("const httpAbsence =");
   assert.ok(absenceIdx > 0, "no httpAbsence in snippetsFor");
-  const absenceBlock = source.slice(absenceIdx, source.indexOf(";", absenceIdx));
+  const absenceBlock = snippets.slice(absenceIdx, snippets.indexOf(";", absenceIdx));
   assert.ok(
     absenceBlock.includes("OBSTACK_PUBLIC_OTLP_HTTP_ENDPOINT"),
     "the absence line must name the remedy variable",
@@ -356,6 +391,93 @@ test("no corner renders an empty export (D282's class test)", () => {
         /^export [A-Z_]+=\s*$/m.test(code),
         false,
         `${id} rendered an empty export under ${JSON.stringify(corner)}`,
+      );
+    }
+  }
+});
+
+// ---------------------------------------------------------------------------
+// D322 — the snippets are a module because TWO surfaces render them
+//
+// The docs corpus (`src/content/docs/quickstart`) renders the same three tabs
+// through `@/components/docs/QuickstartSnippets`. That only stays one
+// definition if two things hold: the module is importable from a server
+// component, and no page ever hand-copies a line out of it. Both are asserted
+// here rather than reviewed, because a copied install command does not fail —
+// it just gets old, and the person it lies to is a stranger at a terminal.
+// ---------------------------------------------------------------------------
+
+const CONTENT_ROOT = path.resolve(HERE, "../../content");
+
+/** Every published page in the corpus, as text — `.mdx` is what gets rendered. */
+function mdxPages(dir: string): { file: string; source: string }[] {
+  const out: { file: string; source: string }[] = [];
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) out.push(...mdxPages(full));
+    else if (entry.name.endsWith(".mdx")) {
+      out.push({ file: path.relative(CONTENT_ROOT, full), source: readFileSync(full, "utf8") });
+    }
+  }
+  return out;
+}
+const corpus = mdxPages(CONTENT_ROOT);
+
+test("D322: the shared snippet module is pure, so a server component can import it", () => {
+  // A `"use client"` directive or a hook here would make the docs page — a
+  // server component — a client component by import, which is how a snippet
+  // module ends up shipping the whole quickstart to the browser.
+  assert.equal(snippets.includes('"use client"'), false, "snippets.ts took a client directive");
+  for (const hook of ["useState", "useEffect", "useTransition", "useMemo"]) {
+    assert.equal(snippets.includes(hook), false, `snippets.ts calls ${hook}`);
+  }
+  // No imports at all: the endpoints and the key arrive as arguments, which is
+  // what lets one function serve a per-request live render and a build-time
+  // docs render without a second code path. Scanned over the module's
+  // STATEMENTS only — the snippets themselves are template literals containing
+  // `import` lines, which is what a reader is meant to paste into their app.
+  const preamble = snippets.slice(0, snippets.indexOf("`"));
+  assert.ok(preamble.length > 0, "no template literal in snippets.ts at all");
+  assert.equal(/^import /m.test(preamble), false, "snippets.ts imports something");
+  assert.ok(snippets.includes("export function snippetsFor("), "snippetsFor is not exported");
+});
+
+test("D322: Quickstart.tsx renders the module's tabs rather than its own copy", () => {
+  assert.ok(
+    source.includes('import { snippetsFor, type ResolvedEndpoints } from "./snippets";'),
+    "Quickstart.tsx no longer imports the shared snippets",
+  );
+  assert.equal(
+    source.includes("function snippetsFor("),
+    false,
+    "Quickstart.tsx defines snippetsFor again — that is the second definition the move deleted",
+  );
+  assert.ok(source.includes("snippetsFor(token ?? API_KEY_PLACEHOLDER, endpoints)"), "the call site moved");
+});
+
+test("D322: the docs render the snippets, and no page carries a copy of one", () => {
+  assert.ok(corpus.length > 0, "the content corpus is empty — this test would pass by reading nothing");
+  // The positive half first: if no page imports the component, the ban below
+  // is satisfied by a corpus that simply has no quickstart in it.
+  assert.ok(
+    corpus.some((p) => p.source.includes('from "@/components/docs/QuickstartSnippets"')),
+    "no page renders the shared snippets — the ban below would then be vacuous",
+  );
+  // Every install command and every OTLP exporter variable in the corpus comes
+  // from the component. A line matching one of these is a hand-copy.
+  const copied = /pip install|npm install \.\/obstack-js-|OTEL_EXPORTER_OTLP_/;
+  for (const page of corpus) {
+    for (const lie of BANNED_LITERALS) {
+      assert.equal(page.source.includes(lie), false, `${page.file}: ${lie}`);
+    }
+    // An unresolved interpolation is a template that reached the page instead
+    // of a value — the `tabCode` guard above, applied to the rendered corpus.
+    assert.equal(page.source.includes("${"), false, `${page.file}: an unresolved interpolation`);
+    for (const [i, line] of page.source.split("\n").entries()) {
+      assert.equal(
+        copied.test(line),
+        false,
+        `${page.file}:${i + 1} hand-copies a snippet line — render it from @/components/docs/QuickstartSnippets instead: ${line.trim()}`,
       );
     }
   }

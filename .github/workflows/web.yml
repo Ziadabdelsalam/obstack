@@ -16,9 +16,14 @@ defaults:
   run:
     # Single path anchor for this job (K3-ii): the workspace root. CI runs the
     # exact same root-delegated commands the runbooks tell humans to run (`npm
-    # ci`/`npm test`/`npm run build`) — one definition of the suite for both —
+    # ci`/`npm run build`/`npm test`) — one definition of the suite for both —
     # and those root scripts cover `apps/web` transitively via the npm
     # workspace wiring, so this anchor does not need to chase the app's path.
+    #
+    # The build runs BEFORE the tests (S4.4 R1 should-fix A): two arms read the
+    # prerendered HTML, and a suite that runs first can only skip them. The
+    # compose stack still comes up before both, because the DSN-backed
+    # integration tests dial it.
     working-directory: .
 
 jobs:
@@ -28,7 +33,17 @@ jobs:
     # for the 360-minute GitHub default.
     timeout-minutes: 15
     steps:
+      # `fetch-depth: 0`, not the action's default of 1 (S4.4 R1 should-fix A).
+      # `src/lib/docs/changelog.test.ts` asks THIS repository when each
+      # changelog entry's named merge commit landed (`git log -1 --format=%cd`
+      # on the sha). A depth-1 checkout has the files and none of the commits,
+      # so that arm found no object, said so, and returned — a green run in
+      # which the only check that can catch a mistyped date never ran. The
+      # arm now fails under `CI` instead of skipping, and this is what keeps it
+      # able to pass.
       - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
 
       # D160, and the cheapest step in this job so it runs before anything boots.
       # One key class exists and its prefix is `ok_live_` (D139); the two
@@ -80,6 +95,23 @@ jobs:
           cache: 'npm'
 
       - run: npm ci
+
+      # BEFORE the tests, deliberately (S4.4 R1 should-fix A). Two arms of the
+      # suite read `apps/web/.next/server/app` — the fence's rendered-page
+      # sweep (`src/app/landing-fence.test.ts` (b')) and the docs' body-link
+      # check (`src/lib/docs/doc-links.test.ts`) — because a claim that only
+      # appears once a page is COMPOSED cannot be caught by reading sources.
+      # `npm test` does not build, so with the build after it those arms
+      # skipped here for a whole sprint while passing on developer machines
+      # that happened to have a `.next`. Both now fail under `CI` when the
+      # directory is missing, which makes this ordering load-bearing rather
+      # than a preference: move it back down and the job goes red naming this
+      # step.
+      #
+      # No env: `resolveMode()` defaults to "mock" (server/data.ts:52), which
+      # is the mode that prerenders `/`, `/login`, `/signup` and both docs
+      # mounts as static HTML — the artifacts those two arms read.
+      - run: npm run build
 
       # D36 skip trap, mirroring go.yml's: the ClickHouse integration tests
       # skip themselves when no ClickHouse answers, and the Postgres ones when
@@ -167,8 +199,6 @@ jobs:
           fi
 
           exit "$status"
-
-      - run: npm run build
 
       # S4.2: the CloudWatch forwarder is the one deployable artifact that runs
       # in someone else's AWS account (D254), so both halves of it are exercised

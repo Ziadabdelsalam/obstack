@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Search } from "lucide-react";
 import { storyTraces } from "@/mock/stories";
-import { isLiveWiredRoute } from "@/lib/live-routes";
+import { isLiveWiredRoute, isProductChromeRoute } from "@/lib/live-routes";
 
 interface Item {
   label: string;
@@ -66,8 +66,13 @@ const traceItems: Item[] = storyTraces.map((t) => ({
  * is a public marketing route the predicate does not speak for.
  */
 function hintFor(item: Item, live: boolean): string {
-  if (!live) return item.hint;
   const path = item.href.split("?")[0];
+  // D321: product chrome is labelled for what it is in BOTH modes. "sample
+  // data" would be false about the docs in live mode, and "page" says nothing
+  // about the one entry in this list that is documentation rather than a
+  // surface — so the chrome class answers before the mode does.
+  if (isProductChromeRoute(path)) return "docs";
+  if (!live) return item.hint;
   if (!path.startsWith("/app")) return item.hint;
   return isLiveWiredRoute(path) ? item.hint : "sample data";
 }

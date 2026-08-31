@@ -36,3 +36,41 @@ export function isLiveWiredRoute(pathname: string): boolean {
     route.endsWith("/") ? pathname.startsWith(route) : pathname === route,
   );
 }
+
+/**
+ * PRODUCT CHROME (D321) — the third class, beside "live-wired" and "not yet
+ * wired".
+ *
+ * D21 split `/app/*` in two: a route either reads the workspace's real data in
+ * live mode, or it renders sample content and says so. `/app/docs` is neither.
+ * It reads no workspace data in either mode, and what it renders is TRUE in
+ * both — the same MDX corpus the public `/docs` serves, byte for byte, out of
+ * the same build.
+ *
+ * Both existing labels are therefore lies about it, in opposite directions:
+ * adding it to `liveWiredRoutes` would claim it reads the facade, and leaving
+ * it out puts "SAMPLE DATA — preview" over a real self-hosting instruction in
+ * live mode and "every screen here is sample data from a fictional company"
+ * under it in mock mode — the second one on the public demo host, where the
+ * docs are the thing a stranger came to read.
+ *
+ * So chrome is named as its own class and consumed by the three surfaces that
+ * label routes: `SampleDataBadge` (renders nothing), `CommandPalette.hintFor`
+ * (hint "docs", never "sample data"), and `DemoFooter` (renders nothing).
+ * `liveWiredRoutes` above is untouched — chrome is never smuggled into the
+ * live set to buy silence.
+ *
+ * Same matching rule as `liveWiredRoutes`: an entry ending in "/" matches its
+ * whole subtree, any other entry is exact. `/app/docs` is both, because the
+ * mount owns its own base path and every page under it.
+ */
+export const productChromeRoutes: readonly string[] = [
+  "/app/docs", // the docs mount — the public /docs corpus inside the shell
+  "/app/docs/",
+];
+
+export function isProductChromeRoute(pathname: string): boolean {
+  return productChromeRoutes.some((route) =>
+    route.endsWith("/") ? pathname.startsWith(route) : pathname === route,
+  );
+}

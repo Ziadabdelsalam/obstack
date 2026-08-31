@@ -2,7 +2,7 @@
 
 **Every layer. One trace.** Observability for AI software — obstack joins your API, agents, LLM calls, and infrastructure into a single correlated trace.
 
-This repo contains **Phase 0**, the frontend prototype — a marketing landing page plus the full app UI on realistic mock data — and **Phase 1**, the core pipeline: an OTLP ingest service writing to ClickHouse, which the traces and overview surfaces read for real.
+This repo holds the whole stack: the Next.js web app (`apps/web/` — the marketing site, the product UI, and the docs corpus at `apps/web/src/content/docs/`), the Go OTLP ingest service that prices and writes telemetry to ClickHouse (`services/ingest/`), the two obstack SDKs (`packages/obstack-py/`, `packages/obstack-js/`), the self-host bundle — Docker Compose (`deploy/compose/`) and a Helm chart (`deploy/helm/obstack/`) — and the demo and sample apps that prove the pipeline end to end (`demo/`).
 
 ## Run it (mock data)
 
@@ -13,6 +13,9 @@ npm run dev
 
 - `/` — landing page
 - `/app` — the product mock (overview, traces, unified trace view, connections, quickstart)
+- `/docs` — the documentation, and `/app/docs` the same pages inside the product shell
+
+The docs are written from `apps/web/src/content/docs/` and ship inside the app in both build modes; `/docs/quickstart` is the page to start on.
 
 Best demo path: open `/app/traces/a3f8c1d92b6e407f` (the OOM-kill story) and hit **Explain this trace**.
 
@@ -71,8 +74,12 @@ The real releases publish at launch; today both install from source, which is
 what the sample apps and the in-product quickstart do:
 
 ```bash
-pip install './packages/obstack-py[fastapi]'                       # Python
-npm pack ./packages/obstack-js && npm install ./obstack-js-0.1.0.tgz  # TypeScript
+# Python — from the obstack repo root
+pip install './packages/obstack-py[fastapi]'
+
+# TypeScript — pack from the obstack repo root; install from your app's directory
+npm pack ./packages/obstack-js --pack-destination /path/to/your-app   # -> obstack-js-0.1.0.tgz
+npm install ./obstack-js-0.1.0.tgz
 ```
 
 ### What is actually instrumented
@@ -134,26 +141,30 @@ Everything visual is real code (Next.js + Tailwind + Recharts). With `OBSTACK_DA
 
 Nine checks run on every pull request against `master`: `web`, `go`, `lint`, `kind`, `images`, `e2e`, `sdk-py`, `sdk-js`, `sdk-e2e`. A tenth, `stack`, is deliberately **not** in that set: since S4.3 it runs on a path filter for pull requests, on **every push to `master`**, and on `workflow_dispatch` — see its bullet below. Workflow definitions live in `.github/workflows/{web,go,lint,kind,images,stack,e2e,sdk-py,sdk-js,sdk-e2e}.yml`. Making any of them *blocking* is branch protection, which is not configured yet — see "Required checks" below.
 
-- **`web`** (`.github/workflows/web.yml`) — Node 24, the active-LTS major meeting Next 16.3's documented floor (20.9.0+, per `node_modules/next/dist/docs/01-app/02-guides/upgrading/version-16.md`). Brings up ClickHouse **and `ingest`** via the same compose services local dev uses (ingest owns the schema, so a bare ClickHouse has no `obstack` database for the ClickHouse-backed tests to read), then runs `npm ci` against the committed `package-lock.json`, `npm test` (the tsx `node:test` runner) and `npm run build`. Like `go`, it fails on any unexpected test skip — the `node:test` runner's own skipped-count must be present and must agree with the skip lines the trap can see, so a self-skipping integration test cannot read as coverage it doesn't have. `setup-node`'s `cache: 'npm'` caches npm's package download cache only, keyed on `package-lock.json`; no `.next` build output is cached, because a cache keyed on `package-lock.json` alone would risk reusing prerenders across `OBSTACK_DATA_MODE` changes (the M1 F6 finding). CI therefore always builds from a clean checkout.
+- **`web`** (`.github/workflows/web.yml`) — Node 24, the active-LTS major meeting Next 16.3's documented floor (20.9.0+, per `node_modules/next/dist/docs/01-app/02-guides/upgrading/version-16.md`). Brings up ClickHouse **and `ingest`** via the same compose services local dev uses (ingest owns the schema, so a bare ClickHouse has no `obstack` database for the ClickHouse-backed tests to read), then runs `npm ci` against the committed `package-lock.json`, `npm run build`, and *then* `npm test` (the tsx `node:test` runner). **Build before test is load-bearing, not a preference** (`web.yml` orders it so and says why): two arms of the suite read the prerendered pages under `apps/web/.next/server/app` — the landing fence's rendered-page sweep (`src/app/landing-fence.test.ts`) and the docs' body-link check (`src/lib/docs/doc-links.test.ts`) — because a claim that only appears once a page is *composed* cannot be caught by reading sources. `npm test` does not build, so with the build after it those arms silently skipped for a whole sprint while passing on developer machines that happened to have a stale `.next`. Both now fail under `CI` when the directory is missing, so undoing the order turns the job red naming the step. Like `go`, it fails on any unexpected test skip — the `node:test` runner's own skipped-count must be present and must agree with the skip lines the trap can see, so a self-skipping integration test cannot read as coverage it doesn't have. `setup-node`'s `cache: 'npm'` caches npm's package download cache only, keyed on `package-lock.json`; no `.next` build output is cached, because a cache keyed on `package-lock.json` alone would risk reusing prerenders across `OBSTACK_DATA_MODE` changes (the M1 F6 finding). CI therefore always builds from a clean checkout.
 - **`go`** (`.github/workflows/go.yml`) — Go 1.25.4 (pinned in `services/ingest/go.mod`), anchored on `services/ingest`. Brings up ClickHouse via the same compose service local dev uses and Postgres as a service container (it needs nothing but environment, where ClickHouse needs `deploy/compose`'s `users.d` — which a container starting before checkout cannot mount), then runs `gofmt -l`, `go vet ./...` and `go test -v -count=1 ./...` against both, carrying the two D11 ClickHouse users (`obstack_ingest` write, `obstack_web` readonly) and the Postgres DSN the migration set's integration tests need. `-count=1` is load-bearing — without it, Go can replay a cached package result from `GOCACHE` and report "PASS" without ever contacting ClickHouse. Any `--- SKIP` in the test output fails the job: a ClickHouse-dependent test that can't reach a server errors instead of silently skipping and reading as coverage it doesn't have.
+- **`lint`** (`.github/workflows/lint.yml`) — Node 24; `npm ci`, then one eslint pass over the web app — `npx eslint src --max-warnings 0`, run from `apps/web` where the flat config lives, because a repo-root invocation finds no config and dies before linting anything. Born clean by ruling: D261 refused a lint job with carve-outs, so the six recorded pre-existing errors and the one warning were fixed in the same change that added the file, and the gate runs at zero warnings. A finding here is a defect to fix, never a baseline to ignore. **Trigger policy**: every PR, plus `workflow_dispatch`; measured **47s** on the first runner (PR #23), far under the ~6-minute line.
 - **`kind`** (`.github/workflows/kind.yml`) — builds the demo agent image (`demo/agent-app/Dockerfile`) tagged with the commit SHA, creates a kind cluster, loads that image in (`imagePullPolicy: Never` makes a registry fallback impossible), and applies the proof workload (`.github/ci/kind-proof-workload.yaml`). After the pod reports Ready, the job waits for it to emit real telemetry against a deliberately black-holed OTLP endpoint and confirms it stayed `Running`/`Ready` anyway — proving the OpenTelemetry SDK's fail-open property, not just that the container started. **Trigger policy**: runs on every PR, same as `web` and `go` — there is no label or manual trigger, so opening a PR or pushing to its branch is what fires it. Measured end-to-end wall-clock (job start to cluster teardown) is ~1m37s (run [31933353051](https://github.com/Ziadabdelsalam/obstack/actions/runs/31933353051)), well under the ~6-minute line the trigger policy is decided on — past that line the job would move to a `ci:kind` label + push-to-`master` + `workflow_dispatch` trigger and drop out of the required-checks set rather than leave a required check some PRs never fire.
-- **`stack`** (`.github/workflows/stack.yml`) — stands the whole stack up on a kind cluster through the real Helm chart (`deploy/helm/obstack/`, the only kind path — D35) by running `deploy/helm/obstack/acceptance.sh`, the exact script the chart README tells a human to run. It drives one `POST /chat` at the demo app and asserts the sprint's correlation evidence through the tsx facade harness against the cluster's ClickHouse: the four-layer waterfall, ≥1 solid log row with pod metadata, ≥1 nearby row from the uninstrumented sidecar, and zero duplicated bodies. **Trigger policy**: the job crossed the ~6-minute line and stayed there — 5m58s–7m17s across its runs since S4.1 — so the pre-committed over-branch fired and `stack` **left the every-PR set**. On pull requests it now runs only when the change touches what `acceptance.sh` actually builds (`deploy/**`, `services/ingest/**`, `demo/agent-app/**`, `apps/web/**`, `package.json`, `package-lock.json`, `packages/obstack-js/package.json`, and the workflow file itself); it runs on **every push to `master`**; and `workflow_dispatch` is there to force it by hand. Because `apps/web/**` is on that list it still fires on most pull requests — the time reclaimed comes from `stack` no longer gating a merge, not from the filter. The backstop is that a red `stack` on `master` is stop-the-line for the next PR.
+- **`images`** (`.github/workflows/images.yml`) — the S4.1 exit clause as a job: from a clean checkout it builds both D262 variants of the one web Dockerfile — live-stamped and mock-stamped — plus the ingest image, and then proves the mode stamp is load-bearing against real containers rather than from a unit test: a mock-stamped artifact asked to serve live refuses with exit 1 naming both values, and the live artifact without its `BETTER_AUTH_SECRET` refuses with the `openssl rand -base64 32` instruction (the message is grepped, because "it died" is not the claim). It then serves the mock variant standalone with no stores at all — the D262 public-demo artifact is a bootable thing, not a claim — and finally boots the compose bundle (clickhouse, postgres, ingest, web) from images built at this same commit, waits for every healthcheck, and answers a real request. **Trigger policy**: every PR, plus `workflow_dispatch`; measured **4m37s** on the first runner (PR #23) and 4m17s on the run after it, under the ~6-minute line.
+- **`stack`** (`.github/workflows/stack.yml`) — stands the whole stack up on a kind cluster through the real Helm chart (`deploy/helm/obstack/`, the only kind path — D35) by running `deploy/helm/obstack/acceptance.sh`, the exact script the chart README tells a human to run. It drives one `POST /chat` at the demo app and asserts the sprint's correlation evidence through the tsx facade harness against the cluster's ClickHouse: the four-layer waterfall, ≥1 solid log row with pod metadata, ≥1 nearby row from the uninstrumented sidecar, and zero duplicated bodies. **Trigger policy**: the job crossed the ~6-minute line and stayed there — 5m58s–7m17s across its runs since S4.1 — so the pre-committed over-branch fired and `stack` **left the every-PR set**. On pull requests it now runs only when the change touches what `acceptance.sh` actually builds (`deploy/**`, `services/ingest/**`, `demo/agent-app/**`, `apps/web/**`, `package.json`, `package-lock.json`, `packages/obstack-js/package.json`, and the workflow file itself); it runs on **every push to `master`**; and `workflow_dispatch` is there to force it by hand. Because `apps/web/**` is on that list it still fires on most pull requests — the time reclaimed comes from `stack` no longer gating a merge, not from the filter. The backstop is that a red `stack` on `master` is stop-the-line for the next PR. Since S4.3 the recorded band watches **master pushes**, not PR runs (D318): PR #23, which changed `package-lock.json`, ran **9m37s** — the web image's dependency layer missed the layer cache and rebuilt, and the very next run on the same lockfile with a warm cache was **7m23s** — while the first master-push run, necessarily cold because no master `stack` run had ever exported a cache, was **15m47s** and is recorded as the seed of that cache scope, not as a datum; the watch's first datum is the second master push, against the 5m58s–7m17s prior.
 - **`e2e`** (`.github/workflows/e2e.yml`) — the tenancy exit assertion as a check (D107): it brings the compose stack up, runs `bash deploy/compose/smoke.sh` as the pipeline floor (D136 — that harness had no CI run of record before this), and then runs `deploy/compose/e2e-drive.mjs`, the promoted CDP drive, in the three lines `deploy/compose/README.md` tells a human to run. Two strangers sign up through the real form in two fresh throwaway Chrome profiles, each lands in the organization and workspace their own signup created, each gets telemetry seeded for exactly the workspace id the product rendered for them, and the drive then asserts strict disjointness plus the cross-tenant negative probe — one workspace asking for the other's trace id — through the product's own surfaces rather than a query written for the test. It refuses loudly rather than clean up after anything it did not start. **Trigger policy**: every PR — and since S4.3 this job *is* the PR critical path, because `stack` left the every-PR set and the D122 captured-DDL guard moved in here (D298/D306(d)). Recorded band **5m28s–6m02s** across the last 11 successful runs, with the window's worst point **6m44s** (run [32269078423](https://github.com/Ziadabdelsalam/obstack/actions/runs/32269078423)). The ~6-minute line is **held**, not re-based to that band: D207's reclaim — the move to a `ci:e2e` label + push-to-`master` + `workflow_dispatch` and the drop out of the required-checks set — is pre-authorized and executes on the first number over the line, with no return trip for a ruling (D306(d)). The local composite is **84s** — 13s boot + 17s smoke + 54s drive, twice — and excludes both the guard step and what the runner pays most for (`npm ci`, the ingest image build), so it is a floor, not an estimate.
 
 - **`sdk-py`** (`.github/workflows/sdk-py.yml`) — Python 3.14; runs `packages/obstack-py`'s "Development" block verbatim: a venv, one editable install with the `[fastapi]` extra plus the exactly-pinned `requirements-dev.txt`, then `pytest packages/obstack-py`. Split from `sdk-js` rather than combined so a red check names the language at fault. It does not build a wheel — `sdk-e2e` does, because the sample's image installs the package for real. **Trigger policy**: every PR; measured 18.0s with a warm pip cache and 34.8s with an empty one (Apple M4, 10 cores, Python 3.14.6), far under the ~6-minute line.
-- **`sdk-js`** (`.github/workflows/sdk-js.yml`) — Node 24; `npm ci`, then `npm test --workspace packages/obstack-js` (the repo's `tsx --test` / `node:test` runner, 68 tests driving the real `openai`, `@anthropic-ai/sdk` and `ai` clients against local fakes) and `npm run build --workspace packages/obstack-js`. The build step is not decoration: `tsx` strips types without checking them, so nothing in the test command would notice a type error. **Trigger policy**: every PR; measured locally at 17.5s for the suite and 0.8s for the build with dependencies installed (Apple M4) — the runner's own number returns with the PR that added the `ai` 7 and Responses legs.
-- **`sdk-e2e`** (`.github/workflows/sdk-e2e.yml`) — runs `bash deploy/compose/sdk-evidence.sh` and nothing else: the SDK exit evidence, one command, from destroyed compose volumes (see "The SDKs" above for what it asserts). **Trigger policy**: every PR, same as every other check here, plus `workflow_dispatch`. Measured end to end on real runs of the job — ~3m43s (run [32050575928](https://github.com/Ziadabdelsalam/obstack/actions/runs/32050575928)) and ~3m44s (run [32052107372](https://github.com/Ziadabdelsalam/obstack/actions/runs/32052107372)) — comfortably under the ~6-minute line. Those numbers measured a **two-sample** job; since S4.3 it boots three (`demo/sdk-sample-ts-ai7` joined it, D307). The recorded worst point of the two-sample job was **4m04s** (run [32668332270](https://github.com/Ziadabdelsalam/obstack/actions/runs/32668332270)), and the projected worst point with the twin is **~5m23s** — a ~45s allowance for its image over CI9's measured 38s, ~8s for its boot and trace selection, ~24s for its OTLP and fail-open legs — still under the ~6-minute line. The real number returns with the first runner. A first policy set from a local 6m01s (destroyed volumes *and* an empty docker builder cache, on the machine described above) was corrected once the runner's own numbers existed: the deciding machine for a trigger policy is the runner. The `stack` job was left alone rather than extended, so no signed job's trigger policy depends on this one.
+- **`sdk-js`** (`.github/workflows/sdk-js.yml`) — Node 24; `npm ci`, then `npm test --workspace packages/obstack-js` (the repo's `tsx --test` / `node:test` runner, 70 tests driving the real `openai`, `@anthropic-ai/sdk` and `ai` clients against local fakes) and `npm run build --workspace packages/obstack-js`. The build step is not decoration: `tsx` strips types without checking them, so nothing in the test command would notice a type error. **Trigger policy**: every PR; the runner's own number returned with the PR that added the `ai` 7 and Responses legs — **1m06s** on PR #23 (57s on the run after it), against ~21s for the suite locally with dependencies installed (Apple M4).
+- **`sdk-e2e`** (`.github/workflows/sdk-e2e.yml`) — runs `bash deploy/compose/sdk-evidence.sh` and nothing else: the SDK exit evidence, one command, from destroyed compose volumes (see "The SDKs" above for what it asserts). **Trigger policy**: every PR, same as every other check here, plus `workflow_dispatch`. Measured end to end on real runs of the job — ~3m43s (run [32050575928](https://github.com/Ziadabdelsalam/obstack/actions/runs/32050575928)) and ~3m44s (run [32052107372](https://github.com/Ziadabdelsalam/obstack/actions/runs/32052107372)) — comfortably under the ~6-minute line. Those numbers measured a **two-sample** job; since S4.3 it boots three (`demo/sdk-sample-ts-ai7` joined it, D307). The recorded worst point of the two-sample job was **4m04s** (run [32668332270](https://github.com/Ziadabdelsalam/obstack/actions/runs/32668332270)), and the projected worst point with the twin is **~5m23s** — a ~45s allowance for its image over CI9's measured 38s, ~8s for its boot and trace selection, ~24s for its OTLP and fail-open legs — still under the ~6-minute line. The real number returned with the first runner: **4m40s** on PR #23 with all three samples aboard (the evidence script itself 242s, **+49s** over the two-sample S4.2 run for the twin's image, boot and its OTLP and fail-open legs) — 43s under the projection, and 4m29s on the run after it. A first policy set from a local 6m01s (destroyed volumes *and* an empty docker builder cache, on the machine described above) was corrected once the runner's own numbers existed: the deciding machine for a trigger policy is the runner. The `stack` job was left alone rather than extended, so no signed job's trigger policy depends on this one.
 
 ### Reproducing each check locally
 
 ```bash
 # web — ClickHouse + ingest first (ingest applies the schema the
-# ClickHouse-backed tests read), from the repo root
+# ClickHouse-backed tests read), from the repo root. Build BEFORE test, the
+# order web.yml runs and for its reason: two arms read the prerendered pages
+# under apps/web/.next/server/app and skip without them (they fail under CI).
 docker compose -f deploy/compose/docker-compose.yml up -d --wait --wait-timeout 120 clickhouse ingest
 npm ci
+npm run build
 CLICKHOUSE_URL=http://127.0.0.1:8123 CLICKHOUSE_USER=obstack_web CLICKHOUSE_PASSWORD=obstack_web_dev \
   npm test
-npm run build
 docker compose -f deploy/compose/docker-compose.yml down -v
 
 # go — both databases first, from the repo root. CI runs Postgres as a service
@@ -171,6 +182,13 @@ OBSTACK_TEST_POSTGRES_DSN=postgres://obstack:obstack_postgres_dev@127.0.0.1:5432
 cd -
 docker compose -f deploy/compose/docker-compose.yml down -v
 
+# lint — from apps/web, where eslint.config lives; a repo-root invocation
+# finds no flat config and dies before linting anything
+npm ci
+cd apps/web
+npx eslint src --max-warnings 0
+cd -
+
 # kind — needs Docker and a local `kind` + `kubectl`
 docker build -t demo-agent:local demo/agent-app
 kind create cluster --name kind-proof
@@ -178,6 +196,26 @@ kind load docker-image demo-agent:local --name kind-proof
 sed 's#IMAGE_PLACEHOLDER#demo-agent:local#' .github/ci/kind-proof-workload.yaml | kubectl apply -f -
 kubectl wait --for=condition=Ready pod/kind-proof-workload --timeout=120s
 kind delete cluster --name kind-proof
+
+# images — needs Docker, from the repo root. The two refusal runs are the
+# point of the job: each container must exit 1 AND say why, so read the
+# message, not just the code. CI wraps both in `timeout 60` and greps the
+# text — a refusal that instead boots and serves forever is the failure being
+# ruled out, and locally that shows up as a container that never exits.
+docker build -t obstack-web:live -f apps/web/Dockerfile --build-arg OBSTACK_DATA_MODE=live .
+docker build -t obstack-web:mock -f apps/web/Dockerfile --build-arg OBSTACK_DATA_MODE=mock .
+docker build -t obstack-ingest:ci services/ingest
+docker run --rm -e OBSTACK_DATA_MODE=live -e BETTER_AUTH_SECRET=probe obstack-web:mock  # exit 1, names both modes
+docker run --rm -e OBSTACK_DATA_MODE=live obstack-web:live  # exit 1, names BETTER_AUTH_SECRET and openssl
+docker run -d --name demo-probe -p 127.0.0.1:3100:3000 -e OBSTACK_DATA_MODE=mock obstack-web:mock
+# the container is still booting when `docker run -d` returns — the same 30x2s
+# wait the job uses, so a cold start reads as slow rather than as broken
+for _ in $(seq 1 30); do curl -fsS -o /dev/null http://127.0.0.1:3100/app && break; sleep 2; done
+docker rm -f demo-probe
+OBSTACK_BETTER_AUTH_SECRET=images-ci-run-secret \
+  docker compose -f deploy/compose/docker-compose.yml up -d --build --wait --wait-timeout 300
+curl -fsS -o /dev/null http://127.0.0.1:3000/login
+docker compose -f deploy/compose/docker-compose.yml down -v
 
 # stack — needs Docker, kind, helm, kubectl, curl, and `npm ci` run once
 kind create cluster --name obstack-stack
@@ -216,5 +254,5 @@ If enforcement is ever enabled, on `master` (Settings → Branches → Add rule)
 
 - Product spec: `docs/superpowers/specs/2026-08-09-obstack-execution-prd.md`
 - Vision/fundraising: `docs/superpowers/specs/2026-08-09-obstack-vision-prd.md`
-- This phase's plan: `.planning/2026-08-09-phase0-frontend-prototype-plan.md`
+- This phase's plan: `.planning/2026-08-23-s4-m4-phase-plan.md` — every earlier phase plan, sprint plan and exit-evidence bundle sits beside it in `.planning/`
 - Screenshots: `docs/screenshots/`

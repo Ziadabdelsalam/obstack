@@ -150,10 +150,13 @@ itself, which is the path `demo/agent-app` shows.
 
 `OTEL_SEMCONV_STABILITY_OPT_IN` is missing from that list on purpose, and
 `demo/agent-app` sets it: without it the FastAPI instrumentation emits the legacy
-`http.method` and the api layer silently dies. `obstack.init()` defaults it to
-`http`, which is measurable here — the api span above carries
-`http.request.method` although nothing in this runbook ever set the variable.
-That default is one of the things the two lines buy.
+`http.method` rather than the stable `http.request.method`. The api layer is not
+what hangs on it — the instrumentation writes `http.route` from the matched route
+in both modes, and `http.route` on its own classifies the span as api. What the
+variable buys is the attribute name the semantic conventions settled on, and
+`obstack.init()` defaults it to `http`, which is measurable here — the api span
+above carries `http.request.method` although nothing in this runbook ever set the
+variable. That default is one of the things the two lines buy.
 
 ## Docker
 

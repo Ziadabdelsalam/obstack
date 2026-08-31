@@ -1,0 +1,57 @@
+export const frontmatter = {
+  title: "Connectors overview",
+  description: "What connects to obstack today, and what is only listed.",
+};
+
+# Connectors
+
+Kubernetes, Docker and any OpenTelemetry source today; the rest of the catalog
+is listed as coming soon.
+
+The catalog in the product holds 19 cards: **3 available** and **16 coming
+soon**. A card marked coming soon is a name and a category — there is nothing to
+click through, and nothing behind it is connected to your workspace.
+
+## Available
+
+| Connector | What it does |
+|---|---|
+| OpenTelemetry (OTLP) | Any OTel SDK or collector. Point your exporter at ingest — three `OTEL_*` variables and no code change. |
+| Kubernetes | The chart brings up a self-contained obstack on your cluster, with a collector DaemonSet that tails every container and attaches pod, namespace and container identity. |
+| Docker | One collector container that tails other containers' Docker logs and ships them as OTLP. |
+
+The OTLP card is the one that matters most: ingest listens for traces and logs
+over both OTLP protocols, gRPC and HTTP, so anything that speaks OTLP is already
+a connector. The [quickstart](/docs/quickstart#send-your-first-trace) has the
+exact export.
+
+The Kubernetes card installs the [Helm chart](/docs/self-hosting/helm-chart),
+which brings up its **own** ingest, ClickHouse and Postgres — the telemetry it
+collects lands in *that* stack, not in the workspace you were reading the card
+from. Connecting an external cluster to a different deployment's ingest needs a
+network-reachable endpoint, which is what the chart's ingest Ingress is for.
+
+The Docker card is not a bare `docker compose --profile collector up`: the
+collector's log include and exclude patterns are keyed by container ID, and the
+bring-up script resolves those IDs before starting it. A container whose SDK
+already ships logs over OTLP should not also have its stdout tailed, or the same
+line lands twice — the script excludes the demo container for exactly that
+reason.
+
+## Coming soon
+
+Vercel, AWS CloudWatch Logs, GCP Cloud Logging, Azure Monitor, Railway, Fly.io,
+Render, Supabase, PostgreSQL, MongoDB, OpenRouter, Vercel AI Gateway, Kafka,
+Redis, GitHub Actions and Cloudflare Workers.
+
+Two of those are a special case worth stating plainly. **Vercel log drains** and
+**AWS CloudWatch Logs** have receivers today: routes on ingest, built and
+exercised in CI against captured payloads. They are still marked coming soon
+because the hosted endpoint a drain or a subscription filter would be pointed at
+is not public yet — and a card's availability is a product claim. **A
+self-hoster can use both today**, against their own ingest:
+
+- [Vercel log drains](/docs/connectors/vercel-log-drains)
+- [AWS CloudWatch Logs](/docs/connectors/aws-cloudwatch)
+
+The other fourteen are names on cards. Nothing has been built behind them.

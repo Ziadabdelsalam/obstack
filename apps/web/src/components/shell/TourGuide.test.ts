@@ -25,28 +25,37 @@ const LOGS_EXPLORER = path.join(HERE, "../logs/LogsExplorer.tsx");
 /**
  * The claim, never written out as a literal in this file: the sweep below reads
  * every checked-in source, INCLUDING this one, so a spelled-out needle would
- * match itself and make the exception list a lie (S2.2 L4 — a sweep is only as
- * good as its own text-ness). Both spellings are hunted.
+ * match itself and make the result a lie (S2.2 L4 — a sweep is only as good as
+ * its own text-ness). Both spellings are hunted.
  *
  * Matching is CASE-INSENSITIVE and that is load-bearing, not tidiness (D67(ii)):
- * the one surviving hit spells the claim with a capital L, so a
- * case-sensitive sweep silently misses it — and would then also miss the claim
- * coming back as a Title-Cased heading, which is exactly how UI copy gets
- * written. `caseSensitiveHits` below proves that difference is real rather than
- * trusting the fold to matter. (This paragraph must never spell the phrase out:
- * the sweep reads this file too.)
+ * UI copy arrives Title-Cased, so a case-sensitive sweep would miss the claim
+ * the moment it came back as a heading — which is how it survived the first
+ * time. Until S4.4 the file that proved this was a real hit in the tree with a
+ * capital letter in it; there is no such file any more, so the proof is BUILT
+ * instead, at the end of the sweep, and it runs through `foldedMatches` — the
+ * same function the sweep filters with (R1). (This paragraph must never spell
+ * the phrase out: the sweep reads this file too.)
  */
 const CLAIM = ["live", "tail"];
 const NEEDLES = [CLAIM.join(" "), CLAIM.join("-")];
 
 /**
- * The one surviving marketing fiction, M3-deferred (the widened D63 item): a
- * landing-page screenshot blurb that annotates no wired surface. The changelog
- * left this list when its copy was repaired (D246) — its remaining comment
- * describes the claim instead of spelling it, so the sweep guards that file
- * like any other. Every OTHER hit in the repo is a regression.
+ * EMPTY, as of S4.4 T5 (D325 class 6). The last entry was a landing-page
+ * screenshot blurb that annotated no wired surface — M3-deferred under the
+ * widened D63 item, and the one file that pinned the claim in place rather than
+ * banning it. Its copy now describes the search the surface performs, so the
+ * sweep has nothing left to excuse: EVERY hit in the repo is a regression.
+ *
+ * The changelog left this list when its copy was repaired (D246); its release
+ * notes are `.mdx` under `src/content/changelog/`, and the prose that explains
+ * what they may not claim (`src/content/changelog/README.md`) describes the
+ * claim instead of spelling it, so the sweep guards those files like any other.
+ *
+ * Nothing below fails on an empty list — see the fold proof at the end of the
+ * sweep, which was made synthetic (D323) for exactly this moment.
  */
-const ALLOWED = ["apps/web/src/components/marketing/ScreensShowcase.tsx"];
+const ALLOWED: string[] = [];
 
 /**
  * Generated or vendored trees, plus `.planning`: the planning record quotes the
@@ -67,7 +76,7 @@ function walk(dir: string, out: string[] = []): string[] {
   return out;
 }
 
-test("D60 sweep: the tail claim survives only in the one named marketing file", () => {
+test("D60 sweep: the tail claim survives nowhere in the repo", () => {
   const scanned = walk(REPO_ROOT);
   // If the walk ever breaks early the assertion below would pass by finding
   // nothing, so the file count is asserted too — the sweep has to have read a
@@ -76,9 +85,34 @@ test("D60 sweep: the tail claim survives only in the one named marketing file", 
 
   const rel = (file: string) => path.relative(REPO_ROOT, file).split(path.sep).join("/");
   const matches = (text: string) => NEEDLES.some((needle) => text.includes(needle));
+  /**
+   * THE folded predicate — one definition, used by the sweep below AND by the
+   * fold proof at the end of this test. Two spellings of "fold the text, then
+   * look" is how a guard comes to guard nothing: written inline at each call
+   * site, the proof exercised `String.prototype.toLowerCase` and said nothing
+   * whatever about whether the SWEEP still folded. Deleting the fold here now
+   * turns the proof red, which is the only arrangement in which it is a proof.
+   */
+  const foldedMatches = (text: string) => matches(text.toLowerCase());
+
+  // D323 — the coverage survived the move. The changelog's four entries were a
+  // hardcoded array in `app/changelog/page.tsx` and the docs were a module
+  // under `src/mock/`; both are now `.mdx` under `src/content/**`. That tree is
+  // swept for one reason only: it is not on SKIP_DIRS. Which is a property of
+  // THIS file, not of the corpus — a `content` entry added to the skip list, or
+  // a corpus moved under a generated directory, would silently take the
+  // product's most public prose out of the sweep's reach. So the sweep is made
+  // to prove it read that prose before its silence means anything.
+  const scannedRel = scanned.map(rel);
+  for (const dir of ["apps/web/src/content/changelog/", "apps/web/src/content/docs/"]) {
+    assert.ok(
+      scannedRel.some((file) => file.startsWith(dir)),
+      `the sweep read no file under ${dir} — the corpus that makes this product's claims to strangers is outside its coverage`,
+    );
+  }
 
   const hits = scanned
-    .filter((file) => matches(readFileSync(file, "utf8").toLowerCase()))
+    .filter((file) => foldedMatches(readFileSync(file, "utf8")))
     .map(rel)
     .sort();
 
@@ -88,16 +122,49 @@ test("D60 sweep: the tail claim survives only in the one named marketing file", 
     "the tail claim appeared somewhere new (or a named exception was repaired without updating this list) — nothing that describes a wired surface may claim a tail (D48/D60)",
   );
 
-  // D67(ii): the fold is not cosmetic. A case-SENSITIVE sweep of the same tree
-  // sees strictly fewer files than the one above, so it would report a repo
-  // already clean of a claim that is still on a page — this asserts the gap
-  // exists rather than trusting the `.toLowerCase()` call to matter.
+  // D67(ii), reshaped by D323: the fold is not cosmetic, and here is the proof
+  // — built, not found.
+  //
+  // This used to assert that the case-SENSITIVE hit set differed from the
+  // case-insensitive one, which said something real only while some file in
+  // the repo happened to spell the claim with a capital letter. The last such
+  // file is the one entry in ALLOWED, and it goes in S4.4 T5: with an empty
+  // allowlist both sets are empty and `notDeepEqual([], [])` fails BY
+  // CONSTRUCTION. The guard against a hollow guard would then have to be
+  // deleted at exactly the moment the sweep first had nothing to find, which
+  // is the wrong direction for a test to move.
+  //
+  // So the fixture is synthetic: the claim, upper-cased at run time — never
+  // spelled in this file, which the sweep also reads — is INVISIBLE to the raw
+  // predicate and VISIBLE once folded, in both of its spellings. That is
+  // precisely what `foldedMatches` above buys, asserted directly, and it holds
+  // whether the allowlist has one entry or none.
+  //
+  // It is asserted THROUGH `foldedMatches`, the same function the sweep filters
+  // with, and that is the whole of the guard: an inline `.toLowerCase()` here
+  // would fold the fixture with the language's own method and pass no matter
+  // what the sweep did — green with the sweep's fold deleted and a shouted
+  // spelling of the claim planted in the tree, which is exactly the failure
+  // this test exists to make impossible.
+  for (const needle of NEEDLES) {
+    const shouted = `## ${needle.toUpperCase()} — the way UI copy actually gets written`;
+    assert.equal(
+      foldedMatches(shouted),
+      true,
+      "the folded sweep no longer sees a shouted spelling of the claim — the fold has stopped doing anything",
+    );
+    assert.equal(
+      matches(shouted),
+      false,
+      "the raw predicate already sees a shouted spelling — the needles are no longer lower-case, so the fold above is silently doing nothing",
+    );
+  }
+
+  // The other half of D67(ii): whatever a case-sensitive sweep of the real tree
+  // finds must be a subset of what the folded one found. Vacuous on a clean
+  // repo, and correct on a dirty one — the assertion that would catch a fold
+  // that had somehow started HIDING files.
   const caseSensitiveHits = scanned.filter((file) => matches(readFileSync(file, "utf8"))).map(rel).sort();
-  assert.notDeepEqual(
-    caseSensitiveHits,
-    hits,
-    "a case-sensitive sweep found the same set — the case-insensitivity D67(ii) requires is no longer being exercised by any fixture, so this guard has gone hollow",
-  );
   for (const hit of caseSensitiveHits) {
     assert.ok(hits.includes(hit), `${hit} matched case-sensitively but not case-insensitively — impossible`);
   }

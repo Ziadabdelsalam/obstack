@@ -22,10 +22,13 @@ GenAI semantic conventions specify and what real provider instrumentations
 produce. Ingest reads element [0] of the array into its singular column.
 
 `http.request.method` and `http.route` — the two attributes that classify a span
-into the api layer. They come from the stock HTTP/framework instrumentation
-init() turns on, never from obstack code; init()'s default of
-OTEL_SEMCONV_STABILITY_OPT_IN=http is what keeps them from arriving as the
-legacy `http.method`, which classifies as `other` instead.
+into the api layer, and either one alone is enough: ingest's classify() checks
+them in turn. They come from the stock HTTP/framework instrumentation init()
+turns on, never from obstack code. init()'s default of
+OTEL_SEMCONV_STABILITY_OPT_IN=http governs which method attribute arrives — the
+stable `http.request.method` rather than the legacy `http.method` — not whether
+the span classifies as api: the instrumentation writes `http.route` in both
+modes, and `http.route` on its own is enough.
 
 `gen_ai.input.messages` and `gen_ai.output.messages` — the log-record wire form
 of prompt and completion (D38 FINAL / D42). obstack-py carries GenAI content on

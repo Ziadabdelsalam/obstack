@@ -105,9 +105,11 @@ spec:
         # join). It is not in collector.excludeContainer, so filelog reads it.
         - name: sidecar
           image: {{ .Values.utilityImage }}
-          # D283: the same bound as its pod-mate — values.yaml's demo block.
+          # D283, but its OWN bound rather than its pod-mate's — values.yaml's
+          # demo.sidecarResources says why a heartbeat loop reserves less CPU
+          # than the instrumented app it sits beside.
           resources:
-            {{- toYaml .Values.demo.resources | nindent 12 }}
+            {{- toYaml .Values.demo.sidecarResources | nindent 12 }}
           command:
             - sh
             - -c

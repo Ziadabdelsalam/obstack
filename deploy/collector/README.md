@@ -22,6 +22,10 @@ Both files share everything else: the OTLP receiver, the bearer-key export
 to ingest, the filelog exclusion pattern below, and the `file_storage`
 checkpointing further down.
 
+A third config for the same image exists but is not in this directory and is
+not a topology of these two: `deploy/helm/obstack/files/collector-events-config.yaml`,
+the chart-owned cluster-events collector — see "Cluster events" below.
+
 ## Image
 
 `otel/opentelemetry-collector-k8s:0.158.0` (D14 — pinned to the exact patch,
@@ -37,7 +41,15 @@ docker run --rm otel/opentelemetry-collector-k8s:0.158.0 components
 
 lists both `file_log` (`receiver/filelogreceiver`) and `k8s_attributes`
 (`processor/k8sattributesprocessor`), plus the `otlp` receiver and
-`otlp_http` exporter both configs use.
+`otlp_http` exporter both configs use. The same distro carries `k8s_events`
+(`receiver/k8seventsreceiver`), which is why the chart's events collector
+runs on this identical pin rather than needing full contrib — confirmed the
+same way, and by `validate` rejecting an unknown component outright:
+
+```bash
+docker run --rm -v "$PWD/../helm/obstack/files/collector-events-config.yaml:/etc/otelcol/config.yaml" \
+  otel/opentelemetry-collector-k8s:0.158.0 validate --config=/etc/otelcol/config.yaml
+```
 
 ## Bearer key (D39 rider)
 
@@ -179,6 +191,34 @@ deployment's job. A DaemonSet running this file must provide:
   default.
 - **The pod's own OTLP endpoints, `:4317`/`:4318`**, reachable by the apps
   that route through it.
+
+## Cluster events (Kubernetes only)
+
+Neither config in this directory ships Kubernetes `Event` objects —
+`FailedScheduling`, a failed image pull, `Unhealthy` from a probe, the
+`Killing` after an OOM. They are not in `config.yaml` on purpose. The
+`k8s_events` receiver watches the API server rather than the node it runs
+on, so a DaemonSet running it would deliver the whole cluster's event stream
+once per node; that is a duplicate of the same family as D37.3's, and it
+takes the same answer — emit it once, don't deduplicate later.
+
+The chart therefore runs events in a **separate single-replica Deployment**
+with its own config, `deploy/helm/obstack/files/collector-events-config.yaml`
+(`templates/collector/events-deployment.yaml`, gated on
+`collector.k8sEvents.enabled`, default on). That config runs one receiver
+into `batch` into the same bearer-key `otlp_http` export these files use, so
+events arrive at ingest as OTLP log records and land in `obstack.logs`. It
+reuses this collector's ServiceAccount, which is why the chart's ClusterRole
+grows `get`/`list`/`watch` on core `events` behind the same flag — a
+widening for `k8s_events`, not for `k8s_attributes`, whose extract set is
+unchanged, and `replicasets` stays absent as stated above.
+
+It carries no `file_storage`: a watch has no byte offset to checkpoint, so
+events during a restart are not backfilled — an honest gap, and a cheap one
+against records the API server itself expires within the hour. Compose gets
+none of this, for the reason its header already gives: no API server to
+watch. `deploy/helm/obstack/README.md`, "The cluster-events collector", is
+the fuller account.
 
 ## Checkpointing (`file_storage`) — the second duplicate door
 

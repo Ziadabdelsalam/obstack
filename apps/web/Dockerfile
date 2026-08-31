@@ -41,6 +41,16 @@ COPY services/ingest/pricing/prices.json services/ingest/pricing/prices.json
 # below if the two disagree.
 ARG OBSTACK_DATA_MODE
 ENV OBSTACK_DATA_MODE=${OBSTACK_DATA_MODE}
+# `OBSTACK_APP_ORIGIN` is the same shape for the same reason (D329): `/` is
+# prerendered, so `lib/app-href.ts` reads this while `next build` renders the
+# landing page and the origin is BAKED into the static HTML — there is no
+# runtime override here either. Unset, which is the default and every
+# deployment before S5, leaves the three "Create your workspace" buttons as
+# same-host paths; the D262 marketing image sets it to the live app's origin so
+# that button leaves the demo host instead of landing on a page that says there
+# is no workspace to create.
+ARG OBSTACK_APP_ORIGIN=
+ENV OBSTACK_APP_ORIGIN=${OBSTACK_APP_ORIGIN}
 # `resolveMode()` (data.ts:56-57) also requires CLICKHOUSE_URL to be non-empty
 # when the mode is "live", because that check runs at module-evaluation time
 # and Next imports every route module — including dynamic ones — while

@@ -1,0 +1,98 @@
+{{- if .Values.collector.k8sEvents.enabled }}
+# The cluster-events collector: a Deployment, not a second DaemonSet, and
+# `replicas: 1` is the correctness mechanism rather than a sizing choice.
+# `k8s_events` watches the API server's Event stream, which is cluster-wide —
+# every replica running it sees every event, so N replicas ship each event N
+# times. A DaemonSet would make N the node count and let the duplication grow
+# with the cluster. files/collector-events-config.yaml's header carries the
+# full reasoning; this file is the half that enforces it.
+#
+# It reuses the DaemonSet's ServiceAccount and ClusterRole (widened with
+# `events` by clusterrole.yaml, behind this same values gate) rather than
+# standing up a second identity for the same collector talking to the same
+# ingest with the same key.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-collector-events
+  labels:
+    {{- include "obstack.labels" . | nindent 4 }}
+    app.kubernetes.io/component: collector-events
+spec:
+  # Not a tunable. See the header: a second replica double-ships every event.
+  replicas: 1
+  # The default RollingUpdate would briefly run the old and new pods at once,
+  # which is exactly the double-ship this file exists to prevent. Recreate
+  # keeps the singleton a singleton across upgrades; a few seconds of missed
+  # events on rollout is the deliberate trade, and it is the same gap the
+  # missing file_storage checkpoint already documents.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: obstack
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: collector-events
+  template:
+    metadata:
+      annotations:
+        # Same mechanism, same reason as the DaemonSet's: otelcol reads its
+        # config once at process start and the file provider does not watch
+        # it, so a ConfigMap change alone would leave this pod on the old
+        # pipeline until someone restarted it by hand.
+        checksum/config: {{ .Files.Get "files/collector-events-config.yaml" | sha256sum }}
+      labels:
+        app.kubernetes.io/name: obstack
+        app.kubernetes.io/instance: {{ .Release.Name }}
+        app.kubernetes.io/component: collector-events
+    spec:
+      serviceAccountName: {{ .Release.Name }}-collector
+      # Deliberately NOT the DaemonSet's `runAsUser/runAsGroup: 0`. That
+      # override exists there for one reason — the node's root-owned
+      # /var/log/pods files and the freshly-created storage hostPath — and
+      # this pod reads neither. It mounts nothing from the host, so the
+      # upstream image's default non-root user is sufficient and is what runs.
+      containers:
+        - name: collector
+          image: {{ .Values.collector.image }}
+          args: ["--config", "/etc/otelcol/config.yaml"]
+          # D283: requests AND limits. Same ruling as collector.resources, on
+          # its own numbers — this pod holds one API watch and a batch buffer,
+          # a smaller and flatter footprint than the log tailer's.
+          resources:
+            {{- toYaml .Values.collector.k8sEvents.resources | nindent 12 }}
+          env:
+            - name: OBSTACK_INGEST_ENDPOINT
+              value: http://{{ .Release.Name }}-ingest:4318
+            - name: OBSTACK_COLLECTOR_API_KEY
+              value: {{ .Values.collector.apiKey | quote }}
+            # No OBSTACK_COLLECTOR_EXCLUDE_CONTAINER and no
+            # OBSTACK_COLLECTOR_STORAGE_DIR: both belong to `file_log`, which
+            # this config does not run.
+          ports:
+            # No hostPort and no OTLP ports at all — nothing sends to this
+            # collector, it only watches the API and exports. The health port
+            # is here for the probes below and nothing else.
+            - name: health
+              containerPort: 13133
+          volumeMounts:
+            - name: config
+              mountPath: /etc/otelcol
+              readOnly: true
+          readinessProbe:
+            httpGet:
+              path: /
+              port: health
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /
+              port: health
+            initialDelaySeconds: 15
+            periodSeconds: 15
+      volumes:
+        - name: config
+          configMap:
+            name: {{ .Release.Name }}-collector-events
+{{- end }}

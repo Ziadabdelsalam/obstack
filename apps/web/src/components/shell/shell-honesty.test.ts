@@ -21,7 +21,10 @@ const TOP_BAR = read("TopBar.tsx");
 const SIDE_NAV = read("SideNav.tsx");
 const PALETTE = read("CommandPalette.tsx");
 const TOUR = read("TourGuide.tsx");
+const BADGE = read("SampleDataBadge.tsx");
+const DEMO_FOOTER = read("DemoFooter.tsx");
 const LAYOUT = readFileSync(path.join(HERE, "../../app/app/layout.tsx"), "utf8");
+const OVERVIEW = readFileSync(path.join(HERE, "../../app/app/page.tsx"), "utf8");
 
 test("TopBar makes no claim about the running system", () => {
   // A throughput reading and a deployment region in the status strip: mock-mode
@@ -30,6 +33,31 @@ test("TopBar makes no claim about the running system", () => {
   for (const claim of ["9.4k", "events/min", "EU-CENTRAL", "ingesting"]) {
     assert.ok(!TOP_BAR.includes(claim), `TopBar claims "${claim}" — the bar carries no system status`);
   }
+});
+
+test("F2: the demo's overview status row does not claim the demo is ingesting", () => {
+  // The TopBar ban above is a ban on a WORD, and the word was living one
+  // component over: `/app`'s own status strip rendered "ingesting ·
+  // loopwork-prod · last 6h" on the mock branch — under a footer saying nothing
+  // is being ingested, and in the pixels of the landing page's screenshot,
+  // where no text sweep could reach it.
+  //
+  // It is banned on the MOCK branch only. In live mode the row is backed by
+  // ingested telemetry and the word is true there, so this reads the mode
+  // ternary rather than the file: collapse the two branches into one literal
+  // and the parse below fails rather than passing by finding nothing.
+  const start = OVERVIEW.indexOf("pulse-dot");
+  assert.ok(start > 0, "the overview status strip is gone — this guard reads its mode ternary");
+  const strip = OVERVIEW.slice(start, OVERVIEW.indexOf("</div>", start));
+  const halves = strip.split(") : (");
+  assert.equal(halves.length, 2, "the status strip no longer branches on mode — both halves must be readable");
+  const [liveHalf, mockHalf] = halves;
+  assert.ok(liveHalf.includes("{data.workspaceId}"), "the live half stopped naming the session's workspace");
+  assert.ok(
+    !mockHalf.includes("ingesting"),
+    "the demo's overview claims it is ingesting — this deployment ingests nothing (D228)",
+  );
+  assert.ok(mockHalf.trim().length > 10, "the mock half parsed empty — the guard is reading nothing");
 });
 
 test("TopBar names a real operator or none at all", () => {
@@ -88,13 +116,108 @@ test("the palette never offers the demo's traces to a live workspace", () => {
 });
 
 test("D134/D228: the demo says it is a demo, from the shell, on every screen", () => {
-  assert.ok(LAYOUT.includes("function DemoFooter()"), "the app shell has no demo footer");
+  // D321: the footer moved out of the layout into its own client component so
+  // it can read the ROUTE as well as the mode — the layout still owns the mode
+  // gate below, and the file now owns "which routes". Same sentence, same
+  // shell, one file further out.
+  assert.ok(DEMO_FOOTER.includes("export function DemoFooter()"), "the app shell has no demo footer");
   assert.ok(LAYOUT.includes("{!live && <DemoFooter />}"), "the demo footer is not gated to the mock branch");
   // Live mode's marker is per-route and stays that way; the drive asserts the
   // absence of the badge string on wired routes, so the footer must not carry
   // it — and must not render there at all.
   assert.ok(!LAYOUT.includes("SAMPLE DATA"), "the footer borrowed the live badge's wording");
+  assert.ok(!DEMO_FOOTER.includes("SAMPLE DATA"), "the footer borrowed the live badge's wording");
+  // The sentence itself is the claim, so it is pinned character for character:
+  // soften it and this goes red rather than the demo quietly getting vaguer
+  // about being a demo.
+  //
+  // D326 — the middle of it is now `SAMPLE_COPY`, the ONE definition of the
+  // words this product uses to say "none of this happened", shared with the
+  // landing page's per-surface labels (`components/marketing/sample-copy.ts`).
+  // The pin follows: the two halves are asserted in the file that renders them,
+  // the middle in the module that defines it, and the reassembly is asserted to
+  // be the same string this test has always demanded.
+  const SAMPLE_COPY_MODULE = readFileSync(
+    path.join(HERE, "../marketing/sample-copy.ts"),
+    "utf8",
+  );
+  const middle = SAMPLE_COPY_MODULE.match(/export const SAMPLE_COPY = "([^"]+)";/)?.[1];
+  assert.ok(middle, "the shared sample-data wording is no longer a single string literal");
+  assert.ok(
+    DEMO_FOOTER.includes("every screen here is {SAMPLE_COPY} — nothing is being ingested"),
+    "the demo footer's sentence changed",
+  );
+  assert.equal(
+    `every screen here is ${middle} — nothing is being ingested`,
+    "every screen here is sample data from a fictional company — nothing is being ingested",
+    "the demo footer's sentence changed",
+  );
+  assert.ok(DEMO_FOOTER.includes("DEMO WORKSPACE"), "the demo footer lost its label");
   assert.ok(LAYOUT.includes("<CommandPalette live={live} />"), "the palette lost the mode it needs to stay honest");
+});
+
+// D321 — the third route class. `/app/docs` renders the same MDX corpus the
+// public `/docs` serves, out of the same build, in both images. Both of the
+// shell's existing labels are therefore false about it in opposite directions:
+// the live-mode badge would call a true self-hosting instruction sample data,
+// and the mock-mode footer says "every screen here is sample data from a
+// fictional company" UNDER it — on the demo host (D262), which is the one a
+// stranger reads the docs on.
+//
+// Text, not render: both are `"use client"` components and the runner is
+// pinned to `--conditions react-server` (D54(ii)), the same reason every
+// assertion in this file reads source. What is asserted is the SHAPE that
+// makes the claim mode-independent — the chrome check takes no mode, reads
+// only the path, and comes before the class-specific check underneath it. The
+// modes themselves are covered by the two gates in the layout: the badge only
+// ever renders in live mode, the footer only in mock, and each returns null on
+// chrome — so `/app/docs` carries neither, in either image.
+test("D321: neither the badge nor the demo footer speaks over product chrome", () => {
+  // The BODY, not the docblock: the prose above each component explains the
+  // mode gate it does not itself apply, so the assertions below read from the
+  // exported function onward.
+  const bodyOf = (source: string) => source.slice(source.indexOf("export function"));
+  for (const [name, source] of [["SampleDataBadge.tsx", BADGE], ["DemoFooter.tsx", DEMO_FOOTER]] as const) {
+    const body = bodyOf(source);
+    assert.ok(
+      body.includes("isProductChromeRoute"),
+      `${name} does not read THE definition of product chrome (D321)`,
+    );
+    assert.match(
+      body,
+      /if \(isProductChromeRoute\(pathname\)\) return null;/,
+      `${name} does not render nothing on a chrome route`,
+    );
+    // The check may not be conditioned on the mode — a docs page is chrome in
+    // the live image and in the mock image alike, and a mode-gated version of
+    // this rule would silence one lie and leave the other standing.
+    assert.equal(
+      /\blive\b/.test(body),
+      false,
+      `${name} decides chrome by mode rather than by route`,
+    );
+  }
+  // Ordering inside the badge: chrome is NOT in the live-wired set (registering
+  // it there would claim it reads the facade), so a badge that asked "is this
+  // wired?" first would fall straight through to rendering.
+  const badgeBody = bodyOf(BADGE);
+  assert.ok(
+    badgeBody.indexOf("isProductChromeRoute(pathname)") < badgeBody.indexOf("isLiveWiredRoute(pathname)"),
+    "the badge asks whether the route is wired before it asks whether it is chrome",
+  );
+  // The palette is the third consumer — the one the plan's own survey missed.
+  // Its hint for a chrome destination says what the destination is, and it
+  // answers before the mode branch, so the label is the same in both images.
+  const hintFor = PALETTE.slice(PALETTE.indexOf("function hintFor("));
+  assert.match(
+    hintFor.slice(0, hintFor.indexOf("\n}")),
+    /if \(isProductChromeRoute\(path\)\) return "docs";/,
+    "the palette's chrome hint changed",
+  );
+  assert.ok(
+    hintFor.indexOf("isProductChromeRoute(path)") < hintFor.indexOf("if (!live)"),
+    "the palette answers by mode before it answers by class — chrome is labelled in both modes",
+  );
 });
 
 test("the tour promises nothing the repo does not have", () => {

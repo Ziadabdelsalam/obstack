@@ -51,8 +51,10 @@ def test_init_is_idempotent() -> None:
 
 
 def test_init_opts_into_stable_http_semantic_conventions() -> None:
-    """Without this the api layer disappears: FastAPI emits the legacy
-    `http.method`, and ingest classifies on `http.request.method`."""
+    """The api layer does not hang on this: ingest classifies on `http.route`
+    too, and FastAPI writes the route in either mode. The default is what makes
+    the method attribute the stable `http.request.method` that the semantic
+    conventions settled on rather than the legacy `http.method`."""
     handle = obstack.init()
     try:
         assert os.environ["OTEL_SEMCONV_STABILITY_OPT_IN"] == "http"

@@ -1,0 +1,90 @@
+export const frontmatter = {
+  title: "Bring your own OpenTelemetry",
+  description: "No obstack SDK: what the four layers need from a stock OTel setup.",
+};
+
+# Bring your own OpenTelemetry
+
+You do not have to install an obstack SDK. obstack reads standard OTLP, so a
+service already instrumented with the stock OpenTelemetry SDK points at it with
+environment variables and no code change — the third snippet in the
+[quickstart](/docs/quickstart#send-your-first-trace) is that whole change.
+
+The running proof lives in this repository: `demo/agent-app/` is a small FastAPI
+service instrumented with **plain OpenTelemetry** — the stock Python SDK and the
+stock FastAPI instrumentation, no obstack SDK and no vendor library — and it
+produces the same four-layer trace the SDKs do. A stock upstream OpenTelemetry
+Collector that has never heard of obstack is also exercised on that path, so
+"standard OTLP on the wire" is a checked claim rather than a design intention.
+
+## What the four layers need
+
+obstack classifies each span into a layer from its attributes. The app never
+states a layer itself.
+
+| Layer | What obstack reads |
+|---|---|
+| `llm` | any `gen_ai.*` attribute — the ones below |
+| `agent` | `obstack.agent.step="<name>"` on a span you start yourself |
+| `tool` | `obstack.tool.name="<name>"` on a span you start yourself |
+| `api` | `http.request.method` **or** `http.route` on a server span — either one alone is enough |
+
+The order of that table is the rule: the first row a span matches decides its
+layer, so an LLM call made from inside an agent step is an `llm` span, not an
+`agent` one. A span matching none of them is `other`.
+
+The `agent` and `tool` attributes are the two things no library can infer — they
+are the only obstack-specific names in the whole arrangement, and setting them
+is a one-line call on a span you were going to start anyway.
+
+On Python's FastAPI instrumentation, `OTEL_SEMCONV_STABILITY_OPT_IN=http` is
+what makes a server span carry the stable `http.request.method` rather than the
+legacy `http.method` — `demo/agent-app` exports it, and `obstack.init()` in the
+Python SDK defaults it. The api layer does not hang on it either way: the
+instrumentation writes `http.route` from the matched route in both modes, and
+`http.route` on its own classifies the span. Set it anyway, so the attribute on
+the wire is the one the semantic conventions settled on.
+
+## The LLM span
+
+| Attribute | Value |
+|-----------|-------|
+| `gen_ai.system` | `openai` |
+| `gen_ai.operation.name` | `chat` |
+| `gen_ai.request.model` / `gen_ai.response.model` | the model asked for, and the model that answered |
+| `gen_ai.prompt` / `gen_ai.completion` | the full prompt and answer text |
+| `gen_ai.usage.input_tokens` / `gen_ai.usage.output_tokens` | token counts |
+| `gen_ai.response.finish_reasons` | the semantic-convention array; ingest takes its first element |
+
+`finish_reasons` is the semantic-convention **array** — that is what real GenAI
+instrumentations emit, and obstack does not ask for a flatter key for its own
+convenience.
+
+Emit no cost and no price attribute. obstack prices at ingest from the token
+counts and the model name, so a cost your app computed would be a second answer
+to the same question.
+
+## What one request emits
+
+```
+POST /chat                              api    auto-instrumented FastAPI server span
+└─ agent.answer_question                agent  obstack.agent.step="answer_question"
+   ├─ tool.knowledge_lookup             tool   obstack.tool.name="knowledge_lookup"
+   │  └─ POST /internal/tools/knowledge api    the self-call's own server span
+   └─ chat <model>                      llm    gen_ai.* attributes
+```
+
+In the demo the tool leg is a **real HTTP request back into the same app**, with
+the traceparent injected by hand and extracted by the FastAPI instrumentation on
+the way in — so the trace only holds together if context propagation actually
+works over the wire.
+
+## Logs
+
+Logs go through the OpenTelemetry `LoggingHandler` installed on the root logger,
+so ordinary `logging.info(...)` calls made inside a span are exported carrying
+that span's trace context. That is what fills the logs rail beside a trace.
+
+Logs that arrive without trace context are not orphaned: they join by time and
+service as the *nearby* class. obstack never parses a trace id out of message
+text to invent a correlation.

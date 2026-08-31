@@ -1,0 +1,9 @@
+export const frontmatter = {
+  date: "2026-08-20",
+  kind: "new",
+  title: "Explain this trace",
+};
+
+{/* merged: f1bba82 PR #20, 2026-08-20 */}
+
+One click on a failed trace streams a root-cause summary built from that trace's own spans and the log lines on its timeline — the ones carrying its trace id and the nearby lines from the same window. Each piece of evidence links back to the span or log line it came from, and a reference the trace does not contain is dropped, with the drop stated rather than linked. The summary comes from Claude, or from whichever Anthropic-compatible endpoint a self-hosted install is pointed at; with no model configured the panel says so instead of guessing. Runs are metered per plan — 20 a month on Free, 200 on Pro.

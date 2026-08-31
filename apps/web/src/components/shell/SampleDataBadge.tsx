@@ -1,7 +1,7 @@
 "use client";
 
 import { usePathname } from "next/navigation";
-import { isLiveWiredRoute } from "@/lib/live-routes";
+import { isLiveWiredRoute, isProductChromeRoute } from "@/lib/live-routes";
 
 /**
  * D21: in live mode every surface that is not yet wired to the facade still
@@ -13,6 +13,11 @@ import { isLiveWiredRoute } from "@/lib/live-routes";
  */
 export function SampleDataBadge() {
   const pathname = usePathname();
+  // D321: product chrome is neither wired nor sample — `/app/docs` renders the
+  // same true corpus as the public `/docs`, so this badge over it would be a
+  // claim about the docs, not about the data. Checked first, because chrome is
+  // not in the wired set and would otherwise fall through to the badge.
+  if (isProductChromeRoute(pathname)) return null;
   if (isLiveWiredRoute(pathname)) return null;
   return (
     <div

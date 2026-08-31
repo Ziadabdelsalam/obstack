@@ -55,11 +55,13 @@ storage/secrets):**
   and no cert-manager ship here. Enabling ingest's also sets
   `OBSTACK_PUBLIC_OTLP_HTTP_ENDPOINT` on the web workload so the product's
   quickstart renders that address; gRPC is deliberately not exposed.
-- **Resource requests/limits** (D253 item 5) on the two workloads this repo
-  builds — `ingest.resources` and `web.resources`, conservative defaults
-  stated at each. **Not yet on ClickHouse, Postgres, the collector DaemonSet
-  or the demo pod**: sizing a database's limits is a measurement, not a
-  guess, and a wrong limit OOM-kills the store it was meant to protect.
+- **Resource requests/limits** (D253 item 5, widened by D283): requests AND
+  limits on `ingest`, `web`, the collector DaemonSet, the events collector
+  and both demo containers, conservative defaults stated at each; **requests
+  only on ClickHouse and Postgres** — sizing a database's limits is a
+  measurement, not a guess, and a wrong limit OOM-kills the store it was
+  meant to protect. The sum of every request is a budget one node must fit —
+  see "The node's CPU-request budget".
 - **Managed-Postgres values** (item 6) — see "Managed Postgres" below for
   that item's stated ceiling.
 
@@ -280,6 +282,64 @@ upgrade").
   containers gate startup only), and a rolling upgrade's *new* pods hold in
   `Init` while the old ones serve. All of it converges on its own; none of
   it needs intervention.
+
+### The node's CPU-request budget
+
+The budget above is time. This one is space, and it is the other way an
+install can spend the whole 900s and tell you nothing useful: a pod that
+cannot be **scheduled** never starts, never fails, and never times out on its
+own — `helm install --wait` simply sits on it.
+
+The arithmetic, on the smallest node this repo's CI actually schedules on. A
+private-repo `ubuntu-latest` runner is 2 vCPU, so the single kind node it
+creates has **2000m** allocatable, and that node's own kubeadm kube-system
+pods reserve **~950m** of it before this chart exists — kube-apiserver 250m,
+kube-controller-manager 200m, kube-scheduler 100m, etcd 100m, coredns 2×100m,
+kindnet 100m. That leaves **~1050m** for the release.
+
+**Measured, on PR #24's tip a541546:** the rendered chart requested **1070m**,
+20m over. `obstack-clickhouse-0` — 500m, the largest single request, and
+therefore the one the scheduler placed last — sat `Pending` for fifteen
+minutes on `FailedScheduling: 0/1 nodes are available: 1 Insufficient cpu`,
+and the `stack` job's only output was `helm install --wait` timing out at
+900s. Nothing in that failure names CPU. The same install passed locally in
+456s on Docker Desktop, which has more of it.
+
+The 20m that tipped it over was the cluster-events collector, an obviously
+small addition. It was fatal because the chart before it requested **exactly
+1050m** — green with *zero* headroom, which is indistinguishable from green
+with plenty until the next commit. So the fix is not only the arithmetic but
+the slack: the chart's defaults now request **990m** (the demo agent 50m→25m
+with the uninstrumented sidecar broken out to its own 5m rather than sharing
+the agent's reservation, and the events collector 20m→10m — an idle API watch,
+sized as one), and the budget is **1000m**, i.e. the free 1050m minus 50m kept
+deliberately empty. ClickHouse, Postgres, ingest, web and the collector
+DaemonSet were not touched: those are the product's defaults, and shaving a
+store to fit a test runner would be sizing the product for CI.
+
+**The guard.** `acceptance.ts budget` renders the chart and sums what the
+scheduler will reserve — per pod, `max(sum of containers, max init container)`,
+since init containers run before and one at a time; per workload, that times
+the pods it schedules at once (a DaemonSet counts once, because the budget is
+about one node) — prints the table, and exits non-zero over budget. It runs
+**first** in `acceptance.sh`, before any image is built, because the answer is
+already fixed at render time and costs a second to ask:
+
+```bash
+npx tsx --tsconfig apps/web/tsconfig.json --conditions react-server \
+  deploy/helm/obstack/acceptance.ts budget
+# -> StatefulSet/obstack-clickhouse  500m × 1 = 500m … total 990m (budget 1000m)
+
+# what a given deployment's values cost — anything after `budget` goes to
+# `helm template` unchanged
+… acceptance.ts budget --set collector.k8sEvents.enabled=false   # -> 980m
+```
+
+`OBSTACK_CPU_BUDGET_M` overrides the 1000m ceiling for one run — that is how
+the check is proven red (`OBSTACK_CPU_BUDGET_M=900 … budget` fails with the
+same table), and how a node that genuinely has more room says so. Raising the
+constant in `acceptance.ts` instead is a deliberate edit, and the comment
+there carries the arithmetic to redo when the runner changes.
 
 ## Postgres in this chart
 
@@ -538,6 +598,75 @@ pod metadata, not the connection alone. Any app instrumented against this
 chart's collector needs the same two resource attributes for the same
 reason.
 
+## The cluster-events collector
+
+Kubernetes records its own account of what happened to a workload as `Event`
+objects — `FailedScheduling`, `Failed` on an image pull, `Unhealthy` from a
+probe, the `Killing` that follows an OOM. They are the half of an incident
+that never reaches a container's stdout, so nothing the DaemonSet tails can
+carry them: a Pod that never started produced no logs to tail. This chart
+ships them to ingest as OTLP log records, landing them in `obstack.logs`
+alongside application logs instead of leaving them visible only to `kubectl
+get events`.
+
+**It is a separate single-replica Deployment, not a receiver added to the
+DaemonSet's config, and that is a correctness decision rather than a
+packaging one.** The `k8s_events` receiver watches the API server, not the
+node it happens to run on, so every replica that runs it receives the entire
+cluster's event stream. Folding it into `files/collector-config.yaml` would
+therefore ship each event once per node — a three-node cluster triple-counts
+every restart, and the over-count grows with the cluster rather than staying
+constant. That is the same class of duplicate D37.3's filelog exclusion
+exists to prevent, and it gets the same answer: don't emit it twice rather
+than deduplicate afterwards. `templates/collector/events-deployment.yaml`
+pins `replicas: 1` and `strategy: Recreate` for exactly that reason — the
+default RollingUpdate would briefly run two pods and double-ship across every
+upgrade.
+
+The pod is deliberately thin next to the DaemonSet's: no `hostPort` and no
+OTLP listener at all (nothing sends to it), no host mounts, and none of the
+DaemonSet's `runAsUser: 0` override — that exists only for the node's
+root-owned log files and the storage `hostPath`, neither of which this pod
+touches, so it runs as the image's default non-root user. It reuses the
+DaemonSet's ServiceAccount, the same `collector.apiKey`, and the same ingest
+endpoint; to ingest it is one more authenticated OTLP client.
+
+**RBAC.** The collector's ClusterRole gains a second rule —
+`get`/`list`/`watch` on core `events` — because a watch on the Event stream
+is the entire receiver. It is gated on the same values flag as the workload,
+so disabling the feature narrows the role rather than leaving a standing
+cluster-wide read nothing in the release consumes. The base rule is
+unchanged, and `replicasets` remains deliberately absent: this widening is
+for `k8s_events`, not for `k8s_attributes`, whose extract set did not move.
+
+**The switch.** `collector.k8sEvents.enabled`, default `true`:
+
+```bash
+# the whole feature leaves the release — no Deployment, no ConfigMap, and no
+# `events` rule on the ClusterRole
+helm template obstack deploy/helm/obstack --set collector.k8sEvents.enabled=false
+```
+
+**What it does not do.** There is no `file_storage` checkpoint on this
+pipeline, and its absence is a decision. Checkpointing exists in
+`config.yaml` because `file_log` reads files from `start_at: beginning` and a
+restart would re-ship every historical line; `k8s_events` holds no byte
+offset — it opens a watch, and a restarted watch resumes from the API
+server's current resource version. The honest cost is that events occurring
+during a restart or a `Recreate` rollout are not backfilled. Events are the
+API server's own short-lived, best-effort records (default TTL one hour), not
+a durable log, so a volume bought to chase them would be a checkpoint over
+data the cluster itself has already discarded.
+
+No `transform` processor runs either. The receiver puts the involved object
+on the Resource (`k8s.object.kind`, `k8s.object.name`, `k8s.object.uid`,
+`k8s.node.name`) and the event itself on the record (`k8s.event.reason`,
+`k8s.event.uid`, `k8s.namespace.name`, …). Ingest promotes only
+`k8s.pod.name`/`k8s.namespace.name` from the Resource, so for event rows the
+`k8s_pod`/`k8s_namespace` columns stay empty and the reading side takes the
+keys out of the stored `resource_attributes`/`attributes` maps exactly as
+they land.
+
 ## The `files/` copies and their contract test
 
 `deploy/helm/obstack/` cannot reference files outside itself — Helm's
@@ -553,6 +682,16 @@ Both are pinned byte-for-byte by
 `services/ingest/internal/mapping/chart_contract_test.go`, which runs in the
 `go` check on every PR — a drifting copy fails `go test ./...`, not a
 customer's cluster.
+
+`files/` holds a third collector config,
+`files/collector-events-config.yaml` (see "The cluster-events collector"
+above), and it is deliberately **not** a row in that test. The two files
+above are copies — they have a source outside the chart that they can drift
+away from, which is the whole thing K1 refuses. The events config has no such
+source: there is no cluster API under Compose, so `config.compose.yaml`
+grows no events receiver, and nothing outside `deploy/helm/obstack/` reads
+the file. Pinning a copy against a source that does not exist would be
+ceremony, not the K1 mechanism, so the pair list stays at two rows.
 
 ## Local repro on kind
 
@@ -646,7 +785,10 @@ kind delete cluster --name t4-chart
 The sprint's exit assertion is one script, `acceptance.sh`, and the `stack`
 CI job (`.github/workflows/stack.yml`) runs exactly it (S2.1 L3 — no
 CI-only sequence, no CI-only timeout arithmetic: the Helm budgets above,
-900s cold install / 300s upgrade, live in the script). It builds this
+900s cold install / 300s upgrade, live in the script). It checks the chart's
+CPU-request budget before anything else (see "The node's CPU-request budget"
+— a render-time fact, asked in a second rather than discovered fifteen
+minutes into a `--wait`), builds this
 repo's three images, side-loads every pinned image into the kind node (an
 optimization, not a correctness mechanism — without it the node pulls the
 same tags itself inside the install budget), installs or upgrades the chart
@@ -654,9 +796,15 @@ with a per-run `web.betterAuthSecret` (`WEB_AUTH_SECRET`, generated with
 `openssl rand -base64 32` — exactly what a real operator supplies; every
 other value stays a chart default), fires `POST /chat`, and asserts:
 
-The `web` workload's own check is a `/login` probe over a port-forward, and
-it is the boot check passing: the image's stamp matched `OBSTACK_DATA_MODE`
-and the release's `BETTER_AUTH_SECRET` reached the pod. The telemetry
+Two of the checks are not telemetry. The first step of the run is the
+CPU-request budget — `acceptance.ts budget`, which renders the chart, prints
+the per-workload table and refuses the run if the total no longer fits the
+node (990m against a 1000m budget today); it touches no cluster, so it costs
+a second and it is why a footprint regression is now a named failure instead
+of a 900s `--wait` timeout. The `web` workload's own check is a `/login`
+probe over a port-forward, and it is the boot check passing: the image's
+stamp matched `OBSTACK_DATA_MODE` and the release's `BETTER_AUTH_SECRET`
+reached the pod. The telemetry
 assertions run through the D17 tsx facade harness (`acceptance.ts` — the
 app's own `@/server/data` facade against the cluster's ClickHouse, the same
 code the web image serves, driven without a browser):
@@ -683,7 +831,14 @@ code the web image serves, driven without a browser):
 - the D38(e) rider: an event-form GenAI log record
   (`gen_ai.input.messages`/`gen_ai.output.messages`) sent through the
   collector's own OTLP endpoint lands with `prompt`/`completion` filled
-  verbatim.
+  verbatim;
+- the S4.4 rider, last because it deletes the demo pod: the events collector
+  Deployment is Available, a third `/chat` runs, and the pod that served it
+  is deleted — the kubelet's `Killing` event on exactly that Pod reaches
+  that trace's `Trace.k8sEvents` through the facade, as `kind: "restart"`,
+  `severity: "info"`, inside the ±10s nearby window. This is the evidence
+  behind the product's "k8s events on the timeline" claim; without it the
+  claim would be about a pipeline nothing had run.
 
 Prerequisites: `docker`, `kind`, `helm`, `kubectl`, `curl` on PATH; a kind
 cluster as the current kubectl context; `npm ci` run once at the repo root

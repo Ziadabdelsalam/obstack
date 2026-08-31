@@ -52,8 +52,8 @@ export OBSTACK_BETTER_AUTH_SECRET=$(openssl rand -base64 32)
 ```
 
 or put it in `deploy/compose/.env` (`cp .env.example .env`, then fill it in). Left
-unset or empty, `web` starts, notices, prints the exact `openssl` command
-above, and exits 1 — loudly, not a hang and not a silent 500 (the boot check
+unset or empty, `web` starts, notices, prints an `openssl` one-liner to generate it (naming the in-container
+`BETTER_AUTH_SECRET`), and exits 1 — loudly, not a hang and not a silent 500 (the boot check
 shared with the mode-stamp refusal, `apps/web/src/server/mode-stamp.ts`). The
 service carries `restart: unless-stopped` like every other one here, so what
 you SEE is a container that never reaches healthy and keeps coming back —

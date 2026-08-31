@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import { MCP_ENDPOINT_PLACEHOLDER, MCP_TOKEN_PLACEHOLDER, mcpSetup } from "./mcp";
@@ -17,8 +17,46 @@ import { MCP_ENDPOINT_PLACEHOLDER, MCP_TOKEN_PLACEHOLDER, mcpSetup } from "./mcp
 
 const repoRoot = path.resolve(import.meta.dirname, "../../../..");
 const read = (p: string) => readFileSync(path.join(import.meta.dirname, p), "utf8");
-const docsSource = read("docs.ts");
 const mcpSource = read("mcp.ts");
+
+/**
+ * The fold, once (S4.4 R3 finding 2). These bans read `source.includes(needle)`
+ * until R3, and a host or a person's name is the same host or person in any
+ * casing — `Charts.Obstack.dev` in a heading, `ZIAD ABDELSALAM` in a seeded
+ * label. A case-sensitive ban on a literal somebody would retype is a ban on
+ * one spelling of it, which is the R1 finding `TourGuide.test.ts` already
+ * carried and the shape the landing fence's registry now folds in one place.
+ */
+const says = (source: string, phrase: string) => source.toLowerCase().includes(phrase.toLowerCase());
+
+/**
+ * THE DOCS ARE NO LONGER MOCK (S4.4 T1). `src/mock/docs.ts` — ten invented
+ * Loopwork articles — is deleted; the real corpus is MDX under
+ * `src/content/**`, rendered by one component onto `/docs` and `/app/docs`
+ * (D319/D320). The two assertions below were written against the fiction and
+ * now read the documentation a stranger is actually told to follow, which is
+ * the stricter target: a fabricated host in a demo article was a story, and
+ * the same host in the published quickstart is a command that fails.
+ *
+ * Read as text, every file in the tree — `.mdx` pages, the conventions
+ * `README.md`, the manifest. The suite runs under
+ * `tsx --conditions react-server` and has no MDX loader, and text is the right
+ * grain anyway: what is banned here is a LITERAL a reader would copy.
+ */
+const CONTENT_ROOT = path.join(import.meta.dirname, "../content");
+function readCorpus(dir: string): { file: string; source: string }[] {
+  const out: { file: string; source: string }[] = [];
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) out.push(...readCorpus(full));
+    else if (/\.(mdx|md|ts|tsx)$/.test(entry.name)) {
+      out.push({ file: path.relative(CONTENT_ROOT, full), source: readFileSync(full, "utf8") });
+    }
+  }
+  return out;
+}
+const contentCorpus = readCorpus(CONTENT_ROOT);
+const contentText = contentCorpus.map((f) => f.source).join("\n");
 const pageSource = readFileSync(
   path.join(import.meta.dirname, "../components/mcp/McpPage.tsx"),
   "utf8",
@@ -45,7 +83,11 @@ const personaCarriers = {
 };
 
 test("no fabricated host or credential in the docs, the MCP data or the MCP page", () => {
-  const sources = { "docs.ts": docsSource, "mcp.ts": mcpSource, "McpPage.tsx": pageSource };
+  const sources: Record<string, string> = { "mcp.ts": mcpSource, "McpPage.tsx": pageSource };
+  // Every file of the real corpus, named individually so a failure says which
+  // page carries the lie rather than "somewhere in the docs".
+  for (const { file, source } of contentCorpus) sources[`content/${file}`] = source;
+  assert.ok(contentCorpus.length > 0, "the docs corpus is empty — this test would pass by having nothing to read");
   for (const lie of [
     "charts.obstack.dev",
     "mcp.obstack.dev",
@@ -54,17 +96,39 @@ test("no fabricated host or credential in the docs, the MCP data or the MCP page
     "ob_mcp_read_",
   ]) {
     for (const [name, source] of Object.entries(sources)) {
-      assert.equal(source.includes(lie), false, `${lie} is back in ${name}`);
+      assert.equal(says(source, lie), false, `${lie} is back in ${name}`);
     }
   }
 });
 
-test("every helm command in the runbooks installs a chart that exists in-repo", () => {
-  // Only the helm lines are checked against this repo: a runbook's `kubectl
-  // -n prod set image deploy/gateway` names a Deployment in the demo company's
-  // cluster, which is story, not an artifact anyone can resolve here.
-  const charts = [...docsSource.matchAll(/helm install \S+ ([A-Za-z0-9._/-]+)/g)].map((m) => m[1]);
-  assert.ok(charts.length >= 1, "expected a runbook to install the chart");
+// The mock corpus's version of this test read a runbook that invented a
+// cluster. The published docs invent nothing: a `helm install` line here is an
+// instruction a reader runs, so the chart it names must be a chart in this
+// repo — the same rule, against a target where breaking it costs somebody an
+// afternoon.
+//
+// WHY THE BRANCH. The old assertion failed closed on an empty corpus
+// (`charts.length >= 1`), which is the property worth keeping: a test that
+// checks every helm command passes trivially when there are none. T1 built the
+// mechanism and T2 writes the self-hosting page, so between them the corpus
+// has zero helm lines and no honest strict assertion to make — a placeholder
+// page carrying a fake `helm install` to keep this green would be exactly the
+// fiction this file exists to delete. So the fail-closed property moves to a
+// MARKER: with no helm command in the tree, T2's obligation must be present
+// and visible in `src/content/docs/README.md`. It cannot pass vacuously by
+// accident, only by a deliberate edit to two files. When T2 writes the real
+// command the strict branch takes over on its own and the marker line goes.
+const HELM_PENDING_MARKER = "<!-- T2: helm command pending -->";
+
+test("every helm command in the docs installs a chart that exists in-repo", () => {
+  const charts = [...contentText.matchAll(/helm install \S+ ([A-Za-z0-9._/-]+)/g)].map((m) => m[1]);
+  if (charts.length === 0) {
+    assert.ok(
+      contentText.includes(HELM_PENDING_MARKER),
+      "the docs have no helm command and no pending marker — this assertion has nothing to check and must not pass quietly",
+    );
+    return;
+  }
   for (const c of charts) {
     assert.ok(existsSync(path.join(repoRoot, c)), `${c} is not a chart in this repo`);
     assert.equal(c.startsWith("deploy/helm/"), true, `${c} is not the in-repo chart path`);
@@ -96,7 +160,7 @@ test("D235: no real person is cast in the demo corpus", () => {
   // invented (D208); it may not be borrowed from someone who did not consent.
   for (const identity of BANNED_IDENTITY) {
     for (const [name, source] of Object.entries(personaCarriers)) {
-      assert.equal(source.includes(identity), false, `${name} casts ${identity} again`);
+      assert.equal(says(source, identity), false, `${name} casts ${identity} again`);
     }
   }
   // The audit log's addresses are documentation-reserved too: RFC 5737's

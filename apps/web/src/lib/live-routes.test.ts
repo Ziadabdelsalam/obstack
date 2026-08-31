@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { isLiveWiredRoute } from "./live-routes";
+import { isLiveWiredRoute, isProductChromeRoute, liveWiredRoutes } from "./live-routes";
 
 test("live-wired registry matches wired prefixes minus named exceptions", () => {
   assert.equal(isLiveWiredRoute("/app"), true);
@@ -52,4 +52,40 @@ test("/app/onboarding and /app/connections are live-wired, exactly", () => {
 // line goes red the moment `/app/costs` (or the `/app/` subtree) is registered.
 test("/app/costs stays unwired — the drive's positive control (D205)", () => {
   assert.equal(isLiveWiredRoute("/app/costs"), false);
+});
+
+// S4.4 T1 (D321): the THIRD class. `/app/docs` reads no workspace data in
+// either mode and renders the same corpus the public `/docs` serves, so it is
+// neither wired nor sample — and both of the existing labels are false about
+// it. Registration again, not the pages (S2.0 L1): the badge, the demo footer
+// and the palette's hint all read this predicate, so the three of them follow
+// these lines.
+test("/app/docs and everything under it is product chrome", () => {
+  assert.equal(isProductChromeRoute("/app/docs"), true);
+  assert.equal(isProductChromeRoute("/app/docs/quickstart"), true);
+  assert.equal(isProductChromeRoute("/app/docs/sdks/typescript"), true);
+});
+
+test("product chrome is a narrow class — no data surface falls into it", () => {
+  assert.equal(isProductChromeRoute("/app/traces"), false);
+  assert.equal(isProductChromeRoute("/app"), false);
+  assert.equal(isProductChromeRoute("/app/costs"), false);
+  // A prefix of the mount is not the mount: `/app/documents` must not inherit
+  // the docs' silence from a careless `startsWith`.
+  assert.equal(isProductChromeRoute("/app/documents"), false);
+});
+
+// The two classes stay disjoint by construction. Smuggling `/app/docs` into
+// `liveWiredRoutes` would buy the same silence from the badge while claiming
+// the route reads the facade — the exact move D321 refuses.
+test("D321: chrome is never smuggled into the live-wired set", () => {
+  assert.equal(isLiveWiredRoute("/app/docs"), false);
+  assert.equal(isLiveWiredRoute("/app/docs/quickstart"), false);
+  for (const route of liveWiredRoutes) {
+    assert.equal(
+      isProductChromeRoute(route),
+      false,
+      `${route} is registered as live-wired AND as chrome — the two classes have collided`,
+    );
+  }
 });

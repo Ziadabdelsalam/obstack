@@ -1,0 +1,75 @@
+export const frontmatter = {
+  title: "Quickstart",
+  description: "Get a key, send a trace, read it back.",
+};
+
+import { QuickstartSnippets } from "@/components/docs/QuickstartSnippets";
+
+# Quickstart
+
+Three steps: get a key, send a trace, look at it. If you do not have an obstack
+running yet, bring one up first — [Docker Compose](/docs/self-hosting/docker-compose)
+is one command and a secret.
+
+## Sign up and get a key
+
+Open your obstack at `/signup` and create an account. Signing up creates your
+organization and your workspace; every record you send afterwards is written
+into that workspace and no other.
+
+An API key is what a client sends as `Authorization: Bearer <token>`, and it
+names the workspace every record in that request is written into. Keys are rows
+in Postgres, issued in the product: press **Issue a key** on `/app/onboarding`
+or in **Settings → API keys**.
+
+Only the hash is stored, so a key is shown once at issue time and is not
+recoverable from the database afterwards. Copy it out of the page while it is on
+screen; reloading cannot bring it back. Ingest caches key lookups for 30 seconds,
+positive and negative, which is also how long a revoked key can keep working.
+
+A compose install seeds one key for you: `ok_dev_local`, against the workspace
+`ws_demo`. It is a public credential by design — it is printed in the
+repository — so a clean stack authenticates with nothing to configure. Issue
+your own before you send anything you care about.
+
+## Send your first trace
+
+Pick the one that matches your app. `<OBSTACK_API_KEY>` is the slot your key
+goes in; the in-app quickstart pastes the key you just issued into these
+snippets for you.
+
+<QuickstartSnippets />
+
+## What you should see
+
+Open `/app/traces` and click the newest trace. A four-layer trace is the thing
+obstack is built to render:
+
+```
+POST /chat                  api    from your web framework's instrumentation
+└─ agent.answer_question    agent  obstack.agent.step="answer_question"
+   ├─ tool.knowledge_lookup tool   obstack.tool.name="knowledge_lookup"
+   └─ chat gpt-4o-mini      llm    gen_ai.* attributes
+```
+
+The `agent` and `tool` rows come from the two decorators or wrappers you added;
+the `api` and `llm` rows are automatic. On the LLM span you should see the model,
+the prompt, the completion, the token counts and a cost obstack computed at
+ingest from the tokens and the model — the SDKs carry no price list.
+
+The quickstart page in the app waits for that first trace and links it when it
+lands. It polls a status route every 5 seconds and stops when the trace is
+linkable; nothing on any obstack surface tails or streams, so a page that looks
+stale gets refreshed by a button, not by waiting.
+
+If nothing arrives:
+
+- **Check the key.** A wrong or revoked key is refused at ingest, and the
+  refusal can lag a rotation by up to 30 seconds because of the lookup cache.
+- **Check the header encoding.** The bearer header is URL-encoded on purpose —
+  an OpenTelemetry SDK drops a header value containing a raw space.
+- **Check `init()` ran first.** Both SDKs patch libraries as they are imported,
+  so an entry point that imports its framework or provider client before
+  `init()` gets an incomplete trace and no error.
+- **Check what is actually instrumented.** Streaming calls are not instrumented
+  on any SDK — see [what obstack does not do](/docs/what-obstack-does-not-do).

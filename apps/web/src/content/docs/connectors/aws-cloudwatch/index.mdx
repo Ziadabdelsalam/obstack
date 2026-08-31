@@ -1,0 +1,87 @@
+export const frontmatter = {
+  title: "AWS CloudWatch Logs",
+  description: "The forwarder and the receiver: three aws commands, and what does not correlate.",
+};
+
+# AWS CloudWatch Logs
+
+**Status, honestly: this artifact is built and CI-exercised, and obstack's
+hosted ingest endpoint is not public yet.** Point it at your own self-hosted
+obstack ingest (compose or the Helm chart, with the ingest ingress enabled) and
+it works today; the hosted connector stays marked "Coming soon" in the product
+until the public endpoint exists.
+
+## The shape
+
+AWS delivers subscription-filter data to a destination in its own envelope —
+base64 of gzip of JSON, wrapped in an `awslogs` object — so the artifact in your
+AWS account is a small forwarder that decodes that envelope and POSTs the JSON
+on to `POST /v1/integrations/cloudwatch`. The decode belongs where the bytes
+already are; all mapping — timestamps, service naming, attributes — happens in
+obstack's ingest.
+
+The forwarder is one dependency-free file, `deploy/cloudwatch-forwarder/forwarder.mjs`,
+deployed as a Lambda in **your** AWS account. Two environment variables are
+required and the function refuses to run without them:
+
+| variable | value |
+|---|---|
+| `OBSTACK_INGEST_URL` | full route URL, ending in `/v1/integrations/cloudwatch` |
+| `OBSTACK_API_KEY` | an obstack ingest key for the workspace these logs belong to |
+
+Two behaviours worth knowing before you deploy it:
+
+- A `CONTROL_MESSAGE` — AWS's reachability probe — is acknowledged and **not**
+  forwarded: it is not telemetry anyone sent.
+- A non-2xx answer from obstack **throws**, so AWS applies its own retry and
+  dead-letter behaviour rather than the logs disappearing quietly.
+
+## Deploy it
+
+Build the zip, from the forwarder's own directory:
+
+```sh
+cd deploy/cloudwatch-forwarder
+npm run package   # writes dist/cloudwatch-forwarder.zip
+```
+
+Then, with your own role, log group and region — the commands are AWS's
+documented subscription-filter pattern:
+
+```sh
+# 1. create the function
+aws lambda create-function \
+  --function-name obstack-cloudwatch-forwarder \
+  --zip-file fileb://dist/cloudwatch-forwarder.zip \
+  --role <lambda-execution-role-arn> \
+  --handler forwarder.handler \
+  --runtime nodejs22.x \
+  --environment "Variables={OBSTACK_INGEST_URL=https://ingest.example.com/v1/integrations/cloudwatch,OBSTACK_API_KEY=ok_...}"
+
+# 2. let CloudWatch Logs invoke it
+aws lambda add-permission \
+  --function-name obstack-cloudwatch-forwarder \
+  --statement-id obstack-cloudwatch-forwarder \
+  --principal logs.amazonaws.com \
+  --action lambda:InvokeFunction \
+  --source-arn "arn:aws:logs:<region>:<account-id>:log-group:<log-group>:*" \
+  --source-account <account-id>
+
+# 3. subscribe a log group to it
+aws logs put-subscription-filter \
+  --log-group-name <log-group> \
+  --filter-name obstack \
+  --filter-pattern "" \
+  --destination-arn arn:aws:lambda:<region>:<account-id>:function:obstack-cloudwatch-forwarder
+```
+
+Repeat step 3 per log group. An empty `--filter-pattern` forwards everything;
+narrow it if you want less.
+
+## No trace context
+
+**The CloudWatch envelope carries no trace context** — not in the envelope, not
+in a log event. Records land trace-less and join by time and service as the
+*nearby* class. **No trace context is invented**: nothing is parsed out of
+message text to manufacture one. That absence is the fact, and it is stated
+rather than papered over.

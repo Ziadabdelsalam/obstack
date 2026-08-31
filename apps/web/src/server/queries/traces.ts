@@ -4,6 +4,7 @@ import { NEARBY_LOG_CAP, NEARBY_LOG_WINDOW_NS } from "@/lib/nearby-logs";
 import {
   toTrace,
   toTraceSummary,
+  type K8sEventRow,
   type LogRow,
   type SpanRow,
   type TraceSummaryRow,
@@ -321,9 +322,90 @@ ORDER BY
 LIMIT {fetch_limit:UInt32}`;
 
 /**
+ * Hard cap on k8s event rows fetched for one trace. Events are the sparse half
+ * of the infra track — a trace's own pods emit a handful inside a window this
+ * narrow, not hundreds — so this is a runaway guard (a crash-looping pod under
+ * a long trace), not a paging boundary. Unlike `NEARBY_LOG_CAP` there is no
+ * cap+1 truncation probe: the waterfall's infra track has nowhere to report
+ * truncation, and marking the 51st BackOff of one pod would say nothing the
+ * first fifty have not.
+ */
+export const K8S_EVENT_CAP = 50;
+
+/**
+ * Kubernetes events on the trace's infra track: `obstack.logs` rows written by
+ * the collector's `k8s_events` receiver (contrib v0.158.0), which turns each
+ * event into one log record — body = the event message, severity from the
+ * event Type (`normal` → Info, `warning` → Warn).
+ *
+ * These rows do NOT look like pod logs, and that is what shapes every clause
+ * below. The receiver puts pod identity in the RESOURCE attribute
+ * `k8s.object.name` (not `k8s.pod.name`) and the namespace in a RECORD
+ * attribute (`k8s.namespace.name`), so ingest's promoted `k8s_pod`/
+ * `k8s_namespace` columns are EMPTY on every one of them — the join key has to
+ * be read back out of the maps. Both maps are stored whole (0002_logs.sql:27),
+ * so nothing is lost; the promoted columns simply do not apply. It also means
+ * these rows can never be picked up by `NEARBY_LOGS_SQL` above, whose join is
+ * on those same empty columns — the two reads cannot double-count a row.
+ *
+ * Everything else mirrors the nearby read deliberately: `trace_id = ''` (event
+ * records carry no trace context), the pod/namespace set drawn from the trace's
+ * own spans via a correlated subquery rather than round-tripped through JS, and
+ * the same `[min_start - W, max_end + W]` window with `W` = `NEARBY_LOG_WINDOW_NS`
+ * — one margin for both halves of the infra story, so an event and the log line
+ * it explains are never on opposite sides of a boundary. Matching the
+ * `(namespace, pod)` PAIR rather than the two sets independently is the same
+ * tightening `NEARBY_LOGS_SQL` already makes: same-named pods in two namespaces
+ * must not cross-attach.
+ *
+ * `resource_attributes['k8s.object.kind'] = 'Pod'` keeps this to events about
+ * the pods that actually ran the trace's spans. Deployment/HPA/Node events are
+ * real but are not attributable to a pod on this timeline, and the `K8sEvent`
+ * view model is pod-keyed.
+ *
+ * Dedupe is mandatory, not defensive: the receiver runs per-collector (a
+ * DaemonSet emits the same cluster event once per node that sees it) and
+ * re-emits an event when its `count` is bumped, so one `k8s.event.uid` legally
+ * lands in this table several times. `LIMIT 1 BY event_uid` over `ORDER BY
+ * timestamp` keeps the earliest — the first observation is the one whose
+ * timestamp belongs on a trace timeline. The order is total (`event_uid, body`
+ * after `timestamp`) for the reason spelled out on LOGS_SQL: `obstack.logs` has
+ * no unique key, so a partial order under a LIMIT lets physical read order pick
+ * the survivor, and re-running the same query after a merge could then return a
+ * different row.
+ */
+const K8S_EVENTS_SQL = `
+SELECT
+    attributes['k8s.event.uid']                                       AS event_uid,
+    attributes['k8s.event.reason']                                    AS reason,
+    resource_attributes['k8s.object.name']                            AS pod,
+    toString(toUnixTimestamp64Nano(timestamp) - {min_start_ns:Int64}) AS at_offset_ns,
+    severity_number,
+    severity_text,
+    body
+FROM obstack.logs
+WHERE workspace_id = {workspace_id:String}
+  AND trace_id = ''
+  AND attributes['k8s.event.uid'] != ''
+  AND resource_attributes['k8s.object.kind'] = 'Pod'
+  AND (attributes['k8s.namespace.name'], resource_attributes['k8s.object.name']) IN (
+      SELECT DISTINCT k8s_namespace, k8s_pod
+      FROM obstack.spans
+      WHERE workspace_id = {workspace_id:String}
+        AND trace_id = {trace_id:String}
+        AND k8s_pod != ''
+  )
+  AND timestamp >= fromUnixTimestamp64Nano({min_start_ns:Int64} - {window_ns:Int64})
+  AND timestamp <= fromUnixTimestamp64Nano({min_start_ns:Int64} + {duration_ns:Int64} + {window_ns:Int64})
+ORDER BY timestamp, event_uid, body
+LIMIT 1 BY event_uid
+LIMIT {event_limit:UInt32}`;
+
+/**
  * Trace detail: one summary lookup, then spans, solid logs and nearby logs by
  * (workspace_id, trace_id) — the nearby read is a peer of the solid one, not a
- * rewrite of it (D28).
+ * rewrite of it (D28) — and, only for traces that ran on Kubernetes at all, the
+ * k8s events for those pods.
  *
  * The scope is the first parameter, like every read in this layer (D113): the
  * `workspace_id` these statements bind comes from `ch`, so no call site here
@@ -352,12 +434,27 @@ export async function queryTrace(
       fetch_limit: NEARBY_LOG_CAP + 1,
     }),
   ]);
+  // The k8s-events read is GATED on the trace having pod attribution at all:
+  // its whole WHERE clause is keyed to the (namespace, pod) pairs of these
+  // spans, so with no pod there is nothing it could match and the query is pure
+  // cost. A non-k8s workspace therefore pays exactly nothing for this feature —
+  // it never issues the statement. That is also why it is not in the
+  // `Promise.all` above: the gate is a fact about `spanRows`, which that batch
+  // is still fetching. One extra round trip, on k8s traces only.
+  const eventRows = spanRows.some((row) => row.k8s_pod !== "")
+    ? await ch.queryRows<K8sEventRow>(K8S_EVENTS_SQL, {
+        ...params,
+        duration_ns: summary.duration_ns,
+        window_ns: NEARBY_LOG_WINDOW_NS,
+        event_limit: K8S_EVENT_CAP,
+      })
+    : [];
   // E3: fetching one past the cap turns "truncated" into a fact instead of a
   // guess — a bare `=== NEARBY_LOG_CAP` count is indistinguishable from "there
   // were exactly that many". `nearbyFetched` is passed through UNSLICED —
   // `toTrace` (adapters.ts) is the one place that both slices to the cap and
   // sets `Trace.nearbyLogsTruncated`, from the same length check.
-  return toTrace(summary, spanRows, logRows, nearbyFetched);
+  return toTrace(summary, spanRows, logRows, nearbyFetched, eventRows);
 }
 
 /**
