@@ -240,6 +240,14 @@ a `SHOW GRANTS` diff against `services/ingest` migrations + the sweep's
 `ALTER … DELETE`, land it in the shared XML and the chart copy, prove it red
 by the compose bundle boot and the `stack` job.
 
+**Reference caution (measured 2026-08-31):** `railway variable set 'X=${{svc.VAR}}'`
+stores the RESOLVED value, not the reference — a later rotation on `svc` does
+not follow. Enter cross-service references through the dashboard's variable
+editor (which keeps the `${{…}}` form), or treat every DSN as a literal that
+must be re-set whenever its source password rotates. The CLI's
+`variable list` (any output mode) prints RESOLVED SECRET VALUES — never run it
+in a logged session except `--json` piped to a key-only filter.
+
 ## 3. Deployment provenance (D356 — no registry, no PAT)
 
 Railway no longer pulls a private image. `web`, `marketing`, `ingest` and
