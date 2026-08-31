@@ -3,6 +3,7 @@
 import { redirect } from "next/navigation";
 import { getAuth } from "@/server/auth";
 import { dataMode } from "@/server/data";
+import { checkRateLimit, getClientIp } from "@/server/rate-limit";
 import { loginErrorCode, type LoginErrorCode } from "./errors";
 
 /** Same split as signup's: `errors.ts` names the failure, this surface logs the ones it could not name. */
@@ -29,6 +30,14 @@ export async function logIn(formData: FormData): Promise<void> {
   const password = String(formData.get("password") ?? "");
 
   if (!email || !password) back("missing-fields");
+
+  // D339: obstack's own abuse control ahead of the in-process sign-in call —
+  // better-auth's own limiter never runs for it (`server/rate-limit.ts`'s
+  // header comment). Refused here, before better-auth is ever called, so its
+  // own vocabulary member renders (F1) rather than the generic `login-failed`
+  // that a real sign-in failure would produce.
+  const ip = await getClientIp();
+  if (!checkRateLimit("login", ip)) back("rate_limited");
 
   try {
     await getAuth().api.signInEmail({ body: { email, password } });

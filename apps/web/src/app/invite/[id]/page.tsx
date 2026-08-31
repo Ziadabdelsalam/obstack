@@ -3,6 +3,7 @@ import Link from "next/link";
 import { headers } from "next/headers";
 import { connection } from "next/server";
 import { Wordmark } from "@/components/shell/Wordmark";
+import { appHost } from "@/lib/app-href";
 import { getAuth } from "@/server/auth";
 import { dataMode } from "@/server/data";
 import {
@@ -166,10 +167,15 @@ export default async function InvitePage({
   // (D114/D125). The honest answer is that this link belongs to the signed-in
   // product, not a 500 from a pool that was never configured.
   if (dataMode !== "live") {
+    // D340: this page forces dynamic rendering (`connection()` above), but
+    // OBSTACK_APP_ORIGIN is still a build-time input (D329) — the same
+    // constant every request reads, and the same one every other hosting
+    // sentence on this build reads.
+    const host = appHost();
     return (
       <Dead
         title="Invites need the signed-in product"
-        message="This is the obstack demo, which runs on sample data with no accounts. Invite links work on an obstack you run yourself."
+        message={`This is the obstack demo, which runs on sample data with no accounts. Invite links work ${host ? `on ${host}` : "on an obstack you run yourself"}.`}
       />
     );
   }

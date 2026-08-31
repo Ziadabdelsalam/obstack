@@ -61,7 +61,7 @@ export function fakeExplainDocument(trace: Trace): string {
   }
   lines.push(
     `${LABELS.suggestion}: This deployment runs Explain in fake mode (OBSTACK_EXPLAIN_MODE=fake), so the lines ` +
-      `above restate what the trace itself records and no model read them. Configure a model to get a real reading.`,
+      `above restate what the trace itself records and no model read them — the operator of this deployment can configure one.`,
   );
   return lines.map(oneLine).join("\n");
 }

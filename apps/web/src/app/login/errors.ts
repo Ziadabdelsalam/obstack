@@ -12,11 +12,18 @@
  * surface where 1.7.1 actually raises that code). It reveals nothing about who
  * has an account, and without it the page would answer "try again" to a retry
  * that can never succeed (D129).
+ *
+ * `rate_limited` is F1's addition (D339): unlike the arms below, the login
+ * action (`app/login/actions.ts`) never routes a rate-limit refusal through
+ * `loginErrorCode` — it already knows the refusal at the call site, ahead of
+ * `signInEmail`, and returns this code directly. `loginErrorCode` stays a
+ * pure library-code mapping and gains no new arm for it.
  */
 export const LOGIN_ERRORS = {
   "missing-fields": "Email and password are both required.",
   "invalid-email": "That email address isn't valid. Use a full address like you@example.com.",
   "invalid-credentials": "Invalid email or password.",
+  rate_limited: "Too many attempts from this address. Try again later.",
   "login-failed": "Sign-in failed. Please try again.",
 } as const;
 

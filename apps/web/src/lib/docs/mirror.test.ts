@@ -227,6 +227,7 @@ test("every OBSTACK_* variable the docs name is a variable this repo defines", (
     "apps/web/src/server/explain/client.ts",
     "apps/web/src/server/ingest-endpoint.ts",
     "apps/web/src/server/mode-stamp.ts",
+    "apps/web/src/lib/status-monitor.ts",
   ]
     .map(repo)
     .join("\n");

@@ -1,7 +1,7 @@
 import "server-only";
 import { dataMode } from "@/server/data";
 import { queryRows, type QueryRows } from "@/server/postgres";
-import { billingMode, getBilling } from "./client";
+import { billingMode, getBilling, isPolar } from "./client";
 import type { BillingClient, UsageEvent } from "./types";
 
 /**
@@ -145,15 +145,17 @@ export async function runReporterOnce(deps: ReporterDeps): Promise<ReporterRun> 
  * Start the interval, or decline to (D170). Both gates matter and neither is a
  * convenience: mock mode has no ledger to read, and `fake` mode has no Polar to
  * report to — so CI, a mock-mode deployment and a local `next dev` all run this
- * function and all start nothing. The sandbox rail is the only configuration
- * that meters.
+ * function and all start nothing. A Polar rail on live data is the only
+ * configuration that meters, and it is BOTH of them: production (`polar`) and
+ * the sandbox evidence run (`polar-sandbox`) meter by the same predicate, so
+ * neither can be left out by a comparison that names one rail (D338).
  *
  * Returns the timer so a caller can prove which branch it took; the interval is
  * unref'd because a periodic report is not a reason for a process to stay
  * alive — the server's own listener decides that.
  */
 export function startUsageReporter(): NodeJS.Timeout | undefined {
-  if (dataMode !== "live" || billingMode() !== "polar-sandbox") return undefined;
+  if (dataMode !== "live" || !isPolar(billingMode())) return undefined;
 
   const timer = setInterval(() => {
     // A failed run is a logged line and nothing else: the next tick re-sends

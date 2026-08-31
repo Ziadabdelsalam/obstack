@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import test from "node:test";
-import { appHref } from "./app-href";
+import { appHref, appHost } from "./app-href";
 
 // run with: npm test --workspace apps/web
 //
@@ -120,6 +120,31 @@ test("the value is read per call, not captured at import", () => {
   assert.equal(appHref("/signup"), "https://app.obstack.dev/signup");
   reset();
   assert.equal(appHref("/signup"), "/signup");
+});
+
+// D340: the same env, read as a bare host rather than a link — the five
+// hosting sentences on the auth/landing/invite pages derive from this.
+test("appHost: unset yields null — nothing to render, the single-host default", () => {
+  reset();
+  assert.equal(appHost(), null);
+});
+
+test("appHost: set yields the host alone — no scheme, no path, no trailing slash", () => {
+  reset();
+  process.env[VAR] = "https://app.obstack.dev";
+  assert.equal(appHost(), "app.obstack.dev");
+  process.env[VAR] = "https://obstack.dev/app/";
+  assert.equal(appHost(), "obstack.dev", "a mounted base path is not part of the host");
+  process.env[VAR] = "http://localhost:3001";
+  assert.equal(appHost(), "localhost:3001", "a port is part of the host");
+  reset();
+});
+
+test("appHost: a malformed value is refused the same way appHref refuses it", () => {
+  reset();
+  process.env[VAR] = "app.obstack.dev";
+  assert.throws(() => appHost(), /OBSTACK_APP_ORIGIN/);
+  reset();
 });
 
 // R2 should-fix 4/5: both docblocks that state this helper's scope said "two"

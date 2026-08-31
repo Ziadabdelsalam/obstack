@@ -1,6 +1,7 @@
 import type { NextConfig } from "next";
 import path from "path";
 import createMDX from "@next/mdx";
+import { marketingRedirects } from "./src/lib/marketing-redirects";
 
 const nextConfig: NextConfig = {
   turbopack: {
@@ -17,6 +18,10 @@ const nextConfig: NextConfig = {
   // the Dockerfile copies that folder instead of `node_modules` + source.
   // node_modules/next/dist/docs/01-app/03-api-reference/05-config/01-next-config-js/output.md
   output: "standalone",
+  // D340/D354: see `src/lib/marketing-redirects.ts` — gated on the MOCK
+  // build with an origin configured (C-1 low finding); every other arm
+  // returns an empty list, which is exactly "no redirects" to Next.
+  redirects: () => marketingRedirects(),
 };
 
 /**

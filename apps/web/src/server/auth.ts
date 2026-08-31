@@ -4,6 +4,7 @@ import { betterAuth } from "better-auth";
 import { nextCookies } from "better-auth/next-js";
 import { organization } from "better-auth/plugins/organization";
 import { getPool, queryRows, type SqlClient } from "@/server/postgres";
+import { RateLimitedError, checkRateLimit, getClientIp } from "@/server/rate-limit";
 
 /**
  * better-auth, email + password, no email verification (U4). The organization
@@ -125,12 +126,30 @@ async function deleteUser(userId: string): Promise<void> {
   await queryRows(`DELETE FROM "user" WHERE id = $1`, [userId]);
 }
 
+/**
+ * D339: obstack's own abuse control, ahead of better-auth's own signup call —
+ * `server/rate-limit.ts`'s header comment names why the library's limiter
+ * never reaches this path. A refusal throws `RateLimitedError` rather than
+ * `SignupError` (F1): `signup/errors.ts`'s `signupErrorCode` recognises it
+ * by `instanceof` and answers its own "Too many attempts..." member, instead
+ * of the generic `signup-failed` every other failure in this boundary falls
+ * through to.
+ */
+async function assertNotRateLimited(): Promise<void> {
+  const ip = await getClientIp();
+  if (!checkRateLimit("signup", ip)) {
+    throw new RateLimitedError("signup");
+  }
+}
+
 /** Signup: better-auth makes the user and the session cookie, the transaction above makes the tenant. */
 export async function signUpWithWorkspace(input: {
   name: string;
   email: string;
   password: string;
 }): Promise<{ orgId: string; workspaceId: string }> {
+  await assertNotRateLimited();
+
   const { user } = await getAuth().api.signUpEmail({
     body: { name: input.name, email: input.email, password: input.password },
   });

@@ -93,6 +93,43 @@ test("assertModeStamp: matched mock stamp needs no secret at all — green (D262
   assert.doesNotThrow(() => assertModeStamp("mock", { OBSTACK_DATA_MODE: "mock" }));
 });
 
+test("assertModeStamp: mock-stamped with a real billing rail — refuses, naming both values (D353)", () => {
+  // Mock mode never reaches `getBilling()`, so the same refusal placed in the
+  // billing module would be a guard on a path this artifact does not run —
+  // it would boot, serve the demo, and quietly present a billing rail nobody
+  // can reach. Boot is the only honest place for it, and it is env-only here
+  // precisely because importing `billing/` would breach D110.
+  assert.throws(
+    () => assertModeStamp("mock", { OBSTACK_DATA_MODE: "mock", OBSTACK_BILLING_MODE: "polar" }),
+    /OBSTACK_DATA_MODE=mock baked in.*running with OBSTACK_BILLING_MODE=polar/,
+  );
+  assert.throws(
+    () =>
+      assertModeStamp("mock", {
+        OBSTACK_DATA_MODE: "mock",
+        OBSTACK_BILLING_MODE: "polar-sandbox",
+      }),
+    /OBSTACK_DATA_MODE=mock baked in.*running with OBSTACK_BILLING_MODE=polar-sandbox/,
+  );
+});
+
+test("assertModeStamp: mock-stamped with the fake rail, or none, is green (D353)", () => {
+  // Unset IS fake — `billingMode()` defaults to it (D168) — so an unset
+  // variable is the demo's own configuration, not something forgotten.
+  assert.doesNotThrow(() => assertModeStamp("mock", { OBSTACK_DATA_MODE: "mock" }));
+  assert.doesNotThrow(() =>
+    assertModeStamp("mock", { OBSTACK_DATA_MODE: "mock", OBSTACK_BILLING_MODE: "fake" }),
+  );
+});
+
+test("assertModeStamp: a live artifact on any rail is green — the inverse is NOT refused (D353)", () => {
+  // live + fake is a real configuration: compose and the chart run it, and a
+  // self-hosted deployment that never bills stays on it forever.
+  const live = { OBSTACK_DATA_MODE: "live", BETTER_AUTH_SECRET: "s3cr3t" };
+  assert.doesNotThrow(() => assertModeStamp("live", live));
+  assert.doesNotThrow(() => assertModeStamp("live", { ...live, OBSTACK_BILLING_MODE: "polar" }));
+});
+
 test("checkModeStampOnBoot: wires readModeStamp into assertModeStamp against the real STAMP_PATH (green path)", () => {
   // `STAMP_PATH` is fixed at module-import time from `process.cwd()`
   // (mirroring `server.js`'s own `process.chdir(__dirname)` before the boot
@@ -108,12 +145,18 @@ test("checkModeStampOnBoot: wires readModeStamp into assertModeStamp against the
   // done-check's red-then-green matrix, not a unit test.
   writeFileSync(STAMP_PATH, "mock");
   const before = process.env.OBSTACK_DATA_MODE;
+  const beforeBilling = process.env.OBSTACK_BILLING_MODE;
   process.env.OBSTACK_DATA_MODE = "mock";
+  // This one call reads the REAL environment, so a shell that happens to
+  // export a Polar mode would make the boot check exit(1) and take the runner
+  // with it — the D353 refusal is asserted above, against an env literal.
+  delete process.env.OBSTACK_BILLING_MODE;
   try {
     assert.doesNotThrow(() => checkModeStampOnBoot());
   } finally {
     rmSync(STAMP_PATH, { force: true });
     if (before === undefined) delete process.env.OBSTACK_DATA_MODE;
     else process.env.OBSTACK_DATA_MODE = before;
+    if (beforeBilling !== undefined) process.env.OBSTACK_BILLING_MODE = beforeBilling;
   }
 });

@@ -8,7 +8,7 @@
  * 1. The mode-stamp boot check (D251(b)/D265(a2)/D267): a mismatched or
  *    under-configured artifact must refuse to start before it ever answers a
  *    request. `checkModeStampOnBoot` does both the checking AND the actual
- *    process exit on refusal — see `@/server/mode-stamp` for the four
+ *    process exit on refusal — see `@/server/mode-stamp` for the five
  *    outcomes and why exiting there, not just throwing, is what "refuse
  *    loudly" requires against this Next version's runtime.
  * 2. The periodic usage report to Polar (D170). Everything about whether it

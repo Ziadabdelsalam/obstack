@@ -206,18 +206,24 @@ test("fake billing starts no interval — CI and local dev never meter (D170)", 
   assert.equal(startUsageReporter(), undefined);
 });
 
-test("polar-sandbox in live mode starts the 5-minute interval, unref'd", async () => {
-  const { startUsageReporter, REPORTER_INTERVAL_MS } = await loadReporter();
-  assert.equal(REPORTER_INTERVAL_MS, 5 * 60 * 1000);
+// Both Polar rails meter: the sandbox evidence run and production run the same
+// reporter, so the gate is asked through `isPolar` and not through a comparison
+// against one rail — a production deployment that silently never metered is the
+// failure this pair exists to exclude (D338).
+for (const mode of ["polar-sandbox", "polar"] as const) {
+  test(`${mode} in live mode starts the 5-minute interval, unref'd`, async () => {
+    const { startUsageReporter, REPORTER_INTERVAL_MS } = await loadReporter();
+    assert.equal(REPORTER_INTERVAL_MS, 5 * 60 * 1000);
 
-  process.env.OBSTACK_BILLING_MODE = "polar-sandbox";
-  try {
-    const timer = startUsageReporter();
-    assert.ok(timer, "the sandbox rail is the configuration that meters");
-    // Unref'd: a periodic report is not a reason for a process to stay alive.
-    assert.equal(timer.hasRef(), false);
-    clearInterval(timer);
-  } finally {
-    delete process.env.OBSTACK_BILLING_MODE;
-  }
-});
+    process.env.OBSTACK_BILLING_MODE = mode;
+    try {
+      const timer = startUsageReporter();
+      assert.ok(timer, `${mode} is a configuration that meters`);
+      // Unref'd: a periodic report is not a reason for a process to stay alive.
+      assert.equal(timer.hasRef(), false);
+      clearInterval(timer);
+    } finally {
+      delete process.env.OBSTACK_BILLING_MODE;
+    }
+  });
+}

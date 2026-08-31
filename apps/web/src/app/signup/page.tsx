@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { Wordmark } from "@/components/shell/Wordmark";
+import { appHost } from "@/lib/app-href";
 import { dataMode } from "@/server/data";
 import { signUp } from "./actions";
 import { signupErrorMessage } from "./errors";
@@ -34,6 +35,10 @@ export default async function SignupPage({
   // disabled form, no SAMPLE badge: a badge marks fabricated data on a real
   // surface, and there is no signup surface here to mark.
   if (dataMode === "mock") {
+    // D340: this build is prerendered, so the host, if any, is a build-time
+    // constant — the same OBSTACK_APP_ORIGIN the marketing image bakes into
+    // the CTAs `appHref` wraps.
+    const host = appHost();
     return (
       <div className={PAGE}>
         <div className="w-full max-w-sm">
@@ -49,8 +54,8 @@ export default async function SignupPage({
             keeps no accounts, so there is no workspace to create here.
           </p>
           <p className="mt-3 text-[13px] leading-relaxed text-mid">
-            Signing up is real on an obstack you host yourself — it creates one organization with
-            one workspace, and your account owns it. We don&apos;t host obstack for anyone yet.
+            Signing up is real {host ? `on ${host}` : "on an obstack you run yourself"} — it
+            creates one organization with one workspace, and your account owns it.
           </p>
 
           {/* Two pointers, both real and both in this build (D327): the demo

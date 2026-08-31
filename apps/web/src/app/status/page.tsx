@@ -4,6 +4,7 @@ import { ArrowRight } from "lucide-react";
 import { Wordmark } from "@/components/shell/Wordmark";
 import { STATUS_COMPONENT_IDS, type IncidentStatus, type StatusComponentId } from "@/lib/docs/incidents";
 import { loadIncidents } from "@/lib/docs/incidents-load";
+import { statusMonitorUrl } from "@/lib/status-monitor";
 
 /**
  * obstack's own status page (D256, shape ratified by D324).
@@ -26,9 +27,14 @@ import { loadIncidents } from "@/lib/docs/incidents-load";
  *    pill, no dot and no percentage anywhere on this page, because obstack
  *    runs no monitor whose answer one could show. A green dot with nothing
  *    behind it is a claim, not a status;
- *  - the Monitoring section says exactly what is true today — that external
- *    uptime monitoring starts at launch and there are no numbers until then
- *    (D256's wording, kept verbatim);
+ *  - the Monitoring section links the external monitor when one is
+ *    configured (`OBSTACK_STATUS_MONITOR_URL`, D342, K9 — Better Stack, the
+ *    user's account) and nothing else: a link only, never a third-party
+ *    script, image, iframe or badge embedded in this page. Unset, it says
+ *    plainly that this deployment publishes no external monitor, replacing
+ *    D256's original time-bound wording — true before launch, false the day
+ *    the monitor exists, and this page cannot know which day it is except
+ *    from the env;
  *  - the incident history is a directory of curated files
  *    (`src/content/status/incidents/`), each one written by a person. It ships
  *    EMPTY, so the section reads "No incidents recorded." — the honest launch
@@ -89,6 +95,7 @@ function SectionHeading({ children }: { children: string }) {
 
 export default async function StatusPage() {
   const notices = await loadIncidents();
+  const monitorUrl = statusMonitorUrl();
   return (
     <div className="flex min-h-screen flex-col bg-bg">
       <header className="sticky top-0 z-40 border-b border-line bg-bg/85 backdrop-blur">
@@ -136,10 +143,24 @@ export default async function StatusPage() {
         <section className="mt-10">
           <SectionHeading>monitoring</SectionHeading>
           <div className="rounded-lg border border-line bg-surface px-4 py-3.5">
-            <p className="text-[13.5px] leading-relaxed text-mid">
-              External uptime monitoring begins at launch; this page shows no uptime numbers until
-              then.
-            </p>
+            {monitorUrl ? (
+              <p className="text-[13.5px] leading-relaxed text-mid">
+                External uptime monitoring for obstack is published at{" "}
+                <a
+                  href={monitorUrl}
+                  target="_blank"
+                  rel="noopener"
+                  className="text-ink underline underline-offset-2"
+                >
+                  {new URL(monitorUrl).host}
+                </a>
+                .
+              </p>
+            ) : (
+              <p className="text-[13.5px] leading-relaxed text-mid">
+                This deployment publishes no external uptime monitor.
+              </p>
+            )}
           </div>
         </section>
 

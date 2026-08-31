@@ -26,10 +26,11 @@ import "server-only";
  * Scope is the three "Create your workspace" buttons, deliberately (D329) —
  * the nav's, the hero's and the closing CTA's; `app-href.test.ts` counts them
  * against the page so this sentence cannot drift again (it said "two" for a
- * sprint after the hero grew its own). The auth pages' own prose stays
- * same-host because it is about THIS deployment ("there is nothing here to sign
- * in to"), and it is the sentence that turns false the day S5 gives obstack a
- * hosted home — which is an S5-GATE item, not something a helper can paper over.
+ * sprint after the hero grew its own). The auth pages' own LINKS stay same-host
+ * because their prose is about THIS deployment ("there is nothing here to sign
+ * in to"). The half of that prose which turned false the day obstack got a
+ * hosted home — the S5-GATE item this docblock used to defer — is now taken,
+ * by `appHost()` below rather than by this function (D340).
  *
  * WHY THE VALUE IS VALIDATED HERE AND NOWHERE ELSE. Because `/` is prerendered,
  * a wrong value is not a runtime error a request could surface — it is baked
@@ -50,6 +51,28 @@ export function appHref(path: string): string {
   const configured = process.env.OBSTACK_APP_ORIGIN?.trim() ?? "";
   if (configured === "") return path;
   return `${appOrigin(configured)}${path}`;
+}
+
+/**
+ * The host half of the same value, for prose rather than a link (D340).
+ *
+ * The moment the configured host exists, every sentence on this build saying
+ * obstack is not hosted becomes false (D13 outranks the S4.4 landing-is-spec
+ * ruling — it freezes target claims, never keeps a false one). Five sentences
+ * across `page.tsx`, the auth pages and the invite page name what obstack a
+ * signup lands on, and they read this instead of `OBSTACK_APP_ORIGIN`
+ * directly so the value they render is a bare host, never a scheme or a path
+ * — U11 forbids a literal host name in source, and this is the one place
+ * that reads the env so those five sites never do.
+ *
+ * Reuses `appOrigin`'s validation rather than re-parsing: a malformed value
+ * fails the same way `appHref` fails it, at `next build`, for the same reason
+ * (D329) — this is also baked into prerendered HTML.
+ */
+export function appHost(): string | null {
+  const configured = process.env.OBSTACK_APP_ORIGIN?.trim() ?? "";
+  if (configured === "") return null;
+  return new URL(appOrigin(configured)).host;
 }
 
 /** The configured value, proven absolute-http(s) and stripped of trailing slashes. */
