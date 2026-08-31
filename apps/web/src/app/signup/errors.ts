@@ -1,3 +1,5 @@
+import { RateLimitedError } from "@/server/rate-limit";
+
 /**
  * The closed vocabulary of `/signup?error=` (D121). The action emits a CODE and
  * this module owns the words; the query value itself never reaches the page, so
@@ -11,6 +13,10 @@
  * 128) and this config overrides neither — copy that named a number the server
  * does not enforce would be the same lie as the generic sentence these codes
  * replace (D129). They move only if `authConfig()` starts setting them.
+ *
+ * `rate_limited` is F1's addition (D339): the one member here that is not a
+ * better-auth answer at all, but obstack's own limiter (`server/rate-limit.ts`)
+ * refusing before better-auth is ever called.
  */
 export const SIGNUP_ERRORS = {
   "missing-fields": "Name, email and password are all required.",
@@ -18,6 +24,7 @@ export const SIGNUP_ERRORS = {
   "invalid-email": "That email address isn't valid. Use a full address like you@example.com.",
   "password-short": "That password is too short. Use at least 8 characters.",
   "password-long": "That password is too long. Use at most 128 characters.",
+  rate_limited: "Too many attempts from this address. Try again later.",
   "signup-failed": "Signup failed. Nothing was created — please try again.",
 } as const;
 
@@ -57,6 +64,11 @@ export function signupErrorMessage(raw: string | string[] | undefined): string |
  * the logging and this keeps the property.
  */
 export function signupErrorCode(error: unknown): SignupErrorCode {
+  // D339: obstack's own refusal, thrown from `server/auth.ts` before
+  // better-auth's `signUpEmail` is ever reached — checked first and by
+  // `instanceof` because this class is never anything but our own throw.
+  if (error instanceof RateLimitedError) return "rate_limited";
+
   const api = error as { name?: string; body?: { code?: string; message?: string } } | null;
   if (api?.name === "APIError") {
     switch (api.body?.code) {

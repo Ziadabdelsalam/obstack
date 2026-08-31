@@ -24,6 +24,7 @@ import {
 } from "@/app/invite/[id]/errors";
 import { inviteLinkPath, parseInvitationId } from "./invites";
 import { SignupError, provisionOrgAndWorkspace } from "./auth";
+import { RateLimitedError } from "./rate-limit";
 import type { SqlClient } from "./postgres";
 
 /**
@@ -411,12 +412,14 @@ test("D121: every code maps to its own fixed copy", () => {
     "invalid-email",
     "password-short",
     "password-long",
+    "rate_limited",
     "signup-failed",
   ]);
   assert.deepEqual(Object.keys(LOGIN_ERRORS), [
     "missing-fields",
     "invalid-email",
     "invalid-credentials",
+    "rate_limited",
     "login-failed",
   ]);
   // D149's enum, and it is short for a measured reason asserted below: 1.7.1
@@ -587,6 +590,27 @@ test("D133: every login arm maps directly, from a real APIError", () => {
   for (const [code, expected] of LOGIN_ARMS) {
     assert.equal(loginErrorCode(apiError(code)), expected, `login arm ${code}`);
   }
+});
+
+// ---- D339/F1: the rate-limit refusal gets its own vocabulary member ----
+//
+// Unlike every arm above, this one is not a real `APIError` at all — it is
+// obstack's own limiter (`server/rate-limit.ts`) refusing BEFORE
+// `signUpEmail` is ever called. `signupErrorCode` recognises it by
+// `instanceof`, ahead of the `APIError` check, so it must win even against a
+// forged object that merely LOOKS like an APIError.
+
+test("D339: signupErrorCode maps RateLimitedError to its own member, never the generic one", () => {
+  assert.equal(signupErrorCode(new RateLimitedError("signup")), "rate_limited");
+  assert.notEqual(signupErrorCode(new RateLimitedError("signup")), "signup-failed");
+
+  // instanceof, not duck-typing: an object merely shaped like the class (or
+  // like an APIError) must not accidentally claim this arm or lose it.
+  assert.equal(
+    signupErrorCode({ name: "RateLimitedError", message: "too many signup attempts from this address" }),
+    "signup-failed",
+    "a forged RateLimitedError-shaped object must not claim the rate_limited arm",
+  );
 });
 
 test("D133 totality: any code outside the arms lands on the generic member", () => {
