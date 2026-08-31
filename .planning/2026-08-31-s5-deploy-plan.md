@@ -198,6 +198,7 @@ Not deployed: the collector (customers export from their side; the D101 endpoint
 
 ## Ship log (manager only, append as executed)
 <!-- step — command — result — confirmation ref (for gated steps) -->
+- 2026-08-31 — W2 step 1: branch `s5-ship` pushed (`7748f9a`, 18 commits); **PR #25 opened** (https://github.com/Ziadabdelsalam/obstack/pull/25); CI run 1 watching; advisor sign-off on critical items 1–4 requested. Merge = user's call after CI green + sign-off; merge triggers `publish` (first GHCR push — critical item 1b, user confirms).
 
 ## Goal check (Step 7, one entry per iteration)
 - iteration 0: pending
