@@ -26,6 +26,23 @@
     </profiles>
 
     <users>
+        <!-- D350: on Railway every service in the project shares one private
+             network, so "loopback-only" is not a given the way it is under
+             compose's `127.0.0.1:PORT:PORT` port bindings — the base image's
+             own entrypoint only restricts `default` to loopback when neither
+             CLICKHOUSE_USER nor CLICKHOUSE_PASSWORD is set, and stops doing so
+             the moment either is. Pin the restriction here instead, so it
+             holds regardless of what env vars a deploy sets. The in-container
+             healthcheck (clickhouse-client's SELECT 1 probe at
+             deploy/compose/docker-compose.yml:26) runs over loopback and
+             stays unaffected. -->
+        <default>
+            <networks replace="replace">
+                <ip>::1</ip>
+                <ip>127.0.0.1</ip>
+            </networks>
+        </default>
+
         <obstack_ingest>
             <password from_env="OBSTACK_CLICKHOUSE_INGEST_PASSWORD"/>
             <networks>

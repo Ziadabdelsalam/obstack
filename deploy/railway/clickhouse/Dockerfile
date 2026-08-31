@@ -14,6 +14,15 @@
 # OBSTACK_CLICKHOUSE_WEB_PASSWORD) — no further wiring is needed in this
 # image beyond setting those two env vars on the Railway service.
 #
+# D350: that same file also pins the base image's built-in `default` user to
+# loopback (`<default><networks replace="replace">`), because Railway's
+# private network is shared across every service in the project and the
+# base image only applies its own loopback restriction to `default` when
+# neither CLICKHOUSE_USER nor CLICKHOUSE_PASSWORD is set on the container —
+# setting either turns `default` into a network-reachable superuser. Do NOT
+# set CLICKHOUSE_USER or CLICKHOUSE_PASSWORD on this service; the XML's
+# `replace="replace"` network restriction on `default` holds regardless.
+#
 # Railway operational notes (compose's equivalents don't carry over 1:1):
 #   - PORT=8123: Railway's healthcheck probes this port; 8123 is ClickHouse's
 #     HTTP interface (see EXPOSE below), so set PORT=8123 on the service.
