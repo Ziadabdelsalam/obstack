@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"go.opentelemetry.io/collector/pdata/plog/plogotlp"
+	"go.opentelemetry.io/collector/pdata/pmetric/pmetricotlp"
 	"go.opentelemetry.io/collector/pdata/ptrace/ptraceotlp"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -66,6 +67,13 @@ func (s *Server) httpHandler() http.Handler {
 		s.export(w, r, req, func(ctx context.Context) payload {
 			s.consumeLogs(ctx, auth.IdentityFromContext(ctx).WorkspaceID, req)
 			return plogotlp.NewExportResponse()
+		})
+	})
+	mux.HandleFunc("POST /v1/metrics", func(w http.ResponseWriter, r *http.Request) {
+		req := pmetricotlp.NewExportRequest()
+		s.export(w, r, req, func(ctx context.Context) payload {
+			s.consumeMetrics(ctx, auth.IdentityFromContext(ctx).WorkspaceID, req)
+			return pmetricotlp.NewExportResponse()
 		})
 	})
 	// The launch receivers (D101/D254). They are routes here rather than a

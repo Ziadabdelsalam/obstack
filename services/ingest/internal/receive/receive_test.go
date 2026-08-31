@@ -15,6 +15,7 @@ import (
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/plog"
 	"go.opentelemetry.io/collector/pdata/plog/plogotlp"
+	"go.opentelemetry.io/collector/pdata/pmetric"
 	"go.opentelemetry.io/collector/pdata/ptrace"
 	"go.opentelemetry.io/collector/pdata/ptrace/ptraceotlp"
 
@@ -50,7 +51,14 @@ type recorder struct {
 	mu         sync.Mutex
 	traces     []ptrace.Traces
 	logs       []plog.Logs
+	metrics    []pmetric.Metrics
 	workspaces []string
+
+	// metricDrops is what ConsumeMetrics reports back across the Consumer
+	// boundary — standing in for the SeriesCache's D376 admission decision the
+	// real Writer would make — so metrics_test.go can drive the cardinality
+	// countDrop proof without a real cache or ClickHouse.
+	metricDrops int
 }
 
 func (r *recorder) ConsumeTraces(_ context.Context, workspaceID string, td ptrace.Traces) {
@@ -67,10 +75,24 @@ func (r *recorder) ConsumeLogs(_ context.Context, workspaceID string, ld plog.Lo
 	r.workspaces = append(r.workspaces, workspaceID)
 }
 
+func (r *recorder) ConsumeMetrics(_ context.Context, workspaceID string, md pmetric.Metrics) (cardinalityDrops int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.metrics = append(r.metrics, md)
+	r.workspaces = append(r.workspaces, workspaceID)
+	return r.metricDrops
+}
+
 func (r *recorder) counts() (traces, logs int) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return len(r.traces), len(r.logs)
+}
+
+func (r *recorder) metricsCount() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.metrics)
 }
 
 func (r *recorder) lastWorkspace() string {
@@ -140,14 +162,20 @@ func spanTraceID(span ptrace.Span) []byte {
 // to get right is which workspace, which key and how many records, not how a
 // count becomes a row.
 type fakeMeter struct {
-	mu       sync.Mutex
-	accepted []acceptedCall
-	dropped  []droppedCall
+	mu             sync.Mutex
+	accepted       []acceptedCall
+	acceptedMetric []acceptedMetricsCall
+	dropped        []droppedCall
 }
 
 type acceptedCall struct {
 	workspaceID, keyID string
 	spans, logs        int64
+}
+
+type acceptedMetricsCall struct {
+	workspaceID, keyID string
+	points             int64
 }
 
 type droppedCall struct {
@@ -162,6 +190,12 @@ func (m *fakeMeter) RecordAccepted(workspaceID, keyID string, spans, logs int64)
 	m.accepted = append(m.accepted, acceptedCall{workspaceID, keyID, spans, logs})
 }
 
+func (m *fakeMeter) RecordAcceptedMetrics(workspaceID, keyID string, points int64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.acceptedMetric = append(m.acceptedMetric, acceptedMetricsCall{workspaceID, keyID, points})
+}
+
 func (m *fakeMeter) RecordDropped(workspaceID, keyID string, reason metering.DropReason, records int64) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -172,6 +206,12 @@ func (m *fakeMeter) acceptedCalls() []acceptedCall {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return append([]acceptedCall(nil), m.accepted...)
+}
+
+func (m *fakeMeter) acceptedMetricsCalls() []acceptedMetricsCall {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]acceptedMetricsCall(nil), m.acceptedMetric...)
 }
 
 // droppedRecords sums what was accumulated under one reason, and asserts along
@@ -206,6 +246,10 @@ func (panicker) ConsumeTraces(context.Context, string, ptrace.Traces) {
 
 func (panicker) ConsumeLogs(context.Context, string, plog.Logs) {
 	panic("consumer exploded on logs")
+}
+
+func (panicker) ConsumeMetrics(context.Context, string, pmetric.Metrics) int {
+	panic("consumer exploded on metrics")
 }
 
 // startServer boots both transports on ephemeral ports.

@@ -13,6 +13,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/plog"
+	"go.opentelemetry.io/collector/pdata/pmetric"
 	"go.opentelemetry.io/collector/pdata/ptrace"
 
 	"github.com/Ziadabdelsalam/observer-stack/services/ingest/internal/mapping"
@@ -102,6 +103,95 @@ func newWriter(t *testing.T) *Writer {
 		t.Fatalf("new writer: %v", err)
 	}
 	return w
+}
+
+// newWriterWithCap is newWriter with a D376 series cap a test can actually
+// exhaust, rather than the production DefaultSeriesCap of 25,000 — proving
+// Config.SeriesCap really reaches mapping.NewSeriesCache without generating
+// that many series.
+func newWriterWithCap(t *testing.T, cap int) *Writer {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	w, err := New(ctx, Config{DSN: testDSN(), FlushInterval: 100 * time.Millisecond, SeriesCap: cap})
+	if err != nil {
+		t.Fatalf("new writer with cap %d: %v", cap, err)
+	}
+	return w
+}
+
+// newMetricsWorkspace is newWorkspace for the D363 metrics tables: its own
+// workspace_id so tests never see each other's series, cleaned up on the way
+// out the same way newWorkspace cleans spans/logs/trace_summaries.
+func newMetricsWorkspace(t *testing.T, conn driver.Conn) string {
+	t.Helper()
+	workspaceID := fmt.Sprintf("ws_it_metrics_%d", time.Now().UnixNano())
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		for _, table := range []string{"metric_points", "metric_points_1m", "metric_points_1h", "metric_series"} {
+			if err := conn.Exec(ctx,
+				"ALTER TABLE obstack."+table+" DELETE WHERE workspace_id = ?", workspaceID); err != nil {
+				t.Logf("cleanup of %s for %s: %v", table, workspaceID, err)
+			}
+		}
+	})
+	return workspaceID
+}
+
+// gaugeMetric returns a payload holding one gauge metric with one data point.
+func gaugeMetric(name string, value float64, ts time.Time) pmetric.Metrics {
+	md := pmetric.NewMetrics()
+	rm := md.ResourceMetrics().AppendEmpty()
+	rm.Resource().Attributes().PutStr("service.name", "demo-agent")
+	metric := rm.ScopeMetrics().AppendEmpty().Metrics().AppendEmpty()
+	metric.SetName(name)
+	dp := metric.SetEmptyGauge().DataPoints().AppendEmpty()
+	dp.SetDoubleValue(value)
+	dp.SetTimestamp(pcommon.NewTimestampFromTime(ts))
+	return md
+}
+
+// mixedMetricsExport builds one export carrying all three D363 temperaments
+// under one resource: a gauge (emits every round), a cumulative monotonic sum
+// (registers on round one, emits its delta from round two on) and a
+// cumulative histogram (same). Passing the same startTime across rounds keeps
+// both cumulative series on the non-reset path.
+func mixedMetricsExport(ts, startTime time.Time, sumValue float64, bucketCounts []uint64, histSum float64, histCount uint64) pmetric.Metrics {
+	md := pmetric.NewMetrics()
+	rm := md.ResourceMetrics().AppendEmpty()
+	rm.Resource().Attributes().PutStr("service.name", "demo-agent")
+	sm := rm.ScopeMetrics().AppendEmpty()
+
+	gauge := sm.Metrics().AppendEmpty()
+	gauge.SetName("it.queue.depth")
+	gdp := gauge.SetEmptyGauge().DataPoints().AppendEmpty()
+	gdp.SetDoubleValue(42)
+	gdp.SetTimestamp(pcommon.NewTimestampFromTime(ts))
+
+	sum := sm.Metrics().AppendEmpty()
+	sum.SetName("it.requests.total")
+	s := sum.SetEmptySum()
+	s.SetAggregationTemporality(pmetric.AggregationTemporalityCumulative)
+	s.SetIsMonotonic(true)
+	sdp := s.DataPoints().AppendEmpty()
+	sdp.SetDoubleValue(sumValue)
+	sdp.SetStartTimestamp(pcommon.NewTimestampFromTime(startTime))
+	sdp.SetTimestamp(pcommon.NewTimestampFromTime(ts))
+
+	hist := sm.Metrics().AppendEmpty()
+	hist.SetName("it.request.duration")
+	h := hist.SetEmptyHistogram()
+	h.SetAggregationTemporality(pmetric.AggregationTemporalityCumulative)
+	hdp := h.DataPoints().AppendEmpty()
+	hdp.ExplicitBounds().FromRaw([]float64{0.1, 0.5, 1})
+	hdp.BucketCounts().FromRaw(bucketCounts)
+	hdp.SetSum(histSum)
+	hdp.SetCount(histCount)
+	hdp.SetStartTimestamp(pcommon.NewTimestampFromTime(startTime))
+	hdp.SetTimestamp(pcommon.NewTimestampFromTime(ts))
+
+	return md
 }
 
 func newTraceID(b byte) pcommon.TraceID {
@@ -594,5 +684,252 @@ func TestWriteFailureIsCountedNotReturned(t *testing.T) {
 
 	if delta := testutil.ToFloat64(counter) - before; delta != 5 {
 		t.Errorf("write drop delta = %v, want the 5 fixture spans", delta)
+	}
+}
+
+// TestWriterLandsMappedMetricsFixture is T4's wiring proof for all three D363
+// temperaments: ConsumeMetrics rides the same D5 batcher shape as
+// spans/logs, and MetricRows' mapping (T2) lands correctly through it —
+// rows in the raw table, the 1m rollup, and the catalog/cardinality source
+// metric_series (packet §3).
+func TestWriterLandsMappedMetricsFixture(t *testing.T) {
+	conn := connect(t)
+	workspaceID := newMetricsWorkspace(t, conn)
+	ctx := context.Background()
+
+	base := time.Now().UTC().Add(-5 * time.Minute)
+	startTime := base.Add(-time.Hour)
+
+	w := newWriter(t)
+	// Round one: the cumulative sum and histogram register their baselines and
+	// emit no row (D363 §1 first-observation rule) — only the gauge does.
+	w.ConsumeMetrics(ctx, workspaceID, mixedMetricsExport(base, startTime, 1000, []uint64{5, 10, 3}, 18, 18))
+	// Round two, a minute later: both cumulative series now emit their delta.
+	w.ConsumeMetrics(ctx, workspaceID, mixedMetricsExport(base.Add(time.Minute), startTime, 1400, []uint64{7, 14, 5}, 26, 26))
+	if err := w.Close(ctx); err != nil {
+		t.Fatalf("close writer: %v", err)
+	}
+
+	// Raw: 2 gauge rows (one per round) + 1 sum row + 1 histogram row (round
+	// two only, per the first-observation rule) = 4.
+	var rawRows uint64
+	if err := conn.QueryRow(ctx,
+		"SELECT count() FROM obstack.metric_points WHERE workspace_id = ?", workspaceID,
+	).Scan(&rawRows); err != nil {
+		t.Fatalf("count raw metric_points: %v", err)
+	}
+	if rawRows != 4 {
+		t.Fatalf("raw metric_points rows = %d, want 4 (2 gauge + 1 sum delta + 1 histogram delta)", rawRows)
+	}
+
+	var sumDelta float64
+	if err := conn.QueryRow(ctx,
+		"SELECT value FROM obstack.metric_points WHERE workspace_id = ? AND name = 'it.requests.total'",
+		workspaceID).Scan(&sumDelta); err != nil {
+		t.Fatalf("read sum row: %v", err)
+	}
+	if sumDelta != 400 {
+		t.Errorf("sum delta = %v, want 400 (1400-1000)", sumDelta)
+	}
+
+	var (
+		bucketCounts []uint64
+		hSum         float64
+		hCount       uint64
+	)
+	if err := conn.QueryRow(ctx,
+		"SELECT bucket_counts, h_sum, h_count FROM obstack.metric_points WHERE workspace_id = ? AND name = 'it.request.duration'",
+		workspaceID).Scan(&bucketCounts, &hSum, &hCount); err != nil {
+		t.Fatalf("read histogram row: %v", err)
+	}
+	wantCounts := []uint64{2, 4, 2}
+	if len(bucketCounts) != len(wantCounts) {
+		t.Fatalf("bucket_counts = %v, want %v", bucketCounts, wantCounts)
+	}
+	for i := range wantCounts {
+		if bucketCounts[i] != wantCounts[i] {
+			t.Errorf("bucket_counts = %v, want %v", bucketCounts, wantCounts)
+		}
+	}
+	if hSum != 8 || hCount != 8 {
+		t.Errorf("h_sum/h_count = %v/%v, want 8/8", hSum, hCount)
+	}
+
+	// The 1m rollup (packet §3): -Merge/plain-aggregate combinators matching
+	// each column's declared aggregate function, grouped by series key —
+	// never FINAL, never a bare SELECT.
+	var rollupSum float64
+	if err := conn.QueryRow(ctx, `
+		SELECT sum(sum_delta) FROM obstack.metric_points_1m
+		WHERE workspace_id = ? AND name = 'it.requests.total'
+		GROUP BY workspace_id, name, series_hash`,
+		workspaceID).Scan(&rollupSum); err != nil {
+		t.Fatalf("read 1m sum rollup: %v", err)
+	}
+	if rollupSum != 400 {
+		t.Errorf("1m rollup sum_delta = %v, want 400", rollupSum)
+	}
+
+	var (
+		rollupCounts []uint64
+		rollupHSum   float64
+		rollupHCount uint64
+	)
+	if err := conn.QueryRow(ctx, `
+		SELECT sumForEachMerge(hist_counts), sum(h_sum), sum(h_count) FROM obstack.metric_points_1m
+		WHERE workspace_id = ? AND name = 'it.request.duration'
+		GROUP BY workspace_id, name, series_hash`,
+		workspaceID).Scan(&rollupCounts, &rollupHSum, &rollupHCount); err != nil {
+		t.Fatalf("read 1m histogram rollup: %v", err)
+	}
+	if len(rollupCounts) != len(wantCounts) {
+		t.Fatalf("1m rollup hist_counts = %v, want %v", rollupCounts, wantCounts)
+	}
+	for i := range wantCounts {
+		if rollupCounts[i] != wantCounts[i] {
+			t.Errorf("1m rollup hist_counts = %v, want %v", rollupCounts, wantCounts)
+		}
+	}
+	if rollupHSum != 8 || rollupHCount != 8 {
+		t.Errorf("1m rollup h_sum/h_count = %v/%v, want 8/8", rollupHSum, rollupHCount)
+	}
+
+	// metric_series: the catalog/cardinality source (packet §3) — one row per
+	// series, keyed by (name, series_hash), typed correctly.
+	rows, err := conn.Query(ctx,
+		"SELECT name, type FROM obstack.metric_series WHERE workspace_id = ? ORDER BY name", workspaceID)
+	if err != nil {
+		t.Fatalf("query metric_series: %v", err)
+	}
+	defer rows.Close()
+	types := map[string]string{}
+	for rows.Next() {
+		var name, mtype string
+		if err := rows.Scan(&name, &mtype); err != nil {
+			t.Fatalf("scan metric_series: %v", err)
+		}
+		types[name] = mtype
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("metric_series rows: %v", err)
+	}
+	wantTypes := map[string]string{
+		"it.queue.depth":      "gauge",
+		"it.requests.total":   "sum",
+		"it.request.duration": "histogram",
+	}
+	if len(types) != len(wantTypes) {
+		t.Fatalf("metric_series names = %v, want %v", types, wantTypes)
+	}
+	for name, wantType := range wantTypes {
+		if types[name] != wantType {
+			t.Errorf("metric_series[%s].type = %q, want %q", name, types[name], wantType)
+		}
+	}
+}
+
+// TestConsumeMetricsCardinalityCapDropsNewSeriesButKeepsEstablished is D376's
+// plumbing proof at the Writer boundary: Config.SeriesCap really reaches
+// mapping.NewSeriesCache, a point creating a brand-new series past the cap
+// is dropped and its count returned across the Consumer boundary, and an
+// already-established series is never rejected regardless of the cap.
+func TestConsumeMetricsCardinalityCapDropsNewSeriesButKeepsEstablished(t *testing.T) {
+	conn := connect(t)
+	workspaceID := newMetricsWorkspace(t, conn)
+	ctx := context.Background()
+	base := time.Now().UTC().Add(-time.Minute)
+
+	w := newWriterWithCap(t, 2)
+
+	// Two distinct new series, both under the cap of 2: no drops.
+	if drops := w.ConsumeMetrics(ctx, workspaceID, gaugeMetric("it.cap.a", 1, base)); drops != 0 {
+		t.Fatalf("series a: cardinalityDrops = %d, want 0", drops)
+	}
+	if drops := w.ConsumeMetrics(ctx, workspaceID, gaugeMetric("it.cap.b", 2, base.Add(time.Second))); drops != 0 {
+		t.Fatalf("series b: cardinalityDrops = %d, want 0", drops)
+	}
+	// The workspace is now at cap (2/2). A further point on an ALREADY
+	// established series is still admitted — established series never drop.
+	if drops := w.ConsumeMetrics(ctx, workspaceID, gaugeMetric("it.cap.a", 3, base.Add(2*time.Second))); drops != 0 {
+		t.Fatalf("established series a at cap: cardinalityDrops = %d, want 0", drops)
+	}
+	// A third, brand-new series arriving at cap is dropped and counted.
+	if drops := w.ConsumeMetrics(ctx, workspaceID, gaugeMetric("it.cap.c", 4, base.Add(3*time.Second))); drops != 1 {
+		t.Fatalf("new series c past cap: cardinalityDrops = %d, want 1", drops)
+	}
+
+	if err := w.Close(ctx); err != nil {
+		t.Fatalf("close writer: %v", err)
+	}
+
+	var landed uint64
+	if err := conn.QueryRow(ctx,
+		"SELECT count() FROM obstack.metric_points WHERE workspace_id = ?", workspaceID,
+	).Scan(&landed); err != nil {
+		t.Fatalf("count landed points: %v", err)
+	}
+	if landed != 3 {
+		t.Fatalf("landed metric_points = %d, want 3 (a twice, b once; c never admitted)", landed)
+	}
+	var cCount uint64
+	if err := conn.QueryRow(ctx,
+		"SELECT count() FROM obstack.metric_points WHERE workspace_id = ? AND name = 'it.cap.c'",
+		workspaceID).Scan(&cCount); err != nil {
+		t.Fatalf("count series c: %v", err)
+	}
+	if cCount != 0 {
+		t.Errorf("series c landed %d rows, want 0 — it should never have been admitted", cCount)
+	}
+}
+
+// TestWriterSeedsSeriesCacheFromMetricSeriesAtBoot is D376's boot
+// reconciliation proof: a second Writer — standing in for a process restart —
+// seeds its cache from obstack.metric_series at New() and must treat the
+// series the FIRST writer established as already-known.
+//
+// The discriminating move is asking the restarted writer about a BRAND-NEW
+// series before it has personally seen anything: with the cap already filled
+// by the seed it must reject that series, where an unseeded writer would
+// happily admit it into what it thinks is an empty workspace. (Re-sending an
+// established series first proves nothing — an unseeded cache admits it too,
+// as a new one, and every later count lines up identically.)
+func TestWriterSeedsSeriesCacheFromMetricSeriesAtBoot(t *testing.T) {
+	conn := connect(t)
+	workspaceID := newMetricsWorkspace(t, conn)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	first := newWriterWithCap(t, 2)
+	for i, name := range []string{"it.seed.a", "it.seed.b"} {
+		if drops := first.ConsumeMetrics(ctx, workspaceID, gaugeMetric(name, float64(i), now)); drops != 0 {
+			t.Fatalf("first writer, %s: cardinalityDrops = %d, want 0", name, drops)
+		}
+	}
+	if err := first.Close(ctx); err != nil {
+		t.Fatalf("close first writer: %v", err)
+	}
+
+	// obstack.metric_series now carries both series with last_seen = today
+	// (UTC), so a brand-new Writer with the same cap of 2 boots already full.
+	second := newWriterWithCap(t, 2)
+	t.Cleanup(func() { second.Close(context.Background()) })
+
+	if drops := second.ConsumeMetrics(ctx, workspaceID, gaugeMetric("it.seed.c", 3, now.Add(time.Second))); drops != 1 {
+		t.Fatalf("restarted writer, new series c: cardinalityDrops = %d, want 1 — the cap must already be full from the seed", drops)
+	}
+	// And the seeded series themselves are established, not re-admitted as new:
+	// they still pass at a cap they exactly fill.
+	if drops := second.ConsumeMetrics(ctx, workspaceID, gaugeMetric("it.seed.a", 4, now.Add(2*time.Second))); drops != 0 {
+		t.Fatalf("restarted writer, seeded series a: cardinalityDrops = %d, want 0 (seeded, not new)", drops)
+	}
+
+	var cCount uint64
+	if err := conn.QueryRow(ctx,
+		"SELECT count() FROM obstack.metric_points WHERE workspace_id = ? AND name = 'it.seed.c'",
+		workspaceID).Scan(&cCount); err != nil {
+		t.Fatalf("count series c: %v", err)
+	}
+	if cCount != 0 {
+		t.Errorf("series c landed %d rows, want 0 — the seeded cap should never have admitted it", cCount)
 	}
 }

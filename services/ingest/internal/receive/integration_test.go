@@ -11,6 +11,8 @@ import (
 
 	"github.com/ClickHouse/clickhouse-go/v2"
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
+	"go.opentelemetry.io/collector/pdata/pcommon"
+	"go.opentelemetry.io/collector/pdata/pmetric"
 
 	"github.com/Ziadabdelsalam/observer-stack/services/ingest/internal/auth"
 	"github.com/Ziadabdelsalam/observer-stack/services/ingest/internal/migrate"
@@ -255,5 +257,161 @@ func TestCloudWatchLandsRowsInClickHouse(t *testing.T) {
 	}
 	if service != "CloudTrail" {
 		t.Errorf("service = %q, want the log group's name", service)
+	}
+}
+
+// newReceiveMetricsWorkspace is newReceiveWorkspace for the D363 metrics
+// tables: its own workspace_id, cleaned up the same way on the way out.
+func newReceiveMetricsWorkspace(t *testing.T, conn driver.Conn) string {
+	t.Helper()
+	workspace := fmt.Sprintf("ws_recv_metrics_%d", time.Now().UnixNano())
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		for _, table := range []string{"metric_points", "metric_points_1m", "metric_points_1h", "metric_series"} {
+			if err := conn.Exec(ctx,
+				"ALTER TABLE obstack."+table+" DELETE WHERE workspace_id = ?", workspace); err != nil {
+				t.Logf("cleanup of %s for %s: %v", table, workspace, err)
+			}
+		}
+	})
+	return workspace
+}
+
+// awaitMetricPointRows polls obstack.metric_points for the batcher's flush
+// rather than sleeping for it, the awaitLogRows pattern for the metrics table.
+func awaitMetricPointRows(t *testing.T, conn driver.Conn, workspace string, want uint64) uint64 {
+	t.Helper()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	var count uint64
+	deadline := time.Now().Add(20 * time.Second)
+	for time.Now().Before(deadline) {
+		row := conn.QueryRow(ctx, "SELECT count() FROM obstack.metric_points WHERE workspace_id = ?", workspace)
+		if err := row.Scan(&count); err != nil {
+			t.Fatalf("count metric_points for %s: %v", workspace, err)
+		}
+		if count >= want {
+			return count
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	return count
+}
+
+// mixedMetricsFixture builds one export carrying all three D363 temperaments
+// under one resource: a gauge (emits every round), a cumulative monotonic sum
+// and a cumulative histogram (both register on round one and emit their
+// delta from round two on) — write's own mixedMetricsExport, adapted here so
+// this seam test drives the real HTTP/OTLP wire encoding rather than calling
+// the Writer directly.
+func mixedMetricsFixture(ts, startTime time.Time, sumValue float64, bucketCounts []uint64, histSum float64, histCount uint64) pmetric.Metrics {
+	md := pmetric.NewMetrics()
+	rm := md.ResourceMetrics().AppendEmpty()
+	rm.Resource().Attributes().PutStr("service.name", "demo-agent")
+	sm := rm.ScopeMetrics().AppendEmpty()
+
+	gauge := sm.Metrics().AppendEmpty()
+	gauge.SetName("it.recv.queue.depth")
+	gdp := gauge.SetEmptyGauge().DataPoints().AppendEmpty()
+	gdp.SetDoubleValue(42)
+	gdp.SetTimestamp(pcommon.NewTimestampFromTime(ts))
+
+	sum := sm.Metrics().AppendEmpty()
+	sum.SetName("it.recv.requests.total")
+	s := sum.SetEmptySum()
+	s.SetAggregationTemporality(pmetric.AggregationTemporalityCumulative)
+	s.SetIsMonotonic(true)
+	sdp := s.DataPoints().AppendEmpty()
+	sdp.SetDoubleValue(sumValue)
+	sdp.SetStartTimestamp(pcommon.NewTimestampFromTime(startTime))
+	sdp.SetTimestamp(pcommon.NewTimestampFromTime(ts))
+
+	hist := sm.Metrics().AppendEmpty()
+	hist.SetName("it.recv.request.duration")
+	h := hist.SetEmptyHistogram()
+	h.SetAggregationTemporality(pmetric.AggregationTemporalityCumulative)
+	hdp := h.DataPoints().AppendEmpty()
+	hdp.ExplicitBounds().FromRaw([]float64{0.1, 0.5, 1})
+	hdp.BucketCounts().FromRaw(bucketCounts)
+	hdp.SetSum(histSum)
+	hdp.SetCount(histCount)
+	hdp.SetStartTimestamp(pcommon.NewTimestampFromTime(startTime))
+	hdp.SetTimestamp(pcommon.NewTimestampFromTime(ts))
+
+	return md
+}
+
+// TestOTLPMetricsLandInClickHouseThroughTheRealWriter is the seam this task
+// was missing: a real OTLP metrics export, POSTed over HTTP with a valid key,
+// through a receiver wired to the REAL batch writer (startWritingServer,
+// not a recorder standing in for it) — landing rows in metric_points, the 1m
+// rollup (GROUP BY + matching combinators, the house query rule), and
+// metric_series, exactly the way a real SDK's export would.
+func TestOTLPMetricsLandInClickHouseThroughTheRealWriter(t *testing.T) {
+	conn := connectReceiveClickHouse(t)
+	workspace := newReceiveMetricsWorkspace(t, conn)
+	srv := startWritingServer(t, workspace)
+
+	base := time.Now().UTC().Add(-time.Minute)
+	startTime := base.Add(-time.Hour)
+
+	// Round one: the cumulative sum/histogram register their baselines and
+	// emit no row (D363 §1 first-observation rule); the gauge emits.
+	exportMetrics(t, srv, mixedMetricsFixture(base, startTime, 1000, []uint64{5, 10, 3}, 18, 18))
+	// Round two, a second later: both cumulative series emit their delta.
+	exportMetrics(t, srv, mixedMetricsFixture(base.Add(time.Second), startTime, 1400, []uint64{7, 14, 5}, 26, 26))
+
+	// 2 gauge rows + 1 sum delta + 1 histogram delta = 4.
+	if got := awaitMetricPointRows(t, conn, workspace, 4); got != 4 {
+		t.Fatalf("landed %d rows in obstack.metric_points, want 4", got)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	// The 1m rollup: plain-aggregate/-Merge combinators matching each column's
+	// declared aggregate function, grouped by series key — never FINAL, never
+	// a bare SELECT (the trace_summaries house rule, packet §3).
+	var rollupSum float64
+	if err := conn.QueryRow(ctx, `
+		SELECT sum(sum_delta) FROM obstack.metric_points_1m
+		WHERE workspace_id = ? AND name = 'it.recv.requests.total'
+		GROUP BY workspace_id, name, series_hash`,
+		workspace).Scan(&rollupSum); err != nil {
+		t.Fatalf("read 1m sum rollup: %v", err)
+	}
+	if rollupSum != 400 {
+		t.Errorf("1m rollup sum_delta = %v, want 400 (1400-1000)", rollupSum)
+	}
+
+	var rollupCounts []uint64
+	if err := conn.QueryRow(ctx, `
+		SELECT sumForEachMerge(hist_counts) FROM obstack.metric_points_1m
+		WHERE workspace_id = ? AND name = 'it.recv.request.duration'
+		GROUP BY workspace_id, name, series_hash`,
+		workspace).Scan(&rollupCounts); err != nil {
+		t.Fatalf("read 1m histogram rollup: %v", err)
+	}
+	if want := []uint64{2, 4, 2}; len(rollupCounts) != len(want) || rollupCounts[0] != want[0] || rollupCounts[1] != want[1] || rollupCounts[2] != want[2] {
+		t.Errorf("1m rollup hist_counts = %v, want %v", rollupCounts, want)
+	}
+
+	// metric_series: the catalog/cardinality source (packet §3) — one series
+	// per metric name here. Counted with uniqExact rather than count(): this is
+	// an AggregatingMergeTree, and two flushes land two parts, each carrying
+	// its own un-merged row for the gauge — a bare count() would read 4 the
+	// moment the two exports fall in different batcher ticks (measured on the
+	// pinned engine: two INSERTs for one series => count() = 2, uniqExact = 1).
+	var seriesCount uint64
+	if err := conn.QueryRow(ctx,
+		"SELECT uniqExact(series_hash) FROM obstack.metric_series WHERE workspace_id = ?", workspace,
+	).Scan(&seriesCount); err != nil {
+		t.Fatalf("count metric_series: %v", err)
+	}
+	if seriesCount != 3 {
+		t.Errorf("metric_series distinct series = %d, want 3 (one per metric name)", seriesCount)
 	}
 }

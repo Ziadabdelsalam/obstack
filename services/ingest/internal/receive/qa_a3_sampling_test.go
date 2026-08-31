@@ -8,6 +8,7 @@ import (
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/plog"
 	"go.opentelemetry.io/collector/pdata/plog/plogotlp"
+	"go.opentelemetry.io/collector/pdata/pmetric"
 	"go.opentelemetry.io/collector/pdata/ptrace"
 	"go.opentelemetry.io/collector/pdata/ptrace/ptraceotlp"
 
@@ -23,6 +24,10 @@ func (c *qaA3Consumer) ConsumeTraces(_ context.Context, _ string, td ptrace.Trac
 func (c *qaA3Consumer) ConsumeLogs(_ context.Context, _ string, ld plog.Logs) {
 	c.logs += ld.LogRecordCount()
 }
+
+// ConsumeMetrics only needs to exist to satisfy Consumer — this harness's A3
+// sampling proof is about traces/logs, never metrics.
+func (c *qaA3Consumer) ConsumeMetrics(_ context.Context, _ string, _ pmetric.Metrics) int { return 0 }
 
 const qaA3Workspace = "ws_qa_a3_tracelesss"
 

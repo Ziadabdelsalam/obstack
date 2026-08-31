@@ -18,8 +18,9 @@ import (
 
 // Signals carried by the accepted counter.
 const (
-	SignalTraces = "traces"
-	SignalLogs   = "logs"
+	SignalTraces  = "traces"
+	SignalLogs    = "logs"
+	SignalMetrics = "metrics"
 )
 
 // Drop reasons (D6, D26). Every drop in the pipeline is one of these.
