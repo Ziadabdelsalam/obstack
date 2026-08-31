@@ -24,9 +24,18 @@
 -- Map(LowCardinality(String), String))` pairing is rejected (code 36).
 -- Rollup/series `attributes` columns below use Map(String, String) instead;
 -- the raw table keeps Map(LowCardinality(String), String) (where the
--- dictionary earns its keep) and the MV SELECTs are unchanged — the insert
--- coerces LC->String losslessly. Attributes are constant per series_hash, so
--- anyLast is exact either way.
+-- dictionary earns its keep); the insert coerces LC->String losslessly.
+-- Attributes are constant per series_hash, so anyLast is exact either way.
+-- (D375 below further changes what the MV SELECTs feed into anyLast.)
+--
+-- D375 amendment (2026-09-01, E-T2 reviewer escalation, packet defect):
+-- rollup/series `attributes` is the MERGED label set, not point attributes
+-- alone -- each MV SELECT computes anyLast(mapUpdate(resource_attributes,
+-- attributes)), point attrs winning on key collision, so resource-borne
+-- groupBy keys (e.g. k8s.pod.name) are queryable without a raw-table join.
+-- Raw table is untouched (both maps kept, full OTLP fidelity); the
+-- SimpleAggregateFunction(anyLast, Map(String, String)) storage type is
+-- unchanged -- mapUpdate's output coerces the same way per D373.
 CREATE TABLE IF NOT EXISTS obstack.metric_points
 (
     workspace_id        LowCardinality(String),
@@ -89,7 +98,7 @@ TTL max_seen_date + INTERVAL 90 DAY;
 CREATE MATERIALIZED VIEW IF NOT EXISTS obstack.metric_points_1m_mv TO obstack.metric_points_1m AS
 SELECT workspace_id, name, type, unit, service, series_hash,
        toStartOfMinute(timestamp) AS bucket,
-       anyLast(attributes) AS attributes,
+       anyLast(mapUpdate(resource_attributes, attributes)) AS attributes,
        sum(value) AS sum_delta,
        min(value) AS gauge_min, max(value) AS gauge_max,
        avgState(value) AS gauge_avg, argMaxState(value, timestamp) AS gauge_last,
@@ -131,7 +140,7 @@ TTL max_seen_date + INTERVAL 90 DAY;
 CREATE MATERIALIZED VIEW IF NOT EXISTS obstack.metric_points_1h_mv TO obstack.metric_points_1h AS
 SELECT workspace_id, name, type, unit, service, series_hash,
        toStartOfHour(timestamp) AS bucket,
-       anyLast(attributes) AS attributes,
+       anyLast(mapUpdate(resource_attributes, attributes)) AS attributes,
        sum(value) AS sum_delta,
        min(value) AS gauge_min, max(value) AS gauge_max,
        avgState(value) AS gauge_avg, argMaxState(value, timestamp) AS gauge_last,
@@ -164,7 +173,7 @@ TTL last_seen + INTERVAL 90 DAY;
 
 CREATE MATERIALIZED VIEW IF NOT EXISTS obstack.metric_series_mv TO obstack.metric_series AS
 SELECT workspace_id, name, series_hash, type, unit, service,
-       anyLast(attributes) AS attributes,
+       anyLast(mapUpdate(resource_attributes, attributes)) AS attributes,
        min(toDateTime(timestamp)) AS first_seen,
        max(toDateTime(timestamp)) AS last_seen
 FROM obstack.metric_points
