@@ -8,12 +8,17 @@
  * ClickHouse/Postgres the operator's shell can reach directly, which is
  * exactly what Railway's private networking refuses this script.
  *
- * Reads five env names, all optional:
- *   OBSTACK_SMOKE_MARKETING_URL   e.g. https://obstack.dev
- *   OBSTACK_SMOKE_APP_URL         e.g. https://app.obstack.dev
- *   OBSTACK_SMOKE_INGEST_URL      e.g. https://ingest.obstack.dev
- *   OBSTACK_SMOKE_INGEST_GRPC_URL optional — e.g. https://ingest-grpc.obstack.dev
- *   OBSTACK_SMOKE_API_KEY         optional — an operator-issued ingest key
+ * Reads env names, all optional:
+ *   OBSTACK_SMOKE_MARKETING_URL       e.g. https://obstack.dev
+ *   OBSTACK_SMOKE_APP_URL             e.g. https://app.obstack.dev
+ *   OBSTACK_SMOKE_INGEST_URL          e.g. https://ingest.obstack.dev
+ *   OBSTACK_SMOKE_INGEST_GRPC_URL     optional — e.g. https://ingest-grpc.obstack.dev
+ *   OBSTACK_SMOKE_API_KEY             optional — an operator-issued ingest key
+ *   OBSTACK_SMOKE_APP_SESSION_COOKIE  optional — a signed-in cookie for the
+ *                                     D277 rendering arm (/app/onboarding)
+ *   OBSTACK_SMOKE_EXPECTED_OTLP_HTTP  optional — the real endpoint that arm
+ *                                     expects to see rendered, e.g.
+ *                                     https://ingest.obstack.dev
  *
  * An unset URL never fails silently: every probe that host would have run is
  * printed as a SKIPPED line instead. Uses Node's global `fetch` only. The
@@ -377,12 +382,115 @@ async function probeGrpc(grpcUrl: string | undefined, apiKey: string | undefined
 
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// optional: D277 rendering — the app's onboarding surface shows the real
+// configured OTLP HTTP endpoint and never a loopback address, and the D336
+// HTTP-only launch means the gRPC endpoint must never appear in the render.
+//
+// SURFACE DECISION: `/app/onboarding` (apps/web/src/app/app/onboarding/page.tsx)
+// is the reachable one. `/app/connections` also calls `resolveIngestEndpoints()`
+// (apps/web/src/server/ingest-endpoint.ts) but hands the result to
+// `ConnectModal` (apps/web/src/components/connections/ConnectModal.tsx), which
+// only renders once `open` state is set by a click
+// (`ConnectionsHub.tsx:142-143,382-383`) — Next SSRs the initial (closed)
+// state, so a plain authenticated GET never reaches that modal's HTML, and
+// there is no separate JSON endpoint that serves it either. `/app/onboarding`
+// renders `Quickstart` (`components/onboarding/Quickstart.tsx`) UNCONDITIONALLY
+// on load, default tab "python", whose snippet is built by
+// `components/onboarding/snippets.ts` `snippetsFor()` and interpolates the
+// real endpoint directly (`OTEL_EXPORTER_OTLP_ENDPOINT=${http}`) with no click
+// required — real plain-HTML SSR output, reachable by `fetch` + a cookie.
+//
+// GAP, stated plainly: `snippets.ts`'s asymmetric design (D282) means an
+// HTTP-only deployment never renders an explicit "gRPC absence" SENTENCE on
+// this page — gRPC is simply omitted from every tab's snippet (`grpcLine`
+// stays `""`). The literal gRPC-absence sentence text ("This deployment does
+// not publish a gRPC OTLP endpoint — set OBSTACK_PUBLIC_OTLP_GRPC_ENDPOINT on
+// the web workload to render this step.") lives only in ConnectModal's
+// `resolveStepSnippet`, which is unreachable without a real click — no
+// `fetch`-only probe can trigger it. This arm therefore asserts gRPC's
+// STRUCTURAL absence instead (no gRPC endpoint or `PROTOCOL=grpc` line
+// anywhere in the response body) as the closest true statement `fetch` can
+// prove, and says so here rather than asserting untested UI behaviour.
+
+const D277_PROBE: ProbeDef = {
+  method: "GET",
+  path: "/app/onboarding",
+  expectation: "HTTP endpoint rendered, gRPC structurally absent, no loopback (D277)",
+};
+
+async function probeD277Rendering(
+  appUrl: string | undefined,
+  cookie: string | undefined,
+  expectedHttp: string | undefined,
+): Promise<void> {
+  const host = "app-render";
+
+  const missing = [
+    !appUrl ? "OBSTACK_SMOKE_APP_URL" : null,
+    !cookie ? "OBSTACK_SMOKE_APP_SESSION_COOKIE" : null,
+    !expectedHttp ? "OBSTACK_SMOKE_EXPECTED_OTLP_HTTP" : null,
+  ].filter((v): v is string => v !== null);
+
+  if (!appUrl || !cookie || !expectedHttp) {
+    record(
+      "SKIPPED",
+      host,
+      D277_PROBE.method,
+      D277_PROBE.path,
+      "-",
+      `${D277_PROBE.expectation} — SKIPPED (unset ${missing.join(", ")})`,
+    );
+    return;
+  }
+
+  const attempt = await safeFetch(`${appUrl}${D277_PROBE.path}`, {
+    headers: { cookie },
+  });
+
+  if (!attempt.response) {
+    record("FAIL", host, D277_PROBE.method, D277_PROBE.path, "ERROR", `${D277_PROBE.expectation} — ${describeError(attempt.error)}`);
+    return;
+  }
+  if (attempt.response.status !== 200) {
+    record(
+      "FAIL",
+      host,
+      D277_PROBE.method,
+      D277_PROBE.path,
+      String(attempt.response.status),
+      `${D277_PROBE.expectation} — expected 200 (not signed in, or not plain HTML?)`,
+    );
+    return;
+  }
+
+  const body = await attempt.response.text();
+  const hasExpectedHttp = body.includes(expectedHttp);
+  const hasLoopback = body.includes("127.0.0.1") || body.includes("localhost");
+  const hasGrpcLine = body.includes("OTEL_EXPORTER_OTLP_PROTOCOL=grpc");
+
+  const failures: string[] = [];
+  if (!hasExpectedHttp) failures.push(`missing the configured HTTP endpoint ${expectedHttp}`);
+  if (hasLoopback) failures.push("a loopback address (127.0.0.1/localhost) is present");
+  if (hasGrpcLine) failures.push("a gRPC protocol line rendered though gRPC should be unset (D336)");
+
+  if (failures.length === 0) {
+    record("ok", host, D277_PROBE.method, D277_PROBE.path, "200", D277_PROBE.expectation);
+  } else {
+    record("FAIL", host, D277_PROBE.method, D277_PROBE.path, "200", `${D277_PROBE.expectation} — ${failures.join("; ")}`);
+  }
+}
+
+// ---------------------------------------------------------------------------
+
 async function main(): Promise<void> {
   const marketingUrl = process.env.OBSTACK_SMOKE_MARKETING_URL;
   const appUrl = process.env.OBSTACK_SMOKE_APP_URL;
   const ingestUrl = process.env.OBSTACK_SMOKE_INGEST_URL;
   const grpcUrl = process.env.OBSTACK_SMOKE_INGEST_GRPC_URL;
   const apiKey = process.env.OBSTACK_SMOKE_API_KEY;
+  const appSessionCookie = process.env.OBSTACK_SMOKE_APP_SESSION_COOKIE;
+  const expectedOtlpHttp = process.env.OBSTACK_SMOKE_EXPECTED_OTLP_HTTP;
 
   if (marketingUrl) {
     await probeMarketing(marketingUrl, appUrl);
@@ -403,6 +511,8 @@ async function main(): Promise<void> {
   }
 
   await probeGrpc(grpcUrl, apiKey);
+
+  await probeD277Rendering(appUrl, appSessionCookie, expectedOtlpHttp);
 
   console.log(
     `\nsmoke: ${counts.ok} ok, ${counts.fail} FAIL, ${counts.skipped} SKIPPED`,
