@@ -30,6 +30,15 @@ export type MetricAgg = "avg" | "min" | "max" | "last" | "sum" | "rate" | "p50" 
 
 export interface MetricSeriesQuery {
   metric: string;
+  /**
+   * D384: REQUIRED — the caller (the catalog entry the UI selected) names the
+   * type directly, rather than the query layer inferring/guessing it. This is
+   * what makes a D378 dual-emitted name (the same metric name genuinely
+   * emitted as two types) answerable at all: `metric` alone cannot disambiguate,
+   * "gauge avg" and "histogram avg" are two different, independently correct
+   * answers for the same name.
+   */
+  type: "gauge" | "sum" | "histogram";
   range: MetricRange;
   agg: MetricAgg;
   /** An observed attribute key ("service.name" included) or null. */

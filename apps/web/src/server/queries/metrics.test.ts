@@ -153,7 +153,6 @@ async function withFixedNow<T>(run: () => Promise<T>): Promise<T> {
 test("queryMetricSeries: the grid has exactly the contracted width, and an unmatched bucket is null, never 0", async () => {
   const lastBucketEpochS = FIXED_NOW_MS / 1000; // 1h range -> 1m buckets; the current (aligned) bucket
   const { ch, calls } = recorder((sql) => {
-    if (sql.includes("obstack.metric_series")) return [{ type: "gauge" }];
     assert.ok(sql.includes("obstack.metric_points_1m"), "queryMetricSeries did not read metric_points_1m");
     assert.ok(!sql.includes("FINAL"), "queryMetricSeries must never use FINAL (trace_summaries house rule)");
     return [
@@ -174,10 +173,13 @@ test("queryMetricSeries: the grid has exactly the contracted width, and an unmat
   });
 
   const { series, totalGroups } = await withFixedNow(() =>
-    queryMetricSeries(ch, { metric: "cpu.util", range: "1h", agg: "avg", groupBy: null, filters: {} }),
+    queryMetricSeries(ch, { metric: "cpu.util", type: "gauge", range: "1h", agg: "avg", groupBy: null, filters: {} }),
   );
 
+  // D384: `type` is bound as a real parameter (D11), never spliced into the SQL.
+  assert.equal(calls[0].params.type, "gauge");
   assertEveryCallScoped("queryMetricSeries", calls);
+  assert.equal(calls.length, 1, "with type supplied, there is no separate metric_series lookup at all");
   assert.equal(series.length, 1);
   assert.equal(totalGroups, 1, "D381: ungrouped totalGroups mirrors series.length");
   assert.equal(series[0].group, null);
@@ -200,29 +202,26 @@ test("queryMetricSeries: every contracted range width, and rate = sum_delta / bu
     ["6h", 72, 300],
     ["24h", 96, 900],
   ] as const) {
-    const { ch } = recorder((sql) => {
-      if (sql.includes("obstack.metric_series")) return [{ type: "sum" }];
-      return [
-        {
-          grp: "",
-          bucket_epoch_s: FIXED_NOW_MS / 1000,
-          sum_delta: 600,
-          gauge_min: 0,
-          gauge_max: 0,
-          gauge_avg: 0,
-          gauge_last: 0,
-          bounds: [],
-          hist_counts: [],
-          h_sum: 0,
-          h_count: 0,
-        },
-      ];
-    });
+    const { ch } = recorder(() => [
+      {
+        grp: "",
+        bucket_epoch_s: FIXED_NOW_MS / 1000,
+        sum_delta: 600,
+        gauge_min: 0,
+        gauge_max: 0,
+        gauge_avg: 0,
+        gauge_last: 0,
+        bounds: [],
+        hist_counts: [],
+        h_sum: 0,
+        h_count: 0,
+      },
+    ]);
 
     const {
       series: [series],
     } = await withFixedNow(() =>
-      queryMetricSeries(ch, { metric: "http.requests", range, agg: "rate", groupBy: null, filters: {} }),
+      queryMetricSeries(ch, { metric: "http.requests", type: "sum", range, agg: "rate", groupBy: null, filters: {} }),
     );
     assert.equal(series.points.length, points, `${range} must serve exactly ${points} buckets (D363 §0)`);
     assert.equal(
@@ -233,33 +232,102 @@ test("queryMetricSeries: every contracted range width, and rate = sum_delta / bu
   }
 });
 
-test("queryMetricSeries: an unknown metric is an honest empty result, and never issues the data query at all", async () => {
+test("queryMetricSeries: an unknown (name, type) pair is an honest empty result, from the SAME single read as any other query (D384)", async () => {
+  // D384 retired the separate metric_series existence check: an unknown name
+  // (or a known name queried under a type it was never emitted as) just
+  // matches zero rows in metric_points_1m — there is no other path to fall
+  // off of, so this is ONE call, not a short-circuit before a second one.
   const { ch, calls } = recorder((sql) => {
-    assert.ok(sql.includes("obstack.metric_series"));
-    return []; // no such metric for this workspace
+    assert.ok(sql.includes("obstack.metric_points_1m"));
+    return [];
   });
 
   const result = await queryMetricSeries(ch, {
     metric: "no.such.metric",
+    type: "gauge",
     range: "1h",
     agg: "avg",
     groupBy: null,
     filters: {},
   });
 
-  assert.deepEqual(result, { series: [], totalGroups: 0 });
-  assert.equal(calls.length, 1, "an unresolved metric must short-circuit before the metric_points_1m read");
+  // The ungrouped view still names ONE series for "the metric as a whole"
+  // (D381) — an unknown metric renders the identical honest-empty shape a
+  // known metric with a fully-filtered-out result would, not a special
+  // vanishing case.
+  assert.equal(result.series.length, 1);
+  assert.equal(result.totalGroups, 1);
+  assert.equal(result.series[0].group, null);
+  assert.ok(result.series[0].points.every((p) => p.v === null));
+  assert.equal(calls.length, 1, "D384: there is no separate metric_series lookup left to short-circuit before");
 });
 
-test("queryMetricSeries: an agg invalid for the metric's type is a request error, never a silent coercion", async () => {
-  const { ch } = recorder((sql) => {
-    assert.ok(sql.includes("obstack.metric_series"));
-    return [{ type: "gauge" }];
+test("queryMetricSeries: an agg invalid for the SUPPLIED type is a request error, never a silent coercion, and never touches ClickHouse (D384)", async () => {
+  const { ch, calls } = recorder(() => {
+    throw new Error("must not query ClickHouse at all — the supplied type is enough to reject synchronously");
   });
 
   await assert.rejects(
-    queryMetricSeries(ch, { metric: "cpu.util", range: "1h", agg: "sum", groupBy: null, filters: {} }),
-    /invalid aggregation "sum" for metric "cpu.util"/,
+    queryMetricSeries(ch, { metric: "cpu.util", type: "gauge", range: "1h", agg: "sum", groupBy: null, filters: {} }),
+    /invalid aggregation "sum" for metric "cpu.util" \(type "gauge"\)/,
+  );
+  assert.equal(calls.length, 0, "agg-vs-type validity is a pure check against the supplied type — no round trip needed");
+});
+
+test("queryMetricSeries: dual-emission (D378/D384) — the SAME name under two supplied types answers independently and correctly", async () => {
+  // Two callers naming the SAME metric name but a DIFFERENT supplied type
+  // must each validate and read against THEIR OWN type — gauge's "sum" is
+  // invalid while histogram/sum's own valid aggs still work, proving the
+  // supplied `type` (not any inference from the name) drives both the
+  // validity check and the bound SQL parameter.
+  const { ch: gaugeCh, calls: gaugeCalls } = recorder(() => [
+    {
+      grp: "",
+      bucket_epoch_s: FIXED_NOW_MS / 1000,
+      sum_delta: 0,
+      gauge_min: 1,
+      gauge_max: 9,
+      gauge_avg: 5,
+      gauge_last: 9,
+      bounds: [],
+      hist_counts: [],
+      h_sum: 0,
+      h_count: 0,
+    },
+  ]);
+  const gaugeResult = await withFixedNow(() =>
+    queryMetricSeries(gaugeCh, { metric: "dual.name", type: "gauge", range: "1h", agg: "avg", groupBy: null, filters: {} }),
+  );
+  assert.equal(gaugeCalls[0].params.type, "gauge");
+  assert.equal(gaugeResult.series[0].points.at(-1)?.v, 5, "gauge avg must read gauge_avg");
+
+  const { ch: histCh, calls: histCalls } = recorder(() => [
+    {
+      grp: "",
+      bucket_epoch_s: FIXED_NOW_MS / 1000,
+      sum_delta: 0,
+      gauge_min: 0,
+      gauge_max: 0,
+      gauge_avg: 0,
+      gauge_last: 0,
+      bounds: [0, 10, 20, 30, 40],
+      hist_counts: [0, 10, 10, 10, 10, 0],
+      h_sum: 0,
+      h_count: 0,
+    },
+  ]);
+  const histResult = await withFixedNow(() =>
+    queryMetricSeries(histCh, { metric: "dual.name", type: "histogram", range: "1h", agg: "avg", groupBy: null, filters: {} }),
+  );
+  assert.equal(histCalls[0].params.type, "histogram");
+  // histogram "avg" reads h_sum/h_count (both 0 here), NOT gauge_avg (5 in the
+  // fixture above) — a mixup here would silently answer 5 for the wrong type.
+  assert.equal(histResult.series[0].points.at(-1)?.v, null, "histogram avg with h_count 0 is a gap, not the OTHER type's value");
+
+  await assert.rejects(
+    queryMetricSeries(gaugeCh, { metric: "dual.name", type: "gauge", range: "1h", agg: "sum", groupBy: null, filters: {} }),
+    /invalid aggregation "sum" for metric "dual.name" \(type "gauge"\)/,
+    "gauge's own agg set must reject \"sum\" regardless of what the histogram side of this name supports",
   );
 });
 
@@ -290,7 +358,6 @@ test("queryMetricSeries: groupBy keeps the top 10 groups by point count, tie-bro
   }
 
   const { ch } = recorder((sql) => {
-    if (sql.includes("obstack.metric_series")) return [{ type: "gauge" }];
     assert.ok(sql.includes("mapContains"), "a groupBy query must gate on the attribute actually being present");
     return rows;
   });
@@ -298,6 +365,7 @@ test("queryMetricSeries: groupBy keeps the top 10 groups by point count, tie-bro
   const { series: result, totalGroups } = await withFixedNow(() =>
     queryMetricSeries(ch, {
       metric: "cpu.util",
+      type: "gauge",
       range: "1h",
       agg: "avg",
       groupBy: "route",

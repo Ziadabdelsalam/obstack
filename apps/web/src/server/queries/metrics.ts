@@ -146,58 +146,6 @@ const VALID_AGGS: Record<MetricType, MetricAgg[]> = {
 };
 
 /**
- * Same series-key merge discipline as the catalog above, scoped to one
- * metric name: DISTINCT over the merged (name, type) set. Ordinarily exactly
- * one type comes back for a name; D378's dual-emission ceiling is handled in
- * `resolveType` below, which picks the first row — so the ORDER BY is load
- * bearing, not decoration: an unordered DISTINCT can hand back the two types
- * in either order between runs, and the same request would then answer from a
- * different type each refresh.
- */
-const METRIC_TYPES_SQL = `
-SELECT DISTINCT type
-FROM (
-    SELECT workspace_id, name, series_hash, toString(type) AS type, unit, service
-    FROM obstack.metric_series
-    WHERE workspace_id = {workspace_id:String} AND name = {metric:String}
-    GROUP BY workspace_id, name, series_hash, type, unit, service
-)
-ORDER BY type`;
-
-/**
- * Resolves which type this metric's data should be read as. `null` means
- * "no such metric" (an honest empty result, not a request error — the
- * catalog simply has nothing under this name for this workspace).
- *
- * A request error fires when the metric exists but the requested `agg` is
- * not valid for ANY type it was observed as (D363 §0's binding "invalid
- * agg-for-type is a request error").
- */
-async function resolveType(
-  ch: ScopedClickHouse,
-  metric: string,
-  agg: MetricAgg,
-): Promise<MetricType | null> {
-  const rows = await ch.queryRows<{ type: MetricType }>(METRIC_TYPES_SQL, { metric });
-  const observed = rows.map((row) => row.type);
-  if (observed.length === 0) return null;
-  const matching = observed.filter((type) => VALID_AGGS[type].includes(agg));
-  if (matching.length === 0) {
-    throw new Error(
-      `invalid aggregation "${agg}" for metric "${metric}" (observed type${observed.length > 1 ? "s" : ""} ${observed.join("/")})`,
-    );
-  }
-  // veteran: "avg" is valid for both gauge and histogram, so a name
-  // dual-emitted as both (D378's accepted ceiling — never silently merged)
-  // is ambiguous from `agg` alone; the first match wins deterministically.
-  // Upgrade path: thread an explicit type into MetricSeriesQuery once a real
-  // dual-emission surface needs to disambiguate — not observed as a product
-  // need yet, since D378 exists to make the mapping bug it guards against
-  // visible in the catalog, not to make it queryable both ways at once.
-  return matching[0];
-}
-
-/**
  * Builds the two-level read over `metric_points_1m` (D363 §3's rollup, the
  * trace_summaries house rule carried over verbatim): the inner query GROUPs
  * BY the series key (`series_hash`) plus the requested bucket width and the
@@ -326,14 +274,25 @@ function hhmmUtc(epochSeconds: number): string {
 }
 
 /**
- * `queryMetricSeries` (D363 §0, frozen). The bucket grid is generated here,
- * not left to whatever rows the SQL happens to return — a bucket with no
- * matching data must still render as `v: null` (an honest gap), never be
- * absent from `points` or coerced to `0`. Grid boundaries are computed with
- * the SAME epoch-anchored flooring `toStartOfInterval(DateTime, INTERVAL n
- * MINUTE)` uses server-side (`floor(epochSeconds / bucketSeconds) *
- * bucketSeconds`), so a grid slot and the SQL row for the same real bucket
- * always carry an identical key to join on.
+ * `queryMetricSeries` (D363 §0, frozen; `type` REQUIRED per D384). The caller
+ * supplies the type, so there is no catalog lookup here at all: an unknown
+ * (name, type) pair simply matches zero rows in `metric_points_1m` and takes
+ * the SAME honest-empty-result path as any other empty query — never a
+ * separate "no such metric" check with its own round trip (D378's
+ * dual-emission ceiling is retired by this: `type` disambiguates a
+ * dual-emitted name directly, rather than a `resolveType` heuristic guessing
+ * at it). Agg-vs-type validity is checked synchronously against the SUPPLIED
+ * type, before any statement reaches ClickHouse (D363 §0's binding "invalid
+ * agg-for-type is a request error").
+ *
+ * The bucket grid is generated here, not left to whatever rows the SQL
+ * happens to return — a bucket with no matching data must still render as
+ * `v: null` (an honest gap), never be absent from `points` or coerced to
+ * `0`. Grid boundaries are computed with the SAME epoch-anchored flooring
+ * `toStartOfInterval(DateTime, INTERVAL n MINUTE)` uses server-side
+ * (`floor(epochSeconds / bucketSeconds) * bucketSeconds`), so a grid slot
+ * and the SQL row for the same real bucket always carry an identical key to
+ * join on.
  */
 export async function queryMetricSeries(
   ch: ScopedClickHouse,
@@ -342,9 +301,9 @@ export async function queryMetricSeries(
   const { bucketMinutes, points: numPoints } = RANGES[q.range];
   const bucketSeconds = bucketMinutes * 60;
 
-  const type = await resolveType(ch, q.metric, q.agg);
-  // no such metric for this workspace — nothing to show, honestly
-  if (type === null) return { series: [], totalGroups: 0 };
+  if (!VALID_AGGS[q.type].includes(q.agg)) {
+    throw new Error(`invalid aggregation "${q.agg}" for metric "${q.metric}" (type "${q.type}")`);
+  }
 
   const nowFlooredS = Math.floor(Date.now() / 1000 / bucketSeconds) * bucketSeconds;
   const grid = Array.from(
@@ -357,7 +316,7 @@ export async function queryMetricSeries(
   const filterEntries = Object.entries(q.filters);
   const params: Record<string, unknown> = {
     metric: q.metric,
-    type,
+    type: q.type,
     bucket_minutes: bucketMinutes,
     since_s: sinceS,
     until_s: untilS,
@@ -397,7 +356,7 @@ export async function queryMetricSeries(
     const byBucket = new Map(groupRows.map((row) => [row.bucket_epoch_s, row]));
     const seriesPoints: MetricSeriesPoint[] = grid.map((epochS) => {
       const row = byBucket.get(epochS);
-      return { t: hhmmUtc(epochS), v: row ? pointValue(type, q.agg, row, bucketSeconds) : null };
+      return { t: hhmmUtc(epochS), v: row ? pointValue(q.type, q.agg, row, bucketSeconds) : null };
     });
     return { group: q.groupBy === null ? null : grp, points: seriesPoints };
   });

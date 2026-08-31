@@ -177,6 +177,7 @@ test("catalog + gauge series (D363 §0) against a seeded ClickHouse", async (t) 
         series: [series],
       } = await queryMetricSeries(ch, {
         metric,
+        type: "gauge",
         range: "1h",
         agg,
         groupBy: null,
@@ -196,7 +197,7 @@ test("catalog + gauge series (D363 §0) against a seeded ClickHouse", async (t) 
 
   await t.test("queryMetricSeries: an invalid agg for a gauge is a request error against real data too", async () => {
     await assert.rejects(
-      queryMetricSeries(ch, { metric, range: "1h", agg: "sum", groupBy: null, filters: {} }),
+      queryMetricSeries(ch, { metric, type: "gauge", range: "1h", agg: "sum", groupBy: null, filters: {} }),
       /invalid aggregation "sum"/,
     );
   });
@@ -206,6 +207,7 @@ test("catalog + gauge series (D363 §0) against a seeded ClickHouse", async (t) 
       series: [filtered],
     } = await queryMetricSeries(ch, {
       metric,
+      type: "gauge",
       range: "1h",
       agg: "last",
       groupBy: null,
@@ -219,6 +221,7 @@ test("catalog + gauge series (D363 §0) against a seeded ClickHouse", async (t) 
       series: [control],
     } = await queryMetricSeries(ch, {
       metric,
+      type: "gauge",
       range: "1h",
       agg: "last",
       groupBy: null,
@@ -290,6 +293,7 @@ test("queryMetricSeries: groupBy on a resource-borne key, top-10 ranking (D375/D
 
   const { series: groups, totalGroups } = await queryMetricSeries(ch, {
     metric,
+    type: "gauge",
     range: "1h",
     agg: "last",
     groupBy: "k8s.pod.name",
@@ -363,10 +367,14 @@ test("sum + histogram temperaments against a seeded ClickHouse", async (t) => {
     ],
   });
 
-  const latest = async (metric: string, agg: "sum" | "rate" | "avg" | "p50" | "p90") => {
+  const latest = async (
+    metric: string,
+    type: "sum" | "histogram",
+    agg: "sum" | "rate" | "avg" | "p50" | "p90",
+  ) => {
     const {
       series: [series],
-    } = await queryMetricSeries(ch, { metric, range: "1h", agg, groupBy: null, filters: {} });
+    } = await queryMetricSeries(ch, { metric, type, range: "1h", agg, groupBy: null, filters: {} });
     assert.ok(series, `${metric}/${agg}: no series returned`);
     const nonNull = series.points.filter((p) => p.v !== null);
     assert.ok(nonNull.length > 0, `${metric}/${agg}: every bucket was null — the rollup read found nothing`);
@@ -374,24 +382,100 @@ test("sum + histogram temperaments against a seeded ClickHouse", async (t) => {
   };
 
   await t.test("a sum reads its delta, and rate divides it by the bucket's seconds", async () => {
-    assert.equal(await latest(sumMetric, "sum"), 60);
-    assert.equal(await latest(sumMetric, "rate"), 1);
+    assert.equal(await latest(sumMetric, "sum", "sum"), 60);
+    assert.equal(await latest(sumMetric, "sum", "rate"), 1);
   });
 
   await t.test("histogram quantiles come off the MERGED bucket arrays, avg off h_sum/h_count", async () => {
-    assert.equal(await latest(histMetric, "p50"), 20);
-    assert.equal(await latest(histMetric, "p90"), 36);
-    assert.equal(await latest(histMetric, "avg"), 20);
+    assert.equal(await latest(histMetric, "histogram", "p50"), 20);
+    assert.equal(await latest(histMetric, "histogram", "p90"), 36);
+    assert.equal(await latest(histMetric, "histogram", "avg"), 20);
   });
 
-  await t.test("an agg invalid for the observed type is refused for each temperament", async () => {
+  await t.test("an agg invalid for the SUPPLIED type is refused for each temperament", async () => {
     await assert.rejects(
-      queryMetricSeries(ch, { metric: sumMetric, range: "1h", agg: "p95", groupBy: null, filters: {} }),
+      queryMetricSeries(ch, { metric: sumMetric, type: "sum", range: "1h", agg: "p95", groupBy: null, filters: {} }),
       /invalid aggregation "p95"/,
     );
     await assert.rejects(
-      queryMetricSeries(ch, { metric: histMetric, range: "1h", agg: "last", groupBy: null, filters: {} }),
+      queryMetricSeries(ch, { metric: histMetric, type: "histogram", range: "1h", agg: "last", groupBy: null, filters: {} }),
       /invalid aggregation "last"/,
+    );
+  });
+});
+
+// D378/D384: a name genuinely emitted as two types (a mapping bug, or two
+// SDKs disagreeing) — the real thing D378 exists to make visible rather than
+// silently merge. `type` is REQUIRED on the query (D384), so the SAME name
+// under two DIFFERENT supplied types must answer from ITS OWN rollup rows,
+// never the other type's, and never conflate the two into one series.
+test("dual-emission (D378/D384): the same name under two supplied types answers independently against a seeded ClickHouse", async (t) => {
+  if (!(await clickhouseReachable())) {
+    t.skip(`no ClickHouse at ${CLICKHOUSE_URL}; start deploy/compose (down -v first) to run this test`);
+    return;
+  }
+
+  const { queryMetricSeries } = await import("./metrics");
+  const ch = forWorkspace(WORKSPACE_ID);
+
+  const suffix = randomBytes(6).toString("hex");
+  const dualName = `it.dual.${suffix}`;
+  const bucketStartS = Math.floor(Date.now() / 1000 / 60) * 60;
+  const at = (second: number) => chTimestamp(BigInt(bucketStartS + second) * NS_PER_SECOND);
+
+  await seed.insert({
+    table: "metric_points",
+    format: "JSONEachRow",
+    values: [
+      // The SAME name, emitted as a gauge (series_hash 70) ...
+      point({ workspace_id: WORKSPACE_ID, name: dualName, type: "gauge", series_hash: 70, timestamp: at(1), value: 42 }),
+      // ... AND, separately, as a histogram (series_hash 80) — D378's identity
+      // hash includes type precisely so these two never collide into one series.
+      point({
+        workspace_id: WORKSPACE_ID,
+        name: dualName,
+        type: "histogram",
+        series_hash: 80,
+        timestamp: at(1),
+        bounds: [0, 10, 20, 30, 40],
+        bucket_counts: [0, 10, 10, 10, 10, 0],
+        h_sum: 800,
+        h_count: 40,
+      }),
+    ],
+  });
+
+  await t.test("gauge avg reads the gauge rollup columns, not the histogram's", async () => {
+    const {
+      series: [series],
+    } = await queryMetricSeries(ch, { metric: dualName, type: "gauge", range: "1h", agg: "avg", groupBy: null, filters: {} });
+    const nonNull = series.points.filter((p) => p.v !== null);
+    assert.equal(nonNull.at(-1)?.v, 42, "gauge avg under the dual-emitted name must read its own value, not the histogram's");
+  });
+
+  await t.test("histogram avg (h_sum/h_count) and p50 read the histogram rollup columns, not the gauge's", async () => {
+    const {
+      series: [avgSeries],
+    } = await queryMetricSeries(ch, { metric: dualName, type: "histogram", range: "1h", agg: "avg", groupBy: null, filters: {} });
+    assert.equal(
+      avgSeries.points.filter((p) => p.v !== null).at(-1)?.v,
+      20, // 800 / 40, per the known distribution — NOT the gauge's 42
+      "histogram avg under the dual-emitted name must read h_sum/h_count, not the gauge's value",
+    );
+    const {
+      series: [p50Series],
+    } = await queryMetricSeries(ch, { metric: dualName, type: "histogram", range: "1h", agg: "p50", groupBy: null, filters: {} });
+    assert.equal(p50Series.points.filter((p) => p.v !== null).at(-1)?.v, 20);
+  });
+
+  await t.test("each type's own agg set is enforced independently — gauge's set rejects a histogram-only agg and vice versa", async () => {
+    await assert.rejects(
+      queryMetricSeries(ch, { metric: dualName, type: "gauge", range: "1h", agg: "p50", groupBy: null, filters: {} }),
+      /invalid aggregation "p50" for metric "[^"]+" \(type "gauge"\)/,
+    );
+    await assert.rejects(
+      queryMetricSeries(ch, { metric: dualName, type: "histogram", range: "1h", agg: "last", groupBy: null, filters: {} }),
+      /invalid aggregation "last" for metric "[^"]+" \(type "histogram"\)/,
     );
   });
 });
@@ -446,10 +530,10 @@ test("cross-tenant disjointness (D96) against a seeded ClickHouse", async (t) =>
   await t.test("a series query never returns another tenant's values", async () => {
     const {
       series: [seriesA],
-    } = await queryMetricSeries(a, { metric, range: "1h", agg: "last", groupBy: null, filters: {} });
+    } = await queryMetricSeries(a, { metric, type: "gauge", range: "1h", agg: "last", groupBy: null, filters: {} });
     const {
       series: [seriesB],
-    } = await queryMetricSeries(b, { metric, range: "1h", agg: "last", groupBy: null, filters: {} });
+    } = await queryMetricSeries(b, { metric, type: "gauge", range: "1h", agg: "last", groupBy: null, filters: {} });
     const lastA = seriesA.points.filter((p) => p.v !== null).at(-1)?.v;
     const lastB = seriesB.points.filter((p) => p.v !== null).at(-1)?.v;
     assert.equal(lastA, 111, "workspace A read a value that is not its own");
