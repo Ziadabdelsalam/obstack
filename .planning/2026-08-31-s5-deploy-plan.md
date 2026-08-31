@@ -198,6 +198,7 @@ Not deployed: the collector (customers export from their side; the D101 endpoint
 
 ## Ship log (manager only, append as executed)
 <!-- step — command — result — confirmation ref (for gated steps) -->
+- 2026-08-31 — **PR #25 run on `2d5dc3d`: all ten green.** Bands: `web` **5m03s** (new band with the second mock+origin build + hosted fence — D354's D137 watch; ~4 min before), `images` **4m46s** (+ ClickHouse build, D350 probe, D353 arm; `publish` skipped on the PR path), `stack` 8m55s, `e2e` 5m52s, `sdk-e2e` 3m55s, `go` 2m31s, `kind` 1m38s, `sdk-js` 1m00s, `lint` 0m35s, `sdk-py` 0m31s. Merge gate → user (triggers `publish`, the first GHCR push).
 - 2026-08-31 — **advisor sign-off on critical items 1–4** (tip `7748f9a`): T1 SIGNED WITH CONDITIONS (T0: `vars.OBSTACK_STATUS_MONITOR_URL` repo variable before merge, else T5 republishes later; user confirms the first GHCR push), T4 SIGNED, T7 SIGNED (record the `web` band), **T8 SIGNED WITH ONE CONDITION — F-T8a: key on the RIGHTMOST `x-forwarded-for` hop** (leftmost is client-forgeable) → applied by the manager (`clientIpFromForwarded`, test flipped, runbook §6 rewritten). Merge may proceed once CI is green on the new tip.
 - 2026-08-31 — W2 step 1: branch `s5-ship` pushed (`7748f9a`, 18 commits); **PR #25 opened** (https://github.com/Ziadabdelsalam/obstack/pull/25); CI run 1 watching; advisor sign-off on critical items 1–4 requested. Merge = user's call after CI green + sign-off; merge triggers `publish` (first GHCR push — critical item 1b, user confirms).
 
