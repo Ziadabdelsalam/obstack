@@ -11,11 +11,11 @@ exactly like the compose/chart builds already do, and config-as-code
 plain `postgres:17.11` pull — a public Docker Hub image needs no GitHub
 build and works on any plan.
 
-**Plan, as measured (D358):** the workspace is on the **free trial** today
-(`railway volume list` → `0MB/500MB` on the staging `postgres` volume).
-Staging runs on the trial; **W4 (production) waits for the $5 Hobby
-subscription** — see "Capacity (D358)" in §7. Every "any plan" statement
-here means trial included.
+**Plan, as measured (D358, updated 2026-08-31):** the workspace is on the
+**$5 Hobby subscription** — `railway volume list` prints `0MB/5000MB`
+(5 GB cap) on the production volumes and on staging volumes created after
+the subscription. The 60 %/75 % watch (§7) is therefore 3 GB / 3.75 GB
+today. Re-read the cap after any plan change.
 
 **Every `deploy/railway/<service>/railway.json` file must be pointed at by
 its absolute repo path in that service's settings page** — Railway does not
@@ -254,6 +254,26 @@ and writes go to the LINKED service. Always `railway service link <name>`
 immediately before any variable read or write, and verify with the output's
 `RAILWAY_SERVICE_NAME`. A missed link is how a password rotation lands on the
 wrong service while the store keeps the old credential.
+
+**CLI echo caution (measured 2026-08-31, W4):** `railway add` and
+`railway environment new/edit` REPLAY every `--variables`/`--service-config`
+argument — secret values included — as `> Enter a variable …` lines on
+stderr. Never merge stderr into a logged session when secrets ride the
+command; send stderr to a file or `/dev/null` and read results with a
+key-only filter. And any key-only filter over `environment config --json`
+must hide the nested `variables.<NAME>.value` leaves, not just match on the
+leaf key (`value` matches no secret-name pattern — a filter keyed on the
+leaf name prints every secret).
+
+**Environment duplication (measured 2026-08-31, W4):** `railway environment
+new <name> -d <src> --service-config <svc> <dot.path> <value> …` duplicates
+every service instance (source incl. rootDirectory, variables, volume
+mounts — volumes come up as FRESH EMPTY per-environment instances) and
+applies the overrides AT CREATION — the D344 "rail before first deploy"
+shape. `source.checkSuites true` IS the Wait-for-CI toggle, per service,
+settable in that same call. `railway environment edit` is a NO-OP on CLI
+5.45.10 (every change answers "No changes to apply") — post-creation config
+changes go through the dashboard or a variables write.
 
 **Reference caution (measured 2026-08-31):** `railway variable set 'X=${{svc.VAR}}'`
 stores the RESOLVED value, not the reference — a later rotation on `svc` does
