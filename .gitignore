@@ -42,6 +42,7 @@ yarn-error.log*
 # ...except the documented template beside the compose file (D279) — the
 # thing a self-hoster is told to copy from, not a secret.
 !deploy/compose/.env.example
+!deploy/railway/.env.example
 
 # vercel
 .vercel

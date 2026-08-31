@@ -75,6 +75,10 @@ Not deployed: the collector (customers export from their side; the D101 endpoint
 - **D346** rollback per service (dashboard or previous sha + redeploy); datastores never; across a migration boundary = escalation; verification = smoke + boot log lines.
 - **D347** DNS: Squarespace ALIAS at apex (resolved); parked records copied into the ship log; TTL 300; order app → ingest → www+apex; rollback = restore parked records.
 - **D348** security posture + inventory (kickoff file §2): classic PAT 90-day, no Railway token anywhere (browser login is the only deploy path), `BETTER_AUTH_URL=OBSTACK_APP_URL`, drain secret unset until a drain exists.
+- **D350** (review A E-A1) ClickHouse `default` user restricted to loopback IN the shared `obstack-users.xml` (compose + the chart's pinned copy); `CLICKHOUSE_PASSWORD` refused; red-first probe from a second container. Owner T3. Blocks W2.
+- **D351** (E-A2) the read-only `images` job builds the Railway ClickHouse image and runs the D350 probe on every PR. Owner T1. Blocks W2.
+- **D352** (E-A3) `publish` boots the PUBLISHED live image (`CLICKHOUSE_URL=http://127.0.0.1:1`, throwaway secret) → `GET /login` 200 in 60 s + the live-without-secret refusal on the published tag. Owner T1. Blocks W2.
+- **D353** (E-A4) boot-time refusal in `checkModeStampOnBoot`: mock stamp + `OBSTACK_BILLING_MODE` ≠ `fake` → exit 1 naming both; `images` job arm proves it red. Inverse (live + fake) refused — D344 stays a runbook rule verified live. Owner T4 (`mode-stamp.ts` + test) / T1 (arm). Blocks W2.
 - **D349** M-fact corrections: M10 (CLI installed), M9 (`:157` is a comment; auth pages carry the copy), M3 (K3 premise wrong), T4/T2/T5/T8 owns re-based.
 
 ## Kickoff questions for the advisor
@@ -212,5 +216,6 @@ Not deployed: the collector (customers export from their side; the D101 endpoint
 - lesson: —
 
 ## Run log
+- 2026-08-31 — **review A** (Opus): T1 FIXED (token/vars via env), T3 FIXED (`Dockerfile.dockerignore`), T4 APPROVE, T9 APPROVE — committed `5b4a4d0` `ed9ca41` `ea7658b` `85a066e`; four escalations → **D350–D353** (all block W2) → F2 (T3) ∥ F3 (T1) ∥ F4 (T4). T8 scope gap → F1 (refusal copy) done. Manager fixed the docs carrier of the dead `/status` sentence + the mirror-test list. `.gitignore` negation for `deploy/railway/.env.example`.
 - 2026-08-31 — **kickoff (Step 2): D332–D349 recorded**, task list re-based (T2 railway.json void, T4/T8 owns measured, T5 build-ARG shape); branch `s5-ship` cut from `f5a0781`; **W1 dispatched: T1 T2 T3 T4(Opus) T5 T7(worktree) T8 T9** in parallel.
 - 2026-08-31 — intake (Step 1): M1–M12 measured; topology drafted; Railway facts R1–R14 from official docs (agent, 49 tool calls); Step 0 confirmed (defaults, limit 3) + user round (K0/T4/K5/K9). Advisor kickoff dispatched.
