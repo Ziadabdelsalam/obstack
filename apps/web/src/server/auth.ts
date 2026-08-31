@@ -31,6 +31,44 @@ export function authConfig() {
     // cookie through `next/headers`, and better-auth warns when a cookie
     // plugin is not the final entry.
     plugins: [organization(), nextCookies()],
+    // D359: staging measured better-auth's OWN limiter — the mounted HTTP
+    // router (`get-session`/`sign-out`), never the in-process signup/login
+    // path D339 already owns — warning "Rate limiting could not determine a
+    // client IP and is falling back to a single shared per-path bucket"
+    // (`node_modules/better-auth/dist/api/rate-limiter/index.mjs:242`) and
+    // writing an empty `ipAddress` on session rows. That single shared bucket
+    // is a latent outage: its default is 100 requests / 10 s for ALL signed-in
+    // traffic combined, not per visitor.
+    //
+    // `ipAddressHeaders` names which header(s) to read, in order; unset it
+    // already defaults to `["x-forwarded-for"]`
+    // (`node_modules/@better-auth/core/dist/utils/ip.mjs:194`,
+    // `const DEFAULT_IP_HEADERS = ["x-forwarded-for"];`) — so the warning was
+    // never a missing-header problem. Setting it here anyway makes the choice
+    // an explicit, pinned decision (`auth.test.ts`'s D359 pin) rather than an
+    // inherited library default that could change under us.
+    //
+    // The actual hop-selection is the library's own, and this repo does not
+    // configure `trustedProxies` (Railway's edge IP ranges are not
+    // documented — S5 kickoff R2 — and a wrong CIDR here is worse than none).
+    // Per the installed build, WITHOUT `trustedProxies` a forwarded header
+    // must carry exactly one value or the address is treated as unresolved:
+    // `if (forwardedIps.length !== 1) return null;`
+    // (`node_modules/@better-auth/core/dist/utils/ip.mjs:188`) — so this
+    // resolves the client IP when Railway's edge writes a single-value
+    // `x-forwarded-for`, and preserves today's fail-open warn-once behaviour
+    // (`resolveRateLimitConfig`, `rate-limiter/index.mjs:232-236`) rather than
+    // trusting an arbitrary hop if that header ever carries a chain instead.
+    //
+    // This is entirely separate from — and unchanged by — obstack's own D339
+    // limiter in `server/rate-limit.ts`: that one guards the two in-process
+    // signup/login calls this HTTP router never reaches, and reads its IP via
+    // `clientIpFromForwarded` (`rate-limit.ts`, rightmost hop per F-T8a), not through better-auth at all.
+    advanced: {
+      ipAddress: {
+        ipAddressHeaders: ["x-forwarded-for"],
+      },
+    },
   };
 }
 

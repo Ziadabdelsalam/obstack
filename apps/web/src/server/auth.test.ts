@@ -23,7 +23,7 @@ import {
   type InviteErrorCode,
 } from "@/app/invite/[id]/errors";
 import { inviteLinkPath, parseInvitationId } from "./invites";
-import { SignupError, provisionOrgAndWorkspace } from "./auth";
+import { SignupError, authConfig, provisionOrgAndWorkspace } from "./auth";
 import { RateLimitedError } from "./rate-limit";
 import type { SqlClient } from "./postgres";
 
@@ -159,6 +159,45 @@ test("a compensation that fails is louder, not quieter", async () => {
       return true;
     },
   );
+});
+
+// ---- D359: better-auth resolves the client IP from Railway's forwarded header ----
+//
+// Staging measured better-auth's OWN limiter (the mounted HTTP router,
+// `get-session`/`sign-out` — never the in-process signup/login path D339
+// already owns) falling back to a single shared per-path bucket because it
+// could not resolve a client IP behind Railway. `authConfig()` now sets
+// `advanced.ipAddress.ipAddressHeaders` explicitly so that fallback stops —
+// pinned here the same way the D121 vocabulary arrays are, so the header
+// list cannot drift silently.
+//
+// `authConfig()` needs both env vars this file deletes above (D114's own
+// guard, `BETTER_AUTH_SECRET` for the config itself and
+// `OBSTACK_POSTGRES_DSN` for the `getPool()` call inside it) — set here only
+// for the extent of this one call and restored immediately after, so no
+// later test in this file inherits them. `getPool()` builds a `pg.Pool`
+// object but opens no socket until a query runs (`postgres.ts`'s own "lazy
+// on purpose" doc), so this stays exactly as server-free as every other test
+// in this file.
+
+test("D359: authConfig() resolves the client IP from x-forwarded-for", () => {
+  const prevSecret = process.env.BETTER_AUTH_SECRET;
+  const prevDsn = process.env.OBSTACK_POSTGRES_DSN;
+  process.env.BETTER_AUTH_SECRET = "d359-test-secret-not-a-real-secret";
+  process.env.OBSTACK_POSTGRES_DSN = "postgres://test:test@127.0.0.1:1/test";
+  try {
+    const config = authConfig() as {
+      advanced?: { ipAddress?: { ipAddressHeaders?: string[] } };
+    };
+    // Exactly this list — Railway's edge writes `x-forwarded-for` (measured on
+    // staging); a second header would be a ruling, not a silent addition.
+    assert.deepEqual(config.advanced?.ipAddress?.ipAddressHeaders, ["x-forwarded-for"]);
+  } finally {
+    if (prevSecret === undefined) delete process.env.BETTER_AUTH_SECRET;
+    else process.env.BETTER_AUTH_SECRET = prevSecret;
+    if (prevDsn === undefined) delete process.env.OBSTACK_POSTGRES_DSN;
+    else process.env.OBSTACK_POSTGRES_DSN = prevDsn;
+  }
 });
 
 // ---- D120: the mounted-endpoint allowlist, over the whole measured surface ----
