@@ -30,10 +30,17 @@
 #   - compose sets ulimit nofile 262144 for this service; Railway's own
 #     nofile ceiling is unverified here and must be observed on staging.
 #
-# The only delta from the pinned upstream image is the one COPY below —
+# D358: this image also bakes in config.d/obstack-logs.xml, which removes
+# ClickHouse's unbounded system.*_log tables (metric_log,
+# asynchronous_metric_log, trace_log, part_log, query_thread_log, text_log)
+# and gives query_log a 7-day TTL — Railway's volumes are small (trial
+# 500 MB, Hobby 5 GB) and those tables carry no TTL by default.
+#
+# The only delta from the pinned upstream image is the two COPYs below —
 # base image user/entrypoint are untouched.
 FROM clickhouse/clickhouse-server:26.3.17.110
 
 COPY deploy/compose/clickhouse/users.d/obstack-users.xml /etc/clickhouse-server/users.d/obstack-users.xml
+COPY deploy/railway/clickhouse/config.d/obstack-logs.xml /etc/clickhouse-server/config.d/obstack-logs.xml
 
 EXPOSE 8123 9000
