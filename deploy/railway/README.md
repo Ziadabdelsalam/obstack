@@ -361,7 +361,10 @@ bypass).
 only proxy in the path** — the R-facts do not quote Railway's forwarded-header
 behaviour (`.planning/2026-08-31-s5-railway-facts.md`), so the K0 staging
 gate proves TWO things, not one: (a) `railway logs --service web` contains no
-"could not determine a client IP" line (the header arrives at all — a
+`[rate-limit] could not determine` line — obstack's own prefixed warning
+(better-auth's unprefixed "could not determine a client IP" is a separate
+subsystem, resolved by D359's `advanced.ipAddress` option, and does not trip
+this check) — (the header arrives at all — a
 BLOCKing check), and (b) a signup replayed with a forged
 `x-forwarded-for: 1.2.3.4` header still counts against the real caller's
 budget (the sixth is refused) — the forged value must never open a fresh
