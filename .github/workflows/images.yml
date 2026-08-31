@@ -12,13 +12,18 @@
 #   1. Both D262 variants of the ONE web Dockerfile build at this commit —
 #      live-stamped and mock-stamped (D251(a)/D267).
 #   2. The mode stamp is load-bearing: a mock artifact served as live REFUSES
-#      (exit 1, naming both values), and a live artifact without its
+#      (exit 1, naming both values), a mock artifact pointed at a real billing
+#      rail refuses the same way (D353), and a live artifact without its
 #      BETTER_AUTH_SECRET refuses with the generate instruction (D251(b),
 #      D265(a2)/D272 — the "costs signup entirely" stakes, proven red here on
 #      every PR).
-#   3. The mock variant serves standalone with no stores at all — the D262
+#   3. The ClickHouse image's users.d file grants what it claims and no more:
+#      `obstack_ingest` owns `obstack` and nothing outside it, `obstack_web`
+#      cannot write in it, and `default` is unreachable over the container
+#      network even when CLICKHOUSE_PASSWORD is set (D350).
+#   4. The mock variant serves standalone with no stores at all — the D262
 #      public-demo artifact is a real, bootable thing, not a claim.
-#   4. `docker compose up` boots clickhouse + postgres + ingest + web from
+#   5. `docker compose up` boots clickhouse + postgres + ingest + web from
 #      images built at this same commit (compose's own `build:` directives —
 #      D267), converges healthy, and answers a real request.
 name: images
@@ -61,6 +66,80 @@ jobs:
       - name: Build the ingest image
         run: docker build -t obstack-ingest:ci services/ingest
 
+      - name: Build the Railway ClickHouse image
+        run: docker build -t obstack-clickhouse:ci -f deploy/railway/clickhouse/Dockerfile .
+
+      # D350: the two application grants and the loopback-only `default` user,
+      # proven on the runner in the same shape as the refusal matrix below — a
+      # broken XML is a database anyone can create in, which without this arm
+      # would only surface once Railway starts serving partner data.
+      #
+      # The client runs from the image under test itself, so client and server
+      # are the same build by construction and the ClickHouse version stays
+      # pinned in exactly one place (this Dockerfile's `FROM`).
+      - name: ClickHouse grants probe (D350)
+        run: |
+          trap 'docker rm -f ci-ch >/dev/null 2>&1 || true; docker network rm ci-ch-net >/dev/null 2>&1 || true' EXIT
+          docker network create ci-ch-net
+          # CLICKHOUSE_PASSWORD is set ON PURPOSE, and it is the whole point of
+          # the `default` arm below. The base image's entrypoint restricts
+          # `default` to loopback ONLY while neither CLICKHOUSE_USER nor
+          # CLICKHOUSE_PASSWORD is set ("disabling network access for user
+          # 'default'", its own log line); setting either makes it stop, and
+          # `default` becomes a network-reachable superuser. So a probe run
+          # WITHOUT this variable would pass on the base image alone and prove
+          # nothing about D350. With it set, the users.d `<default><networks
+          # replace="replace">` block is the only thing left that can refuse.
+          docker run -d --name ci-ch --network ci-ch-net \
+            -e CLICKHOUSE_PASSWORD=ci-default \
+            -e OBSTACK_CLICKHOUSE_INGEST_PASSWORD=ci-ingest \
+            -e OBSTACK_CLICKHOUSE_WEB_PASSWORD=ci-web \
+            obstack-clickhouse:ci
+
+          # `docker exec` reaches the server over the container's own loopback,
+          # so this readiness loop is also the POSITIVE half of D350: `default`
+          # still works there, which is what the compose healthcheck and
+          # `kubectl exec` both rely on.
+          for _ in $(seq 1 30); do
+            if docker exec ci-ch clickhouse-client --query 'SELECT 1' >/dev/null 2>&1; then ready=1; break; fi
+            sleep 2
+          done
+          docker logs ci-ch --tail 40
+          test "${ready:-0}" = 1 || { echo "clickhouse never answered SELECT 1 on loopback default"; exit 1; }
+
+          probe() {
+            docker run --rm --network ci-ch-net obstack-clickhouse:ci clickhouse-client --host ci-ch "$@"
+          }
+
+          set +e
+          # The password below is the CORRECT one, so credentials cannot be what
+          # refuses this connection — only the network restriction can, and it
+          # refuses at connect time (code 516) before any query runs. That is
+          # why the arm is a bare SELECT and not a DDL statement: nothing gets
+          # as far as the grant layer.
+          default_out="$(probe --user default --password ci-default --query 'SELECT 1' 2>&1)"; default_rc=$?
+          # `GRANT ALL ON obstack.*` is scoped to that one database: it covers
+          # `CREATE DATABASE obstack` and the DDL ingest applies inside it, and
+          # nothing outside it. These are the statements ingest actually runs.
+          ingest_db_out="$(probe --user obstack_ingest --password ci-ingest --query 'CREATE DATABASE IF NOT EXISTS obstack' 2>&1)"; ingest_db_rc=$?
+          ingest_tbl_out="$(probe --user obstack_ingest --password ci-ingest --query 'CREATE TABLE obstack.ci_ok (x UInt8) ENGINE=Memory' 2>&1)"; ingest_tbl_rc=$?
+          ingest_drop_out="$(probe --user obstack_ingest --password ci-ingest --query 'DROP TABLE obstack.ci_ok' 2>&1)"; ingest_drop_rc=$?
+          # The read/write split, stated where it bites: `obstack_web` reads
+          # `obstack` and cannot write in it. A CREATE DATABASE arm would not
+          # say this — `obstack_ingest` cannot do that either.
+          web_out="$(probe --user obstack_web --password ci-web --query 'CREATE TABLE obstack.ci_x (x UInt8) ENGINE=Memory' 2>&1)"; web_rc=$?
+          ping_out="$(docker run --rm --network ci-ch-net obstack-clickhouse:ci sh -c 'wget -qO- http://ci-ch:8123/ping' 2>&1)"
+          set -e
+
+          test "$default_rc" -ne 0 || { echo "the default user answered over the container network — the D350 loopback restriction is gone"; echo "$default_out"; exit 1; }
+          echo "$default_out" | grep -q "Code: 516" || { echo "default was refused, but not by the network restriction (expected code 516)"; echo "$default_out"; exit 1; }
+          test "$ingest_db_rc" -eq 0 || { echo "obstack_ingest could not create its own database — the ingest grant is broken"; echo "$ingest_db_out"; exit 1; }
+          test "$ingest_tbl_rc" -eq 0 || { echo "obstack_ingest could not create a table in obstack — the ingest grant is broken"; echo "$ingest_tbl_out"; exit 1; }
+          test "$ingest_drop_rc" -eq 0 || { echo "obstack_ingest could not drop the table it just created — the ingest grant is broken"; echo "$ingest_drop_out"; exit 1; }
+          test "$web_rc" -ne 0 || { echo "obstack_web was able to CREATE TABLE in obstack — the read-only grant is broken"; echo "$web_out"; exit 1; }
+          echo "$web_out" | grep -q "ACCESS_DENIED" || { echo "obstack_web's CREATE failed but not with ACCESS_DENIED"; echo "$web_out"; exit 1; }
+          echo "$ping_out" | grep -q "^Ok\.$" || { echo "/ping never answered Ok."; echo "$ping_out"; exit 1; }
+
       # The refusal matrix — the boot check proven RED on the runner, not
       # believed from a unit test (process.exit(1) is only observable against
       # a real container; T1's own report records why).
@@ -79,6 +158,21 @@ jobs:
           test "$rc" -eq 1 || { echo "mock-stamped artifact did not refuse a live serve with exit 1 (rc=$rc) — the D251(b) refusal is broken"; echo "$out"; exit 1; }
           echo "$out" | grep -q "OBSTACK_DATA_MODE=mock baked in" || { echo "the refusal never named the STAMPED value"; echo "$out"; exit 1; }
           echo "$out" | grep -q "running with OBSTACK_DATA_MODE=live" || { echo "the refusal never named the RUNTIME value"; echo "$out"; exit 1; }
+
+      # D353: the billing-mode stamp is load-bearing the same way the data
+      # mode is — a mock artifact must refuse to serve with a real billing
+      # mode set at runtime, naming both values, rather than boot and
+      # advertise a rail no request in that artifact can reach
+      # (apps/web/src/server/mode-stamp.ts).
+      - name: Billing-mode mismatch refusal (mock image, OBSTACK_BILLING_MODE=polar)
+        run: |
+          set +e
+          out="$(timeout 60 docker run --rm -e OBSTACK_DATA_MODE=mock -e OBSTACK_BILLING_MODE=polar obstack-web:mock 2>&1)"
+          rc=$?
+          set -e
+          test "$rc" -eq 1 || { echo "mock-stamped artifact did not refuse OBSTACK_BILLING_MODE=polar with exit 1 (rc=$rc) — the D353 refusal is broken"; echo "$out"; exit 1; }
+          echo "$out" | grep -q "OBSTACK_BILLING_MODE=polar" || { echo "the refusal never named the runtime billing mode"; echo "$out"; exit 1; }
+          echo "$out" | grep -q "OBSTACK_DATA_MODE=mock" || { echo "the refusal never named the stamped data mode"; echo "$out"; exit 1; }
 
       - name: Live-without-secret refusal
         run: |
@@ -194,6 +288,50 @@ jobs:
           test "$rc" -eq 1 || { echo "published mock-stamped image did not refuse a live serve with exit 1 (rc=$rc) — the D251(b) refusal is broken"; echo "$out"; exit 1; }
           echo "$out" | grep -q "OBSTACK_DATA_MODE=mock baked in" || { echo "the refusal never named the STAMPED value"; echo "$out"; exit 1; }
           echo "$out" | grep -q "running with OBSTACK_DATA_MODE=live" || { echo "the refusal never named the RUNTIME value"; echo "$out"; exit 1; }
+
+      - name: Billing-mode mismatch refusal on the published mock image (D353)
+        run: |
+          set +e
+          out="$(timeout 60 docker run --rm -e OBSTACK_DATA_MODE=mock -e OBSTACK_BILLING_MODE=polar "$REGISTRY/obstack-web:mock-sha-${{ github.sha }}" 2>&1)"
+          rc=$?
+          set -e
+          test "$rc" -eq 1 || { echo "published mock-stamped image did not refuse OBSTACK_BILLING_MODE=polar with exit 1 (rc=$rc)"; echo "$out"; exit 1; }
+          echo "$out" | grep -q "OBSTACK_BILLING_MODE=polar" || { echo "the refusal never named the runtime billing mode"; echo "$out"; exit 1; }
+          echo "$out" | grep -q "OBSTACK_DATA_MODE=mock" || { echo "the refusal never named the stamped data mode"; echo "$out"; exit 1; }
+
+      # D352: the published live tag must actually serve /login — proves the
+      # pushed bytes boot the real login page, not just that they refuse
+      # correctly. CLICKHOUSE_URL points at an unreachable loopback port so
+      # this never touches a real store; measured locally against this same
+      # Dockerfile (T1's own build) that /login answers 200 immediately with
+      # no reachable ClickHouse or Postgres, so the probe is not weakened.
+      - name: Boot the published live image and probe /login (D352)
+        run: |
+          docker pull "$REGISTRY/obstack-web:live-sha-${{ github.sha }}"
+          docker run -d --name publish-live-probe -p 127.0.0.1:3200:3000 \
+            -e OBSTACK_DATA_MODE=live \
+            -e BETTER_AUTH_SECRET=ci-publish-probe \
+            -e CLICKHOUSE_URL=http://127.0.0.1:1 \
+            "$REGISTRY/obstack-web:live-sha-${{ github.sha }}"
+          for _ in $(seq 1 30); do
+            code="$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3200/login || true)"
+            if [ "$code" = "200" ]; then ok=1; break; fi
+            sleep 2
+          done
+          docker logs publish-live-probe --tail 20
+          docker rm -f publish-live-probe
+          test "${ok:-0}" = 1 || { echo "published live image never answered /login with 200 (last code: ${code:-none})"; exit 1; }
+
+      - name: Live-without-secret refusal on the published live image
+        run: |
+          docker pull "$REGISTRY/obstack-web:live-sha-${{ github.sha }}"
+          set +e
+          out="$(timeout 60 docker run --rm -e OBSTACK_DATA_MODE=live "$REGISTRY/obstack-web:live-sha-${{ github.sha }}" 2>&1)"
+          rc=$?
+          set -e
+          test "$rc" -eq 1 || { echo "published live image did not refuse without its auth secret with exit 1 (rc=$rc) — the D272 refusal is broken"; echo "$out"; exit 1; }
+          echo "$out" | grep -q "BETTER_AUTH_SECRET" || { echo "refusal happened but never named the missing variable"; echo "$out"; exit 1; }
+          echo "$out" | grep -q "openssl rand -base64 32" || { echo "refusal named the variable but not how to generate one"; echo "$out"; exit 1; }
 
       - name: Record published digests
         run: |
