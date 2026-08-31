@@ -275,6 +275,18 @@ settable in that same call. `railway environment edit` is a NO-OP on CLI
 5.45.10 (every change answers "No changes to apply") — post-creation config
 changes go through the dashboard or a variables write.
 
+**Volume scope caution (measured 2026-08-31, W4 — caused a production
+re-init):** volumes are PROJECT-scoped with one instance per environment.
+`railway volume delete` destroys the volume in EVERY environment, and
+`railway volume list` shows only the LINKED environment's instance — a
+volume listed "detached" in staging can be the live production datastore.
+Never delete a volume without checking its attachment in every environment
+(`railway volume list` under each), and treat volume deletion as a critical
+item. Config-as-code note (same date): Railway deprecated railway.json
+config files (existing files die 2026-12-01; never-opted-in services cannot
+opt in since 2026-08-28) — the deploy values are dashboard-set directly;
+the files stay as documentation pending Infrastructure-as-Code.
+
 **Environment-duplicate migration ordering (measured 2026-08-31, W4):** in a
 duplicated environment the datastore volumes attach as part of creation, and
 `postgres` may re-run initdb on the fresh volume AFTER `ingest`'s first boot
