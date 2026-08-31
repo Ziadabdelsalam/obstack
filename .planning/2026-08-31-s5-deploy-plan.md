@@ -130,35 +130,35 @@ Not deployed: the collector (customers export from their side; the D101 endpoint
 - result:
 
 ### T1: image publish job — `images.yml` pushes to GHCR on master
-- status: executing (W1, 2026-08-31)
+- status: approved (W1, reviewed; committed on s5-ship)
 - owns: `.github/workflows/images.yml` (+ `deploy/README.md` registry paragraph if one exists)
 - playbook: GitHub repo & CI; Docker + registry
 - done-check: `actionlint` clean; the push step is gated `github.ref == 'refs/heads/master'`; tags `sha-<sha>` + `master`; `permissions: packages: write` on that job only; the mock variant is built TWICE or parameterised — the published `mock` tag carries `OBSTACK_APP_ORIGIN=https://app.obstack.dev` (M7) and the refusal matrix still runs on the unset build; D41 backstop (`cancel-in-progress` never on master) untouched.
 - result:
 
 ### T2: Railway config-as-code + runbook — `deploy/railway/`
-- status: executing (W1, 2026-08-31)
+- status: approved (W1, reviewed; committed on s5-ship)
 - owns: `deploy/railway/README.md`, `deploy/railway/.env.example` (names only), `deploy/railway/smoke.ts` (D335; `railway.json` VOID per E3)
 - playbook: Fly.io / Railway / plain VPS; Docker + registry
 - done-check: every name in §Topology appears once in the env example with its source; `railway.json` validates against the schema URL; smoke script runs against a URL triple (`MARKETING_URL`, `APP_URL`, `INGEST_URL`) and exits non-zero on any failed probe — proven red against a wrong URL.
 - result:
 
 ### T3: ClickHouse image for Railway — `deploy/railway/clickhouse/Dockerfile`
-- status: executing (W1, 2026-08-31)
+- status: approved (W1, reviewed; committed on s5-ship)
 - owns: `deploy/railway/clickhouse/Dockerfile` (+ `.dockerignore`), reusing `deploy/compose/clickhouse/users.d/obstack-users.xml` by `COPY` (single source — no second copy of the XML)
 - playbook: Docker + registry
 - done-check: `docker build` from the repo root; `docker run` with the two passwords → `SELECT 1` succeeds as `obstack_ingest` and `obstack_web`, `obstack_web` cannot `CREATE` (the read-only grant holds); image published by T1 as `obstack-clickhouse:<sha>`.
 - result:
 
 ### T4: production billing mode (M1, D173.5) — executor Opus 5 (user-approved one-task exception)
-- status: executing (W1, 2026-08-31)
+- status: approved (W1, reviewed; committed on s5-ship)
 - owns (E5, measured): `apps/web/src/server/billing/{client,polar,types,reporter,fake}.ts`, `billing.test.ts`, `reporter.test.ts`, `deploy/compose/e2e-drive.mjs:149` (comment)
 - playbook: —
 - done-check: `OBSTACK_BILLING_MODE=polar` selects `server: "production"` on the same module; sandbox arm unchanged; tests cover both; `grep -rn 'polar-sandbox'` finds only the sandbox arm and its docs; typecheck + `apps/web` tests green; D110 boundary intact (still the ONLY module that calls Polar).
 - result:
 
 ### T5: `/status` monitor wiring (U12 = Better Stack, D256, M4)
-- status: executing (W1 — mechanism + unset sentence; the URL value is T0's, baked at the W2 build)
+- status: approved (W1, reviewed; committed on s5-ship)
 - owns: `apps/web/src/app/status/page.tsx`, `status.test.ts`, the `/status` docs sentence if any
 - done-check: the monitoring section renders the monitor's real public artefact (link/badge) and the pinned sentence is replaced by a sentence the test derives from the monitor URL env (`OBSTACK_STATUS_MONITOR_URL`, unset = the current sentence, so compose/chart keep the truth); fence 8/8 still green.
 - result:
@@ -170,19 +170,19 @@ Not deployed: the collector (customers export from their side; the D101 endpoint
 - result:
 
 ### T7: launch copy under hosting (K6 ruling) + OG/robots/sitemap/manifest
-- status: executing (W1, 2026-08-31)
+- status: approved (W1, reviewed; committed on s5-ship)
 - owns: `apps/web/src/app/page.tsx` (`:157,:162,:395,:446,:550`), `apps/web/src/app/invite/[id]/page.tsx:172`, `apps/web/src/app/{robots,sitemap,manifest}.ts`, `opengraph-image`, the S4.4 landing fence rows they touch (`.planning/2026-08-30-s4.4-landing-fence.md`)
 - done-check: fence tests updated in the same commit; rendered-bytes sweep green in both modes; `curl https://obstack.dev/robots.txt` after deploy.
 - result:
 
 ### T8: signup abuse controls (K3 ruling)
-- status: executing (W1, 2026-08-31)
+- status: approved (W1, reviewed; committed on s5-ship)
 - owns (D339): new `apps/web/src/server/rate-limit.ts` + test, `apps/web/src/server/auth.ts` (signup action seam), `apps/web/src/app/login/actions.ts`
 - done-check: the limiter's storage and window are named in `deploy/railway/README.md`; `trustedOrigins` carries exactly the two hosts.
 - result:
 
 ### T9: Explain honest absence on the hosted app (K5)
-- status: executing (W1, 2026-08-31)
+- status: approved (W1, reviewed; committed on s5-ship)
 - owns: the Explain surface component + its test, the Explain docs page sentence
 - done-check: with `OBSTACK_EXPLAIN_MODE=fake` in `live` data mode the surface says Explain is not enabled on this deployment (no fabricated explanation renders); compose/chart truth unchanged (they already run `fake` by default — the sentence must be true there too).
 - result:
@@ -218,6 +218,7 @@ Not deployed: the collector (customers export from their side; the D101 endpoint
 - lesson: —
 
 ## Run log
+- 2026-08-31 — **F5** (T7, D354) done in the worktree → cherry-picked `94e149b`; **review F5** (Opus) APPROVE (red re-proven 34/1 → 35/0; manifests 4/0/0; `web` job has headroom in its 15-min timeout — new band to be recorded from the PR run). **Integrated check on the tip** (manager, main checkout): tsc, actionlint ×2, helm lint 0 failed, Go tests ok, mock+origin build, web suite **550/497/0 fail/53 skip**. **W1 CLOSED: 9 tasks + F1–F5, verdicts A: fixed/fixed/approve/approve · B: fixed/approve/approve · C-1: fixed · C-2: approve/fixed/must-fix(1 line)→fixed · F5: approve.** → W2: PR.
 - 2026-08-31 — **review C-2** (Opus): F2 APPROVE (`default` refused over the network even with `CLICKHOUSE_PASSWORD` set; no consumer breaks), F3 FIXED (7: the D350 probe as written did not test D350 — now runs with a correct `default` password so only the network can refuse, red-proven on a stripped image; ingest arm re-based to `obstack.*` DDL; web arm `CREATE TABLE` → ACCESS_DENIED; `Code: 516` grep; one `trap EXIT` teardown; stopgap comments → invariants), F4 APPROVE after a one-line comment fix — committed `d6b48fa` `2810f3c` `2868747` `61ccd67`. Escalation E-C2 → **D355** (posture stands; runbook paragraph added by the manager). F5 (T7, D354) running.
 - 2026-08-31 — **review B** (Opus): T2 FIXED (7: restart ALWAYS not ON_FAILURE, fabricated "documented default" removed, replica reasons corrected, x-forwarded-for spoofing consequence + K0 forged-header proof, `PORT` in env example, TLS probe refuses http), T5 APPROVE, T8+F1 APPROVE (red-first re-proven 5/8) — committed `00d7347` `5d62d2b` `eef0e12`; full web suite 539/486/53 skip/0 fail. **Review C-1** (Opus, worktree): T7 FIXED (the rendered sweep had claim 13 disarmed on landing/auth in every build — hosted-arm guard added, red-proven; live-build fence failures pre-existing at `f7b9dd0`, unreachable in CI) — cherry-picked `0ea904d`; escalation → **D354** → F5 (T7). F2 (T3) done with a measurement correction: the upstream entrypoint already loopback-restricts `default` unless `CLICKHOUSE_PASSWORD` is set — the XML rule makes it unconditional; `obstack_ingest` cannot `CREATE DATABASE` outside `obstack` (grant `ALL ON obstack.*`) → F3's CI probe arm re-based in review C-2. F3 (T1) done (6 new steps); F4 (T4) done (mode-stamp refusal, 13/13). Review C-2 (F2 F3 F4) running.
 - 2026-08-31 — **review A** (Opus): T1 FIXED (token/vars via env), T3 FIXED (`Dockerfile.dockerignore`), T4 APPROVE, T9 APPROVE — committed `5b4a4d0` `ed9ca41` `ea7658b` `85a066e`; four escalations → **D350–D353** (all block W2) → F2 (T3) ∥ F3 (T1) ∥ F4 (T4). T8 scope gap → F1 (refusal copy) done. Manager fixed the docs carrier of the dead `/status` sentence + the mirror-test list. `.gitignore` negation for `deploy/railway/.env.example`.
