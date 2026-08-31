@@ -200,6 +200,41 @@ jobs:
 
           exit "$status"
 
+      # D354 (S5 F5): the hosted arm of D340's copy flip is only exercised by
+      # a build that actually sets OBSTACK_APP_ORIGIN — the step above never
+      # does (S4.4 R1's ordering keeps it unset so `/`, `/login`, `/signup`
+      # and both docs mounts prerender as static HTML, which the fence's (b')
+      # and doc-links' arms need). So this is a SECOND, disposable build in
+      # the same mode with the origin set, proving the hosted sentences
+      # actually derive from the env rather than only having been read once
+      # on a laptop. `app.example.test` is a CI probe input, not copy — U11
+      # forbids a literal `obstack.dev` in source, and this is not source.
+      - name: Second build — hosted arm (OBSTACK_APP_ORIGIN set)
+        env:
+          OBSTACK_DATA_MODE: mock
+          OBSTACK_APP_ORIGIN: https://app.example.test
+        run: npm run build
+
+      # Only the D340/D354 fence and copy suites, not a second full `npm
+      # test`: the ClickHouse/Postgres integration arms and the CloudWatch
+      # harness below have nothing to do with the hosted arm and would just
+      # re-run unchanged against a build whose mode this step did not touch.
+      # Invoked directly with the same runner and flags apps/web's own `test`
+      # script uses (`apps/web/package.json`), scoped to the four files this
+      # arm is actually proving; `working-directory` overrides the job
+      # default (root) for this one step.
+      #
+      # OBSTACK_APP_ORIGIN carried into the TEST env too, not just the build:
+      # `landing-fence.test.ts` (b')'s D354 fail-not-skip assertion checks
+      # this process's own env against the artifact's baked CTA, so a future
+      # CI edit that sets the origin on one step and not the other goes red
+      # here instead of silently reading the artifact as unset (S4.4 L3).
+      - name: Hosted-arm tests (OBSTACK_APP_ORIGIN set)
+        working-directory: apps/web
+        env:
+          OBSTACK_APP_ORIGIN: https://app.example.test
+        run: npx tsx --conditions react-server --test "src/app/landing-fence.test.ts" "src/lib/app-href.test.ts" "src/app/signup/mock-mode.test.ts" "src/app/robots.test.ts"
+
       # S4.2: the CloudWatch forwarder is the one deployable artifact that runs
       # in someone else's AWS account (D254), so both halves of it are exercised
       # here rather than left to a reader: its harness invokes the real handler

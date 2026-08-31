@@ -642,6 +642,31 @@ test("(b') no public surface renders one either", (t) => {
   const index = decodeEntities(read(path.join(PRERENDER, "index.html")));
   const host = hostedArm(index);
 
+  // D354 — the fail-not-skip arm. This process's own env is not what decided
+  // the artifact (`npm build` and `npm test` are separate runs, D329), which
+  // is exactly why `host` above is read off the HTML rather than trusted from
+  // `process.env`. But that same split lets a CI job set OBSTACK_APP_ORIGIN
+  // on the TEST step and forget it on the BUILD step — the artifact then has
+  // no baked host at all, `host` reads `null`, and every assertion below
+  // would quietly run the unset-arm's checks and pass, on a build that was
+  // supposed to be hosted (S4.4 L3: a green run that never exercised what it
+  // claims to). So when this process's own env carries an origin, the
+  // ARTIFACT must carry that same host's baked absolute CTA — not "some
+  // host", not "any non-null host", the one this env named.
+  const envOrigin = process.env.OBSTACK_APP_ORIGIN?.trim();
+  if (envOrigin) {
+    const expectedHost = new URL(envOrigin).host;
+    assert.equal(
+      host,
+      expectedHost,
+      host === null
+        ? `OBSTACK_APP_ORIGIN=${envOrigin} is set on this test process, but \`/\`'s baked CTA has no ` +
+            "absolute host at all — the build that produced .next ran without the origin"
+        : `OBSTACK_APP_ORIGIN=${envOrigin} is set on this test process, but \`/\`'s baked CTA points at ` +
+            `${host} instead — the build and this test disagree about the origin`,
+    );
+  }
+
   const hits: string[] = [];
   let read_ = 0;
   for (const id of PUBLIC_SURFACES) {
