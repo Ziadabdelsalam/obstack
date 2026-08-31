@@ -23,6 +23,10 @@ delete process.env.OBSTACK_DATA_MODE;
 delete process.env.BETTER_AUTH_SECRET;
 delete process.env.OBSTACK_POSTGRES_DSN;
 delete process.env.CLICKHOUSE_URL;
+// D340: this file asserts the UNSET arm of `appHost()` — the single-host
+// default every deployment before S5 runs, and the `web` service's own build,
+// which has no reason to name its own host in its dead-end auth pages.
+delete process.env.OBSTACK_APP_ORIGIN;
 
 // D156: this mutation is safe because `node --test` isolates per file —
 // every test file is its own child process, so the shimmed React dies with it.
@@ -84,12 +88,13 @@ test("/signup renders the honest no-form state in mock mode (D150)", async () =>
   assert.ok(!rendered.includes("input"), "and nothing to type a password into");
   assert.ok(!rendered.includes("button"), "and nothing to submit");
 
-  // Present tense, about this deployment (D140): what it is, and that hosted
-  // obstack is not something we run for anyone yet.
+  // Present tense, about this deployment (D140): what it is, and — with no
+  // OBSTACK_APP_ORIGIN configured (D340's unset arm) — that signing up here
+  // is real on an obstack the reader runs themselves.
   const copy = text(tree);
   assert.match(copy, /prototype/);
   assert.match(copy, /fictional data/);
-  assert.match(copy, /host obstack for anyone yet/);
+  assert.match(copy, /an obstack you run yourself/);
 
   // Two pointers, both real and both served by THIS build (D327): the demo
   // this deployment IS, and the quickstart in the docs corpus D255 added.
@@ -127,7 +132,7 @@ test("/login renders the same honest no-form state in mock mode (D150)", async (
 
   const copy = text(tree);
   assert.match(copy, /nothing here to sign in to/);
-  assert.match(copy, /host obstack for anyone yet/);
+  assert.match(copy, /an obstack you run yourself/);
 
   const links = hrefs(tree);
   assert.ok(links.includes("/app"));

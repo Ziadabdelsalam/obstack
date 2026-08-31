@@ -5,7 +5,7 @@ import { HeroTrace } from "@/components/marketing/HeroTrace";
 import { ScreensShowcase } from "@/components/marketing/ScreensShowcase";
 import { SampleLabel } from "@/components/marketing/SampleLabel";
 import { SAMPLE_COPY } from "@/components/marketing/sample-copy";
-import { appHref } from "@/lib/app-href";
+import { appHref, appHost } from "@/lib/app-href";
 import { layerColor } from "@/lib/layers";
 import { connectors } from "@/components/connections/connectors";
 
@@ -63,6 +63,10 @@ function SectionLabel({ children }: { children: React.ReactNode }) {
 }
 
 export default function Landing() {
+  // D340: read once — this page is prerendered, so a malformed
+  // OBSTACK_APP_ORIGIN refuses `next build` exactly once rather than twice.
+  const host = appHost();
+  const hostingClause = host ? `on ${host}` : "on an obstack you run yourself";
   return (
     <div className="min-h-screen bg-bg">
       {/* nav */}
@@ -159,9 +163,9 @@ export default function Landing() {
               obstack that does not exist, and on this deployment had nowhere to
               write it either (D257/D327), so it is gone rather than reworded. */}
           <p className="mt-3.5 max-w-lg text-[13px] leading-relaxed text-mid">
-            Signing up creates your workspace on an obstack you run — the one you
-            started yourself. Issue an API key in settings, point your OpenTelemetry
-            exporter at it, and those traces land in that workspace.
+            Signing up creates your workspace {hostingClause}. Issue an API key
+            in settings, point your OpenTelemetry exporter at it, and those
+            traces land in that workspace.
           </p>
         </div>
 
@@ -547,7 +551,7 @@ export default function Landing() {
                   than hedged (D325). The sentence below is the one that is true
                   in both. */}
               <p className="mt-1 text-[13.5px] text-mid">
-                Signing up creates your own workspace on an obstack you run.
+                Signing up creates your own workspace {hostingClause}.
               </p>
             </div>
             <div className="flex flex-wrap items-center gap-3">

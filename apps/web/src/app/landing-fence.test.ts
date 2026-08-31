@@ -216,6 +216,26 @@ interface BannedClaim {
 }
 
 /**
+ * D340: the two surfaces whose SOURCE literally carries "an obstack you run
+ * yourself" as the unset arm of `appHost()` — `page.tsx` (the hosting
+ * sentences at `:162,:550`) and the auth pages (`signup/page.tsx`,
+ * `login/page.tsx`, and by the same shape `invite/[id]/page.tsx`, which this
+ * registry does not sweep — see `SURFACES` below). Claim 13 exists to catch
+ * this stale claim resurfacing on a surface that never had a reason to make
+ * it true; banning it on the two surfaces where the flip PUT it there would
+ * fail the moment it shipped.
+ *
+ * THIS SCOPING IS ABOUT SOURCE ONLY. What those two surfaces RENDER depends on
+ * the origin the build was given, and on a build that HAS one the phrase is
+ * false on exactly them — so `renderedClaimsOn` puts the claim back for (b'),
+ * which is the only check that reads the bytes a stranger receives (S4.4
+ * retro: a fence over SOURCE files guards the files you edited, not the page).
+ */
+const HOSTING_ARM_SURFACES: readonly SurfaceId[] = PUBLIC_SURFACES.filter(
+  (s) => s !== "landing" && s !== "auth",
+);
+
+/**
  * THE claims, and the scope of each.
  *
  * Every one of them is an UNSHIPPED-FEATURE MARKETING CLAIM: a sentence that
@@ -296,7 +316,27 @@ const BANNED_CLAIMS: readonly BannedClaim[] = [
     why: "no support commitment exists to sell — `content/docs/billing-and-plans` restates the plans",
     surfaces: PUBLIC_SURFACES,
   },
+  {
+    // 12
+    needle: ["host", "obstack", "for", "anyone"].join(" "),
+    why: "D340: the hosting negation is DELETED, not rephrased, the moment `app.obstack.dev` exists (D13 outranks the S4.4 landing-is-spec ruling) — banned everywhere, including the auth pages that used to carry it",
+    surfaces: PUBLIC_SURFACES,
+  },
+  {
+    // 13
+    needle: ["an", "obstack", "you", "run"].join(" "),
+    why: "D340: true only on the unset arm of `lib/app-href.ts`'s `appHost()`, which is why the landing and auth SOURCES are excluded above (`HOSTING_ARM_SURFACES`) and why `renderedClaimsOn` puts them back once a build has an origin — everywhere else this is the stale claim the flip retired",
+    surfaces: HOSTING_ARM_SURFACES,
+  },
 ];
+
+/**
+ * Claim 13 again, identified by the scoping that defines it rather than by its
+ * needle (D246: this file may not spell one out). `(b) the registry is a
+ * registry` asserts it is the only claim with this scope, so this cannot
+ * silently start meaning a different row.
+ */
+const HOSTING_ARM_CLAIM = BANNED_CLAIMS.find((c) => c.surfaces === HOSTING_ARM_SURFACES)!;
 
 /**
  * A NOTE FOR WHOEVER TRIPS THIS ON A DENIAL. A substring cannot tell a claim
@@ -327,6 +367,40 @@ function foldedHits(text: string, claims: readonly BannedClaim[]): string[] {
 
 /** The claims banned on one surface. */
 const claimsOn = (surface: SurfaceId) => BANNED_CLAIMS.filter((c) => c.surfaces.includes(surface));
+
+/**
+ * WHICH HOSTING ARM A BUILD RENDERED, read out of the artifact rather than out
+ * of the environment this process happens to carry: `npm test` is a separate
+ * run from `next build` and the env that decided the HTML is long gone by
+ * then (D329 — the value is baked at prerender, so the HTML is the only
+ * witness). `appHref` writes an ABSOLUTE "Create your workspace" href when
+ * `OBSTACK_APP_ORIGIN` was set and a same-host path when it was not, so the
+ * CTA the build wrote says which arm every hosting sentence on it is in.
+ * Returns the host, or `null` for a single-host build.
+ */
+function hostedArm(indexHtml: string): string | null {
+  const m = /href="(https?:\/\/[^"]*)\/signup"/.exec(indexHtml);
+  return m ? new URL(m[1]).host : null;
+}
+
+/**
+ * The claims banned on one surface's RENDERED bytes, which is not the same
+ * list as its sources' (D340).
+ *
+ * Claim 13's needle is scoped away from `landing`/`auth` because their sources
+ * carry it unconditionally — it is the else branch of a ternary, a string
+ * literal present in the file whatever the build does with it. On a build with
+ * no origin that is also what those pages SAY, and it is true. On a build with
+ * one it is false on exactly those two surfaces, and (b') would sweep them
+ * with the claim switched off: measured, a landing sentence reverted to the
+ * retired copy rendered onto `/` of a mock+origin build and this fence stayed
+ * green. So the rendered arm re-adds the claim when the build is hosted.
+ */
+function renderedClaimsOn(id: SurfaceId, hosted: boolean): readonly BannedClaim[] {
+  const claims = claimsOn(id);
+  if (!hosted || claims.includes(HOSTING_ARM_CLAIM)) return claims;
+  return id === "landing" || id === "auth" ? [...claims, HOSTING_ARM_CLAIM] : claims;
+}
 
 // ───────────────────────────────────────────────── the surfaces, declared once
 
@@ -482,8 +556,16 @@ test("(b) the registry is a registry — every claim scoped, every surface cover
   // The scoping is DATA, so it can go wrong quietly: a claim with no surfaces
   // is a rule that runs nowhere, and a surface no claim names is a page the
   // sweep visits and never judges. Both are green without this.
-  assert.equal(BANNED_CLAIMS.length, 11);
+  assert.equal(BANNED_CLAIMS.length, 13);
   assert.equal(new Set(BANNED_CLAIMS.map((c) => c.needle)).size, BANNED_CLAIMS.length, "two claims share a needle");
+  // `HOSTING_ARM_CLAIM` identifies claim 13 by this scope, and `(b')` re-adds
+  // exactly that claim on a hosted build — a second row sharing the scope
+  // would make the identification pick one of them at random.
+  assert.equal(
+    BANNED_CLAIMS.filter((c) => c.surfaces === HOSTING_ARM_SURFACES).length,
+    1,
+    "the hosting-arm scope is no longer one claim's — (b') re-adds it by identity",
+  );
   for (const claim of BANNED_CLAIMS) {
     assert.ok(claim.surfaces.length > 0, `a claim is banned nowhere: ${claim.why}`);
     assert.ok(claim.why.length > 20, `a claim carries no reason: ${claim.needle}`);
@@ -556,6 +638,10 @@ function requireBuild(t: { skip: (why: string) => void }, what: string): boolean
 test("(b') no public surface renders one either", (t) => {
   if (!requireBuild(t, "the PRERENDERED public pages")) return;
 
+  // Which arm this build is in, decided by the build itself (D340).
+  const index = decodeEntities(read(path.join(PRERENDER, "index.html")));
+  const host = hostedArm(index);
+
   const hits: string[] = [];
   let read_ = 0;
   for (const id of PUBLIC_SURFACES) {
@@ -568,7 +654,7 @@ test("(b') no public surface renders one either", (t) => {
       // Not vacuous: the page has to have been read.
       assert.ok(html.length > 2000, `${page} is too small to be a rendered page`);
       read_ += 1;
-      for (const needle of foldedHits(html, claimsOn(id))) hits.push(`${page}: ${needle}`);
+      for (const needle of foldedHits(html, renderedClaimsOn(id, host !== null))) hits.push(`${page}: ${needle}`);
     }
   }
   // 1 + 2 + 14 + 1 + 1 — the count is asserted because "swept nothing" and
@@ -590,6 +676,41 @@ test("(b') no public surface renders one either", (t) => {
     foldedHits(decodeEntities(planted), BANNED_CLAIMS),
     [spaced.needle],
     "the decode no longer exposes an escaped claim",
+  );
+
+  // And the hosting arm is not vacuous in EITHER direction, which is the only
+  // thing standing between the sweep above and a green run over a page that
+  // says the wrong one (D340).
+  if (host === null) {
+    // Unhosted: the sentence the claim would ban is the TRUE one here, and it
+    // has to actually be on the page — otherwise a deletion passes as a flip.
+    assert.deepEqual(
+      foldedHits(index, [HOSTING_ARM_CLAIM]),
+      [HOSTING_ARM_CLAIM.needle],
+      "the single-host landing no longer says whose obstack a signup lands on",
+    );
+  } else {
+    // Hosted: the prose names the same host the CTA points at, so the ban had
+    // a live sentence to be about rather than an absent one.
+    assert.ok(index.toLowerCase().includes(`on ${host.toLowerCase()}`), `\`/\` renders no hosting sentence for ${host}, the origin its own CTA points at`);
+  }
+  // The re-scoping itself, proven on planted text both ways — the real page
+  // must never carry the needle, so the proof cannot be found on it.
+  const staleSentence = `<p>Signing up creates your workspace ${HOSTING_ARM_CLAIM.needle}.</p>`;
+  assert.deepEqual(
+    foldedHits(staleSentence, renderedClaimsOn("landing", true)),
+    [HOSTING_ARM_CLAIM.needle],
+    "a hosted build no longer bans the retired hosting claim on `/`",
+  );
+  assert.deepEqual(
+    foldedHits(staleSentence, renderedClaimsOn("auth", true)),
+    [HOSTING_ARM_CLAIM.needle],
+    "a hosted build no longer bans the retired hosting claim on the auth pages",
+  );
+  assert.deepEqual(
+    foldedHits(staleSentence, renderedClaimsOn("landing", false)),
+    [],
+    "a single-host build banned the sentence that is true on it",
   );
 });
 

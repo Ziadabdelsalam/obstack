@@ -2,6 +2,35 @@ import type { NextConfig } from "next";
 import path from "path";
 import createMDX from "@next/mdx";
 
+/**
+ * D340: the marketing image renders `/signup` and `/login` as the honest
+ * no-form dead end (D150) — true on a single-host build, false the moment
+ * `app.obstack.dev` exists, because that IS the running product these paths
+ * describe. `OBSTACK_APP_ORIGIN` unset (every build before S5, and the `web`
+ * service's own build, which has no reason to redirect to itself) returns
+ * `undefined` — no redirects, the dead-end pages stay; set (the marketing
+ * build only) sends a stranger straight to the real form instead, at the same
+ * build-time seam `appHref`/`appHost` read (D329).
+ *
+ * `undefined` rather than an empty array: `redirects` is an optional key
+ * (node_modules/next/dist/server/config-shared.d.ts:1258,
+ * `redirects?: () => Promise<Redirect[]> | Redirect[]`), and the single-host
+ * build has no redirect concept, not a redirect list with nothing in it.
+ *
+ * Reference: node_modules/next/dist/docs/01-app/03-api-reference/05-config/01-next-config-js/redirects.md
+ */
+function marketingRedirects(): NextConfig["redirects"] {
+  const origin = process.env.OBSTACK_APP_ORIGIN?.trim() ?? "";
+  if (origin === "") return undefined;
+  const dest = origin.replace(/\/+$/, "");
+  return () => [
+    { source: "/signup", destination: `${dest}/signup`, permanent: false },
+    { source: "/signup/:path*", destination: `${dest}/signup/:path*`, permanent: false },
+    { source: "/login", destination: `${dest}/login`, permanent: false },
+    { source: "/login/:path*", destination: `${dest}/login/:path*`, permanent: false },
+  ];
+}
+
 const nextConfig: NextConfig = {
   turbopack: {
     // Workspace root (single lockfile), two levels up from apps/web.
@@ -17,6 +46,7 @@ const nextConfig: NextConfig = {
   // the Dockerfile copies that folder instead of `node_modules` + source.
   // node_modules/next/dist/docs/01-app/03-api-reference/05-config/01-next-config-js/output.md
   output: "standalone",
+  redirects: marketingRedirects(),
 };
 
 /**

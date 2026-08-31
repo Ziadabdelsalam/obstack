@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { Wordmark } from "@/components/shell/Wordmark";
+import { appHost } from "@/lib/app-href";
 import { dataMode } from "@/server/data";
 import { logIn } from "./actions";
 import { loginErrorMessage } from "./errors";
@@ -29,6 +30,10 @@ export default async function LoginPage({
   // /signup: in this mode that page says the same thing, and a pointer has to
   // lead somewhere real.
   if (dataMode === "mock") {
+    // D340: this build is prerendered, so the host, if any, is a build-time
+    // constant — the same OBSTACK_APP_ORIGIN the marketing image bakes into
+    // the CTAs `appHref` wraps.
+    const host = appHost();
     return (
       <div className={PAGE}>
         <div className="w-full max-w-sm">
@@ -44,8 +49,7 @@ export default async function LoginPage({
             accounts, so there is nothing here to sign in to.
           </p>
           <p className="mt-3 text-[13px] leading-relaxed text-mid">
-            Accounts are real on an obstack you host yourself. We don&apos;t host obstack for
-            anyone yet.
+            Accounts are real {host ? `on ${host}` : "on an obstack you run yourself"}.
           </p>
 
           {/* Two pointers, both real and both in this build (D327): the demo
