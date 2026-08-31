@@ -47,7 +47,7 @@ export function readModeStamp(stampPath: string = STAMP_PATH): DataMode | undefi
 }
 
 /**
- * D251(b)/D265(a2)/D267 — the four boot outcomes, in order:
+ * D251(b)/D265(a2)/D267/D353 — the five boot outcomes, in order:
  *  1. stamp absent                        → no-op, returns
  *  2. stamp present, runtime mode unset   → refuse (explicit over implicit
  *     at "costs signup entirely" stakes — compose and the chart always set
@@ -57,6 +57,17 @@ export function readModeStamp(stampPath: string = STAMP_PATH): DataMode | undefi
  *  4. live-stamped, no signing secret     → refuse, with the generate
  *     instruction (mock-stamped artifacts need no secret: no auth, no
  *     Postgres, D262)
+ *  5. mock-stamped, a real billing rail    → refuse, naming both values
+ *     (D353)
+ *
+ * (5) is here and not in `billing/` for the reason that makes it necessary at
+ * all: a mock artifact never reaches `getBilling()`, so a refusal inside the
+ * billing module would guard a path this artifact does not run — it would boot
+ * and serve a demo advertising a rail no request can reach. It is a comparison
+ * of two environment variables and stays one: this module imports nothing from
+ * `billing/`, which is the same D110 boundary the billing barrel keeps from the
+ * other side. The INVERSE is deliberately not refused — live + `fake` is what
+ * compose, the chart and every self-hosted deployment that never bills run.
  *
  * Every refusal is a thrown `Error` — pure and unit-testable. What actually
  * stops the process on that throw is `checkModeStampOnBoot` below, the one
@@ -86,6 +97,17 @@ export function assertModeStamp(
     throw new Error(
       `refusing to start: this artifact was built with OBSTACK_DATA_MODE=${stamp} baked in, but is ` +
         `running with OBSTACK_DATA_MODE=${runtime}. A mismatched serve is refused, not rendered.`,
+    );
+  }
+
+  // Unset IS `fake`: that is `billingMode()`'s default (D168), so an absent
+  // variable is the demo's own configuration rather than something forgotten.
+  const billing = env.OBSTACK_BILLING_MODE;
+  if (stamp === "mock" && billing && billing !== "fake") {
+    throw new Error(
+      `refusing to start: this artifact was built with OBSTACK_DATA_MODE=mock baked in, but is ` +
+        `running with OBSTACK_BILLING_MODE=${billing}. A mock artifact serves generated data and ` +
+        `never reaches the billing rail; set OBSTACK_BILLING_MODE=fake or leave it unset.`,
     );
   }
 
