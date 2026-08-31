@@ -164,24 +164,25 @@ One Railway project, two environments:
 `apps/web/src/server/rate-limit.ts` wraps the signup and login server
 actions directly (better-auth's own limiter never runs on these in-process
 `auth.api.*` calls, only on its HTTP router). In-memory sliding window,
-keyed `(ip, action)`: **signup 5/IP/1h, login 10/IP/10min**. IP is the first
-hop of `x-forwarded-for`; a request with no IP is allowed through with a
-logged warning (fail-open, loud — never a silent bypass).
+keyed `(ip, action)`: **signup 5/IP/1h, login 10/IP/10min**. IP is the
+RIGHTMOST hop of `x-forwarded-for` (advisor condition F-T8a on D339): every
+entry to the left is client-supplied, the rightmost is the one the single
+trusted proxy in front of the app — Railway's edge — writes, whether it
+appends to a client-sent header or replaces it. A request with no IP is
+allowed through with a logged warning (fail-open, loud — never a silent
+bypass).
 
-**What the first hop is worth depends on Railway, and the R-facts do not say.**
-The first hop is the right choice only if Railway's edge REPLACES any
-client-supplied `x-forwarded-for`; if it APPENDS to one, the first hop is a
-value the caller typed, and rotating it defeats this limiter entirely.
-Railway's forwarded-header behaviour is not quoted anywhere in
-`.planning/2026-08-31-s5-railway-facts.md` — D339 chose the first hop
-knowingly and made staging settle it. So the K0 staging gate proves TWO
-things, not one: (a) `railway logs --service web` contains no
+**The rightmost hop is only the client's address if Railway's edge is the
+only proxy in the path** — the R-facts do not quote Railway's forwarded-header
+behaviour (`.planning/2026-08-31-s5-railway-facts.md`), so the K0 staging
+gate proves TWO things, not one: (a) `railway logs --service web` contains no
 "could not determine a client IP" line (the header arrives at all — a
 BLOCKing check), and (b) a signup replayed with a forged
 `x-forwarded-for: 1.2.3.4` header still counts against the real caller's
-budget (the sixth is refused). If (b) fails, the header is
-attacker-controlled, this limiter is advisory only, and that is an
-ESCALATION to the advisor before launch — not something to patch here.
+budget (the sixth is refused) — the forged value must never open a fresh
+bucket. If (b) fails, the header is attacker-controlled, this limiter is
+advisory only, and that is an ESCALATION to the advisor before launch — not
+something to patch here.
 
 **This is correct at exactly one `web` replica** (§1 pins `web` to
 `replicas: 1`). A second `web` replica would split traffic across two

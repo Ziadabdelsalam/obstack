@@ -107,15 +107,17 @@ export class RateLimitedError extends Error {
 }
 
 /**
- * D339's IP rule: the FIRST hop of `x-forwarded-for`, which is the address
- * the edge proxy saw the connection from — every hop after it is whatever the
- * client itself claimed. `null` for anything that names no client, so the
- * caller's only decision is "do I have an IP or not".
+ * D339's IP rule as signed (advisor condition F-T8a): the RIGHTMOST hop of
+ * `x-forwarded-for`. Everything to the left is client-supplied — a forger
+ * rotating the leftmost value would open a fresh bucket per request — while
+ * the rightmost entry is the one the single trusted proxy in front of the
+ * app (Railway's edge) writes, under both documented proxy behaviours
+ * (append or replace). No header at all names no client → `null`.
  */
-export function firstForwardedIp(headerValue: string | null): string | null {
+export function clientIpFromForwarded(headerValue: string | null): string | null {
   if (!headerValue) return null;
-  const first = headerValue.split(",")[0]?.trim();
-  return first ? first : null;
+  const hops = headerValue.split(",").map((h) => h.trim()).filter(Boolean);
+  return hops.length ? hops[hops.length - 1]! : null;
 }
 
 /**
@@ -133,7 +135,7 @@ export function firstForwardedIp(headerValue: string | null): string | null {
  */
 export async function getClientIp(): Promise<string | null> {
   try {
-    return firstForwardedIp((await headers()).get("x-forwarded-for"));
+    return clientIpFromForwarded((await headers()).get("x-forwarded-for"));
   } catch (error) {
     if (error instanceof Error && error.message.includes("was called outside a request scope")) {
       return null;

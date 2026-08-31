@@ -3,7 +3,7 @@ import test from "node:test";
 import {
   RateLimitedError,
   checkRateLimit,
-  firstForwardedIp,
+  clientIpFromForwarded,
   resetRateLimitsForTests,
 } from "./rate-limit";
 import { signupErrorCode } from "@/app/signup/errors";
@@ -84,18 +84,19 @@ test("no IP present: fail open, and the warning fires exactly once across two ca
   assert.equal(warnings.length, 1, "the no-IP warning must fire exactly once per process, not per call");
 });
 
-// ---- firstForwardedIp: D339's IP extraction rule ----
+// ---- clientIpFromForwarded: D339's IP extraction rule (F-T8a: rightmost hop) ----
 
-test("firstForwardedIp reads the FIRST hop of x-forwarded-for", () => {
-  assert.equal(firstForwardedIp("203.0.113.7, 10.0.0.1, 10.0.0.2"), "203.0.113.7");
-  assert.equal(firstForwardedIp("203.0.113.7"), "203.0.113.7");
-  assert.equal(firstForwardedIp("  203.0.113.7  ,10.0.0.1"), "203.0.113.7");
+test("clientIpFromForwarded reads the RIGHTMOST hop of x-forwarded-for — the trusted proxy's, never the forgeable leftmost", () => {
+  assert.equal(clientIpFromForwarded("1.2.3.4, 203.0.113.7"), "203.0.113.7");
+  assert.equal(clientIpFromForwarded("203.0.113.7"), "203.0.113.7");
+  assert.equal(clientIpFromForwarded("  1.2.3.4  ,203.0.113.7  "), "203.0.113.7");
+  assert.equal(clientIpFromForwarded("1.2.3.4, 203.0.113.7,"), "203.0.113.7");
 });
 
-test("firstForwardedIp answers null for anything that names no client", () => {
-  assert.equal(firstForwardedIp(null), null);
-  assert.equal(firstForwardedIp(""), null);
-  assert.equal(firstForwardedIp(","), null);
+test("clientIpFromForwarded answers null for anything that names no client", () => {
+  assert.equal(clientIpFromForwarded(null), null);
+  assert.equal(clientIpFromForwarded(""), null);
+  assert.equal(clientIpFromForwarded(","), null);
 });
 
 // ---- F1: the seam this module cannot exercise directly, proven at its boundary ----
