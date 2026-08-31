@@ -1,0 +1,16 @@
+# Build context allowlist for deploy/railway/clickhouse/Dockerfile.
+#
+# BuildKit reads `<dockerfile>.dockerignore` from beside the Dockerfile in
+# preference to the context root's `.dockerignore`, so this file scopes THIS
+# build only — the repo has no root `.dockerignore`, and adding one would
+# change every other build in the tree (apps/web, services/ingest, compose).
+#
+# The context is the repo root (2.1 GB: node_modules, .next, .git, and
+# apps/web/.env.local) and this image needs exactly one file out of it. Deny
+# everything, re-admit that one path. BuildKit only transfers the paths a COPY
+# names, so today's measured transfer is already 231 B — this file makes that a
+# rule of the build rather than a property of the builder's optimiser, and it
+# is what keeps a developer's .env.local out of the daemon if the build ever
+# runs on the classic builder or gains a second COPY.
+*
+!deploy/compose/clickhouse/users.d/obstack-users.xml
