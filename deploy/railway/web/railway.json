@@ -1,0 +1,20 @@
+{
+  "$schema": "https://railway.app/railway.schema.json",
+  "build": {
+    "dockerfilePath": "apps/web/Dockerfile",
+    "watchPatterns": [
+      "apps/web/**",
+      "packages/**",
+      "package.json",
+      "package-lock.json",
+      "services/ingest/pricing/prices.json",
+      "deploy/railway/web/railway.json"
+    ]
+  },
+  "deploy": {
+    "healthcheckPath": "/login",
+    "healthcheckTimeout": 120,
+    "restartPolicyType": "ALWAYS",
+    "numReplicas": 1
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "$schema": "https://railway.app/railway.schema.json",
+  "build": {
+    "dockerfilePath": "Dockerfile",
+    "watchPatterns": [
+      "services/ingest/**",
+      "deploy/railway/ingest/railway.json"
+    ]
+  },
+  "deploy": {
+    "healthcheckPath": "/healthz",
+    "healthcheckTimeout": 120,
+    "restartPolicyType": "ALWAYS",
+    "numReplicas": 1
+  }
+}
