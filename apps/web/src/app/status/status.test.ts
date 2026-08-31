@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { createRequire } from "node:module";
 import path from "node:path";
 import test from "node:test";
 import { STATUS_COMPONENT_IDS } from "@/lib/docs/incidents";
@@ -12,11 +13,25 @@ import { STATUS_COMPONENT_IDS } from "@/lib/docs/incidents";
 // an invented resolved incident, and a header crediting it all to an obstack
 // capability that does not exist. D256 deleted it with no relocation.
 //
-// This file is the fence that keeps it deleted, and it is a TEXT test for the
-// same reason the shell tests are (D54(ii)): the page is a server component
-// and the runner is pinned to `--conditions react-server`, so what can be
-// asserted is the source — which is the right grain anyway, because every
-// banned thing here is a literal somebody would type.
+// This file is mostly a TEXT test for the same reason the shell tests are
+// (D54(ii)): the page is a server component and the runner is pinned to
+// `--conditions react-server`, so the source is what most of the assertions
+// below read — the right grain for them, because every banned thing here is
+// a literal somebody would type.
+//
+// The D342 monitoring tests are the one exception: what they check is
+// env-dependent BEHAVIOUR (which of two arms the page renders), and that is
+// not a fact the source text carries either way — the conditional is in the
+// source regardless of which arm runs. So those two RENDER the real page
+// module instead, walking the element tree the server returns, the same
+// shim `signup/mock-mode.test.ts` uses for the same obstacle: under
+// `--conditions react-server` React has no `createContext`, and `next/link`
+// calls it at module scope, so importing a real page module needs this one
+// function supplied first. Nothing below ever CALLS `<Link>` or
+// `<Wordmark>` — a React element is a plain object, and the tree is only
+// walked, never rendered.
+const react = createRequire(import.meta.url)("react");
+react.createContext ??= () => ({});
 //
 // THE NEEDLES ARE ASSEMBLED FROM PARTS, never spelled (the D246 discipline
 // TourGuide.test.ts established). `apps/web/src` is swept for these phrases in
@@ -71,6 +86,35 @@ function noticeSources(): Record<string, string> {
 /** THE `/status` surface: the modules, plus every notice they publish. */
 const SURFACE: Record<string, string> = { ...MODULES, ...noticeSources() };
 const pageSource = MODULES["app/status/page.tsx"];
+
+// The tree-walking helpers below are `signup/mock-mode.test.ts`'s, copied
+// rather than imported (that file's are not exported, and reimplementing
+// four one-line functions is cheaper than opening a cross-directory export
+// surface for a test helper). A React element is a plain object; nothing
+// here ever calls `<Link>` or `<Wordmark>`, only walks the tree the server
+// component returns.
+type Element = { type?: unknown; props?: Record<string, unknown> };
+
+/** Every element and string in a returned tree, depth-first. */
+function flatten(node: unknown, out: (Element | string)[] = []): (Element | string)[] {
+  if (typeof node === "string") out.push(node);
+  else if (Array.isArray(node)) for (const child of node) flatten(child, out);
+  else if (node && typeof node === "object") {
+    const el = node as Element;
+    out.push(el);
+    flatten(el.props?.children, out);
+  }
+  return out;
+}
+
+const renderedText = (tree: unknown) => flatten(tree).filter((n) => typeof n === "string").join(" ");
+
+const anchorHrefs = (tree: unknown) =>
+  flatten(tree)
+    .filter((n): n is Element => typeof n === "object" && n.type === "a")
+    .map((n) => n.props?.href)
+    .filter((h): h is string => typeof h === "string");
+
 /** The page's text with JSX line-wrapping flattened, so a sentence can be matched as a sentence. */
 const pageText = pageSource.replace(/\s+/g, " ");
 
@@ -223,13 +267,47 @@ test("every component is named and described, and none is scored", () => {
   );
 });
 
-test("D256: the monitoring slot says what is true, in the ruled words", () => {
-  assert.ok(
-    pageText.includes(
-      "External uptime monitoring begins at launch; this page shows no uptime numbers until then.",
-    ),
-    "the monitoring sentence is not on the page verbatim — it is the whole of what this section may claim",
+const MONITOR_VAR = "OBSTACK_STATUS_MONITOR_URL";
+
+test("D342: unset — the honest default, and no monitor link on the page", async () => {
+  // Rendered, not read as text (see the header comment above `flatten`): the
+  // source carries both arms' JSX regardless of env, so what proves the
+  // UNSET arm is what the server actually returns when the env is unset.
+  delete process.env[MONITOR_VAR];
+  const page = await import("@/app/status/page");
+  const tree = await page.default();
+
+  assert.equal(
+    renderedText(tree).includes("This deployment publishes no external uptime monitor."),
+    true,
+    "the unset sentence is missing",
   );
+  assert.equal(
+    renderedText(tree).includes("External uptime monitoring for obstack is published at"),
+    false,
+    "the set-arm sentence rendered while the env was unset",
+  );
+  assert.deepEqual(anchorHrefs(tree), [], "an <a> to a monitor rendered with no monitor configured");
+});
+
+test("D342: set — the monitor link renders, with the host as its visible text", async () => {
+  process.env[MONITOR_VAR] = "https://status.example.com/";
+  const page = await import("@/app/status/page");
+  const tree = await page.default();
+  delete process.env[MONITOR_VAR];
+
+  assert.equal(
+    renderedText(tree).includes("External uptime monitoring for obstack is published at"),
+    true,
+    "the set-arm sentence did not render",
+  );
+  assert.equal(
+    renderedText(tree).includes("This deployment publishes no external uptime monitor."),
+    false,
+    "the unset sentence rendered alongside the configured monitor",
+  );
+  assert.deepEqual(anchorHrefs(tree), ["https://status.example.com"], "the monitor link's href");
+  assert.equal(renderedText(tree).includes("status.example.com"), true, "the visible link text is the host");
 });
 
 test("D324: with nothing published, the incidents section is one sentence", () => {

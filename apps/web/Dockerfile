@@ -51,6 +51,14 @@ ENV OBSTACK_DATA_MODE=${OBSTACK_DATA_MODE}
 # is no workspace to create.
 ARG OBSTACK_APP_ORIGIN=
 ENV OBSTACK_APP_ORIGIN=${OBSTACK_APP_ORIGIN}
+# `OBSTACK_STATUS_MONITOR_URL` is the same build-time shape (D342): `/status`
+# is prerendered, so `lib/status-monitor.ts` reads this while `next build`
+# renders that page, and the link (or its absence) is BAKED into the static
+# HTML — there is no runtime override here either. Unset, which is the
+# default until the Better Stack URL exists (K9), renders no external monitor
+# link; the page says plainly that this deployment publishes none.
+ARG OBSTACK_STATUS_MONITOR_URL=
+ENV OBSTACK_STATUS_MONITOR_URL=${OBSTACK_STATUS_MONITOR_URL}
 # `resolveMode()` (data.ts:56-57) also requires CLICKHOUSE_URL to be non-empty
 # when the mode is "live", because that check runs at module-evaluation time
 # and Next imports every route module — including dynamic ones — while

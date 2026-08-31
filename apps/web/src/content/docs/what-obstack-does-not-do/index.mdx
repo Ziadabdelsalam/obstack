@@ -140,9 +140,10 @@ synchronously.
 
 {/* D256 */}
 
-**There is no external uptime monitoring yet.** It begins at launch, which is
-why the status page carries no uptime numbers rather than numbers nothing
-measured.
+**obstack runs no uptime monitor of its own.** The status page links an
+external monitor when the operator of a deployment configures one
+(`OBSTACK_STATUS_MONITOR_URL`, baked at build time); otherwise it says the
+deployment publishes none. It never shows uptime numbers nothing measured.
 
 {/* D284 */}
 
