@@ -101,7 +101,7 @@ Not deployed: the collector (customers export from their side; the D101 endpoint
 <!-- Draft; the advisor may restructure at kickoff. Executors receive this path + one ID. -->
 
 ### T0: operator prerequisites (manager + user; no agent)
-- status: pending
+- status: executing — 2026-08-31: Railway CLI 5.45.10 installed (Homebrew); operator logged in as **hi@obstack.dev** (the product account — an earlier login as the personal Outlook account was superseded; its `impartial-tenderness` project is unrelated and untouched); the obstack workspace has NO projects yet; plan tier unverified (Pro needed for R5). Squarespace apex resolved (R10). Open: Railway plan, GHCR read PAT, Better Stack (U12), Polar org verification (U14), design partners (U13).
 - owns: — (accounts, CLI, scopes)
 - done-check: `railway whoami` succeeds; Railway project exists (staging + production environments); `gh auth status` unchanged (CI does the push); a `read:packages` PAT exists for Railway; Squarespace DNS editable; **U12** monitor account named or BLOCK T5; **U14** Polar org verification status known or BLOCK the promotion critical item; **U13** design-partner list exists or the exit clause is recorded open; **U16** GCP application irrelevant under U10=Railway (record); **U15** launch without email (recommendation) recorded.
 - result:
