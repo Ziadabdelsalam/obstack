@@ -84,6 +84,25 @@ healthcheck watching. `ALWAYS` keeps retrying and recovers by itself.
 | `postgres` | `POSTGRES_DB` | fixed value `obstack` |
 | `postgres` | `PGDATA` | fixed value `/var/lib/postgresql/data/pgdata` |
 
+### ClickHouse users posture (D350, D355)
+
+The shared `users.d` file (compose, chart and this image are one source) pins
+`default` to loopback — unconditionally, whatever the upstream entrypoint does
+with `CLICKHOUSE_PASSWORD`. The two application users keep `::/0` and
+`obstack_ingest` keeps `GRANT ALL ON obstack.*`: on Railway the project's
+private network is single-tenant (only obstack's five services share it), so
+**the credential is the boundary, not the network.** That only holds if the
+passwords stay where the table above puts them: `OBSTACK_CLICKHOUSE_INGEST_PASSWORD`
+on `clickhouse` and `ingest` ONLY, `OBSTACK_CLICKHOUSE_WEB_PASSWORD` on
+`clickhouse` and `web` ONLY — never a shared-variable reference that fans a
+password out to a service that does not need it. Network-scoping the app users
+is refused for now (Railway documents no stable service addresses, R3).
+Narrowing the ingest grant to the privileges its migrations and the retention
+sweep actually use is an **M5 item with its method fixed**: derive the list by
+a `SHOW GRANTS` diff against `services/ingest` migrations + the sweep's
+`ALTER … DELETE`, land it in the shared XML and the chart copy, prove it red
+by the compose bundle boot and the `stack` job.
+
 ## 3. Registry
 
 Railway **Pro** plan is required to configure private-registry credentials
