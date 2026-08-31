@@ -45,12 +45,33 @@ export const usage = {
   resetsOn: "Sep 1, 2026",
 };
 
+/**
+ * The demo's ingest health, and the one rule its rows obey (S4.4 R3 must-fix 2).
+ *
+ * `droppedBySource` used to attribute 12 drops to a "Vercel log drain". Nothing
+ * in this deployment has a Vercel log drain: the catalog lists Vercel as
+ * `coming-soon` (`components/connections/connectors`) and the demo's own
+ * connected sources stopped claiming it when R2 must-fix 2 rewired that row to
+ * Docker. So the settings Ingest tab was still reporting traffic — and errors —
+ * from a source the connections wall says does not exist, which is the same
+ * false CAPABILITY claim D208 refuses, just one tab further from anywhere a
+ * prerender sweep can read (`SettingsSuite.tsx` renders these rows on a client
+ * tab).
+ *
+ * THE RULE, pinned in `mock/connectors.test.ts` so it cannot rot again: every
+ * `source` here is the `name` of a source `mock/connectors.ts` shows as
+ * CONNECTED, and the counts add up to `droppedLast24h`. The reasons stay
+ * plausible for the source that carries them — a Docker collector forwarding a
+ * container's stdout meets lines that are not JSON; an OTLP SDK sends oversized
+ * span attributes — and the Docker row's 12 is the same 12 its connected row
+ * already shows as `errorCount`, so the two screens tell one story.
+ */
 export const ingest = {
   eventsLast24h: 412883,
   droppedLast24h: 37,
   droppedBySource: [
-    { source: "Vercel log drain", count: 12, reason: "unparseable JSON body" },
-    { source: "OTLP · agent-worker", count: 25, reason: "span attribute exceeds 8KB limit" },
+    { source: "loopwork-web (docker, staging)", count: 12, reason: "log line is not valid JSON" },
+    { source: "agent-worker · obstack-py", count: 25, reason: "span attribute exceeds 8KB limit" },
   ],
   samplingRate: 100,
   degradedMode: false,

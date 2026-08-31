@@ -99,12 +99,18 @@ export default async function StatusPage() {
             </Link>
             <span className="font-mono text-[11px] text-faint">status</span>
           </div>
+          {/*
+            "Open the app", not "the demo". `/app` is a demo in one of the two
+            images only: in the live image an anonymous reader is redirected to
+            `/login` and a signed-in one lands in their own workspace. This page
+            is the same bytes in both, so the label has to be true in both.
+          */}
           <Link
             href="/app"
             className="flex items-center gap-1.5 rounded-md px-3 py-1.5 text-[13px] font-medium text-bg"
             style={{ background: "var(--color-ink)" }}
           >
-            Open the demo <ArrowRight className="h-3.5 w-3.5" />
+            Open the app <ArrowRight className="h-3.5 w-3.5" />
           </Link>
         </div>
       </header>

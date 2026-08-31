@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import { DocsPage } from "@/components/docs/DocsPage";
 import { docsStaticParams } from "@/lib/docs/docs";
-import { loadDoc } from "@/lib/docs/load";
+import { docsMetadata } from "@/lib/docs/load";
 
 /**
  * The IN-APP docs mount (D320's K2(b)) — the same pages, inside the shell.
@@ -39,8 +39,11 @@ export async function generateMetadata({
   params: Promise<{ slug?: string[] }>;
 }): Promise<Metadata> {
   const { slug } = await params;
-  const { frontmatter } = await loadDoc(slug ?? []);
-  return { title: `${frontmatter.title} — obstack docs` };
+  // The SAME metadata the public mount serves (`@/lib/docs/load`). It was not,
+  // until this call replaced a second copy of the title template that had
+  // quietly dropped `frontmatter.description` — a divergence between the two
+  // mounts that neither screen shows and no reader could report.
+  return docsMetadata(slug ?? []);
 }
 
 export default async function InAppDocsPage({

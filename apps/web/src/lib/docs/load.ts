@@ -1,4 +1,5 @@
 import type { ComponentType } from "react";
+import type { Metadata } from "next";
 import type { MDXComponents } from "mdx/types";
 import { notFound } from "next/navigation";
 import {
@@ -89,6 +90,37 @@ export async function loadDoc(slug: readonly string[]): Promise<LoadedDoc> {
   const entry = findDocsEntry(slug);
   if (!entry) notFound();
   return { entry, ...(await importPage(entry)) };
+}
+
+/**
+ * A page's `<head>`, for BOTH mounts (D320).
+ *
+ * This is a shared function for the same reason `DocsPage` is: the two route
+ * files claim to differ only by `basePath`, and metadata is the one part of a
+ * page a reviewer never sees rendered. They drifted the first time exactly
+ * that way — the public mount spread `frontmatter.description` into its
+ * `Metadata` and the in-app mount did not, so the same page had a description
+ * on `/docs/quickstart` and none on `/app/docs/quickstart`, with nothing on
+ * either screen to show it. One function is what makes "only the basePath
+ * differs" checkable rather than asserted in a docblock.
+ *
+ * `loadDoc`, not `findDocsEntry`: the title lives in the page's `frontmatter`
+ * export and nowhere else, and an off-manifest slug must 404 from
+ * `generateMetadata` too — `notFound()` is supported there
+ * (node_modules/next/dist/docs/01-app/03-api-reference/04-functions/generate-metadata.md:197).
+ * The second `import()` this costs is a resolved promise, not a second
+ * compile, and the page render is about to make the same call.
+ *
+ * `description` is spread CONDITIONALLY: `description: undefined` is not the
+ * same as no description once a parent segment has set one, and the corpus's
+ * frontmatter makes the field optional.
+ */
+export async function docsMetadata(slug: readonly string[]): Promise<Metadata> {
+  const { frontmatter } = await loadDoc(slug);
+  return {
+    title: `${frontmatter.title} — obstack docs`,
+    ...(frontmatter.description ? { description: frontmatter.description } : {}),
+  };
 }
 
 /** A nav entry: the manifest entry plus the title only its page knows. */

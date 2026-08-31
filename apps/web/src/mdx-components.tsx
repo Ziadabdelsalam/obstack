@@ -71,7 +71,18 @@ const components: MDXComponents = {
   ),
   hr: (props) => <hr className="mt-8 border-line" {...props} />,
   // `pre` is the block; `code` is both the inline span and the child of `pre`.
-  // The block case is styled on `pre` so the inline rule can stay unconditional.
+  //
+  // The font size on `code` is therefore CONDITIONAL, and that is measured, not
+  // stylistic: `text-[12px]` here and `text-[11.5px]` on `pre` are
+  // equal-specificity single classes, so whichever Tailwind emits later wins
+  // everywhere — and in the prerendered HTML it was this one, inside fenced
+  // blocks included. The visible symptom was on `/docs/quickstart`, which mixes
+  // MDX fences with the bare `<pre>` blocks `@/components/docs/QuickstartSnippets`
+  // renders: the same page showed code at two sizes, 12px in the fences and
+  // 11.5px in the component's blocks. `[&:not(pre_&)]` scopes the size to the
+  // INLINE case, which is the only case it was ever about; everything else on
+  // `code` — the mono face, the rounding — is wanted in both, so a block is now
+  // sized by `pre` alone.
   pre: (props) => (
     <pre
       className="mt-4 overflow-x-auto rounded-md border border-line bg-raised p-3 font-mono text-[11.5px] leading-relaxed text-ink"
@@ -79,7 +90,7 @@ const components: MDXComponents = {
     />
   ),
   code: (props) => (
-    <code className="rounded-[3px] font-mono text-[12px] text-ink" {...props} />
+    <code className="rounded-[3px] font-mono text-ink [&:not(pre_&)]:text-[12px]" {...props} />
   ),
   // remark-gfm's tables (next.config.ts). They scroll inside their own box
   // rather than widening the page.

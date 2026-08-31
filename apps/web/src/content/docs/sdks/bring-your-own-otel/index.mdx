@@ -24,18 +24,26 @@ states a layer itself.
 
 | Layer | What obstack reads |
 |---|---|
-| `api` | the stable `http.request.method` attribute from a server span |
+| `llm` | any `gen_ai.*` attribute — the ones below |
 | `agent` | `obstack.agent.step="<name>"` on a span you start yourself |
 | `tool` | `obstack.tool.name="<name>"` on a span you start yourself |
-| `llm` | the `gen_ai.*` attributes below |
+| `api` | `http.request.method` **or** `http.route` on a server span — either one alone is enough |
+
+The order of that table is the rule: the first row a span matches decides its
+layer, so an LLM call made from inside an agent step is an `llm` span, not an
+`agent` one. A span matching none of them is `other`.
 
 The `agent` and `tool` attributes are the two things no library can infer — they
 are the only obstack-specific names in the whole arrangement, and setting them
 is a one-line call on a span you were going to start anyway.
 
-On Python's FastAPI instrumentation, set `OTEL_SEMCONV_STABILITY_OPT_IN` to
-`http`: without it the instrumentation emits the legacy `http.method` and the
-api layer disappears.
+On Python's FastAPI instrumentation, `OTEL_SEMCONV_STABILITY_OPT_IN=http` is
+what makes a server span carry the stable `http.request.method` rather than the
+legacy `http.method` — `demo/agent-app` exports it, and `obstack.init()` in the
+Python SDK defaults it. The api layer does not hang on it either way: the
+instrumentation writes `http.route` from the matched route in both modes, and
+`http.route` on its own classifies the span. Set it anyway, so the attribute on
+the wire is the one the semantic conventions settled on.
 
 ## The LLM span
 

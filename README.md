@@ -74,8 +74,12 @@ The real releases publish at launch; today both install from source, which is
 what the sample apps and the in-product quickstart do:
 
 ```bash
-pip install './packages/obstack-py[fastapi]'                       # Python
-npm pack ./packages/obstack-js && npm install ./obstack-js-0.1.0.tgz  # TypeScript
+# Python — from the obstack repo root
+pip install './packages/obstack-py[fastapi]'
+
+# TypeScript — pack from the obstack repo root; install from your app's directory
+npm pack ./packages/obstack-js --pack-destination /path/to/your-app   # -> obstack-js-0.1.0.tgz
+npm install ./obstack-js-0.1.0.tgz
 ```
 
 ### What is actually instrumented
@@ -137,7 +141,7 @@ Everything visual is real code (Next.js + Tailwind + Recharts). With `OBSTACK_DA
 
 Nine checks run on every pull request against `master`: `web`, `go`, `lint`, `kind`, `images`, `e2e`, `sdk-py`, `sdk-js`, `sdk-e2e`. A tenth, `stack`, is deliberately **not** in that set: since S4.3 it runs on a path filter for pull requests, on **every push to `master`**, and on `workflow_dispatch` — see its bullet below. Workflow definitions live in `.github/workflows/{web,go,lint,kind,images,stack,e2e,sdk-py,sdk-js,sdk-e2e}.yml`. Making any of them *blocking* is branch protection, which is not configured yet — see "Required checks" below.
 
-- **`web`** (`.github/workflows/web.yml`) — Node 24, the active-LTS major meeting Next 16.3's documented floor (20.9.0+, per `node_modules/next/dist/docs/01-app/02-guides/upgrading/version-16.md`). Brings up ClickHouse **and `ingest`** via the same compose services local dev uses (ingest owns the schema, so a bare ClickHouse has no `obstack` database for the ClickHouse-backed tests to read), then runs `npm ci` against the committed `package-lock.json`, `npm test` (the tsx `node:test` runner) and `npm run build`. Like `go`, it fails on any unexpected test skip — the `node:test` runner's own skipped-count must be present and must agree with the skip lines the trap can see, so a self-skipping integration test cannot read as coverage it doesn't have. `setup-node`'s `cache: 'npm'` caches npm's package download cache only, keyed on `package-lock.json`; no `.next` build output is cached, because a cache keyed on `package-lock.json` alone would risk reusing prerenders across `OBSTACK_DATA_MODE` changes (the M1 F6 finding). CI therefore always builds from a clean checkout.
+- **`web`** (`.github/workflows/web.yml`) — Node 24, the active-LTS major meeting Next 16.3's documented floor (20.9.0+, per `node_modules/next/dist/docs/01-app/02-guides/upgrading/version-16.md`). Brings up ClickHouse **and `ingest`** via the same compose services local dev uses (ingest owns the schema, so a bare ClickHouse has no `obstack` database for the ClickHouse-backed tests to read), then runs `npm ci` against the committed `package-lock.json`, `npm run build`, and *then* `npm test` (the tsx `node:test` runner). **Build before test is load-bearing, not a preference** (`web.yml` orders it so and says why): two arms of the suite read the prerendered pages under `apps/web/.next/server/app` — the landing fence's rendered-page sweep (`src/app/landing-fence.test.ts`) and the docs' body-link check (`src/lib/docs/doc-links.test.ts`) — because a claim that only appears once a page is *composed* cannot be caught by reading sources. `npm test` does not build, so with the build after it those arms silently skipped for a whole sprint while passing on developer machines that happened to have a stale `.next`. Both now fail under `CI` when the directory is missing, so undoing the order turns the job red naming the step. Like `go`, it fails on any unexpected test skip — the `node:test` runner's own skipped-count must be present and must agree with the skip lines the trap can see, so a self-skipping integration test cannot read as coverage it doesn't have. `setup-node`'s `cache: 'npm'` caches npm's package download cache only, keyed on `package-lock.json`; no `.next` build output is cached, because a cache keyed on `package-lock.json` alone would risk reusing prerenders across `OBSTACK_DATA_MODE` changes (the M1 F6 finding). CI therefore always builds from a clean checkout.
 - **`go`** (`.github/workflows/go.yml`) — Go 1.25.4 (pinned in `services/ingest/go.mod`), anchored on `services/ingest`. Brings up ClickHouse via the same compose service local dev uses and Postgres as a service container (it needs nothing but environment, where ClickHouse needs `deploy/compose`'s `users.d` — which a container starting before checkout cannot mount), then runs `gofmt -l`, `go vet ./...` and `go test -v -count=1 ./...` against both, carrying the two D11 ClickHouse users (`obstack_ingest` write, `obstack_web` readonly) and the Postgres DSN the migration set's integration tests need. `-count=1` is load-bearing — without it, Go can replay a cached package result from `GOCACHE` and report "PASS" without ever contacting ClickHouse. Any `--- SKIP` in the test output fails the job: a ClickHouse-dependent test that can't reach a server errors instead of silently skipping and reading as coverage it doesn't have.
 - **`lint`** (`.github/workflows/lint.yml`) — Node 24; `npm ci`, then one eslint pass over the web app — `npx eslint src --max-warnings 0`, run from `apps/web` where the flat config lives, because a repo-root invocation finds no config and dies before linting anything. Born clean by ruling: D261 refused a lint job with carve-outs, so the six recorded pre-existing errors and the one warning were fixed in the same change that added the file, and the gate runs at zero warnings. A finding here is a defect to fix, never a baseline to ignore. **Trigger policy**: every PR, plus `workflow_dispatch`; measured **47s** on the first runner (PR #23), far under the ~6-minute line.
 - **`kind`** (`.github/workflows/kind.yml`) — builds the demo agent image (`demo/agent-app/Dockerfile`) tagged with the commit SHA, creates a kind cluster, loads that image in (`imagePullPolicy: Never` makes a registry fallback impossible), and applies the proof workload (`.github/ci/kind-proof-workload.yaml`). After the pod reports Ready, the job waits for it to emit real telemetry against a deliberately black-holed OTLP endpoint and confirms it stayed `Running`/`Ready` anyway — proving the OpenTelemetry SDK's fail-open property, not just that the container started. **Trigger policy**: runs on every PR, same as `web` and `go` — there is no label or manual trigger, so opening a PR or pushing to its branch is what fires it. Measured end-to-end wall-clock (job start to cluster teardown) is ~1m37s (run [31933353051](https://github.com/Ziadabdelsalam/obstack/actions/runs/31933353051)), well under the ~6-minute line the trigger policy is decided on — past that line the job would move to a `ci:kind` label + push-to-`master` + `workflow_dispatch` trigger and drop out of the required-checks set rather than leave a required check some PRs never fire.
@@ -153,12 +157,14 @@ Nine checks run on every pull request against `master`: `web`, `go`, `lint`, `ki
 
 ```bash
 # web — ClickHouse + ingest first (ingest applies the schema the
-# ClickHouse-backed tests read), from the repo root
+# ClickHouse-backed tests read), from the repo root. Build BEFORE test, the
+# order web.yml runs and for its reason: two arms read the prerendered pages
+# under apps/web/.next/server/app and skip without them (they fail under CI).
 docker compose -f deploy/compose/docker-compose.yml up -d --wait --wait-timeout 120 clickhouse ingest
 npm ci
+npm run build
 CLICKHOUSE_URL=http://127.0.0.1:8123 CLICKHOUSE_USER=obstack_web CLICKHOUSE_PASSWORD=obstack_web_dev \
   npm test
-npm run build
 docker compose -f deploy/compose/docker-compose.yml down -v
 
 # go — both databases first, from the repo root. CI runs Postgres as a service

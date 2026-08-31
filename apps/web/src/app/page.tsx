@@ -81,8 +81,20 @@ export default function Landing() {
             <Link href="/status" className="hover:text-ink">Status</Link>
           </nav>
           <div className="flex items-center gap-4">
+            {/*
+              "Open the app", not "the demo" — the same label `/docs`, `/status`
+              and `/changelog` carry, for the same reason. `/app` is a demo in
+              one of the two images only (`apps/web/Dockerfile:42`): in the live
+              image an anonymous reader is redirected to `/login`
+              (`app/app/layout.tsx`) and a signed-in one lands in their own
+              workspace. This page ships the same bytes to both — it takes no
+              mode branch, and `appHref` below is its ONE build-time seam (D329)
+              — so the label has to be true in both. The hero's and the footer's
+              copies of this link carry the same label; `landing-fence.test.ts`
+              (g) is what keeps all three of them together.
+            */}
             <Link href="/app" className="hidden text-[13px] text-mid hover:text-ink sm:block">
-              Open the demo
+              Open the app
             </Link>
             {/* D329/K13 — the one link on this page that must reach the RUNNING
                 app rather than this deployment. On the D262 marketing host a
@@ -129,11 +141,13 @@ export default function Landing() {
             >
               Create your workspace <ArrowRight className="h-4 w-4" />
             </Link>
+            {/* The nav's link again — same target, same label, and the note
+                above it in the header says why it is not called a demo. */}
             <Link
               href="/app"
               className="rounded-md border border-line bg-raised px-4.5 py-2.5 text-[14px] font-medium text-ink hover:border-line-strong"
             >
-              Open the demo
+              Open the app
             </Link>
             <span className="font-mono text-[12px] text-faint">
               OTel-native · three env vars to try it
@@ -519,12 +533,19 @@ export default function Landing() {
               <h2 className="font-display text-[22px] font-semibold text-ink">
                 See your whole stack in one trace.
               </h2>
-              {/* "live sample data" contradicted itself: the demo is a fixed
-                  sample corpus, and the only thing live about it is that it is
-                  running. Say which of the two it is (D106). */}
-              <p className="mt-1 text-[13.5px] text-mid">
-                The demo runs on sample data — no signup, no setup.
-              </p>
+              {/* A second line stood here and said the demo runs on sample data
+                  with no signup and no setup. D106 had already repaired its
+                  first fault (it used to say "live sample data", which
+                  contradicted itself), but not the one that mattered: both
+                  halves are false in the live image, where `/app` is the
+                  operator's own workspace behind `/login` and reaching it costs
+                  exactly a signup. The S4.4 enumeration rated it TRUE because it
+                  walked this page as a stranger on the D262 marketing host — one
+                  of the two images it ships to. This page has no mode branch in
+                  which to say it only there (see the header note), and a claim
+                  that cannot be made true everywhere it renders gets cut rather
+                  than hedged (D325). The sentence below is the one that is true
+                  in both. */}
               <p className="mt-1 text-[13.5px] text-mid">
                 Signing up creates your own workspace on an obstack you run.
               </p>
@@ -537,11 +558,13 @@ export default function Landing() {
               >
                 Create your workspace <ArrowRight className="h-4 w-4" />
               </Link>
+              {/* The third and last copy of the nav's link — same target, same
+                  label, same reason (the header note). */}
               <Link
                 href="/app"
                 className="rounded-md border border-line bg-raised px-4.5 py-2.5 text-[14px] font-medium text-ink hover:border-line-strong"
               >
-                Open the demo
+                Open the app
               </Link>
             </div>
           </div>

@@ -18,8 +18,11 @@
  * the directive here (the D246 discipline: a sweep's needles do not appear in
  * the files it sweeps).
  *
- * Moved here VERBATIM from `Quickstart.tsx` — the rendered output is
- * byte-identical, which is the whole point of the move.
+ * The move out of `Quickstart.tsx` (D322) changed no byte — the rendered
+ * output was identical the day it landed, which is what made the move safe.
+ * It is not a copy of that file any more: D331's two-directory comment and the
+ * `--pack-destination` that makes the TypeScript tab's two lines actually
+ * compose were both written HERE, and here is the only place to edit them.
  */
 
 /** What every snippet on this page interpolates for the endpoint (D266/D277):
@@ -102,7 +105,7 @@ export OTEL_EXPORTER_OTLP_HEADERS=Authorization=Bearer%20${key}
       "typescript",
       "TypeScript",
       `# pack from the obstack repo root; install from your app's directory
-npm pack ./packages/obstack-js        # -> obstack-js-${OBSTACK_JS_VERSION}.tgz
+npm pack ./packages/obstack-js --pack-destination /path/to/your-app   # -> obstack-js-${OBSTACK_JS_VERSION}.tgz
 npm install ./obstack-js-${OBSTACK_JS_VERSION}.tgz
 
 // instrumentation.ts — before the libraries it instruments are imported

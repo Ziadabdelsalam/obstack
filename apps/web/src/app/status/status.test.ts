@@ -27,6 +27,9 @@ const HERE = path.dirname(import.meta.filename);
 const WEB_SRC = path.resolve(HERE, "../..");
 const read = (p: string) => readFileSync(path.join(WEB_SRC, p), "utf8");
 
+/** Does this text carry that phrase, in ANY casing? The one fold this file uses. */
+const says = (source: string, phrase: string) => source.toLowerCase().includes(phrase.toLowerCase());
+
 /**
  * The MODULES `/status` reaches that are not framework code. The incident
  * loader is in here too — a percentage or a fabricated state does not become
@@ -100,9 +103,16 @@ test("D256: the deleted page's vocabulary does not come back", () => {
     // one, so the word is banned outright rather than only in its old phrase.
     ["operat", "ional"].join(""),
   ];
+  // FOLDED, on both sides (S4.4 R3 finding 2). This read `source.includes(phrase)`
+  // until R3, and half these needles are assembled Title-Cased — so the check
+  // was simultaneously too strict (a lower-case revival of "Loopwork status"
+  // walked past it) and too loose (a Title-Cased one of the lower-case needles
+  // did too). UI copy arrives Title-Cased; a case-sensitive ban on a phrase
+  // somebody would type as a heading is a ban on one spelling of it. The
+  // landing fence's registry folds for the same reason, in one place.
   for (const [name, source] of Object.entries(SURFACE)) {
     for (const phrase of banned) {
-      assert.equal(source.includes(phrase), false, `${name} says "${phrase}" again`);
+      assert.equal(says(source, phrase), false, `${name} says "${phrase}" again`);
     }
   }
 });

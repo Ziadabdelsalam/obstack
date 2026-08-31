@@ -37,8 +37,11 @@ from .instrumentation import AnthropicInstrumentor, OpenAIInstrumentor
 _log = logging.getLogger(__name__)
 
 # Standard OTel, not obstack's: without it the HTTP instrumentations emit the
-# legacy `http.method`, ingest's api-layer classifier looks for
-# `http.request.method`, and the api layer of every trace silently disappears.
+# legacy `http.method` rather than the stable `http.request.method` ingest's
+# api-layer classifier reads. The api layer itself does not hang on it — that
+# classifier takes `http.route` as well, and the instrumentations write the route
+# in either mode — so what this default buys is the attribute name the semantic
+# conventions settled on, not the layer.
 # setdefault, so an application that has already chosen a value keeps it.
 _SEMCONV_OPT_IN = "OTEL_SEMCONV_STABILITY_OPT_IN"
 

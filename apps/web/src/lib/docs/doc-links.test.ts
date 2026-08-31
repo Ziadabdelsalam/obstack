@@ -51,6 +51,22 @@ test("the rebasing rule: docs hrefs move, everything else is left alone", () => 
     rebaseDocsHref("/docs/quickstart#send-your-first-trace", IN_APP_BASE),
     "/app/docs/quickstart#send-your-first-trace",
   );
+  // THE SUFFIX ON THE BASE PATH ITSELF (S4.4 R3 finding 3). `/docs#…` and
+  // `/docs?…` are `/docs` with something after it, and the matcher used to ask
+  // two questions — is it exactly `/docs`, does it start with `/docs/` — of
+  // which these are the answer to neither. They returned `null`, `DocLink`
+  // rendered them unrebased, and a signed-in reader following one dropped out
+  // of `/app/docs` onto the public marketing site: the one leak this module
+  // exists to close, reached through the href shape it had no case for. Nothing
+  // in the corpus writes one today, which is precisely why only a test can hold
+  // the rule — the first author who links to the docs index by anchor would
+  // otherwise reopen it silently.
+  assert.equal(rebaseDocsHref("/docs#y", IN_APP_BASE), "/app/docs#y");
+  assert.equal(rebaseDocsHref("/docs?x=1", IN_APP_BASE), "/app/docs?x=1");
+  assert.equal(rebaseDocsHref("/docs?x=1#y", IN_APP_BASE), "/app/docs?x=1#y");
+  // The public mount stays the identity case for those too.
+  assert.equal(rebaseDocsHref("/docs#y", PUBLIC_DOCS_BASE), "/docs#y");
+  assert.equal(rebaseDocsHref("/docs?x=1#y", PUBLIC_DOCS_BASE), "/docs?x=1#y");
   // `null` means "not mine — render it as the author wrote it".
   for (const href of [
     "#send-your-first-trace",
@@ -61,6 +77,10 @@ test("the rebasing rule: docs hrefs move, everything else is left alone", () => 
     "/app/traces",
     "//evil.example.com/docs/x",
     "/docsomething",
+    // The segment test survives the suffix handling: a longer FIRST SEGMENT is
+    // still somebody else's route, whatever it carries after it.
+    "/docsomething#y",
+    "/docsomething?x=1",
     undefined,
   ]) {
     assert.equal(rebaseDocsHref(href, IN_APP_BASE), null, `${href} was rewritten and should not have been`);

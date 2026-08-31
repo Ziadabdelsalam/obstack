@@ -57,7 +57,18 @@ export default async function SignupPage({
               this deployment IS, and the documentation it serves. The second
               used to be a cloud sign-up anchor on the landing page — which
               offered a hosted obstack that does not exist, and became a dead
-              link the moment D257 removed the block it pointed at. */}
+              link the moment D257 removed the block it pointed at.
+
+              WHY THE FIRST ONE MAY SAY "demo" HERE and may not on `/`, `/docs`,
+              `/status` or `/changelog`. Those pages ship the same bytes to both
+              images, so they call `/app` the app. This tree is inside the
+              `dataMode === "mock"` branch above: it renders ONLY in the mock
+              image, which is the one where `/app` is the demo — the live image
+              never reaches this line, it renders the form below. The gate is
+              the whole warrant for the word, so it is pinned rather than
+              trusted: `mock-mode.test.ts` asserts the label on the tree this
+              branch returns, and `app/landing-fence.test.ts` (g) asserts that
+              it appears nowhere in this file outside the branch. */}
           <div className="mt-7 flex flex-col gap-2.5">
             <Link href="/app" className={POINTER}>
               Open the demo

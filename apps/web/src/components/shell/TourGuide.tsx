@@ -76,7 +76,10 @@ const steps: TourStep[] = [
     path: "/app/incidents",
     target: "incident",
     title: "Incidents — the story, stitched",
-    body: "The sample incident laid out end to end — pipelines, alerts, k8s events, metrics and traces on one timeline, which is what the stitching is meant to show. This screen is a design, not a working incident tool: nothing here is generated from your data yet.",
+    // The source list is a capability claim even on a screen this step calls a
+    // design: nothing ingests cluster events (`server/adapters.ts` sets none),
+    // so they are not named among the sources (S4.4 R3 coordinator ruling).
+    body: "The sample incident laid out end to end — pipelines, alerts, metrics and traces on one timeline, which is what the stitching is meant to show. This screen is a design, not a working incident tool: nothing here is generated from your data yet.",
   },
   {
     path: "/app/slos",

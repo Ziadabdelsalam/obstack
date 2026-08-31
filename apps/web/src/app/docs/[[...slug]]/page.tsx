@@ -4,7 +4,7 @@ import { ArrowRight } from "lucide-react";
 import { Wordmark } from "@/components/shell/Wordmark";
 import { DocsPage } from "@/components/docs/DocsPage";
 import { docsStaticParams } from "@/lib/docs/docs";
-import { loadDoc } from "@/lib/docs/load";
+import { docsMetadata } from "@/lib/docs/load";
 
 /**
  * The PUBLIC docs mount — the site a stranger reads before signing up.
@@ -21,9 +21,16 @@ import { loadDoc } from "@/lib/docs/load";
  * as well as everything under it: an optional catch-all matches its base path
  * with no segments.
  *
- * Marketing chrome (the wordmark header, the demo CTA) belongs to this file
- * and not to `DocsPage`: it is the half that must NOT appear inside the app
- * shell, where the reader already has a nav and is already in the product.
+ * Marketing chrome (the wordmark header, the CTA into the product) belongs to
+ * this file and not to `DocsPage`: it is the half that must NOT appear inside
+ * the app shell, where the reader already has a nav and is already in the
+ * product.
+ *
+ * THE CTA SAYS "Open the app", not "Open the demo". `/app` is the demo only in
+ * the mock image: in the live image an anonymous reader is redirected to
+ * `/login` (`app/app/layout.tsx`) and a signed-in operator lands in their own
+ * workspace. The label has to be true of both, because this page is one build
+ * (D251/D267) and a mode branch here is exactly what `docs.test.ts` bans.
  */
 
 export const dynamicParams = false;
@@ -38,11 +45,10 @@ export async function generateMetadata({
   params: Promise<{ slug?: string[] }>;
 }): Promise<Metadata> {
   const { slug } = await params;
-  const { frontmatter } = await loadDoc(slug ?? []);
-  return {
-    title: `${frontmatter.title} — obstack docs`,
-    ...(frontmatter.description ? { description: frontmatter.description } : {}),
-  };
+  // Shared with the in-app mount (`@/lib/docs/load`), not spelled twice: the
+  // description reached one mount's `<head>` and not the other's for exactly
+  // as long as this was a literal here.
+  return docsMetadata(slug ?? []);
 }
 
 export default async function PublicDocsPage({
@@ -59,14 +65,21 @@ export default async function PublicDocsPage({
             <Link href="/" aria-label="obstack home">
               <Wordmark />
             </Link>
-            <span className="font-mono text-[11px] text-faint">docs</span>
+            {/*
+              A LINK, not a label: this word is the only thing on a docs page
+              that names the section, and on a phone — where the sidebar is
+              `display: none` — it is the shortest route back to the index.
+            */}
+            <Link href="/docs" className="font-mono text-[11px] text-faint hover:text-mid">
+              docs
+            </Link>
           </div>
           <Link
             href="/app"
             className="flex items-center gap-1.5 rounded-md px-3 py-1.5 text-[13px] font-medium text-bg"
             style={{ background: "var(--color-ink)" }}
           >
-            Open the demo <ArrowRight className="h-3.5 w-3.5" />
+            Open the app <ArrowRight className="h-3.5 w-3.5" />
           </Link>
         </div>
       </header>

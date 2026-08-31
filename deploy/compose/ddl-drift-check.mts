@@ -39,6 +39,15 @@
  * is terminated explicitly and awaited, so a plain DROP has nothing left to
  * kill. Neither half depends on timing.
  *
+ * And the teardown cannot speak over the capture. Every step in that `finally`
+ * runs through `bestEffort` (below): a `query()` on an admin connection that
+ * died with the pools rejects — `server.on('error')` handles the socket EVENT,
+ * not the promise — and a bare `await` there would have replaced the drift
+ * verdict with the story of its own cleanup, then skipped the DROP and
+ * `server.end()` on the way out, orphaning the scratch database. Guarded, each
+ * step still gets its turn, the failure prints on stderr naming what it was,
+ * and the error that reaches `main().catch` is always the real one.
+ *
  * Invoked by .github/workflows/e2e.yml — moved there from stack.yml in S4.3
  * (D298/D306: this guard's failure source is app code ordinary web PRs touch,
  * and `stack` no longer gates a merge, so it runs on the PR critical path).
@@ -71,6 +80,30 @@ const CONFIG = "apps/web/src/server/auth.ts";
  * of the teardown — so the handler exists purely to make the event handled.
  */
 const ignoreTeardownError = (): void => undefined;
+
+/**
+ * One teardown step, which may fail and may not take the run down with it.
+ *
+ * `finally` runs while the capture's own error is in flight, and a rejection
+ * raised inside it REPLACES that error: the run would report "Connection
+ * terminated unexpectedly" — a symptom of the cleanup — where it should have
+ * reported the DDL drift, or the auth-config failure, that is the only thing
+ * anybody wants from this script. That is exactly the teardown-race territory
+ * this file already fixed once at the pool: `server.on('error')` above makes a
+ * dying socket a handled EVENT, but it does nothing for a `query()` PROMISE
+ * that rejects because the connection is gone, which is what an admin
+ * connection killed alongside the pools produces. So every step is wrapped, no
+ * step can skip the steps after it, and the failure is printed rather than
+ * swallowed — an orphaned scratch database on the compose Postgres should be
+ * visible in the log that caused it.
+ */
+async function bestEffort(what: string, step: () => Promise<unknown>): Promise<void> {
+  try {
+    await step();
+  } catch (err: unknown) {
+    console.error(`ddl-drift: teardown: ${what}: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
 
 function fail(message: string): never {
   console.error(`ddl-drift: ${message}`);
@@ -170,24 +203,35 @@ async function main(): Promise<void> {
     const plan = await getMigrations(config);
     generated = (await plan.compileMigrations()).trim();
   } finally {
-    // Teardown in the one order that cannot race (the header argues it):
+    // Teardown in the one order that cannot race (the header argues it), and
+    // every step BEST-EFFORT (see `bestEffort`): the capture's error is the one
+    // that must reach the operator, and each step must still get its turn when
+    // the step before it failed — a skipped DROP is a scratch database orphaned
+    // on the compose Postgres, and a skipped `server.end()` is a hung process.
     //   1. ask every pool to close. `end()` resolves early — its sockets may
     //      still be draining — and a capture that threw may never have reached
     //      the loop above, so this neither waits for quiet nor is allowed to
     //      mask the throw;
-    await Promise.all(pools.map((p) => p.end().catch(ignoreTeardownError)));
+    await Promise.all(
+      pools.map((p, i) => bestEffort(`closing pool ${i + 1} of ${pools.length}`, () => p.end())),
+    );
     //   2. terminate anything still attached to the scratch database, and WAIT
     //      for Postgres to answer. This is the step FORCE used to do implicitly
     //      and at the worst possible moment;
-    await server.query(
-      `SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = $1 AND pid <> pg_backend_pid()`,
-      [scratch],
+    await bestEffort(`terminating backends on ${scratch}`, () =>
+      server.query(
+        `SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = $1 AND pid <> pg_backend_pid()`,
+        [scratch],
+      ),
     );
     //   3. drop plainly. DROP DATABASE already waits out backends that are
     //      exiting (5s in CountOtherDBBackends), and step 2 left it nothing
-    //      else, so FORCE would have nothing to add.
-    await server.query(`DROP DATABASE IF EXISTS "${scratch}"`);
-    await server.end();
+    //      else, so FORCE would have nothing to add. If this is what failed,
+    //      the message names the database a human now has to drop.
+    await bestEffort(`dropping ${scratch} — drop it by hand if it is still there`, () =>
+      server.query(`DROP DATABASE IF EXISTS "${scratch}"`),
+    );
+    await bestEffort("closing the admin connection", () => server.end());
   }
 
   const captured = await readFile(CAPTURED_URL, "utf8");

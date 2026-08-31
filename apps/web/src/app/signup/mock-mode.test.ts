@@ -106,6 +106,14 @@ test("/signup renders the honest no-form state in mock mode (D150)", async () =>
   assert.ok(links.includes("/app"), "the demo this deployment is");
   assert.ok(links.includes("/docs/quickstart"), "the quickstart this build serves");
   assert.ok(!links.includes("/#waitlist"), "the removed cloud-preview anchor is still linked");
+
+  // And what the first pointer is CALLED, which only this branch may say. `/`,
+  // `/docs`, `/status` and `/changelog` ship the same bytes to both images and
+  // therefore call `/app` the app; this tree renders in the mock image alone,
+  // where `/app` really is the demo. Asserted on the returned tree because that
+  // is the artifact — `app/landing-fence.test.ts` (g) holds the other half, that
+  // the words never appear outside this branch in the source.
+  assert.match(copy, /Open the demo/, "the label the mock image is the one image that can honestly show");
 });
 
 test("/login renders the same honest no-form state in mock mode (D150)", async () => {
@@ -125,6 +133,7 @@ test("/login renders the same honest no-form state in mock mode (D150)", async (
   assert.ok(links.includes("/app"));
   assert.ok(links.includes("/docs/quickstart"));
   assert.ok(!links.includes("/#waitlist"), "the removed cloud-preview anchor is still linked");
+  assert.match(copy, /Open the demo/, "the same label, warranted by the same gate");
 });
 
 test("both actions trip rather than reach the auth stack in mock mode", async () => {

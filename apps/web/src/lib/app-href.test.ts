@@ -43,6 +43,71 @@ test("set: the origin prefixes the path, once, with no separator invented", () =
   reset();
 });
 
+// R3 must-fix 1: the helper used to concatenate whatever the environment held,
+// and `/` is PRERENDERED — a wrong value is not a runtime error some request
+// surfaces, it is static HTML shipped to strangers. The two wrong values are
+// the two that are easy to type, so both are pinned: one is normalized, the
+// other is refused loudly enough that `next build` cannot get past it.
+test("a trailing slash is normalized away, not baked into the href", () => {
+  reset();
+  process.env[VAR] = "https://app.obstack.dev/";
+  assert.equal(appHref("/signup"), "https://app.obstack.dev/signup");
+  process.env[VAR] = "https://app.obstack.dev///";
+  assert.equal(appHref("/signup"), "https://app.obstack.dev/signup");
+  // Surrounding whitespace is the same class of accident (a Docker `--build-arg`
+  // that picked up a stray space) and is not a different value.
+  process.env[VAR] = "  https://app.obstack.dev/  ";
+  assert.equal(appHref("/signup"), "https://app.obstack.dev/signup");
+  reset();
+});
+
+test("a scheme-less value is refused at build time, not baked in as a relative link", () => {
+  // The dangerous one: `app.obstack.dev` + `/signup` is a RELATIVE href, so the
+  // three CTAs would resolve against the marketing host and land back on the
+  // dead-end page this helper exists to route around — with no error anywhere.
+  reset();
+  process.env[VAR] = "app.obstack.dev";
+  assert.throws(() => appHref("/signup"), (err: unknown) => {
+    assert.ok(err instanceof Error);
+    assert.match(err.message, /OBSTACK_APP_ORIGIN/, "the error must name the variable to fix");
+    assert.match(err.message, /app\.obstack\.dev/, "the error must quote the value it refused");
+    return true;
+  });
+  reset();
+});
+
+test("garbage, a non-http scheme and a query string are all refused", () => {
+  reset();
+  for (const bad of [
+    "not a url at all",
+    "://app.obstack.dev",
+    "ftp://app.obstack.dev",
+    "javascript:alert(1)",
+    "file:///etc/passwd",
+    "https://app.obstack.dev?next=1",
+    "https://app.obstack.dev#top",
+  ]) {
+    process.env[VAR] = bad;
+    assert.throws(
+      () => appHref("/signup"),
+      /OBSTACK_APP_ORIGIN/,
+      `${JSON.stringify(bad)} was accepted as an app origin`,
+    );
+  }
+  reset();
+});
+
+test("a valid origin with a base path still prefixes once", () => {
+  // Not every deployment mounts the app at the root of its host; a base path is
+  // legal input, and the trailing-slash rule is what makes it join cleanly.
+  reset();
+  process.env[VAR] = "https://obstack.dev/app/";
+  assert.equal(appHref("/signup"), "https://obstack.dev/app/signup");
+  process.env[VAR] = "http://localhost:3001";
+  assert.equal(appHref("/app"), "http://localhost:3001/app");
+  reset();
+});
+
 test("the value is read per call, not captured at import", () => {
   // The helper is called during `next build` while the page renders, which is
   // after this module was first imported. A value read at module scope would

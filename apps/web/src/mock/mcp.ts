@@ -13,8 +13,13 @@ export const mcpTools: McpTool[] = [
     example: 'query_traces({ status: "error", route: "/v1/tickets/bulk", last: "1h" })',
   },
   {
+    // The description is a CAPABILITY claim about the planned tool, so it lists
+    // only what a trace actually carries: `adapters.ts` builds spans (with
+    // `pod`/`node` from `k8s_pod`/`k8s_node`), prompts and completions, and the
+    // correlated log rows. It leaves `k8sEvents` undefined — nothing ingests
+    // cluster events — so they are not offered here (S4.4 R3 coordinator ruling).
     name: "get_trace",
-    description: "Full trace by id: spans, prompts, correlated logs, k8s events, pods",
+    description: "Full trace by id: spans, prompts, correlated logs, pods",
     example: 'get_trace({ id: "a3f8c1d92b6e407f" })',
   },
   {

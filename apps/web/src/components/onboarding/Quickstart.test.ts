@@ -112,7 +112,13 @@ test("install lines are the READMEs' verbatim, naming the held package names", (
   assert.ok(pyReadme.includes(pipLine), "the Python README no longer documents that install");
   assert.ok(python.includes(pipLine), "the Python tab must render the README's install line");
 
-  const pack = `npm pack ./packages/obstack-js        # -> obstack-js-${jsPackage.version}.tgz`;
+  // `--pack-destination` is load-bearing, not decoration: without it the
+  // tarball lands in the CWD of the pack (the obstack repo root) while the line
+  // below installs it from the app's directory — the two lines could not both
+  // be run as printed, which is the copy-that-harms D331 refused to defer.
+  const pack =
+    "npm pack ./packages/obstack-js --pack-destination /path/to/your-app" +
+    `   # -> obstack-js-${jsPackage.version}.tgz`;
   const install = `npm install ./obstack-js-${jsPackage.version}.tgz`;
   assert.ok(jsReadme.includes(pack) && jsReadme.includes(install), "the JS README's install moved");
   assert.ok(typescript.includes(pack), "the TypeScript tab must render the README's pack line");

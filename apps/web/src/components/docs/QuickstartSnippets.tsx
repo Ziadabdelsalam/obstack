@@ -110,7 +110,7 @@ const OTEL_ENV_ROWS: readonly (readonly [string, string])[] = [
   ],
   [
     "OTEL_SEMCONV_STABILITY_OPT_IN",
-    "init() defaults it to http; without it FastAPI emits the legacy http.method and the api layer disappears",
+    "init() defaults it to http, so FastAPI emits the stable http.request.method rather than the legacy http.method; the api layer does not depend on it, since http.route classifies the span in either mode",
   ],
   ["OTEL_BSP_SCHEDULE_DELAY / OTEL_BLRP_SCHEDULE_DELAY", "export interval, ms"],
 ];

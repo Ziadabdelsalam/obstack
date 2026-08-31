@@ -163,7 +163,7 @@ keeps every setting it already had.
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | OTLP/HTTP base URL, e.g. `http://127.0.0.1:4318` |
 | `OTEL_EXPORTER_OTLP_PROTOCOL` | `http/protobuf` |
 | `OTEL_EXPORTER_OTLP_HEADERS` | `Authorization=Bearer%20<key>` — **URL-encoded**, the SDK drops a header with a raw space |
-| `OTEL_SEMCONV_STABILITY_OPT_IN` | `init()` defaults it to `http`; without it FastAPI emits the legacy `http.method` and the api layer disappears |
+| `OTEL_SEMCONV_STABILITY_OPT_IN` | `init()` defaults it to `http`, so FastAPI emits the stable `http.request.method` rather than the legacy `http.method`; the api layer does not depend on it, since `http.route` classifies the span in either mode |
 | `OTEL_BSP_SCHEDULE_DELAY` / `OTEL_BLRP_SCHEDULE_DELAY` | export interval, ms |
 
 A complete local run against a compose ingest:

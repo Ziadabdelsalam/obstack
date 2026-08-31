@@ -44,6 +44,7 @@ const pages = {
   quickstart: page("quickstart"),
   typescript: page("sdks/typescript"),
   python: page("sdks/python"),
+  byoOtel: page("sdks/bring-your-own-otel"),
   compose: page("self-hosting/docker-compose"),
   helm: page("self-hosting/helm-chart"),
   connectors: page("connectors/overview"),
@@ -150,6 +151,63 @@ test("the Python environment table is the README's, row for row", () => {
 function strip(cell: string): string {
   return flat(cell.replace(/`/g, "").replace(/\*\*/g, ""));
 }
+
+test("the layer table on the bring-your-own-OTel page is the ingest classifier's rule", () => {
+  // The page that tells a stranger with a stock OTel setup which attributes to
+  // emit. Every name in its table is a promise made by `classify` in
+  // `services/ingest/internal/mapping/spans.go`, and the promise is not the
+  // page's to restate — it was WRONG when this test was written: the api row
+  // named `http.request.method` alone, and the paragraph under it said the api
+  // layer "disappears" without `OTEL_SEMCONV_STABILITY_OPT_IN=http`. The
+  // classifier takes `http.route` as well (`mapping_test.go`'s "api by route"),
+  // and the pinned FastAPI instrumentation writes `http.route` in either
+  // semconv mode — so the instruction was a fix for a breakage that could not
+  // happen, and the table understated what obstack reads.
+  const mapping = repo("services/ingest/internal/mapping/mapping.go");
+  const spans = repo("services/ingest/internal/mapping/spans.go");
+  const attr = (name: string) => {
+    const match = mapping.match(new RegExp(`${name}\\s*= "([^"]+)"`));
+    assert.ok(match, `mapping.go no longer defines ${name}`);
+    return match[1];
+  };
+  const start = spans.indexOf("func classify(");
+  assert.ok(start > 0, "the classifier is no longer a function called classify in spans.go");
+  const classify = spans.slice(start, spans.indexOf("\n}", start));
+
+  const flatPage = flat(pages.byoOtel);
+  // Every attribute the classifier reads by name is a row on the page. The
+  // `gen_ai` case is a PREFIX rather than a constant, so it is checked as one.
+  for (const name of ["attrAgentStep", "attrToolName", "attrHTTPMethod", "attrHTTPRoute"]) {
+    assert.ok(classify.includes(`attrs.Get(${name})`), `classify no longer reads ${name}`);
+    // Opening backtick only: the marker rows print the attribute WITH its value
+    // (`` `obstack.agent.step="<name>"` ``), so a closed span would be a check
+    // on the page's formatting rather than on the name.
+    assert.ok(
+      flatPage.includes(`\`${attr(name)}`),
+      `/docs/sdks/bring-your-own-otel never names ${attr(name)}, which classify reads`,
+    );
+  }
+  const prefix = mapping.match(/genAIPrefix\s*= "([^"]+)"/);
+  assert.ok(prefix, "mapping.go no longer defines the GenAI prefix");
+  assert.ok(classify.includes("HasPrefix(k, genAIPrefix)"), "classify no longer matches the GenAI prefix");
+  assert.ok(flatPage.includes(`\`${prefix[1]}*\``), `the page does not name ${prefix[1]}* as the llm rule`);
+
+  // The api layer's two attributes are alternatives, and the page has to say so
+  // — an author reading "or" emits one; an author reading the old row emits the
+  // one attribute the semconv opt-in governs and believes the layer depends on
+  // it. The disproved sentence is banned by shape, not quoted: `http.route`
+  // arrives in both modes, so nothing about the api layer is conditional on the
+  // variable.
+  assert.ok(
+    flatPage.includes(`\`${attr("attrHTTPMethod")}\` **or** \`${attr("attrHTTPRoute")}\``),
+    "the api row no longer states that either HTTP attribute alone classifies the span",
+  );
+  assert.equal(
+    /api layer (disappears|dies|is lost)/.test(flatPage),
+    false,
+    "the page claims the api layer depends on the semconv opt-in — it does not, http.route is emitted either way",
+  );
+});
 
 // ---------------------------------------------------------------------------
 // Self-hosting

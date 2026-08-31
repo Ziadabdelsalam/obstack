@@ -20,6 +20,16 @@ const read = (p: string) => readFileSync(path.join(import.meta.dirname, p), "utf
 const mcpSource = read("mcp.ts");
 
 /**
+ * The fold, once (S4.4 R3 finding 2). These bans read `source.includes(needle)`
+ * until R3, and a host or a person's name is the same host or person in any
+ * casing — `Charts.Obstack.dev` in a heading, `ZIAD ABDELSALAM` in a seeded
+ * label. A case-sensitive ban on a literal somebody would retype is a ban on
+ * one spelling of it, which is the R1 finding `TourGuide.test.ts` already
+ * carried and the shape the landing fence's registry now folds in one place.
+ */
+const says = (source: string, phrase: string) => source.toLowerCase().includes(phrase.toLowerCase());
+
+/**
  * THE DOCS ARE NO LONGER MOCK (S4.4 T1). `src/mock/docs.ts` — ten invented
  * Loopwork articles — is deleted; the real corpus is MDX under
  * `src/content/**`, rendered by one component onto `/docs` and `/app/docs`
@@ -86,7 +96,7 @@ test("no fabricated host or credential in the docs, the MCP data or the MCP page
     "ob_mcp_read_",
   ]) {
     for (const [name, source] of Object.entries(sources)) {
-      assert.equal(source.includes(lie), false, `${lie} is back in ${name}`);
+      assert.equal(says(source, lie), false, `${lie} is back in ${name}`);
     }
   }
 });
@@ -150,7 +160,7 @@ test("D235: no real person is cast in the demo corpus", () => {
   // invented (D208); it may not be borrowed from someone who did not consent.
   for (const identity of BANNED_IDENTITY) {
     for (const [name, source] of Object.entries(personaCarriers)) {
-      assert.equal(source.includes(identity), false, `${name} casts ${identity} again`);
+      assert.equal(says(source, identity), false, `${name} casts ${identity} again`);
     }
   }
   // The audit log's addresses are documentation-reserved too: RFC 5737's

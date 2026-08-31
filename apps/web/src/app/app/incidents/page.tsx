@@ -95,9 +95,14 @@ export default function IncidentsPage() {
         </div>
       </section>
 
+      {/* A CAPABILITY sentence, not story data: D208 lets the demo invent the
+          timeline's CONTENT (the k8s row above is invented), but this line says
+          what the product reads. Cluster events are set only by
+          `mock/generate.ts` and by no adapter in `server/adapters.ts`, so they
+          are not in the list (S4.4 R3 coordinator ruling). */}
       <p className="mt-3 font-mono text-[10.5px] leading-relaxed text-faint">
-        reconstructed automatically from pipelines, alerts, k8s events, metrics and traces sharing
-        the incident window — the timeline is the same data you&apos;ve seen on every other screen,
+        reconstructed automatically from pipelines, alerts, metrics and traces sharing the
+        incident window — the timeline is the same data you&apos;ve seen on every other screen,
         stitched.
       </p>
     </div>

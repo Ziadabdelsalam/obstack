@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFileSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import {
@@ -193,19 +193,142 @@ test("the content path is one interpolation, and it is the file that exists", ()
   }
 });
 
-// The modules that make up the docs mechanism, as text. Everything the two
-// route files reach that is not framework code.
+// ─────────────────────────────────────────────── the render path, and its list
+//
+// THE MECHANISM'S OWN modules, as text: the two route files, the renderer, the
+// manifest, and the pieces that exist only to draw a docs page.
+//
+// This map used to be a remembered list, and it had quietly stopped being the
+// render path (S4.4 R3 finding 4): `components/docs/DocLink.tsx` renders EVERY
+// anchor in every body and `components/docs/QuickstartSnippets.tsx` is imported
+// by `content/docs/quickstart/index.mdx`, and neither was here — so the two
+// fences below, which are the whole reason the map exists, swept a docs
+// renderer that no longer included the module deciding where its links go. A
+// list nobody can see going stale is the shape of every fence failure this
+// sprint recorded, so the list is now CHECKED against a derived closure
+// ("the swept list IS the render path", below) rather than trusted.
 const RENDERER_SOURCES: Record<string, string> = {
   "lib/docs/docs.ts": read("lib/docs/docs.ts"),
   "lib/docs/load.ts": read("lib/docs/load.ts"),
+  "lib/docs/doc-href.ts": read("lib/docs/doc-href.ts"),
   "content/docs/manifest.ts": read("content/docs/manifest.ts"),
   "components/docs/DocsPage.tsx": read("components/docs/DocsPage.tsx"),
   "components/docs/DocsNav.tsx": read("components/docs/DocsNav.tsx"),
+  "components/docs/DocLink.tsx": read("components/docs/DocLink.tsx"),
   "components/docs/Prose.tsx": read("components/docs/Prose.tsx"),
+  "components/docs/QuickstartSnippets.tsx": read("components/docs/QuickstartSnippets.tsx"),
   "mdx-components.tsx": read("mdx-components.tsx"),
   "app/docs/[[...slug]]/page.tsx": read("app/docs/[[...slug]]/page.tsx"),
   "app/app/docs/[[...slug]]/page.tsx": read("app/app/docs/[[...slug]]/page.tsx"),
 };
+
+/**
+ * Modules the docs pages ALSO reach that belong to the rest of the app, with
+ * the reason each one is on the path and the file that already guards it.
+ *
+ * They are held to the IMPORT bans and not to the MENTION ban, and the split is
+ * named here rather than fudged by weakening an assertion:
+ * `connections/connectors.ts` opens by explaining the D204 rule, which means
+ * spelling the module it forbids — a docblock about a ban is not the ban being
+ * broken (the D246 problem, inverted). Everything that can be checked without
+ * that ambiguity — a real `from "@/mock/…"` edge, a mode branch, a filesystem
+ * call — is checked on these exactly as on the map above.
+ */
+const SHARED_RENDER_PATH: Record<string, string> = {
+  "components/connections/connectors.ts": "the connector catalog (D204) — `mock/connectors.test.ts` guards it",
+  "components/onboarding/snippets.ts": "the ONE definition of the quickstart snippets (D322)",
+  "components/shell/Wordmark.tsx": "the wordmark, on the public mount's own header",
+  "lib/ingest-endpoint.ts": "the compose default OTLP addresses (D215) the snippets interpolate",
+  "lib/layers.ts": "the layer palette the wordmark draws",
+  "lib/types.ts": "the `Layer` union that palette is keyed by",
+};
+const sharedSources: Record<string, string> = Object.fromEntries(
+  Object.keys(SHARED_RENDER_PATH).map((f) => [f, read(f)]),
+);
+
+/** A repo-relative module path, in the form both maps above are keyed by. */
+const relKey = (file: string) => path.relative(WEB_SRC, file).split(path.sep).join("/");
+
+/**
+ * `@/x` or `./x` as written in an import, resolved to a file under `src/` —
+ * or `null` for a package specifier, which is framework code and out of scope.
+ */
+function resolveSpecifier(spec: string, fromRel: string): string | null {
+  let base: string;
+  if (spec.startsWith("@/")) base = path.join(WEB_SRC, spec.slice(2));
+  else if (spec.startsWith(".")) base = path.resolve(WEB_SRC, path.dirname(fromRel), spec);
+  else return null;
+  for (const candidate of [base, `${base}.ts`, `${base}.tsx`, `${base}.mdx`]) {
+    if (existsSync(candidate) && statSync(candidate).isFile()) return relKey(candidate);
+  }
+  return null;
+}
+
+/**
+ * THE DOCS RENDER PATH, DERIVED: every `.ts`/`.tsx` module reachable by a
+ * static import from either route file or from any page of the corpus.
+ *
+ * The corpus pages are SEEDS rather than discoveries, and that is the one thing
+ * this walk cannot do for itself: `load.ts` pulls a page in through
+ * ``import(`@/content/docs/${contentPath}.mdx`)``, a specifier no static walk
+ * can resolve, so an `.mdx` that imports a component — which is how
+ * `QuickstartSnippets` got onto the path unnoticed — is invisible from the
+ * route file. Seeding the walk with the tree `walkPages` already found closes
+ * exactly that hole, and `docs.test.ts`'s first assertion is what keeps that
+ * tree equal to the manifest.
+ *
+ * It is a text walk, not a compiler: it reads `from "…"` and `import("…")`, so
+ * a specifier assembled at runtime would be missed. Nothing in this repo writes
+ * one except the line above, which is why that line is the seeded exception.
+ */
+function renderPathModules(): string[] {
+  const seen = new Set<string>();
+  const modules: string[] = [];
+  const queue = [
+    "app/docs/[[...slug]]/page.tsx",
+    "app/app/docs/[[...slug]]/page.tsx",
+    ...pages.map((p) => relKey(p.file)),
+  ];
+  while (queue.length > 0) {
+    const rel = queue.shift()!;
+    if (seen.has(rel)) continue;
+    seen.add(rel);
+    const source = readFileSync(path.join(WEB_SRC, rel), "utf8");
+    // The corpus is content, swept by `mock/corpus-honesty.test.ts` and by the
+    // landing fence's registry; what this list is FOR is the code around it.
+    if (!rel.endsWith(".mdx")) modules.push(rel);
+    for (const m of source.matchAll(/(?:from|import)\s*\(?\s*"([^"]+)"/g)) {
+      const next = resolveSpecifier(m[1], rel);
+      if (next) queue.push(next);
+    }
+  }
+  return modules.sort();
+}
+
+test("the swept list IS the render path — a module joins the fences by existing", () => {
+  // The assertion the two fences below rest on. Before it, adding a module to
+  // the docs render path and forgetting this file left both of them green over
+  // a smaller renderer than the one that ships — measured: `DocLink.tsx`, the
+  // module that decides where every body link goes, was off the list for the
+  // whole sprint that introduced it.
+  const reached = renderPathModules();
+  assert.ok(reached.length >= 15, `the import walk reached only ${reached.length} modules — it is not walking`);
+
+  const accounted = new Set([...Object.keys(RENDERER_SOURCES), ...Object.keys(SHARED_RENDER_PATH)]);
+  assert.deepEqual(
+    reached.filter((m) => !accounted.has(m)),
+    [],
+    "a module on the docs render path is in neither RENDERER_SOURCES nor SHARED_RENDER_PATH — " +
+      "add it to the first if it exists to draw a docs page, to the second (with its reason) if the rest of the app owns it",
+  );
+  // The other direction, so the map cannot outlive what it describes: an entry
+  // for a module nothing imports any more is a fence pointed at nothing.
+  assert.deepEqual(
+    [...accounted].filter((m) => !reached.includes(m)).sort(),
+    [],
+    "a swept module is no longer reachable from either docs route — remove it, or restore the import",
+  );
+});
 
 // NX4/D251: `images.yml` builds `obstack-web:live` and `obstack-web:mock` from
 // ONE source with a build-time stamp between them, so the docs must compile to
@@ -221,6 +344,26 @@ test("the docs renderer is mode-blind — no @/mock/* edge, no mode branch", () 
     assert.equal(source.includes("resolveMode"), false, `${name} branches on the data mode`);
     assert.equal(source.includes("dataMode"), false, `${name} reads the data mode`);
   }
+  // The shared half of the path: the edge, not the mention (see
+  // SHARED_RENDER_PATH). An import is the thing that actually makes the docs
+  // mode-aware, and it is a shape a docblock cannot accidentally be.
+  for (const [name, source] of Object.entries(sharedSources)) {
+    assert.equal(/from "@\/mock\//.test(source), false, `${name} imports a mock module`);
+    assert.equal(source.includes("resolveMode"), false, `${name} branches on the data mode`);
+    assert.equal(source.includes("dataMode"), false, `${name} reads the data mode`);
+  }
+  // And the corpus, which is on the render path by being imported: an `.mdx`
+  // page may import a component (`quickstart/index.mdx` does), so it can reach
+  // a mock module exactly as a `.tsx` can — through a line the route file
+  // cannot see, because the import that pulls the page in is computed.
+  for (const page of pages) {
+    const source = readFileSync(page.file, "utf8");
+    assert.equal(
+      /from "@\/mock\//.test(source),
+      false,
+      `/${page.slug.join("/")}: a docs page imports a mock module`,
+    );
+  }
 });
 
 test("D320: no module that ships reads the filesystem", () => {
@@ -228,7 +371,8 @@ test("D320: no module that ships reads the filesystem", () => {
   // tree is a traced `.next/standalone` copy — NX3 measured the build-time
   // walk, never a request-time one. The manifest exists so there is nothing to
   // walk; this is the assertion that keeps it that way.
-  for (const [name, source] of Object.entries(RENDERER_SOURCES)) {
+  const swept = { ...RENDERER_SOURCES, ...sharedSources };
+  for (const [name, source] of Object.entries(swept)) {
     for (const banned of ['from "fs"', "from 'fs'", "node:fs", "node:path", 'from "path"', "readdirSync", "readFileSync"]) {
       assert.equal(source.includes(banned), false, `${name} reaches the filesystem (${banned})`);
     }
