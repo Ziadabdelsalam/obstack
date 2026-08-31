@@ -1,0 +1,26 @@
+<!--
+  obstack ClickHouse system log trim for Railway (D358).
+
+  Railway volumes are small (trial 500 MB, Hobby 5 GB) and ClickHouse's
+  system.*_log tables carry no TTL by default — on a single-node host that
+  nobody queries directly, they are dead weight that eats the volume budget
+  for no benefit. Remove the ones we never read (config.d `remove="remove"`
+  deletes the merged element — verified by measurement, see the T3b done
+  check, not assumed from docs), and give the one we might read (query_log)
+  a bounded 7-day retention instead of removing it outright.
+
+  Deliberately untouched: users.d/obstack-users.xml (D11/D350) — this file
+  only trims system logging, it does not touch users or grants.
+-->
+<clickhouse>
+    <metric_log remove="remove"/>
+    <asynchronous_metric_log remove="remove"/>
+    <trace_log remove="remove"/>
+    <part_log remove="remove"/>
+    <query_thread_log remove="remove"/>
+    <text_log remove="remove"/>
+
+    <query_log>
+        <ttl>event_date + INTERVAL 7 DAY DELETE</ttl>
+    </query_log>
+</clickhouse>

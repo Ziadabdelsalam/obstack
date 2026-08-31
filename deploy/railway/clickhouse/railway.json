@@ -1,0 +1,16 @@
+{
+  "$schema": "https://railway.app/railway.schema.json",
+  "build": {
+    "dockerfilePath": "deploy/railway/clickhouse/Dockerfile",
+    "watchPatterns": [
+      "deploy/railway/clickhouse/**",
+      "deploy/compose/clickhouse/**"
+    ]
+  },
+  "deploy": {
+    "healthcheckPath": "/ping",
+    "healthcheckTimeout": 120,
+    "restartPolicyType": "ALWAYS",
+    "numReplicas": 1
+  }
+}

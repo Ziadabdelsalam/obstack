@@ -14,3 +14,4 @@
 # runs on the classic builder or gains a second COPY.
 *
 !deploy/compose/clickhouse/users.d/obstack-users.xml
+!deploy/railway/clickhouse/config.d/**
