@@ -57,8 +57,25 @@ Not deployed: the collector (customers export from their side; the D101 endpoint
 - **R12 datastores:** ClickHouse = marketplace template (not officially maintained); Postgres docs bless running your own image instead of the managed template → own pinned images (K7) is doc-sanctioned.
 - **R13 regions:** four, per-service (EU present). **R14 sleeping:** only if a service opts into "Serverless" — always-on by default (ingest safe).
 
-## Advisor decisions
-<!-- filled at kickoff (Step 2); D-numbers continue the project ledger from D331 -->
+## Advisor decisions (kickoff 2026-08-31 — full text + E1–E7 evidence: `.planning/2026-08-31-s5-advisor-kickoff.md`; BINDING)
+- **D332** CI→GHCR, immutable `sha-<sha>` tags only; Railway pulls with a CLASSIC PAT `read:packages`; Railway Pro = T0 prerequisite; public images refused. Deploy = new sha ref + redeploy; rollback = previous sha.
+- **D333** `images.yml`: `push: [master]` + `cancel-in-progress: ${{ github.event_name == 'pull_request' }}` (stack.yml:96-112 pattern); new `publish` job, `packages: write` there only; four images; refusal re-run on the published mock.
+- **D334** own pinned datastore images, one volume + one replica each, EU West for all five; backups feature verified at T0 (present → daily; absent → runbook says so, dump = M5).
+- **D335** no config-as-code for image services; T2 = runbook table + `.env.example` + `smoke.ts` (unattended HTTPS probes, red-proven); compose smoke/e2e-drive NOT reused.
+- **D336** launch HTTP-only unless staging proves gRPC on a second domain → :4317 (vendored grpc exporter); pass → `ingest-grpc.obstack.dev`; fail → GRPC endpoint unset. TCP proxy refused.
+- **D337** ingest `PORT=8080` (healthcheck routing only), explicit target ports per domain, admin never public; web/marketing `PORT=3000` explicit, healthchecks `/login` and `/app`.
+- **D338** billing mode `polar`; `BillingMode = "fake"|"polar-sandbox"|"polar"`; `createPolarBilling(mode)` picks `server`; `isPolar()` predicate; D110 intact; owns = E5 list.
+- **D339** obstack-owned limiter `server/rate-limit.ts` wrapping the signup/login ACTIONS (better-auth's limiter never reaches in-process `auth.api.*` — E1): signup 5/IP/1h, login 10/IP/10min, first hop of `x-forwarded-for`, no-IP → allow + warn once; red-first test; `trustedOrigins` unset; no captcha; staging log grep for the no-IP warning = BLOCK.
+- **D340** hosting negations flip now (D13 outranks landing-is-spec): mock `/signup`,`/login` → `next.config` redirects to the app origin when set; five sentences derive from new `appHost()` (set: "on <host>"; unset: "on an obstack you run yourself"); "We don't host obstack for anyone yet" DELETED; fence banned list grows; `mock-mode.test.ts:92,130` reconciled. "+ usage" verified at promotion (no metered price → "/mo"). "installed from this repo today" STAYS; SDK publish OUT. `robots.ts` IN (live `Disallow: /`, mock allow); OG/sitemap/manifest OUT.
+- **D341** Explain: `fake.ts:63-64` suffix → "the operator of this deployment can configure one."; docs `explain/index.mdx` gains the hosted-fake sentence; fake runs still meter; no marketing fence row.
+- **D342** `/status`: link only; `OBSTACK_STATUS_MONITOR_URL` build ARG/ENV beside `OBSTACK_APP_ORIGIN`; server-only helper refusing non-https; set/unset sentences ruled; monitor check set named.
+- **D343** K0 charter: the D38(e) walk on staging + adversarial list; PASS before any DNS edit.
+- **D344** production NEVER runs `fake`/`polar-sandbox`; production env carries the production rail before its first deploy; app cut-over gated on U14; promotion checklist (real checkout refunded, real webhook, D200 revocation once).
+- **D345** Vercel flip on a real drain capture; CloudWatch needs AWS — none → stays SOON, recorded. Separate commits.
+- **D346** rollback per service (dashboard or previous sha + redeploy); datastores never; across a migration boundary = escalation; verification = smoke + boot log lines.
+- **D347** DNS: Squarespace ALIAS at apex (resolved); parked records copied into the ship log; TTL 300; order app → ingest → www+apex; rollback = restore parked records.
+- **D348** security posture + inventory (kickoff file §2): classic PAT 90-day, no Railway token anywhere (browser login is the only deploy path), `BETTER_AUTH_URL=OBSTACK_APP_URL`, drain secret unset until a drain exists.
+- **D349** M-fact corrections: M10 (CLI installed), M9 (`:157` is a comment; auth pages carry the copy), M3 (K3 premise wrong), T4/T2/T5/T8 owns re-based.
 
 ## Kickoff questions for the advisor
 - **K0 — QA gate.** No qa-team run exists for S4.x (reviewer×2 + integrator was the S4 shape). Rule: ship on the S4 gates as recorded, or require a qa-team pass on the staging environment before production (recommendation: a staging-environment QA charter IS the smoke suite — one pass, adversarial on `/signup` + the ingest key path, before DNS flips).
@@ -107,35 +124,35 @@ Not deployed: the collector (customers export from their side; the D101 endpoint
 - result:
 
 ### T1: image publish job — `images.yml` pushes to GHCR on master
-- status: pending
+- status: executing (W1, 2026-08-31)
 - owns: `.github/workflows/images.yml` (+ `deploy/README.md` registry paragraph if one exists)
 - playbook: GitHub repo & CI; Docker + registry
 - done-check: `actionlint` clean; the push step is gated `github.ref == 'refs/heads/master'`; tags `sha-<sha>` + `master`; `permissions: packages: write` on that job only; the mock variant is built TWICE or parameterised — the published `mock` tag carries `OBSTACK_APP_ORIGIN=https://app.obstack.dev` (M7) and the refusal matrix still runs on the unset build; D41 backstop (`cancel-in-progress` never on master) untouched.
 - result:
 
 ### T2: Railway config-as-code + runbook — `deploy/railway/`
-- status: pending
-- owns: `deploy/railway/README.md`, per-service `railway.json` (R8), `deploy/railway/.env.example` (names only, mirrors compose's), `deploy/railway/smoke.ts` (K8)
+- status: executing (W1, 2026-08-31)
+- owns: `deploy/railway/README.md`, `deploy/railway/.env.example` (names only), `deploy/railway/smoke.ts` (D335; `railway.json` VOID per E3)
 - playbook: Fly.io / Railway / plain VPS; Docker + registry
 - done-check: every name in §Topology appears once in the env example with its source; `railway.json` validates against the schema URL; smoke script runs against a URL triple (`MARKETING_URL`, `APP_URL`, `INGEST_URL`) and exits non-zero on any failed probe — proven red against a wrong URL.
 - result:
 
 ### T3: ClickHouse image for Railway — `deploy/railway/clickhouse/Dockerfile`
-- status: pending
+- status: executing (W1, 2026-08-31)
 - owns: `deploy/railway/clickhouse/Dockerfile` (+ `.dockerignore`), reusing `deploy/compose/clickhouse/users.d/obstack-users.xml` by `COPY` (single source — no second copy of the XML)
 - playbook: Docker + registry
 - done-check: `docker build` from the repo root; `docker run` with the two passwords → `SELECT 1` succeeds as `obstack_ingest` and `obstack_web`, `obstack_web` cannot `CREATE` (the read-only grant holds); image published by T1 as `obstack-clickhouse:<sha>`.
 - result:
 
 ### T4: production billing mode (M1, D173.5) — executor Opus 5 (user-approved one-task exception)
-- status: pending
-- owns: `apps/web/src/server/billing/client.ts`, `apps/web/src/server/billing/polar.ts`, their tests, `deploy/compose/.env.example` + chart values comment lines that name `polar-sandbox`, the docs page that documents `OBSTACK_BILLING_MODE`
+- status: executing (W1, 2026-08-31)
+- owns (E5, measured): `apps/web/src/server/billing/{client,polar,types,reporter,fake}.ts`, `billing.test.ts`, `reporter.test.ts`, `deploy/compose/e2e-drive.mjs:149` (comment)
 - playbook: —
 - done-check: `OBSTACK_BILLING_MODE=polar` selects `server: "production"` on the same module; sandbox arm unchanged; tests cover both; `grep -rn 'polar-sandbox'` finds only the sandbox arm and its docs; typecheck + `apps/web` tests green; D110 boundary intact (still the ONLY module that calls Polar).
 - result:
 
 ### T5: `/status` monitor wiring (U12 = Better Stack, D256, M4)
-- status: pending (BLOCKED on T0: the Better Stack status page must exist to be linked)
+- status: executing (W1 — mechanism + unset sentence; the URL value is T0's, baked at the W2 build)
 - owns: `apps/web/src/app/status/page.tsx`, `status.test.ts`, the `/status` docs sentence if any
 - done-check: the monitoring section renders the monitor's real public artefact (link/badge) and the pinned sentence is replaced by a sentence the test derives from the monitor URL env (`OBSTACK_STATUS_MONITOR_URL`, unset = the current sentence, so compose/chart keep the truth); fence 8/8 still green.
 - result:
@@ -147,19 +164,19 @@ Not deployed: the collector (customers export from their side; the D101 endpoint
 - result:
 
 ### T7: launch copy under hosting (K6 ruling) + OG/robots/sitemap/manifest
-- status: pending (scope ruled at kickoff)
+- status: executing (W1, 2026-08-31)
 - owns: `apps/web/src/app/page.tsx` (`:157,:162,:395,:446,:550`), `apps/web/src/app/invite/[id]/page.tsx:172`, `apps/web/src/app/{robots,sitemap,manifest}.ts`, `opengraph-image`, the S4.4 landing fence rows they touch (`.planning/2026-08-30-s4.4-landing-fence.md`)
 - done-check: fence tests updated in the same commit; rendered-bytes sweep green in both modes; `curl https://obstack.dev/robots.txt` after deploy.
 - result:
 
 ### T8: signup abuse controls (K3 ruling)
-- status: pending (scope ruled at kickoff)
-- owns: `apps/web/src/server/auth.ts` (+ a test proving the limiter refuses the N+1th sign-up from one IP inside the window — proven red first)
+- status: executing (W1, 2026-08-31)
+- owns (D339): new `apps/web/src/server/rate-limit.ts` + test, `apps/web/src/server/auth.ts` (signup action seam), `apps/web/src/app/login/actions.ts`
 - done-check: the limiter's storage and window are named in `deploy/railway/README.md`; `trustedOrigins` carries exactly the two hosts.
 - result:
 
 ### T9: Explain honest absence on the hosted app (K5)
-- status: pending (advisor shapes at kickoff)
+- status: executing (W1, 2026-08-31)
 - owns: the Explain surface component + its test, the Explain docs page sentence
 - done-check: with `OBSTACK_EXPLAIN_MODE=fake` in `live` data mode the surface says Explain is not enabled on this deployment (no fabricated explanation renders); compose/chart truth unchanged (they already run `fake` by default — the sentence must be true there too).
 - result:
@@ -195,4 +212,5 @@ Not deployed: the collector (customers export from their side; the D101 endpoint
 - lesson: —
 
 ## Run log
+- 2026-08-31 — **kickoff (Step 2): D332–D349 recorded**, task list re-based (T2 railway.json void, T4/T8 owns measured, T5 build-ARG shape); branch `s5-ship` cut from `f5a0781`; **W1 dispatched: T1 T2 T3 T4(Opus) T5 T7(worktree) T8 T9** in parallel.
 - 2026-08-31 — intake (Step 1): M1–M12 measured; topology drafted; Railway facts R1–R14 from official docs (agent, 49 tool calls); Step 0 confirmed (defaults, limit 3) + user round (K0/T4/K5/K9). Advisor kickoff dispatched.
