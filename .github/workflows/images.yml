@@ -26,11 +26,18 @@ name: images
 on:
   pull_request:
     branches: [master]
+  push:
+    branches: [master]
   workflow_dispatch:
 
 concurrency:
   group: images-${{ github.head_ref || github.ref }}
-  cancel-in-progress: true
+  # D306(b) / D333: on a push the group collapses to `images-refs/heads/master`,
+  # so `cancel-in-progress: true` would let a second merge cancel the first
+  # merge's publish run mid-push — a hole in the D41 backstop. An IN-PROGRESS
+  # master run is never cancelled; `cancel-in-progress` is PR-only (copied
+  # verbatim from stack.yml:96-112).
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -105,3 +112,100 @@ jobs:
           docker compose -f deploy/compose/docker-compose.yml up -d --build --wait --wait-timeout 300
           curl -fsS -o /dev/null http://127.0.0.1:3000/login
           docker compose -f deploy/compose/docker-compose.yml down -v
+
+  # Runs only on a master push, once `images` has proven the same Dockerfiles
+  # build clean and refuse correctly at this commit. This is the only job
+  # granted registry write scope — PR runs never carry a token that can push
+  # (D332/D333).
+  # Tags are `sha-<github.sha>` ONLY: no `latest`, no `master`, so Railway's
+  # image ref always names the exact digest CI built and refusal-tested.
+  publish:
+    name: publish
+    needs: images
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      packages: write
+    env:
+      REGISTRY: ghcr.io/ziadabdelsalam
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+
+      # Token and actor arrive as ENV, never as `${{ }}` spliced into the shell
+      # script: an expression is substituted before bash parses the line, so a
+      # value carrying a quote or a `$` would be parsed as script rather than as
+      # data. GitHub's masking hides the token in the log either way; this is
+      # about what the shell executes.
+      - name: Log in to GHCR
+        env:
+          GHCR_ACTOR: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_ACTOR" --password-stdin
+
+      # `vars.OBSTACK_STATUS_MONITOR_URL` is unset until T0 names the Better
+      # Stack page (D342), and unset is a fine value: the build arg is then
+      # empty and `/status` renders the no-monitor sentence. It arrives as ENV
+      # and is quoted so a value with a space cannot split into a second
+      # argument or be parsed as script.
+      - name: Build and push obstack-web:live-sha-${{ github.sha }}
+        env:
+          STATUS_MONITOR_URL: ${{ vars.OBSTACK_STATUS_MONITOR_URL }}
+        run: |
+          docker build -t "$REGISTRY/obstack-web:live-sha-${{ github.sha }}" -f apps/web/Dockerfile \
+            --build-arg OBSTACK_DATA_MODE=live \
+            --build-arg "OBSTACK_STATUS_MONITOR_URL=$STATUS_MONITOR_URL" \
+            .
+          docker push "$REGISTRY/obstack-web:live-sha-${{ github.sha }}"
+
+      - name: Build and push obstack-web:mock-sha-${{ github.sha }}
+        env:
+          STATUS_MONITOR_URL: ${{ vars.OBSTACK_STATUS_MONITOR_URL }}
+        run: |
+          docker build -t "$REGISTRY/obstack-web:mock-sha-${{ github.sha }}" -f apps/web/Dockerfile \
+            --build-arg OBSTACK_DATA_MODE=mock \
+            --build-arg OBSTACK_APP_ORIGIN=https://app.obstack.dev \
+            --build-arg "OBSTACK_STATUS_MONITOR_URL=$STATUS_MONITOR_URL" \
+            .
+          docker push "$REGISTRY/obstack-web:mock-sha-${{ github.sha }}"
+
+      - name: Build and push obstack-ingest:sha-${{ github.sha }}
+        run: |
+          docker build -t "$REGISTRY/obstack-ingest:sha-${{ github.sha }}" services/ingest
+          docker push "$REGISTRY/obstack-ingest:sha-${{ github.sha }}"
+
+      - name: Build and push obstack-clickhouse:sha-${{ github.sha }}
+        run: |
+          docker build -t "$REGISTRY/obstack-clickhouse:sha-${{ github.sha }}" -f deploy/railway/clickhouse/Dockerfile .
+          docker push "$REGISTRY/obstack-clickhouse:sha-${{ github.sha }}"
+
+      # Same refusal proven in `images`, re-run against the artifact actually
+      # pulled back from GHCR — proves the pushed bytes refuse, not just the
+      # local build cache.
+      - name: Mode-mismatch refusal on the published mock image
+        run: |
+          docker pull "$REGISTRY/obstack-web:mock-sha-${{ github.sha }}"
+          set +e
+          out="$(timeout 60 docker run --rm -e OBSTACK_DATA_MODE=live -e BETTER_AUTH_SECRET=ci-refusal-probe "$REGISTRY/obstack-web:mock-sha-${{ github.sha }}" 2>&1)"
+          rc=$?
+          set -e
+          test "$rc" -eq 1 || { echo "published mock-stamped image did not refuse a live serve with exit 1 (rc=$rc) — the D251(b) refusal is broken"; echo "$out"; exit 1; }
+          echo "$out" | grep -q "OBSTACK_DATA_MODE=mock baked in" || { echo "the refusal never named the STAMPED value"; echo "$out"; exit 1; }
+          echo "$out" | grep -q "running with OBSTACK_DATA_MODE=live" || { echo "the refusal never named the RUNTIME value"; echo "$out"; exit 1; }
+
+      - name: Record published digests
+        run: |
+          {
+            echo "### Published images (sha \`${{ github.sha }}\`)"
+            echo
+            for ref in \
+              "$REGISTRY/obstack-web:live-sha-${{ github.sha }}" \
+              "$REGISTRY/obstack-web:mock-sha-${{ github.sha }}" \
+              "$REGISTRY/obstack-ingest:sha-${{ github.sha }}" \
+              "$REGISTRY/obstack-clickhouse:sha-${{ github.sha }}"; do
+              digest="$(docker inspect --format '{{index .RepoDigests 0}}' "$ref")"
+              echo "- \`$ref\` -> \`$digest\`"
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
