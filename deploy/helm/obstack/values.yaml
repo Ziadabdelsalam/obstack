@@ -258,6 +258,38 @@ collector:
       cpu: 200m
       memory: 256Mi
 
+  # Kubernetes cluster events (Pod scheduling failures, image pull errors,
+  # OOMKills, probe failures — the API server's own Event objects) shipped to
+  # ingest as OTLP log records, so they land in `obstack.logs` next to
+  # application logs instead of being visible only to `kubectl get events`.
+  #
+  # ON by default: a cluster whose events are missing is the case where the
+  # product has least to say about a Pod that never started, and the cost is
+  # one small extra pod. Set `enabled: false` and the whole feature leaves the
+  # release — no Deployment, no ConfigMap, and no `events` rule on the
+  # collector's ClusterRole (templates/collector/clusterrole.yaml gates that
+  # grant on this same flag, so turning the feature off narrows the RBAC
+  # rather than leaving a standing unused permission).
+  #
+  # This runs as its OWN single-replica Deployment
+  # (templates/collector/events-deployment.yaml), not inside the collector
+  # DaemonSet: the `k8s_events` receiver watches the API server, so every
+  # replica sees the whole cluster's event stream and a per-node DaemonSet
+  # would ship each event once per node. README.md, "The cluster-events
+  # collector", has the full rationale.
+  k8sEvents:
+    enabled: true
+    # D283: requests AND limits, same ruling as collector.resources above on
+    # this workload's own numbers — one API watch plus a batch buffer is a
+    # smaller and flatter footprint than the node's log tailer.
+    resources:
+      requests:
+        cpu: 20m
+        memory: 64Mi
+      limits:
+        cpu: 100m
+        memory: 128Mi
+
 demo:
   image: obstack-demo-agent:kind
   pullPolicy: Never

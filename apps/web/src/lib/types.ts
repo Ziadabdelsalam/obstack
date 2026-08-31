@@ -33,12 +33,21 @@ export interface Span {
   llm?: LlmDetail;
 }
 
-/** A Kubernetes-level event rendered on the trace's infra track. */
+/**
+ * A Kubernetes-level event rendered on the trace's infra track.
+ *
+ * `kind` is a curated union, not the open-ended set of k8s event reasons: the
+ * live adapter (`server/adapters.ts`) maps the reasons the product has a story
+ * for onto the named members and everything else onto `"other"`, so a new
+ * upstream reason renders as a plain marker instead of being dropped. The UI
+ * renders the kind as text and colors by `severity`, so the catch-all needs no
+ * per-kind styling.
+ */
 export interface K8sEvent {
   id: string;
   atMs: number;
   pod: string;
-  kind: "oom_kill" | "restart" | "scale" | "reindex" | "throttle";
+  kind: "oom_kill" | "restart" | "scale" | "reindex" | "throttle" | "other";
   severity: "info" | "warn" | "fatal";
   label: string;
 }

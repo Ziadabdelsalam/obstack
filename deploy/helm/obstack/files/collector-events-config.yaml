@@ -1,0 +1,97 @@
+# obstack-collector — the cluster-events form.
+#
+# A CONFIGURATION over the same unmodified upstream image the DaemonSet runs
+# (D14, PRD §5 "distribution, not fork"): same
+# `otel/opentelemetry-collector-k8s:0.158.0` pin, same bearer-key export to
+# ingest, a different and deliberately tiny pipeline. It receives nothing over
+# the wire — it watches the Kubernetes API's Event stream and forwards what it
+# sees to ingest as OTLP log records.
+#
+# CHART-OWNED, and the one collector config with no `deploy/collector/`
+# source. `files/collector-config.yaml` is a byte-for-byte copy pinned by
+# `services/ingest/internal/mapping/chart_contract_test.go` because it has a
+# second consumer outside the chart (the compose profile's sibling file, the
+# T1 hand-off README). This one has none: there is no cluster API under
+# Compose, so `config.compose.yaml` deliberately grows no events receiver, and
+# nothing outside `deploy/helm/obstack/` reads this file. A copy pinned
+# against a source that does not exist is not the K1 mechanism, it is
+# ceremony — so this file lives here alone, and the contract test's pair list
+# stays at two rows.
+#
+# WHY THIS IS NOT IN THE DAEMONSET'S CONFIG. `k8s_events` watches the API
+# server, not the node it happens to be scheduled on. Every replica that runs
+# it receives the full cluster-wide Event stream, so folding this receiver
+# into `config.yaml` would ship each event once per node — a three-node
+# cluster would triple-count every Pod restart, and the duplication scales
+# with the cluster instead of staying constant. That is the same class of
+# duplicate D37.3's filelog exclusion exists to prevent, and it gets the same
+# answer: don't emit it twice, rather than deduplicate afterwards. The single
+# replica in templates/collector/events-deployment.yaml is the mechanism.
+
+receivers:
+  # Watches the API server's Event objects and emits one log record per
+  # event. `auth_type: serviceAccount` is the same in-cluster credential
+  # `k8s_attributes` uses in config.yaml; the ServiceAccount is literally the
+  # same one (templates/collector/serviceaccount.yaml), which is why the
+  # ClusterRole grows `events` rather than a second role appearing.
+  #
+  # `namespaces` is deliberately unset: unset means every namespace, which is
+  # what a cluster-events view has to mean — an operator debugging a failing
+  # Pod does not know in advance which namespace it will be in, and a list
+  # here would silently drop the ones nobody remembered to add.
+  #
+  # No `transform` stage follows. The receiver puts the involved object on the
+  # Resource (`k8s.object.kind`, `k8s.object.name`, `k8s.object.uid`,
+  # `k8s.node.name`) and the event itself on the record (`k8s.event.reason`,
+  # `k8s.event.uid`, `k8s.namespace.name`, …) — receiver/k8seventsreceiver/
+  # k8s_event_to_logdata.go at the pinned version. Ingest promotes only
+  # `k8s.pod.name`/`k8s.namespace.name` from the Resource, so for these rows
+  # the `k8s_pod`/`k8s_namespace` columns stay empty and the web side reads
+  # the keys out of the stored `resource_attributes`/`attributes` maps exactly
+  # as they land. Rewriting them here would only move the coupling.
+  k8s_events:
+    auth_type: serviceAccount
+
+processors:
+  batch: {}
+
+exporters:
+  otlp_http:
+    endpoint: "${env:OBSTACK_INGEST_ENDPOINT:-http://ingest:4318}"
+    headers:
+      # Phase-1 bearer key (D4), taken from the collector's own env (D39
+      # rider) — the same key, the same wire format and the same
+      # `values.yaml` field as the DaemonSet: to ingest this is one more
+      # authenticated OTLP client, not a second kind of sender. Production
+      # supplies it via a values file or a mounted secret — never a committed
+      # literal.
+      Authorization: "Bearer ${env:OBSTACK_COLLECTOR_API_KEY}"
+
+extensions:
+  # Explicit 0.0.0.0, same reason as config.yaml: the default
+  # (localhost:13133) only answers loopback connections, which a kubelet
+  # probe against the pod IP does not use.
+  health_check:
+    endpoint: 0.0.0.0:13133
+
+  # No `file_storage` here, and its absence is a decision rather than an
+  # omission. Checkpointing exists in config.yaml because `file_log` reads
+  # files with `start_at: beginning`, so a restart would re-ship every
+  # historical line. `k8s_events` holds no byte offset to persist — it opens a
+  # watch, and a restarted watch resumes from the API server's current
+  # resource version. The cost of that is the honest one, stated in the
+  # READMEs: events occurring during a restart are not backfilled. Events are
+  # the API server's own short-lived, best-effort records (the default TTL is
+  # an hour), not a durable log, and a per-replica hostPath bought to chase
+  # them would be a checkpoint over data the cluster itself has already
+  # discarded.
+
+service:
+  extensions: [health_check]
+  pipelines:
+    # Logs only, and only this one receiver. No traces pipeline: nothing here
+    # produces spans, and an empty pipeline is a config error, not a no-op.
+    logs:
+      receivers: [k8s_events]
+      processors: [batch]
+      exporters: [otlp_http]

@@ -18,5 +18,13 @@ type: application
 # 0.3.0's: the rendered manifests change in a way an operator can observe, and
 # one bump per sprint (D268) is what keeps that legible. Upgrading within M4 is
 # additive — nothing here removes or renames a 0.3.0 object.
-version: 0.4.0
+# 0.5.0: the cluster-events collector — a single-replica Deployment plus its
+# own ConfigMap, and an `events` rule on the collector's ClusterRole, all
+# behind `collector.k8sEvents.enabled` (default on). Its own number for the
+# usual reason: an operator can observe two new objects and a widened
+# ClusterRole in the rendered manifests. Still additive — nothing here removes
+# or renames a 0.4.0 object, and setting the flag false renders the same set of
+# objects 0.4.0 did (the ClusterRole's explanatory comment is the only textual
+# difference in that render).
+version: 0.5.0
 appVersion: "0.1.0"

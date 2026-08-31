@@ -538,6 +538,75 @@ pod metadata, not the connection alone. Any app instrumented against this
 chart's collector needs the same two resource attributes for the same
 reason.
 
+## The cluster-events collector
+
+Kubernetes records its own account of what happened to a workload as `Event`
+objects — `FailedScheduling`, `Failed` on an image pull, `Unhealthy` from a
+probe, the `Killing` that follows an OOM. They are the half of an incident
+that never reaches a container's stdout, so nothing the DaemonSet tails can
+carry them: a Pod that never started produced no logs to tail. This chart
+ships them to ingest as OTLP log records, landing them in `obstack.logs`
+alongside application logs instead of leaving them visible only to `kubectl
+get events`.
+
+**It is a separate single-replica Deployment, not a receiver added to the
+DaemonSet's config, and that is a correctness decision rather than a
+packaging one.** The `k8s_events` receiver watches the API server, not the
+node it happens to run on, so every replica that runs it receives the entire
+cluster's event stream. Folding it into `files/collector-config.yaml` would
+therefore ship each event once per node — a three-node cluster triple-counts
+every restart, and the over-count grows with the cluster rather than staying
+constant. That is the same class of duplicate D37.3's filelog exclusion
+exists to prevent, and it gets the same answer: don't emit it twice rather
+than deduplicate afterwards. `templates/collector/events-deployment.yaml`
+pins `replicas: 1` and `strategy: Recreate` for exactly that reason — the
+default RollingUpdate would briefly run two pods and double-ship across every
+upgrade.
+
+The pod is deliberately thin next to the DaemonSet's: no `hostPort` and no
+OTLP listener at all (nothing sends to it), no host mounts, and none of the
+DaemonSet's `runAsUser: 0` override — that exists only for the node's
+root-owned log files and the storage `hostPath`, neither of which this pod
+touches, so it runs as the image's default non-root user. It reuses the
+DaemonSet's ServiceAccount, the same `collector.apiKey`, and the same ingest
+endpoint; to ingest it is one more authenticated OTLP client.
+
+**RBAC.** The collector's ClusterRole gains a second rule —
+`get`/`list`/`watch` on core `events` — because a watch on the Event stream
+is the entire receiver. It is gated on the same values flag as the workload,
+so disabling the feature narrows the role rather than leaving a standing
+cluster-wide read nothing in the release consumes. The base rule is
+unchanged, and `replicasets` remains deliberately absent: this widening is
+for `k8s_events`, not for `k8s_attributes`, whose extract set did not move.
+
+**The switch.** `collector.k8sEvents.enabled`, default `true`:
+
+```bash
+# the whole feature leaves the release — no Deployment, no ConfigMap, and no
+# `events` rule on the ClusterRole
+helm template obstack deploy/helm/obstack --set collector.k8sEvents.enabled=false
+```
+
+**What it does not do.** There is no `file_storage` checkpoint on this
+pipeline, and its absence is a decision. Checkpointing exists in
+`config.yaml` because `file_log` reads files from `start_at: beginning` and a
+restart would re-ship every historical line; `k8s_events` holds no byte
+offset — it opens a watch, and a restarted watch resumes from the API
+server's current resource version. The honest cost is that events occurring
+during a restart or a `Recreate` rollout are not backfilled. Events are the
+API server's own short-lived, best-effort records (default TTL one hour), not
+a durable log, so a volume bought to chase them would be a checkpoint over
+data the cluster itself has already discarded.
+
+No `transform` processor runs either. The receiver puts the involved object
+on the Resource (`k8s.object.kind`, `k8s.object.name`, `k8s.object.uid`,
+`k8s.node.name`) and the event itself on the record (`k8s.event.reason`,
+`k8s.event.uid`, `k8s.namespace.name`, …). Ingest promotes only
+`k8s.pod.name`/`k8s.namespace.name` from the Resource, so for event rows the
+`k8s_pod`/`k8s_namespace` columns stay empty and the reading side takes the
+keys out of the stored `resource_attributes`/`attributes` maps exactly as
+they land.
+
 ## The `files/` copies and their contract test
 
 `deploy/helm/obstack/` cannot reference files outside itself — Helm's
@@ -553,6 +622,16 @@ Both are pinned byte-for-byte by
 `services/ingest/internal/mapping/chart_contract_test.go`, which runs in the
 `go` check on every PR — a drifting copy fails `go test ./...`, not a
 customer's cluster.
+
+`files/` holds a third collector config,
+`files/collector-events-config.yaml` (see "The cluster-events collector"
+above), and it is deliberately **not** a row in that test. The two files
+above are copies — they have a source outside the chart that they can drift
+away from, which is the whole thing K1 refuses. The events config has no such
+source: there is no cluster API under Compose, so `config.compose.yaml`
+grows no events receiver, and nothing outside `deploy/helm/obstack/` reads
+the file. Pinning a copy against a source that does not exist would be
+ceremony, not the K1 mechanism, so the pair list stays at two rows.
 
 ## Local repro on kind
 
@@ -683,7 +762,14 @@ code the web image serves, driven without a browser):
 - the D38(e) rider: an event-form GenAI log record
   (`gen_ai.input.messages`/`gen_ai.output.messages`) sent through the
   collector's own OTLP endpoint lands with `prompt`/`completion` filled
-  verbatim.
+  verbatim;
+- the S4.4 rider, last because it deletes the demo pod: the events collector
+  Deployment is Available, a third `/chat` runs, and the pod that served it
+  is deleted — the kubelet's `Killing` event on exactly that Pod reaches
+  that trace's `Trace.k8sEvents` through the facade, as `kind: "restart"`,
+  `severity: "info"`, inside the ±10s nearby window. This is the evidence
+  behind the product's "k8s events on the timeline" claim; without it the
+  claim would be about a pipeline nothing had run.
 
 Prerequisites: `docker`, `kind`, `helm`, `kubectl`, `curl` on PATH; a kind
 cluster as the current kubectl context; `npm ci` run once at the repo root

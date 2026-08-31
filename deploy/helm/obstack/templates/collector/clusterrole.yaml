@@ -1,9 +1,20 @@
-# Exactly the T1 hand-off (deploy/collector/README.md, "What config.yaml
-# assumes of its DaemonSet"): k8s_attributes runs `auth_type: serviceAccount`
-# and watches the API to resolve pod identity from `pods` and `namespaces`
-# only — it reads no labels and no owner references, so `replicasets` is
-# deliberately absent. Adding it later is what widens this rule, not a chart
-# preference.
+# The base rule is exactly the T1 hand-off (deploy/collector/README.md, "What
+# config.yaml assumes of its DaemonSet"): k8s_attributes runs
+# `auth_type: serviceAccount` and watches the API to resolve pod identity from
+# `pods` and `namespaces` only — it reads no labels and no owner references,
+# so `replicasets` is deliberately absent, and it still is. Adding it later is
+# what widens this rule, not a chart preference.
+#
+# `events` below is precisely that: a widening, with a component that needs it
+# named. It is not for k8s_attributes — the processor's extract set is
+# unchanged — but for the `k8s_events` receiver on the events collector
+# (templates/collector/events-deployment.yaml), which reads the API server's
+# Event stream and can do nothing without `watch` on it. Both workloads share
+# one ServiceAccount, so the grant lands here rather than in a second role;
+# gating it on the same `collector.k8sEvents.enabled` flag as the workload is
+# what keeps the rule honest when the feature is off — turn the events
+# collector off and the permission goes with it, instead of leaving a standing
+# cluster-wide read nothing in the release consumes.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -15,3 +26,8 @@ rules:
   - apiGroups: [""]
     resources: ["pods", "namespaces"]
     verbs: ["get", "list", "watch"]
+  {{- if .Values.collector.k8sEvents.enabled }}
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["get", "list", "watch"]
+  {{- end }}

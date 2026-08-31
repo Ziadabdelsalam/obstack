@@ -263,7 +263,7 @@ const BANNED_CLAIMS: readonly BannedClaim[] = [
   {
     // 6
     needle: ["k8s", "events"].join(" "),
-    why: "cluster events are set by `mock/generate.ts` and by no adapter in `server/adapters.ts` — nothing ingests them",
+    why: "cluster events reach `k8sEvents` only through the chart's events collector (Kubernetes deployments, proven by the S4.4 acceptance rider) and never under compose — the public claim comes back qualified and by ruling, not by allowlist; until that ruling it stays banned",
     surfaces: PUBLIC_SURFACES,
   },
   {
@@ -430,6 +430,12 @@ const SURFACES: Record<SurfaceId, Surface> = {
  * │ The needle stays scoped to PUBLIC_SURFACES: D208 continues to cover      │
  * │ in-app story DATA — the demo incident keeps its invented k8s row — and   │
  * │ nothing was allowlisted.                                                 │
+ * │                                                                          │
+ * │ Since that ruling (S4.4, later): the chart's events collector now ships  │
+ * │ cluster events and `server/adapters.ts` sets `k8sEvents` from them —     │
+ * │ Kubernetes deployments only, proven by the acceptance rider. The four    │
+ * │ removed capability sentences stay removed until a copy ruling names the  │
+ * │ qualified claim; their comments say so at each site.                     │
  * └──────────────────────────────────────────────────────────────────────────┘
  */
 const IN_APP_OUT_OF_SCOPE = (page: string) => page === "app.html" || page.startsWith("app/");

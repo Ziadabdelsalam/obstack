@@ -2,10 +2,12 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { NEARBY_LOG_CAP } from "@/lib/nearby-logs";
 import {
+  toK8sEvent,
   toLogRecord,
   toSpan,
   toTrace,
   toTraceSummary,
+  type K8sEventRow,
   type LogRow,
   type SpanRow,
   type TraceSummaryRow,
@@ -190,7 +192,7 @@ test("error count promotes the trace to error, empty root falls back", () => {
   assert.equal(trace.method, "—");
 });
 
-test("trace detail stitches spans and logs, leaving explanation and k8sEvents undefined", () => {
+test("trace detail stitches spans and logs; with no event rows k8sEvents (and explanation) stay undefined", () => {
   const trace = toTrace(summaryRow, [spanRow, llmRow], [logRow], []);
   assert.equal(trace.spans.length, 2);
   assert.equal(trace.logs.length, 1);
@@ -380,6 +382,83 @@ test("orphan content rows (span_id matches no span in this trace) fold nowhere a
   const span = trace.spans.find((s) => s.id === "b5");
   assert.equal(span?.llm?.prompt, "", "an orphan content row must not fold into an unrelated span");
   assert.equal(trace.logs.length, 0, "an orphan content row must not render in the rail");
+});
+
+// Kubernetes events on the infra track: `K8S_EVENTS_SQL` rows (the collector's
+// k8s_events receiver, one log record per event) → `Trace.k8sEvents`. The pod
+// arrives as the resource attribute `k8s.object.name` and the offset is already
+// resolved against the trace's min_start in SQL, so this row shape is not a
+// LogRow and gets its own fixture. Dedupe by `k8s.event.uid` is NOT tested here
+// because it does not live here: `K8S_EVENTS_SQL`'s `LIMIT 1 BY event_uid` over
+// `ORDER BY timestamp` resolves it at the server, so the rows this adapter sees
+// are already unique per uid — a TS-side dedupe test would assert a behavior
+// this file does not own.
+const eventRow: K8sEventRow = {
+  event_uid: "b1a7d0c4-5f1e-4a2b-9c33-0d7e6f2a8b41",
+  reason: "Unhealthy",
+  pod: "agent-worker-7d9fb-kx2rq",
+  at_offset_ns: "-1500000000", // -1.5s: inside the window, before the trace started
+  severity_number: 13,
+  severity_text: "Warn",
+  body: "Liveness probe failed: HTTP probe failed with statuscode: 500",
+};
+
+test("event rows populate k8sEvents with the pod, the trace-relative offset, the kind and the message", () => {
+  const trace = toTrace(summaryRow, [spanRow], [logRow], [], [eventRow]);
+  assert.deepEqual(trace.k8sEvents, [
+    {
+      id: "b1a7d0c4-5f1e-4a2b-9c33-0d7e6f2a8b41",
+      atMs: -1500,
+      pod: "agent-worker-7d9fb-kx2rq",
+      kind: "restart",
+      severity: "warn",
+      label: "Liveness probe failed: HTTP probe failed with statuscode: 500",
+    },
+  ]);
+  // events are their own field — they must not leak into the logs rail
+  assert.equal(trace.logs.length, 1);
+});
+
+test("event reasons fold onto the curated kind union, unknown reasons to other", () => {
+  const kind = (reason: string) => toK8sEvent({ ...eventRow, reason }).kind;
+  assert.equal(kind("OOMKilling"), "oom_kill");
+  assert.equal(kind("OOMKilled"), "oom_kill");
+  assert.equal(kind("BackOff"), "restart");
+  assert.equal(kind("Unhealthy"), "restart");
+  assert.equal(kind("Killing"), "restart");
+  assert.equal(kind("FailedScheduling"), "other");
+  assert.equal(kind("SomeControllerInventedThis"), "other");
+  assert.equal(kind(""), "other");
+});
+
+test("an OOM kill is fatal whatever the receiver labelled it; other kinds take the row's own severity", () => {
+  // the receiver maps event Type "warning" → Warn, so an OOMKilling row arrives
+  // at severity_number 13 — the trace timeline still calls it fatal.
+  const oom = toK8sEvent({ ...eventRow, reason: "OOMKilling", severity_number: 13, severity_text: "Warn" });
+  assert.equal(oom.kind, "oom_kill");
+  assert.equal(oom.severity, "fatal");
+  assert.equal(toK8sEvent({ ...eventRow, severity_number: 9, severity_text: "Info" }).severity, "info");
+  assert.equal(toK8sEvent({ ...eventRow, severity_number: 13 }).severity, "warn");
+  // no error member on K8sEvent["severity"]: anything above WARN folds to warn,
+  // it does not silently downgrade to info
+  assert.equal(toK8sEvent({ ...eventRow, severity_number: 17 }).severity, "warn");
+});
+
+test("a bodyless event falls back to its reason so the marker still says what it was", () => {
+  assert.equal(toK8sEvent({ ...eventRow, body: "" }).label, "Unhealthy");
+});
+
+test("the offset is rounded to whole milliseconds", () => {
+  assert.equal(toK8sEvent({ ...eventRow, at_offset_ns: "1500400" }).atMs, 2);
+  assert.equal(toK8sEvent({ ...eventRow, at_offset_ns: "1400400" }).atMs, 1);
+});
+
+test("no event rows omits the k8sEvents key entirely — never an empty array (D208: no false capability claim)", () => {
+  const trace = toTrace(summaryRow, [spanRow], [logRow], [], []);
+  assert.equal("k8sEvents" in trace, false, "an empty array here would earn Waterfall's '& k8s events' heading");
+  // the default parameter must produce the same absence for the call sites that
+  // predate events (queryTrace skips the query outright for non-k8s traces)
+  assert.equal("k8sEvents" in toTrace(summaryRow, [spanRow], [logRow], []), false);
 });
 
 test("coalesce disabled leaves an event-form-only trace with an empty prompt, proving the fill is real", () => {

@@ -1,11 +1,25 @@
 import "server-only";
-import type { Layer, LlmDetail, LogRecord, Severity, Span, SpanStatus, Trace } from "@/lib/types";
+import type {
+  K8sEvent,
+  Layer,
+  LlmDetail,
+  LogRecord,
+  Severity,
+  Span,
+  SpanStatus,
+  Trace,
+} from "@/lib/types";
 import { NEARBY_LOG_CAP } from "@/lib/nearby-logs";
 
 /**
  * ClickHouse rows → the view-model types in `src/lib/types.ts` (D12). No new UI
- * types: the product's existing shapes are the contract, and anything the
- * pipeline cannot supply yet (`explanation`, `k8sEvents`) stays undefined.
+ * types: the product's existing shapes are the contract, and an optional field
+ * the pipeline cannot supply for a given trace stays ABSENT rather than being
+ * filled with a placeholder. `k8sEvents` is supplied now — from the k8s event
+ * rows the collector's `k8s_events` receiver writes, when the deployment ships
+ * them and the trace ran on the pods they describe — and omitted, never empty,
+ * when it does not. `explanation` remains unset here: it is produced elsewhere
+ * (`server/explain/`), not adapted from a row.
  *
  * 64-bit values arrive as strings — every nanosecond quantity is already
  * reduced to an offset or a duration in SQL, so nothing here parses an absolute
@@ -77,6 +91,27 @@ export interface LogRow {
   k8s_namespace: string;
   k8s_pod: string;
   k8s_container: string;
+}
+
+/**
+ * One Kubernetes event row (`K8S_EVENTS_SQL`). Not a `LogRow`: the identifying
+ * fields are read out of the attribute maps in SQL — pod identity arrives as
+ * the resource attribute `k8s.object.name`, so the promoted `k8s_pod` column is
+ * empty on these rows — and `reason` has no analogue in a log line at all.
+ */
+export interface K8sEventRow {
+  /** `k8s.event.uid`; the query already deduped on it, so it is unique here */
+  event_uid: string;
+  /** `k8s.event.reason` — the open-ended upstream vocabulary, folded onto `K8sEvent["kind"]` below */
+  reason: string;
+  /** `k8s.object.name` of the involved Pod */
+  pod: string;
+  /** nanos from the trace's `min_start`; negative for events before it */
+  at_offset_ns: string;
+  severity_number: number;
+  severity_text: string;
+  /** the event message */
+  body: string;
 }
 
 const nsToMs = (ns: string): number => Number(ns) / 1_000_000;
@@ -176,8 +211,14 @@ export function toSpan(
   };
 }
 
-/** OTel severity numbers: 1-4 TRACE, 5-8 DEBUG, 9-12 INFO, 13-16 WARN, 17-20 ERROR, 21+ FATAL. */
-function toSeverity(row: LogRow): Severity {
+/**
+ * OTel severity numbers: 1-4 TRACE, 5-8 DEBUG, 9-12 INFO, 13-16 WARN, 17-20
+ * ERROR, 21+ FATAL. Structurally typed on the two severity columns rather than
+ * on `LogRow`, because k8s event rows carry the identical pair and must fold
+ * the identical way — one severity ladder for everything ingest writes into
+ * `obstack.logs`.
+ */
+function toSeverity(row: { severity_number: number; severity_text: string }): Severity {
   const n = row.severity_number;
   if (n >= 21) return "fatal";
   if (n >= 17) return "error";
@@ -204,6 +245,63 @@ export function toLogRecord(row: LogRow, index: number): LogRecord {
     // "app" is the rail's sentinel for "the only container", so it stays quiet
     // for telemetry that carries no k8s resource attributes.
     container: row.k8s_container || "app",
+  };
+}
+
+/**
+ * Kubernetes event reason → the UI's `kind` union. Curated on purpose: the
+ * upstream vocabulary is open-ended (any controller may invent a reason), so
+ * this table names the ones the timeline has a story for and everything else
+ * falls to `"other"` — a real marker at a real time with the event's own
+ * message, rather than a dropped row or an invented classification.
+ *
+ * `scale`, `throttle` and `reindex` stay mock-only by construction, not by
+ * omission: scaling and throttling events attach to Deployment/HPA/Node
+ * objects, which `K8S_EVENTS_SQL`'s `k8s.object.kind = 'Pod'` filter excludes,
+ * and `reindex` is not a Kubernetes concept at all.
+ */
+const EVENT_KINDS: Record<string, K8sEvent["kind"]> = {
+  OOMKilling: "oom_kill",
+  OOMKilled: "oom_kill",
+  BackOff: "restart",
+  Unhealthy: "restart",
+  Killing: "restart",
+};
+
+/**
+ * One event row → the infra track's `K8sEvent`.
+ *
+ * `atMs` is relative to the trace's `min_start` like every other offset in this
+ * file (the subtraction happened in SQL, against the exact epoch nanos), and is
+ * rounded: an infra event's meaning is "around here on this timeline", and
+ * sub-millisecond precision on a kubelet-reported event time would be precision
+ * the source does not have.
+ *
+ * Severity is derived, not copied: an OOM kill is `"fatal"` whatever the
+ * receiver labelled it (a `warning`-Type event that killed the container is not
+ * a warning to the person reading the trace), and otherwise the row's own OTel
+ * severity decides. The receiver only ever emits Info or Warn, but anything at
+ * or above the WARN range folds to `"warn"` rather than silently downgrading to
+ * `"info"` if that ever changes — `K8sEvent["severity"]` has no error member.
+ *
+ * `label` is the event message; a bodyless event falls back to its reason so
+ * the marker still says what it was.
+ */
+function toEventSeverity(kind: K8sEvent["kind"], row: K8sEventRow): K8sEvent["severity"] {
+  if (kind === "oom_kill") return "fatal";
+  const severity = toSeverity(row);
+  return severity === "warn" || severity === "error" || severity === "fatal" ? "warn" : "info";
+}
+
+export function toK8sEvent(row: K8sEventRow): K8sEvent {
+  const kind = EVENT_KINDS[row.reason] ?? "other";
+  return {
+    id: row.event_uid,
+    atMs: Math.round(nsToMs(row.at_offset_ns)),
+    pod: row.pod,
+    kind,
+    severity: toEventSeverity(kind, row),
+    label: row.body || row.reason,
   };
 }
 
@@ -267,12 +365,21 @@ const isContentCarrier = (row: LogRow): boolean => Boolean(row.prompt || row.com
  * `nearbyLogsTruncated` is set `true` only when truncation is proven and
  * otherwise OMITTED — never `false` — matching the `explanation`/`k8sEvents`
  * optional-field pattern above (D12).
+ *
+ * `eventRows` (K8S_EVENTS_SQL) defaults to `[]`, and not only for the callers
+ * that predate it: `queryTrace` SKIPS that query entirely for a trace whose
+ * spans carry no pod, so "no events" is the normal shape for every non-k8s
+ * workspace, not an edge case. It maps to an ABSENT `k8sEvents` key rather than
+ * an empty array, because `Waterfall.tsx` earns its "pods & k8s events" heading
+ * from whether any event exists (`lib/infra-track.ts`) — an empty array would
+ * be the same false capability claim that heading was fixed for.
  */
 export function toTrace(
   summary: TraceSummaryRow,
   spanRows: SpanRow[],
   logRows: LogRow[],
   nearbyLogRows: LogRow[],
+  eventRows: K8sEventRow[] = [],
 ): Trace {
   const eventFillBySpan = eventDerivedFillBySpan(logRows);
   const spans = spanRows.map((row) => toSpan(row, summary.trace_id, eventFillBySpan));
@@ -280,6 +387,7 @@ export function toTrace(
   const nearbyLogsTruncated = nearbyLogRows.length > NEARBY_LOG_CAP;
   const nearby = nearbyLogRows.slice(0, NEARBY_LOG_CAP);
   const renderedLogs = logRows.filter((row) => !isContentCarrier(row));
+  const k8sEvents = eventRows.map(toK8sEvent);
   return {
     ...toTraceSummary(summary),
     rootName: summary.root_name || root?.name || "(unnamed root)",
@@ -287,5 +395,6 @@ export function toTrace(
     spans,
     logs: [...renderedLogs, ...nearby].map((row, i) => toLogRecord(row, i)),
     ...(nearbyLogsTruncated ? { nearbyLogsTruncated: true } : {}),
+    ...(k8sEvents.length > 0 ? { k8sEvents } : {}),
   };
 }

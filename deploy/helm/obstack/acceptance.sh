@@ -5,9 +5,11 @@
 # assert the D37 evidence bundle through the D17 tsx facade harness
 # (acceptance.ts) against the cluster's ClickHouse. Then the T1-escalation
 # rider: restart the collector DaemonSet and prove previously-shipped lines
-# are NOT re-shipped (file_storage checkpointing), and the D38(e) rider: a
+# are NOT re-shipped (file_storage checkpointing), the D38(e) rider: a
 # collector-routed event-form GenAI fixture lands with prompt/completion
-# filled.
+# filled, and the S4.4 rider (last, because it deletes the demo pod): a live
+# kubelet event on the pod that served a trace reaches that trace's
+# `k8sEvents` through the facade.
 #
 # CI's `stack` job runs THIS script (S2.1 L3) — there is no CI-only sequence
 # and no CI-only timeout arithmetic: the Helm timeouts below are the chart
@@ -196,5 +198,42 @@ step "D38(e): collector-routed event-form GenAI fixture"
 port_forward "ds/$RELEASE-collector" "$COLLECTOR_PORT:4318" \
   -X POST -H 'content-type: application/json' -d '{}' "http://127.0.0.1:$COLLECTOR_PORT/v1/logs"
 harness genai-fixture
+
+# S4.4 cluster-events rider — LAST on purpose: it deletes the demo pod, so
+# every check above must already have run against the pod that served them.
+#
+# The product claims "k8s events on the timeline". This proves it on a live
+# cluster instead of describing it: the chart's events collector
+# (templates/collector/events-deployment.yaml — a single-replica Deployment,
+# because k8s_events watches the cluster-wide API stream) is asserted Available
+# first, then a fresh trace is driven and the pod that served it is deleted.
+# The kubelet emits a `Killing` event against exactly that Pod — a Normal-Type
+# event, which EVENT_KINDS (apps/web/src/server/adapters.ts) folds to kind
+# "restart" at severity "info" — and the harness reads it back through the same
+# facade the trace detail page renders from.
+#
+# Idempotent with the cleanup trap and with a re-run: the demo Deployment
+# recreates the pod, and the port-forwards this rider invalidates (the demo
+# Service's endpoint goes away with the pod) are the trap's to kill anyway,
+# because nothing after this line drives the demo again.
+step "S4.4: a live kubelet event lands on the trace's timeline"
+kubectl rollout status "deployment/$RELEASE-collector-events" --timeout=180s
+# By the chart's own labels, never a guessed name — demo replicas is 1
+# (templates/demo/deployment.yaml says why), so this IS the pod serving /chat.
+demo_pod="$(kubectl get pod \
+  -l "app.kubernetes.io/instance=$RELEASE,app.kubernetes.io/component=demo" \
+  -o jsonpath='{.items[0].metadata.name}')"
+[ -n "$demo_pod" ] || fail "no demo pod found for release '$RELEASE'"
+trace_3="$(chat 'what changed right before the error rate spiked')"
+printf '   trace_id=%s pod=%s\n' "$trace_3" "$demo_pod"
+# One full BatchSpanProcessor interval before the pod stops existing:
+# OTEL_BSP_SCHEDULE_DELAY is 1000ms (templates/demo/deployment.yaml), and the
+# trace's spans have to be OUT of the pod for K8S_EVENTS_SQL to have any
+# (namespace, pod) pair to match the event against. Two seconds also keeps the
+# `Killing` event comfortably inside the ±10s nearby window
+# (apps/web/src/lib/nearby-logs.ts) it is joined on, rather than at its edge.
+sleep 2
+kubectl delete pod "$demo_pod" --wait=false
+harness events "$trace_3" "$demo_pod"
 
 printf '\nacceptance: PASS (stack-on-kind, %ss)\n' "$SECONDS"

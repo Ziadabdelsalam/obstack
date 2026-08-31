@@ -16,6 +16,12 @@
  *   genai-fixture       — the D38(e) rider: one collector-routed event-form
  *                         GenAI log record lands with prompt/completion
  *                         filled (bring-your-own-OTel end-to-end).
+ *   events <trace_id> <pod>
+ *                       — the S4.4 rider: a LIVE Kubernetes event on the pod
+ *                         that served the trace reaches `Trace.k8sEvents`
+ *                         through the same facade, so the product's "k8s
+ *                         events on the timeline" claim is asserted rather
+ *                         than asserted-about.
  *
  * Standalone, from the repo root (CLICKHOUSE_URL etc. must point at the
  * cluster — acceptance.sh's port-forwards, by default):
@@ -23,7 +29,8 @@
  *     deploy/helm/obstack/acceptance.ts assert <trace_id>
  */
 import { randomBytes } from "node:crypto";
-import type { Trace } from "@/lib/types";
+import type { K8sEvent, Trace } from "@/lib/types";
+import { NEARBY_LOG_WINDOW_S } from "@/lib/nearby-logs";
 import {
   awaitWholeTrace,
   DEMO_WORKSPACE,
@@ -42,6 +49,13 @@ const ARRIVAL_TIMEOUT_MS = 60_000;
 
 /** The fixture rides the same two batch hops; polling stops at first sight. */
 const FIXTURE_TIMEOUT_MS = 30_000;
+
+/** The `Killing` event is emitted by the kubelet a second or two after the
+ *  delete, then rides the events collector's batch and ingest's 1s batch. The
+ *  generous ceiling is deliberate: this poll is the only place a genuinely
+ *  broken cluster-events path can be told apart from a slow one, and it stops
+ *  at first sight, so the cost of the headroom is zero on a healthy run. */
+const EVENTS_TIMEOUT_MS = 90_000;
 
 function fail(message: string): never {
   console.error(`acceptance: ${message}`);
@@ -299,6 +313,136 @@ WHERE workspace_id = {workspace_id:String} AND trace_id = {trace_id:String}`;
   console.log("acceptance: PASS");
 }
 
+/**
+ * S4.4: live Kubernetes events reach the trace's timeline.
+ *
+ * The caller (`acceptance.sh`) has just deleted the pod that served
+ * `traceId`, so the kubelet emits a `Killing` event against exactly that Pod.
+ * Everything between there and here is the product under test: the chart's
+ * events collector watches the API server, ships the event as an OTLP log
+ * record, ingest stores it trace-less with `k8s.event.uid` set, and
+ * `queryTrace`'s K8S_EVENTS_SQL pair-matches
+ * `(k8s.namespace.name, k8s.object.name)` against this trace's spans inside
+ * the nearby window. Read back through the SAME facade `assertTrace` uses
+ * (`dataForWorkspace(...).getTrace`) — the claim is about what the trace
+ * detail page renders, so it is asserted on the rendered shape and nowhere
+ * else (D13/D17).
+ *
+ * Not `awaitWholeTrace`: that helper's contract is "the trace landed whole",
+ * which this trace satisfies within seconds and which says nothing about
+ * events. Polling `getTrace` directly keeps the deadline attached to the one
+ * fact this rider is about.
+ */
+async function clusterEvents(traceId: string, pod: string): Promise<void> {
+  const { dataForWorkspace } = await import("@/server/data");
+  const data = dataForWorkspace(DEMO_WORKSPACE);
+  const windowMs = NEARBY_LOG_WINDOW_S * 1_000;
+
+  const deadline = Date.now() + EVENTS_TIMEOUT_MS;
+  let trace: Trace | undefined;
+  let event: K8sEvent | undefined;
+  for (;;) {
+    trace = await data.getTrace(traceId);
+    // First event ON THIS POD, in the query's timestamp order. Deliberately
+    // not "first event whose kind is restart": narrowing the poll to the
+    // answer we want would turn a mis-mapped reason into a timeout instead of
+    // the specific red check below.
+    event = trace?.k8sEvents?.find((e) => e.pod === pod);
+    if (event) break;
+    if (Date.now() > deadline) break;
+    await sleep(1_000);
+  }
+
+  if (!event) {
+    // A timeout here has three distinguishable causes — no event rows reached
+    // ClickHouse at all (collector/RBAC), rows landed but not for this pod
+    // (the wrong pod was deleted), or rows landed for this pod but outside
+    // the window (the join or the timestamps). Print the evidence that
+    // separates them rather than a bare "not found".
+    const { forWorkspace } = await import("@/server/clickhouse");
+    const ch = forWorkspace(DEMO_WORKSPACE);
+    const EVENT_ROW_COUNT_SQL = `
+SELECT count() AS total
+FROM obstack.logs
+WHERE workspace_id = {workspace_id:String} AND attributes['k8s.event.uid'] != ''`;
+    const EVENT_ROW_BREAKDOWN_SQL = `
+SELECT
+    attributes['k8s.event.reason']         AS reason,
+    resource_attributes['k8s.object.kind'] AS object_kind,
+    resource_attributes['k8s.object.name'] AS object_name,
+    count()                                AS n
+FROM obstack.logs
+WHERE workspace_id = {workspace_id:String} AND attributes['k8s.event.uid'] != ''
+GROUP BY reason, object_kind, object_name
+ORDER BY n DESC
+LIMIT 10`;
+    const [{ total } = { total: "0" }] =
+      await ch.queryRows<{ total: string }>(EVENT_ROW_COUNT_SQL);
+    const breakdown = await ch.queryRows<{
+      reason: string;
+      object_kind: string;
+      object_name: string;
+      n: string;
+    }>(EVENT_ROW_BREAKDOWN_SQL);
+
+    console.error(
+      `acceptance:   - trace.k8sEvents: ${
+        trace === undefined
+          ? "the trace itself did not resolve through the facade"
+          : trace.k8sEvents === undefined
+            ? "absent (no event mapped for this trace)"
+            : trace.k8sEvents
+                .map((e) => `${e.kind}/${e.severity} on ${e.pod} at +${e.atMs}ms`)
+                .join("; ")
+      }`,
+    );
+    console.error(
+      `acceptance:   - obstack.logs rows carrying k8s.event.uid in ${DEMO_WORKSPACE}: ${total}`,
+    );
+    for (const row of breakdown) {
+      console.error(
+        `acceptance:     ${row.n}× ${row.reason} on ${row.object_kind}/${row.object_name}`,
+      );
+    }
+    fail(
+      `no k8s event for pod ${pod} reached trace ${traceId} within ${EVENTS_TIMEOUT_MS / 1000}s`,
+    );
+  }
+
+  const whole = trace as Trace;
+  const problems: string[] = [];
+  // `Killing` is a Normal-Type event, so the receiver stamps it INFO and
+  // EVENT_KINDS (adapters.ts) folds the reason to "restart". Both halves of
+  // that mapping are asserted, because either one silently changing is
+  // exactly the regression this rider exists to catch.
+  if (event.kind !== "restart") {
+    problems.push(`kind = ${JSON.stringify(event.kind)}, want "restart" (reason Killing)`);
+  }
+  if (event.severity !== "info") {
+    problems.push(`severity = ${JSON.stringify(event.severity)}, want "info" (a Normal-Type event)`);
+  }
+  if (event.id === "") problems.push("id is empty — k8s.event.uid did not survive the pipeline");
+  if (event.label === "") problems.push("label is empty — neither the event message nor its reason arrived");
+  // The window the query itself binds (NEARBY_LOG_WINDOW_NS), restated on the
+  // rendered offsets: an event outside it is one K8S_EVENTS_SQL should never
+  // have returned.
+  if (event.atMs < -windowMs || event.atMs > whole.durationMs + windowMs) {
+    problems.push(
+      `atMs ${event.atMs} is outside [${-windowMs}, ${whole.durationMs + windowMs}] — the ±${NEARBY_LOG_WINDOW_S}s window around a ${whole.durationMs}ms trace`,
+    );
+  }
+  if (problems.length > 0) {
+    for (const p of problems) console.error(`acceptance:   - ${p}`);
+    fail(`the k8s event on ${pod} landed wrong`);
+  }
+
+  const onPod = whole.k8sEvents?.filter((e) => e.pod === pod) ?? [];
+  console.log(
+    `acceptance:   S4.4 cluster events alive: ${JSON.stringify(event.label)} on ${pod} at +${event.atMs}ms → kind=${event.kind} severity=${event.severity} (${onPod.length} event(s) on this pod, ±${NEARBY_LOG_WINDOW_S}s of a ${whole.durationMs}ms trace)`,
+  );
+  console.log("acceptance: PASS");
+}
+
 async function main(): Promise<void> {
   // The facade resolves its mode at import time (D13) and the clickhouse
   // module reads its env on first query — set everything before either import
@@ -309,10 +453,13 @@ async function main(): Promise<void> {
   process.env.CLICKHOUSE_USER ??= "obstack_web";
   process.env.CLICKHOUSE_PASSWORD ??= "obstack_web_dev";
 
-  const [command, arg] = process.argv.slice(2);
+  const [command, arg, arg2] = process.argv.slice(2);
   if (command === "assert" && arg) return assertTrace(arg);
   if (command === "genai-fixture" && !arg) return genaiFixture();
-  fail("usage: acceptance.ts assert <trace_id> | acceptance.ts genai-fixture");
+  if (command === "events" && arg && arg2) return clusterEvents(arg, arg2);
+  fail(
+    "usage: acceptance.ts assert <trace_id> | acceptance.ts genai-fixture | acceptance.ts events <trace_id> <pod>",
+  );
 }
 
 main().catch((err: unknown) => fail(err instanceof Error ? err.message : String(err)));
