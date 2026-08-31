@@ -275,6 +275,14 @@ settable in that same call. `railway environment edit` is a NO-OP on CLI
 5.45.10 (every change answers "No changes to apply") — post-creation config
 changes go through the dashboard or a variables write.
 
+**Environment-duplicate migration ordering (measured 2026-08-31, W4):** in a
+duplicated environment the datastore volumes attach as part of creation, and
+`postgres` may re-run initdb on the fresh volume AFTER `ingest`'s first boot
+already applied migrations (measured: migrations 18:15:04, initdb 18:20:20 —
+the schema died with the container disk). After every environment duplicate,
+once `postgres` is settled on its volume, **redeploy `ingest`** and read the
+"schema migrations applied" lines again before trusting the environment.
+
 **Reference caution (measured 2026-08-31):** `railway variable set 'X=${{svc.VAR}}'`
 stores the RESOLVED value, not the reference — a later rotation on `svc` does
 not follow. Enter cross-service references through the dashboard's variable
