@@ -240,6 +240,13 @@ a `SHOW GRANTS` diff against `services/ingest` migrations + the sweep's
 `ALTER … DELETE`, land it in the shared XML and the chart copy, prove it red
 by the compose bundle boot and the `stack` job.
 
+**CLI service-targeting caution (measured 2026-08-31):** `railway variable`'s
+`-s/--service` flag is silently IGNORED on this CLI version (5.45.10) — reads
+and writes go to the LINKED service. Always `railway service link <name>`
+immediately before any variable read or write, and verify with the output's
+`RAILWAY_SERVICE_NAME`. A missed link is how a password rotation lands on the
+wrong service while the store keeps the old credential.
+
 **Reference caution (measured 2026-08-31):** `railway variable set 'X=${{svc.VAR}}'`
 stores the RESOLVED value, not the reference — a later rotation on `svc` does
 not follow. Enter cross-service references through the dashboard's variable
