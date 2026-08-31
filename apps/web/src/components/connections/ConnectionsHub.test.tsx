@@ -41,6 +41,7 @@ const source = (overrides: Partial<LiveSource> & { keyId: string }): LiveSource 
   droppedDecode: 0,
   droppedUnsupported: 0,
   droppedQuota: 0,
+  droppedCardinality: 0,
   lastEvent: null,
   ratePerMin: null,
   ...overrides,
@@ -61,6 +62,16 @@ test("errors are the receive-path drops and never the quota ones", () => {
   assert.equal(sourceErrors(s), 7);
   // The control: with no receive-path drops a sampled-out workspace is clean.
   assert.equal(sourceErrors(source({ keyId: "k2", droppedQuota: 5_000 })), 0);
+});
+
+// S6.1 T7 (packet §2): a workspace hitting its metrics cardinality cap is a
+// fault in what is being sent (a label-explosion bug, most often) — not the
+// plan's sampling — so `dropped_cardinality` joins the receive-path drops
+// rather than sitting out, uncounted, beside `droppedQuota`.
+test("cardinality-cap drops are errors too, and still never the quota ones", () => {
+  const s = source({ keyId: "k1", droppedCardinality: 12 });
+  assert.equal(sourceErrors(s), 12);
+  assert.equal(liveSourceStatus(s), "degraded");
 });
 
 // The empty state is about RECORDS, not rows: a workspace that issued three keys

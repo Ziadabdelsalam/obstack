@@ -36,6 +36,10 @@ export interface LiveSource {
   droppedDecode: number;
   droppedUnsupported: number;
   droppedQuota: number;
+  /** Metrics points refused past the D363 §2 cardinality cap (packet §2's
+   *  honest-UI leg) — a label-explosion bug, not the plan's sampling, so
+   *  `sourceErrors` counts it beside the receive-path drops below. */
+  droppedCardinality: number;
   /** Formatted on the server, like every other rendered instant. Null = never. */
   lastEvent: string | null;
   /**
@@ -82,12 +86,17 @@ export type ConnectedPanel =
     }
   | { mode: "demo"; sources: ConnectedSource[] };
 
-/** Receive-path errors: decode plus unsupported, and deliberately NOT quota
- *  drops — a sampled-out record is the degradation the plan bought, and summing
- *  the two would tell an operator their exporter is broken while it is working
- *  exactly as designed (the basis `server/ingest-health.ts` states, D162). */
+/** Errors: decode plus unsupported plus cardinality-cap drops, and deliberately
+ *  NOT quota drops — a sampled-out record is the degradation the plan bought,
+ *  and summing it in would tell an operator their exporter is broken while it
+ *  is working exactly as designed (the basis `server/ingest-health.ts` states,
+ *  D162). Cardinality drops join the other two rather than getting a third
+ *  bucket: like a decode failure or an unsupported signal, a workspace hitting
+ *  its D363 §2 series cap is a fault in what is being sent (a label-explosion
+ *  bug, most often) — not a tier the customer bought, which is the line that
+ *  keeps quota out. */
 export function sourceErrors(source: LiveSource): number {
-  return source.droppedDecode + source.droppedUnsupported;
+  return source.droppedDecode + source.droppedUnsupported + source.droppedCardinality;
 }
 
 /**
@@ -123,7 +132,11 @@ const liveStatusStyle: Record<
   { color: string; label: string }
 > = {
   healthy: { color: "var(--color-ok)", label: "healthy" },
-  degraded: { color: "var(--color-warn)", label: "receive errors" },
+  // "errors", not "receive errors": the count behind this label now includes
+  // cardinality-cap drops, which happen after receipt (mapping/admission), so
+  // naming only the receive path would misdescribe a workspace degraded
+  // purely by a label-explosion bug.
+  degraded: { color: "var(--color-warn)", label: "errors" },
   silent: { color: "var(--color-warn)", label: "nothing accepted" },
   revoked: { color: "var(--color-err)", label: "revoked" },
 };
@@ -314,7 +327,7 @@ export function ConnectionsHub({
              counters, and both are as fresh as the last metering flush. */
           <p className="border-t border-line px-3.5 py-2 font-mono text-[10.5px] leading-relaxed text-faint">
             {data.asOf
-              ? `rate is accepted records per minute over the last ${data.rateWindowMinutes} complete minutes, and — means no records of any kind arrived on that key in the window; accepted and sampled are cumulative per key, as of ${data.asOf} — errors are receive-path only; sampled records are the plan's quota, not a fault`
+              ? `rate is accepted records per minute over the last ${data.rateWindowMinutes} complete minutes, and — means no records of any kind arrived on that key in the window; accepted and sampled are cumulative per key, as of ${data.asOf} — errors are receive-path or cardinality-cap drops; sampled records are the plan's quota, not a fault`
               : "no events on any key yet — these counts start with the first accepted record"}
           </p>
         )}
