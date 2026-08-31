@@ -98,6 +98,18 @@ harness() {
       deploy/helm/obstack/acceptance.ts "$@")
 }
 
+# FIRST, because it needs no cluster, no images and no install: the rendered
+# chart's total CPU requests have to fit the node they will be scheduled on.
+# Measured on PR #24's tip a541546 — the chart asked for 1070m on a 2-vCPU
+# GitHub runner whose kube-system already reserves ~950m of 2000m, so
+# obstack-clickhouse-0 (500m, scheduled last) sat Pending for fifteen minutes
+# on `FailedScheduling: 0/1 nodes are available: 1 Insufficient cpu` and the
+# only thing the `stack` job reported was `helm install --wait` timing out at
+# 900s. That is a render-time fact wearing a fifteen-minute disguise; this step
+# takes it off. README.md, "The node's CPU-request budget".
+step "chart CPU-request budget"
+harness budget
+
 step "building this repo's images"
 docker build -t obstack-ingest:kind "$repo_root/services/ingest"
 docker build -t obstack-demo-agent:kind "$repo_root/demo/agent-app"

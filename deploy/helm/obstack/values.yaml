@@ -280,11 +280,15 @@ collector:
   k8sEvents:
     enabled: true
     # D283: requests AND limits, same ruling as collector.resources above on
-    # this workload's own numbers — one API watch plus a batch buffer is a
-    # smaller and flatter footprint than the node's log tailer.
+    # this workload's own numbers — an idle API watch plus a batch buffer is a
+    # smaller and flatter footprint than the node's log tailer, so it reserves
+    # 10m against the tailer's 50m. The limit is the one that bounds an event
+    # storm and stays where it was; the request is what the scheduler must
+    # actually find free on a node, and the chart's total of those is a budget
+    # the acceptance checks (README.md, "The node's CPU-request budget").
     resources:
       requests:
-        cpu: 20m
+        cpu: 10m
         memory: 64Mi
       limits:
         cpu: 100m
@@ -294,16 +298,33 @@ demo:
   image: obstack-demo-agent:kind
   pullPolicy: Never
   # D283: requests + limits, same ground as collector.resources — a traffic
-  # generator is exactly the thing to bound. Applied to both of the pod's
-  # containers (the agent and the uninstrumented sidecar). Observed agent
-  # footprint ~55Mi.
+  # generator is exactly the thing to bound. This block is the INSTRUMENTED
+  # container's alone (templates/demo/deployment.yaml's `demo-agent`); the
+  # sidecar beside it has its own below. Observed agent footprint ~55Mi, and
+  # the CPU request is a reservation for an app that idles between /chat calls
+  # — 25m, not the 50m it carried while one block covered both containers.
   resources:
     requests:
-      cpu: 50m
+      cpu: 25m
       memory: 64Mi
     limits:
       cpu: 500m
       memory: 128Mi
+  # The uninstrumented sidecar (D37.2 — a `sh` loop echoing one heartbeat every
+  # 5s) gets its OWN block rather than sharing the agent's: a log-line emitter
+  # does not need the agent's reservation, and a request is a reservation, not
+  # a ceiling. The whole chart's requests are a budget a single node has to fit
+  # — the acceptance's first step renders this chart and refuses to go further
+  # when they stop fitting (README.md, "The node's CPU-request budget"), so a
+  # number raised here is a number that has to come from somewhere. The limit
+  # stays generous enough that the shell is never throttled out of a heartbeat.
+  sidecarResources:
+    requests:
+      cpu: 5m
+      memory: 16Mi
+    limits:
+      cpu: 50m
+      memory: 32Mi
 
 # A small, pinned utility image (D14 — exact tag, never floating), used
 # wherever this chart needs a shell and no OTel SDK: the demo pod's second,

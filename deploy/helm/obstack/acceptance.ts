@@ -4,9 +4,13 @@
  * the chart, so the exit is asserted through the same
  * `apps/web/src/server/data.ts` facade the app renders from).
  *
- * Two commands, both invoked by `acceptance.sh` (CI runs that same script —
+ * Four commands, all invoked by `acceptance.sh` (CI runs that same script —
  * S2.1 L3):
  *
+ *   budget              — the only one that touches no cluster at all: render
+ *                         the chart and refuse to go further if its total CPU
+ *                         requests cannot fit the node CI schedules them on
+ *                         (README.md, "The node's CPU-request budget").
  *   assert <trace_id>   — the whole-trace checks shared with compose's
  *                         smoke.ts (`deploy/compose/trace-checks.ts`: four
  *                         layers, cost/token, correlated logs, listed), plus
@@ -28,7 +32,9 @@
  *   npx tsx --tsconfig apps/web/tsconfig.json --conditions react-server \
  *     deploy/helm/obstack/acceptance.ts assert <trace_id>
  */
+import { execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
+import { parseAllDocuments } from "yaml";
 import type { K8sEvent, Trace } from "@/lib/types";
 import { NEARBY_LOG_WINDOW_S } from "@/lib/nearby-logs";
 import {
@@ -57,6 +63,27 @@ const FIXTURE_TIMEOUT_MS = 30_000;
  *  at first sight, so the cost of the headroom is zero on a healthy run. */
 const EVENTS_TIMEOUT_MS = 90_000;
 
+/**
+ * The ceiling on the rendered chart's total CPU **requests**, in millicores.
+ *
+ * The arithmetic, on the smallest node this repo's CI actually schedules on: a
+ * private-repo `ubuntu-latest` runner is 2 vCPU, so its single kind node has
+ * 2000m allocatable, and that node's own kubeadm kube-system pods reserve
+ * ~950m of it (kube-apiserver 250m, kube-controller-manager 200m,
+ * kube-scheduler 100m, etcd 100m, coredns 2×100m, kindnet 100m). That leaves
+ * ~1050m for this release, and the budget is 1050 − 50 = **1000m**, i.e. the
+ * free space minus 50m of deliberate headroom.
+ *
+ * The headroom is the whole point, and it is why this is 1000 and not 1050:
+ * before the cluster-events collector this chart requested exactly 1050m and
+ * was green with ZERO slack, so a541546's 20m addition — a workload nobody
+ * thought of as large — pushed ClickHouse (500m, and scheduled last) into
+ * `FailedScheduling: Insufficient cpu`, where it sat Pending until
+ * `helm install --wait` gave up 900s later. A budget with no headroom does not
+ * catch that; it only decides which commit gets blamed for it.
+ */
+const CHART_CPU_REQUEST_BUDGET_M = 1_000;
+
 function fail(message: string): never {
   console.error(`acceptance: ${message}`);
   process.exit(1);
@@ -64,6 +91,124 @@ function fail(message: string): never {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** A Kubernetes CPU quantity as millicores: "500m", "1", "0.5" all legal. */
+function cpuMillis(quantity: unknown): number {
+  if (typeof quantity === "number") return Math.ceil(quantity * 1000);
+  if (typeof quantity !== "string" || quantity === "") return 0;
+  const value = quantity.endsWith("m")
+    ? Number(quantity.slice(0, -1))
+    : Number(quantity) * 1000;
+  if (!Number.isFinite(value)) fail(`unparseable cpu quantity ${JSON.stringify(quantity)}`);
+  return Math.ceil(value);
+}
+
+/** The rendered shape this walks — everything else in the manifest is ignored. */
+interface RenderedContainer {
+  resources?: { requests?: { cpu?: string | number } };
+}
+interface RenderedWorkload {
+  kind?: string;
+  metadata?: { name?: string };
+  spec?: {
+    replicas?: number;
+    parallelism?: number;
+    template?: { spec?: { containers?: RenderedContainer[]; initContainers?: RenderedContainer[] } };
+  };
+}
+
+/**
+ * The chart's CPU-request footprint, checked against the node it has to fit on
+ * — the first thing `acceptance.sh` runs, because it needs no cluster, no
+ * images and no install, and the answer is already fixed at render time.
+ *
+ * What the scheduler reserves for one pod is `max(sum of containers, max init
+ * container)` — init containers run one at a time and before the app
+ * containers, so they never add to them — and a workload's cost is that
+ * multiplied by the pods it schedules at once. A DaemonSet's multiplier is 1
+ * because the budget is about ONE node: on a bigger cluster the same per-pod
+ * number is what each node reserves, which is the same question asked per node.
+ */
+function chartCpuBudget(helmArgs: string[]): void {
+  const budgetM = Number(process.env.OBSTACK_CPU_BUDGET_M ?? CHART_CPU_REQUEST_BUDGET_M);
+  if (!Number.isFinite(budgetM) || budgetM <= 0) {
+    fail(`OBSTACK_CPU_BUDGET_M is ${JSON.stringify(process.env.OBSTACK_CPU_BUDGET_M)}, not a positive number of millicores`);
+  }
+
+  // The chart beside this file, rendered exactly as `acceptance.sh` installs
+  // it: chart defaults everywhere, plus the one value that has no default. The
+  // dummy secret reaches only templates/secret.yaml — no resource field of any
+  // workload reads it — so the footprint below is the release's own. Anything
+  // after `budget` on the command line is passed to `helm template` unchanged,
+  // which is how a deployment asks what ITS values cost (`budget --set
+  // collector.k8sEvents.enabled=false`, `budget -f prod.yaml`); acceptance.sh
+  // passes nothing, because it installs the defaults.
+  const chartDir = __dirname;
+  let rendered: string;
+  try {
+    rendered = execFileSync(
+      "helm",
+      ["template", "obstack", chartDir, "--set", "web.betterAuthSecret=cpu-budget-render", ...helmArgs],
+      { encoding: "utf8", maxBuffer: 64 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"] },
+    );
+  } catch (err) {
+    const stderr = (err as { stderr?: string }).stderr ?? "";
+    fail(`helm template ${chartDir} failed${stderr ? `:\n${stderr.trimEnd()}` : ""}`);
+  }
+
+  const SCHEDULED_KINDS = new Set(["Deployment", "StatefulSet", "DaemonSet", "Job"]);
+  const rows: { label: string; perPodM: number; pods: number; totalM: number }[] = [];
+  for (const doc of parseAllDocuments(rendered)) {
+    const obj = doc.toJS() as RenderedWorkload | null;
+    if (!obj?.kind || !SCHEDULED_KINDS.has(obj.kind)) continue;
+    const podSpec = obj.spec?.template?.spec;
+    if (!podSpec) continue;
+    const containers = (podSpec.containers ?? []).reduce(
+      (sum, c) => sum + cpuMillis(c.resources?.requests?.cpu),
+      0,
+    );
+    const init = (podSpec.initContainers ?? []).reduce(
+      (max, c) => Math.max(max, cpuMillis(c.resources?.requests?.cpu)),
+      0,
+    );
+    const perPodM = Math.max(containers, init);
+    // Deployment/StatefulSet say how many pods they run; a Job's concurrent
+    // pods are its `parallelism` (this chart's migration Jobs are one-runner by
+    // design); a DaemonSet's is one node's worth, per the note above.
+    const pods =
+      obj.kind === "DaemonSet" ? 1 : (obj.spec?.replicas ?? obj.spec?.parallelism ?? 1);
+    rows.push({
+      label: `${obj.kind}/${obj.metadata?.name ?? "<unnamed>"}`,
+      perPodM,
+      pods,
+      totalM: perPodM * pods,
+    });
+  }
+  if (rows.length === 0) fail("helm template rendered no schedulable workloads — nothing to budget");
+
+  rows.sort((a, b) => a.label.localeCompare(b.label));
+  const totalM = rows.reduce((sum, r) => sum + r.totalM, 0);
+  const width = Math.max(...rows.map((r) => r.label.length));
+  console.log(
+    `acceptance: chart CPU requests, as the scheduler sees them${helmArgs.length > 0 ? ` (${helmArgs.join(" ")})` : ""}:`,
+  );
+  for (const r of rows) {
+    console.log(
+      `acceptance:   ${r.label.padEnd(width)}  ${String(r.perPodM).padStart(4)}m × ${r.pods} = ${String(r.totalM).padStart(5)}m`,
+    );
+  }
+  console.log(
+    `acceptance:   ${"total".padEnd(width)}  ${" ".repeat(11)}${String(totalM).padStart(5)}m  (budget ${budgetM}m)`,
+  );
+
+  if (totalM > budgetM) {
+    fail(
+      `the chart requests ${totalM}m of CPU, over the ${budgetM}m budget by ${totalM - budgetM}m — it will not schedule on a 2-vCPU kind node, and \`helm install --wait\` would sit on a Pending pod until its 900s timeout instead of saying so. Lower a request above, or change the budget deliberately (README.md, "The node's CPU-request budget")`,
+    );
+  }
+  console.log(`acceptance:   ${totalM}m ≤ ${budgetM}m — fits with ${budgetM - totalM}m to spare`);
+  console.log("acceptance: PASS");
 }
 
 /**
@@ -454,11 +599,16 @@ async function main(): Promise<void> {
   process.env.CLICKHOUSE_PASSWORD ??= "obstack_web_dev";
 
   const [command, arg, arg2] = process.argv.slice(2);
+  // Render-time only: no cluster, no ClickHouse, nothing above this line.
+  if (command === "budget") {
+    chartCpuBudget(process.argv.slice(3));
+    return;
+  }
   if (command === "assert" && arg) return assertTrace(arg);
   if (command === "genai-fixture" && !arg) return genaiFixture();
   if (command === "events" && arg && arg2) return clusterEvents(arg, arg2);
   fail(
-    "usage: acceptance.ts assert <trace_id> | acceptance.ts genai-fixture | acceptance.ts events <trace_id> <pod>",
+    "usage: acceptance.ts budget [helm template args…] | acceptance.ts assert <trace_id> | acceptance.ts genai-fixture | acceptance.ts events <trace_id> <pod>",
   );
 }
 
