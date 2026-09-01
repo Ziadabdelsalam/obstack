@@ -1,199 +1,93 @@
-"use client";
+import { redirect } from "next/navigation";
+import { connection } from "next/server";
+import { ExploreLive } from "@/components/explore/ExploreLive";
+import { ExploreMock } from "@/components/explore/ExploreMock";
+import { VALID_AGGS, type MetricAgg, type MetricRange, type MetricSeriesQuery } from "@/lib/metrics-types";
+import { forWorkspace } from "@/server/clickhouse";
+import { dataMode } from "@/server/data";
+import { listMetricCatalog, queryMetricSeries } from "@/server/queries/metrics";
+import { getSessionContext } from "@/server/session";
+import { activeSeriesCount, SERIES_CAP } from "./series-cap";
 
-import { useEffect, useState } from "react";
-import Link from "next/link";
-import { Plus } from "lucide-react";
-import {
-  metricCatalog,
-  serviceOptions,
-  type ExploreQuery,
-  type GroupBy,
-} from "@/mock/explore";
-import { layerLabel, layerOrder } from "@/lib/layers";
-import { useWorkspace } from "@/state/workspace-store";
-import { ExploreChart } from "@/components/explore/ExploreChart";
-import { SaveToDashboardModal } from "@/components/explore/SaveToDashboardModal";
+const RANGES: MetricRange[] = ["1h", "6h", "24h"];
+const isRange = (v: unknown): v is MetricRange => RANGES.includes(v as MetricRange);
 
-const GROUP_OPTIONS: { value: GroupBy; label: string }[] = [
-  { value: "none", label: "none" },
-  { value: "service", label: "service" },
-  { value: "model", label: "model" },
-  { value: "route", label: "route" },
-];
-
-const RANGE_OPTIONS: { value: 1 | 6 | 24; label: string }[] = [
-  { value: 1, label: "1h" },
-  { value: 6, label: "6h" },
-  { value: 24, label: "24h" },
-];
-
-const CHART_OPTIONS: { value: "line" | "area" | "bar"; label: string }[] = [
-  { value: "line", label: "line" },
-  { value: "area", label: "area" },
-  { value: "bar", label: "bar" },
-];
-
-function ChipGroup<T extends string | number>({
-  label,
-  options,
-  value,
-  onChange,
+/**
+ * Explore, live-wired (D367): a server component branching on `dataMode` (the
+ * `connections/page.tsx:36` idiom), never the `data.ts` facade — the live
+ * branch reads T6's frozen contract directly and feeds `ExploreLive` nothing
+ * but resolved, server-fetched props. The mock branch renders `ExploreMock`
+ * verbatim, with zero props, so the rendered DOM there is unchanged.
+ *
+ * Filters live in the URL (the `TracesSearch`/`LogsExplorer` house pattern):
+ * every read below is scoped to the session's own workspace (D113), and a
+ * request that names a metric/range/agg/group combination the contract would
+ * refuse to answer falls back to an honest empty result instead of crashing —
+ * the UI itself never constructs such a combination, so this only guards a
+ * hand-edited or stale link.
+ */
+export default async function ExplorePage({
+  searchParams,
 }: {
-  label: string;
-  options: { value: T; label: string }[];
-  value: T;
-  onChange: (v: T) => void;
+  searchParams: Promise<{ [key: string]: string | string[] | undefined }>;
 }) {
-  return (
-    <div>
-      <p className="mb-1.5 font-mono text-[10px] uppercase tracking-widest text-faint">{label}</p>
-      <div className="flex flex-wrap gap-1.5">
-        {options.map((o) => (
-          <button
-            key={o.value}
-            type="button"
-            onClick={() => onChange(o.value)}
-            className={`rounded-md border px-2.5 py-1 font-mono text-[10.5px] ${
-              value === o.value
-                ? "border-line-strong bg-raised text-ink"
-                : "border-line text-faint hover:text-ink"
-            }`}
-          >
-            {o.label}
-          </button>
-        ))}
-      </div>
-    </div>
-  );
-}
+  if (dataMode !== "live") return <ExploreMock />;
+  await connection();
 
-export default function ExplorePage() {
-  const { addWidget, dashboards } = useWorkspace();
-  const [query, setQuery] = useState<ExploreQuery>({
-    metricId: metricCatalog[0].id,
-    service: "all",
-    env: "prod",
-    groupBy: "none",
-    rangeHours: 6,
-  });
-  const [chartType, setChartType] = useState<"line" | "area" | "bar">("line");
-  const [showSave, setShowSave] = useState(false);
-  const [toast, setToast] = useState<{ dashboardId: string; dashboardName: string } | null>(null);
+  const session = await getSessionContext();
+  if (!session) redirect("/login");
 
-  useEffect(() => {
-    if (!toast) return;
-    const timer = setTimeout(() => setToast(null), 5000);
-    return () => clearTimeout(timer);
-  }, [toast]);
+  const ch = forWorkspace(session.workspaceId);
+  // Two independent reads, in parallel (the `connections/page.tsx:50` idiom):
+  // the discovered catalog and the workspace's active-series count, which the
+  // cap banner states from `metric_series` itself rather than inferring.
+  const [catalog, active] = await Promise.all([listMetricCatalog(ch), activeSeriesCount(ch)]);
 
-  const metric = metricCatalog.find((m) => m.id === query.metricId) ?? metricCatalog[0];
+  const params = await searchParams;
+  const requestedMetric = typeof params.metric === "string" ? params.metric : undefined;
+  const requestedType = typeof params.type === "string" ? params.type : undefined;
+  // D384: `type` joins `metric` as the selection key — a name D378 genuinely
+  // dual-emitted as two types needs BOTH to name one catalog row. An exact
+  // pair match wins; a name-only match (an older deep link, or `type` missing)
+  // still resolves to something rather than falling straight to the default,
+  // same honest-degrade posture as every other param below.
+  const selected =
+    catalog.find((m) => m.name === requestedMetric && m.type === requestedType) ??
+    catalog.find((m) => m.name === requestedMetric) ??
+    catalog[0] ??
+    null;
 
-  const set = <K extends keyof ExploreQuery>(key: K, value: ExploreQuery[K]) =>
-    setQuery((q) => ({ ...q, [key]: value }));
+  if (!selected) {
+    return (
+      <ExploreLive
+        catalog={catalog}
+        query={null}
+        result={{ series: [], totalGroups: 0 }}
+        seriesCap={SERIES_CAP}
+        capReached={active >= SERIES_CAP}
+      />
+    );
+  }
 
-  const onPick = (dashboardId: string) => {
-    const dashboardName = dashboards.find((d) => d.id === dashboardId)?.name ?? "dashboard";
-    addWidget(dashboardId, {
-      title: `${metric.name}${query.groupBy !== "none" ? ` by ${query.groupBy}` : ""}`,
-      kind: chartType === "bar" ? "topn" : "timeseries",
-      metricId: query.metricId,
-      groupBy: query.groupBy,
-    });
-    setToast({ dashboardId, dashboardName });
-  };
+  const range: MetricRange = isRange(params.range) ? params.range : "1h";
+  const requestedAgg = typeof params.agg === "string" ? params.agg : undefined;
+  const agg: MetricAgg =
+    requestedAgg && (VALID_AGGS[selected.type] as string[]).includes(requestedAgg)
+      ? (requestedAgg as MetricAgg)
+      : VALID_AGGS[selected.type][0];
+  const requestedGroup = typeof params.group === "string" ? params.group : undefined;
+  const groupBy = requestedGroup && selected.attrKeys.includes(requestedGroup) ? requestedGroup : null;
+
+  const query: MetricSeriesQuery = { metric: selected.name, type: selected.type, range, agg, groupBy, filters: {} };
+  const result = await queryMetricSeries(ch, query);
 
   return (
-    <div className="flex h-full">
-      <aside className="w-60 shrink-0 overflow-y-auto border-r border-line px-3 py-4">
-        <h2 className="mb-2 px-1 font-mono text-[11px] uppercase tracking-widest text-faint">Metrics</h2>
-        {layerOrder.map((layer) => {
-          const metrics = metricCatalog.filter((m) => m.layer === layer);
-          if (metrics.length === 0) return null;
-          return (
-            <div key={layer} className="mb-3">
-              <p className="mb-1 px-1 font-mono text-[9.5px] uppercase tracking-widest text-faint">
-                {layerLabel[layer]}
-              </p>
-              <div className="space-y-0.5">
-                {metrics.map((m) => (
-                  <button
-                    key={m.id}
-                    type="button"
-                    onClick={() => set("metricId", m.id)}
-                    className={`flex w-full items-center justify-between gap-2 rounded-md px-2 py-1.5 text-left font-mono text-[11.5px] ${
-                      m.id === query.metricId ? "bg-raised text-ink" : "text-mid hover:bg-raised hover:text-ink"
-                    }`}
-                  >
-                    <span className="truncate">{m.name}</span>
-                    <span className="shrink-0 font-mono text-[9.5px] text-faint">{m.unit}</span>
-                  </button>
-                ))}
-              </div>
-            </div>
-          );
-        })}
-      </aside>
-
-      <main className="flex-1 overflow-y-auto px-5 py-4">
-        <div className="mb-4 flex items-center justify-between gap-2">
-          <div>
-            <h1 className="font-display text-[19px] font-semibold text-ink">{metric.name}</h1>
-            <p className="mt-0.5 font-mono text-[11px] text-faint">{metric.unit}</p>
-          </div>
-          <button
-            type="button"
-            onClick={() => setShowSave(true)}
-            className="flex items-center gap-1.5 rounded-md border border-line-strong bg-raised px-3 py-1.5 font-mono text-[12px] text-ink hover:bg-overlay"
-          >
-            <Plus className="h-3.5 w-3.5" />
-            Save to dashboard
-          </button>
-        </div>
-
-        <div className="mb-4 flex flex-wrap gap-5 rounded-lg border border-line bg-surface p-3.5">
-          <ChipGroup
-            label="service"
-            options={serviceOptions.map((s) => ({ value: s, label: s }))}
-            value={query.service}
-            onChange={(v) => set("service", v)}
-          />
-          <ChipGroup
-            label="env"
-            options={[
-              { value: "prod", label: "prod" },
-              { value: "staging", label: "staging" },
-            ]}
-            value={query.env}
-            onChange={(v) => set("env", v)}
-          />
-          <ChipGroup label="group by" options={GROUP_OPTIONS} value={query.groupBy} onChange={(v) => set("groupBy", v)} />
-          <ChipGroup
-            label="range"
-            options={RANGE_OPTIONS}
-            value={query.rangeHours}
-            onChange={(v) => set("rangeHours", v)}
-          />
-          <ChipGroup label="chart" options={CHART_OPTIONS} value={chartType} onChange={setChartType} />
-        </div>
-
-        <div className="rounded-lg border border-line bg-surface p-3.5">
-          <ExploreChart query={query} chartType={chartType} />
-        </div>
-      </main>
-
-      {showSave && <SaveToDashboardModal onPick={onPick} onClose={() => setShowSave(false)} />}
-
-      {toast && (
-        <div className="fixed bottom-4 right-4 z-50 flex items-center gap-3 rounded-lg border border-line bg-overlay px-4 py-3">
-          <p className="font-mono text-[11.5px] text-ink">Widget saved to {toast.dashboardName}</p>
-          <Link
-            href={`/app/dashboards/${toast.dashboardId}`}
-            className="font-mono text-[11.5px] text-faint underline hover:text-ink"
-          >
-            View
-          </Link>
-        </div>
-      )}
-    </div>
+    <ExploreLive
+      catalog={catalog}
+      query={query}
+      result={result}
+      seriesCap={SERIES_CAP}
+      capReached={active >= SERIES_CAP}
+    />
   );
 }

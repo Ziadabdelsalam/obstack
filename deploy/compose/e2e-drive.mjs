@@ -185,6 +185,7 @@ import {
   EVIDENCE_FREE_QUOTA,
   LOG_BODY_TOKEN,
   LOG_TRACE,
+  metricNames,
   PROMPT_TRACE,
   SPAN_PROMPT_TOKEN,
 } from "./exit-seed.mjs";
@@ -1988,9 +1989,9 @@ try {
     `${prefix}… is listed as a connected source`,
   );
   check(
-    "the counts say what they are: cumulative and dated, errors receive-path only, quota as sampling and not a fault (D260/D219)",
+    "the counts say what they are: cumulative and dated, errors receive-path or cardinality-cap drops, quota as sampling and not a fault (D260/D219)",
     /accepted and sampled are cumulative per key, as of \d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC/.test(hub.text) &&
-      hub.text.includes("errors are receive-path only") &&
+      hub.text.includes("errors are receive-path or cardinality-cap drops") &&
       hub.text.includes("sampled records are the plan's quota, not a fault") &&
       /last event \d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC/.test(hub.text) &&
       hub.text.includes("0 sampled") &&
@@ -2451,6 +2452,122 @@ try {
     ingestTab.text.slice(0, 240),
   );
 
+  // -------------------------------------------------------- metrics (S6.1)
+  /**
+   * PLACED HERE, and the placement is load-bearing. `RecordAcceptedMetrics`
+   * (D368) increments the SAME `api_key_health.accepted` column the two claims
+   * immediately above read EXACTLY — the connections hub's `${FIRST_SPANS}
+   * accepted` and the Data & ingest tab's `EXPECTED_ACCEPTED` — so seven data
+   * points arriving before either of them would make both of them wrong about
+   * a number that is right. Nothing below asserts an accepted count: the
+   * remaining usage claims are over `usage_ledger`, which metrics never touch
+   * (D365/D368 — metrics are not billed, and quota cannot fire on them, which
+   * is also why this step works at all while alice is over her free quota).
+   */
+  step("alice's metrics go in the FRONT DOOR: three OTLP temperaments on the real /v1/metrics (D370)");
+  const metricsSeed = spawnSync(
+    "node",
+    [
+      join(composeDir, "exit-seed.mjs"),
+      "--leg",
+      "metrics",
+      "--workspace",
+      alice.workspaceId,
+      "--label",
+      ACTORS.alice.label,
+    ],
+    {
+      cwd: repoRoot,
+      // The key travels in the ENVIRONMENT and never in argv: `ps` publishes a
+      // command line to every process on the box, and the hygiene step at the
+      // end asserts this token reached nothing this run printed or wrote.
+      env: { ...process.env, SEED_METRICS_TOKEN: firstToken, INGEST_OTLP },
+      encoding: "utf8",
+    },
+  );
+  writeFileSync(join(OUT, "seed-metrics-alice.json"), `${metricsSeed.stdout ?? ""}${metricsSeed.stderr ?? ""}`);
+  must(metricsSeed.status === 0, `exit-seed.mjs --leg metrics failed: ${metricsSeed.stderr}`);
+  const metricsSent = JSON.parse(metricsSeed.stdout);
+  console.log(`   ${metricsSeed.stdout.trim().split("\n").join("\n   ")}`);
+  const aliceMetrics = metricNames(ACTORS.alice.label);
+  check(
+    "the export the seeder sent is the one this drive is about to open a page on — same three names, from one definition (D115)",
+    metricsSent.expectations.map((e) => e.name).sort().join(",") === Object.values(aliceMetrics).sort().join(","),
+    `${metricsSent.expectations.map((e) => `${e.name}:${e.type}`).join(" ")} vs ${Object.values(aliceMetrics).join(" ")}`,
+  );
+
+  /**
+   * The contract answers through the app's own modules, which this drive —
+   * plain node — cannot import: `metrics-checks.ts` runs under tsx with the
+   * SAME environment the server is served with, prints its claims as JSON, and
+   * every one of them is re-stated here so the transcript carries the claim
+   * and not merely somebody else's exit code (which is also asserted).
+   */
+  function metricsChecks(actor, answering, extra = []) {
+    const run = spawnSync(
+      "npx",
+      [
+        "tsx",
+        "--tsconfig",
+        "apps/web/tsconfig.json",
+        "--conditions",
+        "react-server",
+        join(composeDir, "metrics-checks.ts"),
+        actor.workspaceId,
+        JSON.stringify(metricsSent.expectations),
+        ...extra,
+      ],
+      { cwd: repoRoot, env: appEnv, encoding: "utf8" },
+    );
+    writeFileSync(
+      join(OUT, `metrics-checks-${actor.label}.json`),
+      `${run.stdout ?? ""}${run.stderr ?? ""}`,
+    );
+    must(
+      run.stdout?.trim().startsWith("{"),
+      `metrics-checks.ts printed no claims for ${actor.workspaceId}: ${run.stderr}`,
+    );
+    const { claims } = JSON.parse(run.stdout);
+    for (const c of claims) check(c.claim, c.ok, c.detail);
+    // An empty or short claim list reads exactly like a green one, so what is
+    // checked is the TIE — every subject this call was made about came back
+    // named — plus the exit code, which is the same verdict by another route.
+    check(
+      `the checks module answered for all ${answering.length} subject(s) of that run, and agrees with its own exit code`,
+      answering.every((m) => claims.some((c) => c.metric === m)) &&
+        run.status === (claims.every((c) => c.ok) ? 0 : 1),
+      `${claims.length} claim(s) [${[...new Set(claims.map((c) => c.metric))].join(", ")}] · exit ${run.status}`,
+    );
+    return claims;
+  }
+  metricsChecks(alice, metricsSent.expectations.map((e) => `${e.name}:${e.type}`));
+  // The tenancy half, asked of the OTHER stranger with ALICE's expectations:
+  // bob sent no metrics at all, so his catalog naming any of hers would be the
+  // discovery path reading across the boundary (D142).
+  metricsChecks(bob, ["tenancy"], ["--absent"]);
+
+  step("/app/explore is live-wired: it renders the metric that arrived, with no SAMPLE badge (D21/D367)");
+  const explore = await pageFor(
+    alice,
+    `/app/explore?metric=${encodeURIComponent(aliceMetrics.gauge)}&type=gauge&range=1h&agg=avg`,
+  );
+  const exploreH1 = explore.html.match(/<h1[^>]*>([^<]*)<\/h1>/)?.[1];
+  check(
+    "the deep link resolves server-side to that metric's own page — the <h1> is the name the export sent",
+    explore.status === 200 && exploreH1 === aliceMetrics.gauge,
+    `HTTP ${explore.status} · <h1>${exploreH1}</h1> · sent ${aliceMetrics.gauge}`,
+  );
+  check(
+    "and it carries no SAMPLE badge — while /app/costs above still does, which is what makes this absence a fact",
+    !explore.html.includes("SAMPLE DATA"),
+    "badge present on a live-wired route",
+  );
+  check(
+    "no cardinality-cap banner on a three-series workspace: the cap is read from metric_series, never assumed",
+    !explore.html.includes("Series limit reached"),
+    "the cap banner rendered for a workspace nowhere near it",
+  );
+
   step("a plan change round-trips: checkout → return → reconcile → redirect → ONE paint says Pro (D168/D189)");
   await openTab(alice, "Billing & usage", `document.querySelector("main")?.textContent.includes("change plan")`);
   must(await alice.evaluate(clickText("Upgrade to Pro")), "the Billing & usage tab offers no Pro upgrade");
@@ -2701,6 +2818,11 @@ try {
     "/app/settings",
     "/app/onboarding",
     "/app/connections",
+    // The list is `liveWiredRoutes` itself (apps/web/src/lib/live-routes.ts):
+    // a route that reads the workspace's real data is a route an anonymous
+    // browser must not reach, so wiring one here is the other half of wiring
+    // it there — /app/explore joined that list this sprint (D21/D367).
+    "/app/explore",
   ]) {
     await alice.goto(path, `document.body.textContent.length > 0`);
     const state = await alice.evaluate(STATE);

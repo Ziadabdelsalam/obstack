@@ -138,6 +138,83 @@ func TestDropsCountPerReasonAndNeverMeterUsage(t *testing.T) {
 	}
 }
 
+// Metric points meter into the key's health cell only — accepted and its last
+// event, exactly as RecordAccepted's health half does — and never into the
+// ledger: metrics carry no quota and RecordAccepted (the ledger writer) is
+// D368-unusable for them (metering.go:244-270 writes usage_ledger, which has no
+// column for metric points). The proof T3 owns: RecordAcceptedMetrics writes
+// zero usage_ledger cells, so a quota decision reading the ledger can never see
+// a metrics event.
+func TestRecordAcceptedMetricsWritesZeroLedgerCells(t *testing.T) {
+	m, flush, clock := newTestMeter(t)
+
+	m.RecordAcceptedMetrics("ws_alice", "key_a", 7)
+	m.RecordAcceptedMetrics("ws_alice", "key_a", 3)
+
+	mustFlush(t, m)
+	b := lastBatch(t, flush)
+
+	if len(b.ledger) != 0 {
+		t.Errorf("RecordAcceptedMetrics wrote %d ledger cells, want 0: %+v", len(b.ledger), b.ledger)
+	}
+	got := b.health[healthKey{workspaceID: "ws_alice", keyID: "key_a"}]
+	if got.accepted != 10 {
+		t.Errorf("health accepted = %d, want 10 (7+3)", got.accepted)
+	}
+	if !got.lastEventAt.Equal(clock.t) {
+		t.Errorf("last event = %s, want the latest accept at %s", got.lastEventAt, clock.t)
+	}
+	// Nothing else in the cell moved — this is an accepted-and-liveness write only.
+	if got.droppedDecode != 0 || got.droppedUnsupported != 0 || got.droppedQuota != 0 || got.droppedCardinality != 0 {
+		t.Errorf("RecordAcceptedMetrics touched a drop column: %+v", got)
+	}
+}
+
+// A count with no key or workspace has no committable home, the same rule
+// RecordAccepted follows.
+func TestRecordAcceptedMetricsSkipsKeylessCounts(t *testing.T) {
+	m, flush, _ := newTestMeter(t)
+
+	m.RecordAcceptedMetrics("ws_alice", "", 5)
+	m.RecordAcceptedMetrics("", "key_a", 5)
+	m.RecordAcceptedMetrics("ws_alice", "key_a", 0)
+
+	// Every call above was skipped, so there is nothing to flush at all — the
+	// same "nothing accumulated is nothing to write" rule TestEmptyFlushIsNoTransaction
+	// proves.
+	b := m.take()
+	if !b.empty() {
+		t.Errorf("a keyless or workspace-less metrics count was accumulated: %+v", b)
+	}
+	if err := m.Flush(context.Background()); err != nil {
+		t.Fatalf("Flush: %v", err)
+	}
+	if len(flush.batches) != 0 {
+		t.Errorf("an empty accumulator opened %d transactions", len(flush.batches))
+	}
+}
+
+// The cardinality drop reason (packet §2, D368) lands in its own column, beside
+// the other three, and never in the ledger.
+func TestDropCardinalityCountsInItsOwnColumn(t *testing.T) {
+	m, flush, _ := newTestMeter(t)
+
+	m.RecordDropped("ws_alice", "key_a", DropCardinality, 12)
+	m.RecordDropped("ws_alice", "key_a", DropQuota, 1)
+
+	mustFlush(t, m)
+	b := lastBatch(t, flush)
+
+	if len(b.ledger) != 0 {
+		t.Errorf("a drop metered usage: %+v", b.ledger)
+	}
+	got := b.health[healthKey{workspaceID: "ws_alice", keyID: "key_a"}]
+	want := healthCell{droppedQuota: 1, droppedCardinality: 12}
+	if got != want {
+		t.Errorf("health cell = %+v, want %+v", got, want)
+	}
+}
+
 // A failed flush costs nothing: the counts come back, add to whatever arrived
 // during the attempt, and go out whole on the next tick. This is what makes the
 // ledger's number right after a Postgres blip rather than merely eventually

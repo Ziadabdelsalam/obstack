@@ -37,6 +37,7 @@ func TestEmbeddedMigrationsSplitAsExpected(t *testing.T) {
 		"0002_logs.sql":                1,
 		"0003_trace_summaries.sql":     2,
 		"0004_retention_outer_ttl.sql": 3,
+		"0005_metrics.sql":             7,
 	}
 	names, err := migrations.FS.ReadDir(".")
 	if err != nil {

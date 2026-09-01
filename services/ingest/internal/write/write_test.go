@@ -217,12 +217,14 @@ func TestFullQueueShedsAndCounts(t *testing.T) {
 	b.close(context.Background())
 }
 
-// D263: Writer.Close(ctx) hands the same ctx to both batchers' close, spent
-// sequentially — spans first, then logs with whatever ctx has left. Before
-// the fix each batcher retried under its own independent 30s-per-attempt
-// clock (worst case ~181.5s combined, uncoordinated); a shared deadline means
-// the pair as a whole can never run past it.
-func TestWriterCloseSharesOneDeadlineAcrossBothBatchers(t *testing.T) {
+// D263: Writer.Close(ctx) hands the same ctx to every batcher's close, spent
+// sequentially — spans, then logs, then metrics, each with whatever ctx has
+// left. Before the fix each batcher retried under its own independent
+// 30s-per-attempt clock (worst case ~181.5s combined, uncoordinated); a shared
+// deadline means the group as a whole can never run past it. All three block
+// until their ctx ends, so a batcher closed on anything but the shared
+// deadline hangs here rather than passing quietly.
+func TestWriterCloseSharesOneDeadlineAcrossEveryBatcher(t *testing.T) {
 	blockUntilDone := func(ctx context.Context) error {
 		<-ctx.Done()
 		return ctx.Err()
@@ -234,9 +236,13 @@ func TestWriterCloseSharesOneDeadlineAcrossBothBatchers(t *testing.T) {
 	w.logs = newBatcher("logs", 1000, time.Hour,
 		func(r mapping.LogRow) string { return r.WorkspaceID },
 		func(ctx context.Context, _ []mapping.LogRow) error { return blockUntilDone(ctx) })
+	w.metrics = newBatcher("metric_points", 1000, time.Hour,
+		func(r mapping.MetricRow) string { return r.WorkspaceID },
+		func(ctx context.Context, _ []mapping.MetricRow) error { return blockUntilDone(ctx) })
 
 	w.spans.enqueue(spanRows(1))
 	w.logs.enqueue([]mapping.LogRow{{WorkspaceID: "ws_test"}})
+	w.metrics.enqueue([]mapping.MetricRow{{WorkspaceID: "ws_test"}})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
 	defer cancel()
@@ -293,6 +299,9 @@ func TestWriterCloseDeadlineReachesBothBatchersBeforeEitherDrains(t *testing.T) 
 		func(r mapping.SpanRow) string { return r.WorkspaceID }, spansInsert)
 	w.logs = newBatcher("logs", 1, time.Hour,
 		func(r mapping.LogRow) string { return r.WorkspaceID }, logsInsert)
+	w.metrics = newBatcher("metric_points", 1, time.Hour,
+		func(r mapping.MetricRow) string { return r.WorkspaceID },
+		func(context.Context, []mapping.MetricRow) error { return nil })
 
 	spanRow := spanRows(1)
 	spanRow[0].WorkspaceID = ws

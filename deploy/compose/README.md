@@ -198,8 +198,9 @@ then builds the production app itself, serves it at `http://localhost:3210`
 `__Secure-` session cookie the one the product actually issues, D119), and
 drives one throwaway Chrome profile per stranger over CDP. It prints one
 `ok`/`FAIL` line per claim, exits non-zero on any failure, and leaves its
-artifacts — build log, server log, both seed outputs, the transcript — in a temp
-directory it names (override with `OUT_DIR=...`).
+artifacts — build log, server log, both seed outputs, the metrics seed output,
+both metrics-checks outputs, the transcript — in a temp directory it names
+(override with `OUT_DIR=...`).
 
 What it asserts, in order:
 
@@ -258,7 +259,7 @@ What it asserts, in order:
 - **connections shows that key** — `/app/connections` lists the key events
   actually arrived on (the settings key, which nothing was ever sent on, is a
   credential and is *not* listed), with the D100 counters as they are: cumulative
-  totals with the instant they were counted at, errors that are receive-path only
+  totals with the instant they were counted at, errors that are receive-path or cardinality-cap drops
   and quota drops rendered as sampling rather than as faults (D218/D219), and no
   invented per-minute rate anywhere on the panel. Neither of the two routes this
   sprint registered carries a `SAMPLE DATA` badge, while `/app/costs` still does;
@@ -280,6 +281,22 @@ What it asserts, in order:
   route's statement guards are then the same two numbers. The step runs inside
   the metering propagation wait on purpose (D207): that sleep is computed from an
   absolute deadline, so work done first costs the run nothing;
+- **alice's metrics land through the FRONT DOOR, and the query contract answers
+  for them (D370)** — a gauge, a cumulative sum and a cumulative histogram are
+  exported over OTLP/JSON to the real `/v1/metrics` with alice's own key, never
+  a direct ClickHouse insert. `metrics-checks.ts` then asks the frozen contract
+  the app itself answers with, and every claim it returns is re-stated in the
+  transcript: the catalog DISCOVERS each metric by its (name, type), with the
+  unit and attribute keys the export carried; the series comes back as 60
+  one-minute buckets over the last hour, totalGroups one (D381); the exact
+  expected value lands in the one bucket the export stamped, and every other
+  bucket reads null rather than 0; grouped by `service.name` it collapses to
+  the ONE group the export's resource named. Asked with alice's expectations,
+  bob's own catalog lists none of them — discovery is per tenant here too
+  (D142). Then `/app/explore` renders the metric that arrived, the `<h1>`
+  naming it and no `SAMPLE DATA` badge on the page, the D21 flip this sprint
+  wires, while `/app/costs` — the unwired positive control the badge check
+  above uses — still carries one;
 - **token hygiene** — both keys the run issued through the UI are searched for,
   as literals, in everything the drive printed and everything it wrote: stdout,
   the transcript, the server log, the build log, every artifact beside them. The
@@ -348,15 +365,32 @@ default — the workspace, and the content label woven into that seeding's words
 node deploy/compose/exit-seed.mjs --workspace ws_1a2b3c --label zzalice
 ```
 
+The metrics leg (D370) is separate and additive, and its key is a live
+`ok_live_` token: a token in argv sits in every process listing on the box, so
+it goes in the environment instead and never on the command line — and the
+drive's own hygiene sweep then asserts it reached nothing that run printed or
+wrote. The leg POSTs to ingest's real OTLP front door and touches ClickHouse
+for nothing:
+
+```bash
+SEED_METRICS_TOKEN=ok_live_… INGEST_OTLP=http://127.0.0.1:4318 \
+  node deploy/compose/exit-seed.mjs --workspace ws_1a2b3c --label zzalice --leg metrics
+```
+
 The label goes on content only — names, bodies, prompts — and never on an
 identifier, because the filter legs match services and pods exactly; and never
 on an empty field, because the carrier row's empty body is the leg.
 
-The seeder refuses to run twice into a non-empty workspace. It cannot delete —
-the ingest user has no mutation grant — so a second run would duplicate every
-row and silently inflate the counts the drive checks. Each run signs up new
-strangers, so it seeds workspaces nobody has seeded before; `docker compose
---profile '*' down -v` is how you start the whole thing from nothing.
+The seeder refuses to run twice into a non-empty workspace — the trace/log leg
+only. It cannot delete — the ingest user has no mutation grant — so a second
+run would duplicate every row and silently inflate the counts the drive
+checks. The metrics leg has no such guard: a second run by hand carries a new
+start time, so ingest reads it as a stream restart (D363 §1's reset rule)
+rather than a continuation of the series already there, and the expectations
+that run prints — the sum's 60 among them — stop describing what the store
+holds. Each run signs up new strangers, so it seeds workspaces nobody has
+seeded before; `docker compose --profile '*' down -v` is how you start the
+whole thing from nothing.
 
 A driven stack is also not a stack the test suites can run against: the drive
 lowers two columns of the free plan with no undo — the event quota

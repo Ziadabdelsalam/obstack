@@ -46,6 +46,14 @@ test("/app/onboarding and /app/connections are live-wired, exactly", () => {
   assert.equal(isLiveWiredRoute("/app/connections/anything"), false);
 });
 
+// S6.1 T7 (D367/D21): explore reads T6's frozen metrics contract in live mode,
+// so the SAMPLE badge must be gone there — registration, not the page (S2.0
+// L1), same as every other entry above.
+test("/app/explore is live-wired, exactly", () => {
+  assert.equal(isLiveWiredRoute("/app/explore"), true);
+  assert.equal(isLiveWiredRoute("/app/explore/anything"), false);
+});
+
 // D205: the e2e drive's SAMPLE-badge positive control is `/app/costs`, and this
 // sprint wires neither it nor any other unwired route — a registration that
 // silently vacated that control would leave the drive asserting nothing. The

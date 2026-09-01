@@ -168,6 +168,7 @@ type health struct {
 	droppedDecode      int64
 	droppedUnsupported int64
 	droppedQuota       int64
+	droppedCardinality int64
 	lastEventAt        *time.Time
 	updatedAt          time.Time
 }
@@ -183,8 +184,8 @@ func healthRow(ctx context.Context, t *testing.T, dsn, keyID string) health {
 
 	var h health
 	if err := conn.QueryRow(ctx,
-		"SELECT accepted, dropped_decode, dropped_unsupported, dropped_quota, last_event_at, updated_at FROM api_key_health WHERE key_id = $1",
-		keyID).Scan(&h.accepted, &h.droppedDecode, &h.droppedUnsupported, &h.droppedQuota, &h.lastEventAt, &h.updatedAt); err != nil {
+		"SELECT accepted, dropped_decode, dropped_unsupported, dropped_quota, dropped_cardinality, last_event_at, updated_at FROM api_key_health WHERE key_id = $1",
+		keyID).Scan(&h.accepted, &h.droppedDecode, &h.droppedUnsupported, &h.droppedQuota, &h.droppedCardinality, &h.lastEventAt, &h.updatedAt); err != nil {
 		t.Fatalf("read health for %s: %v", keyID, err)
 	}
 	return h
@@ -288,6 +289,64 @@ func TestFlushWritesLedgerAndHealthRows(t *testing.T) {
 	fresh := clock.t.Truncate(time.Minute)
 	if got := windowAccepted(ctx, t, dsn, "key_alice", fresh); got != 2 {
 		t.Errorf("window bucket at %s = %d accepted, want 2", fresh, got)
+	}
+}
+
+// The D368 proof against a real server: RecordAcceptedMetrics writes the key's
+// health cell and never a usage_ledger row, and DropCardinality lands in its
+// own real column — the two claims that matter to the "quota cannot fire on
+// metrics" guarantee T4 builds on (RecordAccepted, the ledger writer, is never
+// called on the metrics path).
+func TestRecordAcceptedMetricsWritesNoLedgerRowAgainstRealPostgres(t *testing.T) {
+	ctx := requirePostgres(t)
+	dsn := migratedSchema(ctx, t)
+	seed(ctx, t, dsn)
+
+	clock := testClock()
+	m := openMeter(ctx, t, dsn, clock)
+
+	m.RecordAcceptedMetrics("ws_alice", "key_alice", 25000)
+	m.RecordDropped("ws_alice", "key_alice", DropCardinality, 4)
+	if err := m.Flush(ctx); err != nil {
+		t.Fatalf("Flush: %v", err)
+	}
+
+	var ledgerRows int
+	conn, err := pgx.Connect(ctx, dsn)
+	if err != nil {
+		t.Fatalf("connect postgres: %v", err)
+	}
+	defer conn.Close(ctx)
+	if err := conn.QueryRow(ctx, "SELECT count(*) FROM usage_ledger WHERE workspace_id = 'ws_alice'").Scan(&ledgerRows); err != nil {
+		t.Fatalf("count ledger rows: %v", err)
+	}
+	if ledgerRows != 0 {
+		t.Errorf("usage_ledger holds %d rows for a workspace that only sent metrics, want 0", ledgerRows)
+	}
+
+	h := healthRow(ctx, t, dsn, "key_alice")
+	if h.accepted != 25000 {
+		t.Errorf("health accepted = %d, want 25000", h.accepted)
+	}
+	if h.droppedCardinality != 4 {
+		t.Errorf("health dropped_cardinality = %d, want 4", h.droppedCardinality)
+	}
+	if h.lastEventAt == nil || !h.lastEventAt.UTC().Equal(clock.t) {
+		t.Errorf("last_event_at = %v, want the metrics accept at %s", h.lastEventAt, clock.t)
+	}
+
+	// The windowed row (D260) written by the same flush, read back from the
+	// server: its UPSERT gained the new column in a different position from the
+	// cumulative one, and every column there is BIGINT, so a swapped parameter
+	// would land silently as a wrong count rather than as an error.
+	var windowAcceptedCount, windowCardinality int64
+	if err := conn.QueryRow(ctx,
+		"SELECT accepted, dropped_cardinality FROM api_key_health_windows WHERE key_id = 'key_alice' AND bucket_start = $1",
+		clock.t.Truncate(time.Minute)).Scan(&windowAcceptedCount, &windowCardinality); err != nil {
+		t.Fatalf("read window row: %v", err)
+	}
+	if windowAcceptedCount != 25000 || windowCardinality != 4 {
+		t.Errorf("window bucket = %d accepted / %d dropped_cardinality, want 25000/4", windowAcceptedCount, windowCardinality)
 	}
 }
 

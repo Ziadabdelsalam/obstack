@@ -1,7 +1,7 @@
 // Package retention enforces per-tier retention on the D7 tables (D252): a
 // fixed-cadence sweep that reads each workspace's plan from Postgres and
-// deletes its rows past `plans.retention_days` from spans, logs and
-// trace_summaries. The table-level 90-day TTL (migration 0004) stays behind it
+// deletes its rows past `plans.retention_days` from every swept table (`deletes`
+// below). The table-level 90-day TTL (migrations 0004/0005) stays behind it
 // as the outer bound, so a sweep that stops running degrades to over-delivery —
 // the benign direction — never to unbounded growth.
 //
@@ -44,6 +44,16 @@
 // a trace straddling the cutoff loses its older spans while its summary
 // survives to its own expiry — the same semantic the flat TTL had. The sweep
 // deletes telemetry rows, never workspaces; D180's gate does not fire (D264d).
+//
+// D363 packet §4 (T5) extends the same mechanism, in place, to the three
+// metrics objects that carry the 90-day outer TTL: metric_points_1m and
+// metric_points_1h key on max_seen_date (the summaries' own semantic —
+// AggregatingMergeTree, same as trace_summaries), and metric_series keys on
+// last_seen so a workspace's catalog forgets series older than its plan's
+// retention. Raw metric_points is DELIBERATELY NOT in this list: it is an
+// implementation buffer (MV source + re-derivation), not a product promise,
+// and carries its own flat 3-day table TTL — sweeping it would be redundant
+// work enforcing a tier no contract states.
 package retention
 
 import (
@@ -81,7 +91,7 @@ const (
 	// would abort — loudly and forever, with retention never enforced for that
 	// workspace — the first time one workspace's backlog needs more than a
 	// minute of masking. The profile sets a default, not a constraint, so the
-	// sweep raises it for its own three statements and nothing else.
+	// sweep raises it for its own delete statements and nothing else.
 	statementTimeout = 15 * time.Minute
 
 	// planQueryTimeout bounds the Postgres read that starts a sweep.
@@ -98,16 +108,23 @@ const plansSQL = `
 	  JOIN plans p ON p.id = COALESCE(wp.plan_id, 'free')
 	 ORDER BY w.id`
 
-// The three deletes. Predicates match each table's own time column; the
-// summaries cut on max_seen_date per the retained semantic above. Lightweight
-// DELETE needs no system-table access — deliberate, because the ingest role
-// has none (measured, CH6).
+// The deletes, one per swept table. Predicates match each table's own time
+// column; the summaries cut on max_seen_date per the retained semantic above.
+// Lightweight DELETE needs no system-table access — deliberate, because the
+// ingest role has none (measured, CH6).
 //
 // spans and logs compare instants, which carry their own timezone; the
 // summaries compare calendar dates, and max_seen_date is max(toDate(start_time))
 // over a UTC column — so its cutoff is computed in UTC too rather than in
 // whatever timezone the server happens to run in, which would move the cutoff a
 // day in either direction, one of which is early deletion.
+//
+// metric_points_1m/_1h cut on max_seen_date for the same reason trace_summaries
+// does (calendar date, no column timezone, so the cutoff is computed in UTC
+// explicitly); metric_series cuts on last_seen, an instant column that carries
+// its own UTC timezone like start_time/timestamp above. metric_points (raw) is
+// intentionally absent from this list — packet §4: implementation buffer, flat
+// 3-day table TTL only, never plan-swept.
 var deletes = []struct {
 	table string
 	sql   string
@@ -115,6 +132,9 @@ var deletes = []struct {
 	{"spans", `DELETE FROM obstack.spans WHERE workspace_id = ? AND start_time < now() - toIntervalDay(?)`},
 	{"logs", `DELETE FROM obstack.logs WHERE workspace_id = ? AND timestamp < now() - toIntervalDay(?)`},
 	{"trace_summaries", `DELETE FROM obstack.trace_summaries WHERE workspace_id = ? AND max_seen_date < toDate(now('UTC') - toIntervalDay(?))`},
+	{"metric_points_1m", `DELETE FROM obstack.metric_points_1m WHERE workspace_id = ? AND max_seen_date < toDate(now('UTC') - toIntervalDay(?))`},
+	{"metric_points_1h", `DELETE FROM obstack.metric_points_1h WHERE workspace_id = ? AND max_seen_date < toDate(now('UTC') - toIntervalDay(?))`},
+	{"metric_series", `DELETE FROM obstack.metric_series WHERE workspace_id = ? AND last_seen < now() - toIntervalDay(?)`},
 }
 
 // Ops-only counters, the metering flusher's split: what a customer sees is the
@@ -238,9 +258,9 @@ func (s *Sweeper) Run(ctx context.Context) {
 	}
 }
 
-// Sweep runs one pass: resolve every workspace's tier, delete past it on all
-// three tables. A failed workspace or table is logged, counted and skipped —
-// one workspace's failure must not starve the rest of their retention — and
+// Sweep runs one pass: resolve every workspace's tier, delete past it on every
+// swept table (`deletes` above). A failed workspace or table is logged, counted
+// and skipped — one workspace's failure must not starve the rest of theirs — and
 // everything failed is naturally retried whole next interval, because a sweep
 // carries no state between runs.
 func (s *Sweeper) Sweep(ctx context.Context) {

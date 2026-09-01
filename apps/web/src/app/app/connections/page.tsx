@@ -68,6 +68,7 @@ export default async function ConnectionsPage() {
           droppedDecode: key.droppedDecode,
           droppedUnsupported: key.droppedUnsupported,
           droppedQuota: key.droppedQuota,
+          droppedCardinality: key.droppedCardinality,
           lastEvent: key.lastEventAt ? asMinute(key.lastEventAt) : null,
           // D260: the measured rate crosses as the number it is; the window it
           // was measured over crosses beside it so the panel can say so.

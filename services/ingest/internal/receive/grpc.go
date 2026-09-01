@@ -6,6 +6,7 @@ import (
 	"runtime/debug"
 
 	"go.opentelemetry.io/collector/pdata/plog/plogotlp"
+	"go.opentelemetry.io/collector/pdata/pmetric/pmetricotlp"
 	"go.opentelemetry.io/collector/pdata/ptrace/ptraceotlp"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -32,6 +33,7 @@ func (s *Server) newGRPCServer() *grpc.Server {
 	)
 	ptraceotlp.RegisterGRPCServer(srv, &traceService{srv: s})
 	plogotlp.RegisterGRPCServer(srv, &logService{srv: s})
+	pmetricotlp.RegisterGRPCServer(srv, &metricService{srv: s})
 	return srv
 }
 
@@ -94,4 +96,14 @@ type logService struct {
 func (l *logService) Export(ctx context.Context, req plogotlp.ExportRequest) (plogotlp.ExportResponse, error) {
 	l.srv.consumeLogs(ctx, auth.IdentityFromContext(ctx).WorkspaceID, req)
 	return plogotlp.NewExportResponse(), nil
+}
+
+type metricService struct {
+	pmetricotlp.UnimplementedGRPCServer
+	srv *Server
+}
+
+func (m *metricService) Export(ctx context.Context, req pmetricotlp.ExportRequest) (pmetricotlp.ExportResponse, error) {
+	m.srv.consumeMetrics(ctx, auth.IdentityFromContext(ctx).WorkspaceID, req)
+	return pmetricotlp.NewExportResponse(), nil
 }

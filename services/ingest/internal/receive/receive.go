@@ -27,6 +27,8 @@ import (
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/plog"
 	"go.opentelemetry.io/collector/pdata/plog/plogotlp"
+	"go.opentelemetry.io/collector/pdata/pmetric"
+	"go.opentelemetry.io/collector/pdata/pmetric/pmetricotlp"
 	"go.opentelemetry.io/collector/pdata/ptrace"
 	"go.opentelemetry.io/collector/pdata/ptrace/ptraceotlp"
 	"google.golang.org/grpc"
@@ -43,6 +45,15 @@ import (
 type Consumer interface {
 	ConsumeTraces(ctx context.Context, workspaceID string, td ptrace.Traces)
 	ConsumeLogs(ctx context.Context, workspaceID string, ld plog.Logs)
+
+	// ConsumeMetrics maps and enqueues a decoded metrics export, admitting new
+	// series against the D376 cardinality cap along the way (mapping.MetricRows
+	// decides; this call never does). cardinalityDrops is handed back rather
+	// than counted on the far side of the interface because the health-column
+	// half of that drop (api_key_health.dropped_cardinality) needs the API key
+	// identity, which the writer never sees — countDrop below is the one call
+	// site with both halves.
+	ConsumeMetrics(ctx context.Context, workspaceID string, md pmetric.Metrics) (cardinalityDrops int)
 }
 
 // Meter accumulates what each key carried in and what was refused, for the
@@ -56,6 +67,11 @@ type Consumer interface {
 // one still serves telemetry exactly as it otherwise would.
 type Meter interface {
 	RecordAccepted(workspaceID, keyID string, spans, logs int64)
+	// RecordAcceptedMetrics is RecordAccepted's counterpart for metric points
+	// (D368): health.accepted + lastEventAt only, never the usage ledger —
+	// metrics ingestion writes zero usage_ledger rows and never consults the
+	// quota decision (D365).
+	RecordAcceptedMetrics(workspaceID, keyID string, points int64)
 	RecordDropped(workspaceID, keyID string, reason metering.DropReason, records int64)
 }
 
@@ -233,6 +249,26 @@ func (s *Server) consumeLogs(ctx context.Context, workspaceID string, req plogot
 	s.meterAccepted(identity, 0, int64(accepted))
 }
 
+// consumeMetrics is traces/logs' counterpart for the metrics signal, with one
+// deliberate omission: it never calls overQuota (D365/D368) — metrics carry no
+// quota and ReasonQuota cannot fire on this path, full stop. What it does
+// instead of quota sampling is meter the cardinality-cap drop the Consumer
+// hands back: admission itself lives in mapping (T2's SeriesCache), this
+// method only plumbs the cache in via the Consumer and counts what it reports.
+func (s *Server) consumeMetrics(ctx context.Context, workspaceID string, req pmetricotlp.ExportRequest) {
+	identity := auth.Identity{WorkspaceID: workspaceID, KeyID: auth.IdentityFromContext(ctx).KeyID}
+	md := req.Metrics()
+
+	accepted := md.DataPointCount()
+	if accepted == 0 {
+		return
+	}
+	cardinalityDrops := s.cfg.Consumer.ConsumeMetrics(ctx, workspaceID, md)
+	s.countDrop(identity, dropCardinality, cardinalityDrops)
+	metrics.Accepted.WithLabelValues(workspaceID, metrics.SignalMetrics).Add(float64(accepted))
+	s.meterAcceptedMetrics(identity, int64(accepted))
+}
+
 // quotaSampleRate is head sampling's divisor while a workspace is over its
 // plan's quota (D165): one trace in ten survives. One rate for every plan, no
 // environment variable — a rate an operator can turn is a rate that differs
@@ -331,6 +367,7 @@ var (
 	dropDecode      = dropReason{metrics.ReasonDecode, metering.DropDecode}
 	dropUnsupported = dropReason{metrics.ReasonUnsupported, metering.DropUnsupported}
 	dropQuota       = dropReason{metrics.ReasonQuota, metering.DropQuota}
+	dropCardinality = dropReason{metrics.ReasonCardinality, metering.DropCardinality}
 )
 
 // countDrop records records lost after auth, in both places a drop is visible:
@@ -355,5 +392,11 @@ func (s *Server) countDrop(identity auth.Identity, reason dropReason, records in
 func (s *Server) meterAccepted(identity auth.Identity, spans, logs int64) {
 	if s.cfg.Meter != nil {
 		s.cfg.Meter.RecordAccepted(identity.WorkspaceID, identity.KeyID, spans, logs)
+	}
+}
+
+func (s *Server) meterAcceptedMetrics(identity auth.Identity, points int64) {
+	if s.cfg.Meter != nil {
+		s.cfg.Meter.RecordAcceptedMetrics(identity.WorkspaceID, identity.KeyID, points)
 	}
 }

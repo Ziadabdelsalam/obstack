@@ -9,6 +9,7 @@ import (
 
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/plog"
+	"go.opentelemetry.io/collector/pdata/pmetric"
 	"go.opentelemetry.io/collector/pdata/ptrace"
 	"go.opentelemetry.io/collector/pdata/ptrace/ptraceotlp"
 	"google.golang.org/grpc"
@@ -167,7 +168,11 @@ type countingConsumer struct {
 
 func (c *countingConsumer) ConsumeTraces(context.Context, string, ptrace.Traces) { c.traces.Add(1) }
 func (c *countingConsumer) ConsumeLogs(context.Context, string, plog.Logs)       {}
-func (c *countingConsumer) count() int64                                         { return c.traces.Load() }
+
+// ConsumeMetrics only needs to exist for this codec harness — it never sends
+// metrics — so there is nothing to count and nothing to drop.
+func (c *countingConsumer) ConsumeMetrics(context.Context, string, pmetric.Metrics) int { return 0 }
+func (c *countingConsumer) count() int64                                                { return c.traces.Load() }
 
 func codecTraceFixture() ptrace.Traces {
 	td := ptrace.NewTraces()

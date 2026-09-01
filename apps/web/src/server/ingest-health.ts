@@ -84,6 +84,9 @@ export interface KeyHealth {
   droppedDecode: number;
   droppedUnsupported: number;
   droppedQuota: number;
+  /** Metrics data points refused because the workspace was at its D363 §2
+   *  active-series cap when they would have created a new one. */
+  droppedCardinality: number;
   lastEventAt: Date | null;
   asOf: Date | null;
 }
@@ -203,6 +206,7 @@ const HEALTH_SQL = `
          coalesce(h.dropped_decode, 0)      AS dropped_decode,
          coalesce(h.dropped_unsupported, 0) AS dropped_unsupported,
          coalesce(h.dropped_quota, 0)       AS dropped_quota,
+         coalesce(h.dropped_cardinality, 0) AS dropped_cardinality,
          h.last_event_at AS last_event_at,
          h.updated_at    AS updated_at
     FROM api_keys k
@@ -296,6 +300,7 @@ type HealthRow = {
   dropped_decode: string;
   dropped_unsupported: string;
   dropped_quota: string;
+  dropped_cardinality: string;
   last_event_at: Date | null;
   updated_at: Date | null;
 };
@@ -343,6 +348,7 @@ export async function getIngestHealth(
     droppedDecode: toCount(row.dropped_decode),
     droppedUnsupported: toCount(row.dropped_unsupported),
     droppedQuota: toCount(row.dropped_quota),
+    droppedCardinality: toCount(row.dropped_cardinality),
     lastEventAt: row.last_event_at,
     asOf: row.updated_at,
   }));

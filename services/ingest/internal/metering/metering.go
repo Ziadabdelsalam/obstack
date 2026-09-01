@@ -93,26 +93,28 @@ ON CONFLICT (workspace_id, period_start) DO UPDATE
 	// here: a flush carrying only drops leaves an existing last_event_at alone,
 	// and a key that has never carried an accepted record keeps NULL rather than
 	// rendering as the epoch.
-	healthUpsertSQL = `INSERT INTO api_key_health (key_id, workspace_id, accepted, dropped_decode, dropped_unsupported, dropped_quota, last_event_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7)
+	healthUpsertSQL = `INSERT INTO api_key_health (key_id, workspace_id, accepted, dropped_decode, dropped_unsupported, dropped_quota, dropped_cardinality, last_event_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 ON CONFLICT (key_id) DO UPDATE
   SET accepted = api_key_health.accepted + EXCLUDED.accepted,
       dropped_decode = api_key_health.dropped_decode + EXCLUDED.dropped_decode,
       dropped_unsupported = api_key_health.dropped_unsupported + EXCLUDED.dropped_unsupported,
       dropped_quota = api_key_health.dropped_quota + EXCLUDED.dropped_quota,
+      dropped_cardinality = api_key_health.dropped_cardinality + EXCLUDED.dropped_cardinality,
       last_event_at = GREATEST(api_key_health.last_event_at, EXCLUDED.last_event_at),
       updated_at = now()`
 
 	// The windowed counterpart (D260): the same add-never-set semantics on a
 	// minute bucket, so the rate the product renders is computed from counts
 	// rather than estimated from cumulative totals (D218's refusal answered).
-	windowUpsertSQL = `INSERT INTO api_key_health_windows (key_id, workspace_id, bucket_start, accepted, dropped_decode, dropped_unsupported, dropped_quota)
-VALUES ($1, $2, $3, $4, $5, $6, $7)
+	windowUpsertSQL = `INSERT INTO api_key_health_windows (key_id, workspace_id, bucket_start, accepted, dropped_decode, dropped_unsupported, dropped_quota, dropped_cardinality)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 ON CONFLICT (key_id, bucket_start) DO UPDATE
   SET accepted = api_key_health_windows.accepted + EXCLUDED.accepted,
       dropped_decode = api_key_health_windows.dropped_decode + EXCLUDED.dropped_decode,
       dropped_unsupported = api_key_health_windows.dropped_unsupported + EXCLUDED.dropped_unsupported,
-      dropped_quota = api_key_health_windows.dropped_quota + EXCLUDED.dropped_quota`
+      dropped_quota = api_key_health_windows.dropped_quota + EXCLUDED.dropped_quota,
+      dropped_cardinality = api_key_health_windows.dropped_cardinality + EXCLUDED.dropped_cardinality`
 
 	// Retention, in the same transaction as the writes: the table's bound is a
 	// property of the flush rather than of a job someone has to remember.
@@ -148,6 +150,10 @@ const (
 	// DropQuota — records shed by head sampling because the workspace is over
 	// its plan's quota (D165).
 	DropQuota
+	// DropCardinality — a metric point that would have created a NEW series
+	// past the per-workspace 25k-active-series cap (packet §2). Established
+	// series never drop under this reason.
+	DropCardinality
 )
 
 // Meter accumulates counts in memory and writes them as the D162 UPSERT-adds.
@@ -201,6 +207,7 @@ type healthCell struct {
 	droppedDecode      int64
 	droppedUnsupported int64
 	droppedQuota       int64
+	droppedCardinality int64
 	lastEventAt        time.Time
 }
 
@@ -270,6 +277,28 @@ func (m *Meter) RecordAccepted(workspaceID, keyID string, spans, logs int64) {
 	})
 }
 
+// RecordAcceptedMetrics counts metric points a key carried into the pipeline,
+// into the key's health cell only (D368): accepted and its last event, exactly
+// as RecordAccepted's health half does. It never touches m.ledger — metrics
+// carry no quota and are not billed usage, so usage_ledger has no column for
+// them and none is added; RecordAccepted (metering.go, above) is unusable here
+// for exactly that reason; a quota decision must never be able to fire on a
+// metrics POST, and it cannot read what nothing writes.
+func (m *Meter) RecordAcceptedMetrics(workspaceID, keyID string, points int64) {
+	if points <= 0 {
+		return
+	}
+	at := m.now().UTC()
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	m.updateHealth(workspaceID, keyID, at, func(c *healthCell) {
+		c.accepted += points
+		c.lastEventAt = at
+	})
+}
+
 // RecordDropped counts records refused or shed after auth, under the column its
 // reason names. Nothing here touches the ledger: usage is what we accepted, so a
 // drop is a health fact and never a billed one.
@@ -290,6 +319,8 @@ func (m *Meter) RecordDropped(workspaceID, keyID string, reason DropReason, reco
 			c.droppedUnsupported += records
 		case DropQuota:
 			c.droppedQuota += records
+		case DropCardinality:
+			c.droppedCardinality += records
 		}
 	})
 }
@@ -448,6 +479,7 @@ func (c *healthCell) add(o healthCell) {
 	c.droppedDecode += o.droppedDecode
 	c.droppedUnsupported += o.droppedUnsupported
 	c.droppedQuota += o.droppedQuota
+	c.droppedCardinality += o.droppedCardinality
 	if o.lastEventAt.After(c.lastEventAt) {
 		c.lastEventAt = o.lastEventAt
 	}
@@ -478,7 +510,7 @@ func (m *Meter) flushPostgres(ctx context.Context, b batch) error {
 			lastEventAt = cell.lastEventAt
 		}
 		if _, err := tx.Exec(ctx, healthUpsertSQL, key.keyID, key.workspaceID,
-			cell.accepted, cell.droppedDecode, cell.droppedUnsupported, cell.droppedQuota, lastEventAt); err != nil {
+			cell.accepted, cell.droppedDecode, cell.droppedUnsupported, cell.droppedQuota, cell.droppedCardinality, lastEventAt); err != nil {
 			return fmt.Errorf("api key health upsert: %w", err)
 		}
 	}
@@ -490,7 +522,7 @@ func (m *Meter) flushPostgres(ctx context.Context, b batch) error {
 	for _, key := range sortedWindowKeys(b.windows) {
 		cell := b.windows[key]
 		if _, err := tx.Exec(ctx, windowUpsertSQL, key.keyID, key.workspaceID, key.bucketStart,
-			cell.accepted, cell.droppedDecode, cell.droppedUnsupported, cell.droppedQuota); err != nil {
+			cell.accepted, cell.droppedDecode, cell.droppedUnsupported, cell.droppedQuota, cell.droppedCardinality); err != nil {
 			return fmt.Errorf("api key health window upsert: %w", err)
 		}
 	}

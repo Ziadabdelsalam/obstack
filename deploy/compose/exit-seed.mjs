@@ -1,11 +1,13 @@
 /**
  * The evidence dataset the `e2e` drive seeds (T5, extended by F8 and S3.3).
  *
- * TWO SEEDINGS LIVE HERE, one per store, and they are invoked separately
+ * THREE SEEDINGS LIVE HERE, one per store, and they are invoked separately
  * because they answer different questions. `--workspace/--label` writes the
  * ClickHouse telemetry fixture described below; `--lower-free-quota` writes the
  * single Postgres row the S3.3 metering step needs (D172) and touches nothing
- * else. See "the quota seeding" at the bottom of this file.
+ * else; `--leg metrics` sends the S6.1 metrics fixture through the product's
+ * OWN front door — an OTLP export to the real `/v1/metrics`, never an insert
+ * (D370). See "the quota seeding" and "the metrics seeding" at the bottom.
  *
  * Writes a DEDICATED workspace straight into ClickHouse through the ingest
  * user, so the run asserts against data whose exact shape is known here rather
@@ -42,6 +44,8 @@
  * same tokens, same ids whatever the label is; only the words differ.
  *
  *   node deploy/compose/exit-seed.mjs --workspace ws_1a2b3c --label zzalice
+ *   SEED_METRICS_TOKEN=ok_live_… node deploy/compose/exit-seed.mjs --leg metrics \
+ *     --workspace ws_1a2b3c --label zzalice
  *   node deploy/compose/exit-seed.mjs --lower-free-quota
  */
 
@@ -52,10 +56,26 @@ const USER = process.env.CLICKHOUSE_INGEST_USER ?? "obstack_ingest";
 const PASSWORD = process.env.CLICKHOUSE_INGEST_PASSWORD ?? "obstack_ingest_dev";
 const PG_DSN =
   process.env.OBSTACK_POSTGRES_DSN ?? "postgres://obstack:obstack_postgres_dev@127.0.0.1:5432/obstack";
+/** OTLP/HTTP, the wire contract a customer's exporter speaks (D6) — the metrics
+ *  leg's only destination, because it is the only leg that goes in the front. */
+const OTLP = process.env.INGEST_OTLP ?? "http://127.0.0.1:4318";
 
 const USAGE =
   "usage: node deploy/compose/exit-seed.mjs --workspace <workspace_id> --label <label>\n" +
+  "       node deploy/compose/exit-seed.mjs --leg metrics --workspace <workspace_id> --label <label>\n" +
+  "         (with SEED_METRICS_TOKEN=<that workspace's own ok_live_ key> in the environment)\n" +
   "       node deploy/compose/exit-seed.mjs --lower-free-quota";
+
+/** Which store this invocation writes to. Absent is the ClickHouse fixture, so
+ *  the default invocation is exactly the one it always was. */
+const LEGS = ["clickhouse", "metrics"];
+function legOf(argv) {
+  const at = argv.indexOf("--leg");
+  if (at === -1) return "clickhouse";
+  const value = argv[at + 1];
+  if (!LEGS.includes(value)) throw new Error(`--leg must be one of ${LEGS.join("|")} — ${USAGE}`);
+  return value;
+}
 
 /**
  * Refused rather than defaulted, both of them: a seeder that guessed would
@@ -335,6 +355,216 @@ async function lowerFreeQuota() {
   }
 }
 
+// ----------------------------------------------------- the metrics seeding
+/**
+ * The S6.1 metrics fixture (D370), and the one thing it does differently from
+ * everything above is the entire point of it: these rows go in through the
+ * FRONT DOOR — an OTLP/JSON export POSTed to the real `/v1/metrics` with the
+ * workspace's own key — never a direct ClickHouse insert (D115/D370). A
+ * fixture written straight into `metric_points` would prove the query
+ * contract and nothing at all about the receiver, the delta normalization or
+ * the materialized views standing between an exporter and an answer.
+ *
+ * All three OTLP temperaments, in one export, under one resource:
+ *   - a GAUGE, which passes through untouched;
+ *   - a cumulative monotonic SUM and a cumulative HISTOGRAM, which are
+ *     delta-normalized at ingest — and whose FIRST observation registers a
+ *     baseline and emits NO row (D363 §1). That is why each of those carries
+ *     THREE snapshots rather than one: the first buys the baseline, and the
+ *     two after it are the deltas the 1m rollup merges into a known bucket.
+ *
+ * Nothing here can be undone either, but nothing here needs to be: the drive
+ * points this at a workspace a signup created seconds earlier, and never
+ * re-runs the leg against it — fresh strangers every run. A second run by
+ * hand would carry a new `startTimeUnixNano` and so hit the cumulative-reset
+ * path (D363 §1's reset rule) rather than continue the same accumulation; the
+ * expectations printed below are static, so what they'd then say — the sum's
+ * 60, among them — would be a lie about that workspace. No guard is added
+ * here on purpose: a ClickHouse read in a leg that otherwise needs nothing
+ * but a token would be machinery built only for that hand-run case.
+ */
+
+/** How far back the export is stamped: well inside the contract's 1h window of
+ *  60 one-minute buckets, and far enough back that the minute it lands in is
+ *  CLOSED — "the value in that bucket" against a minute still filling would be
+ *  a race with the wall clock rather than a claim about the data. */
+const METRICS_BUCKET_MS = Math.floor((now - 3 * 60_000) / 60_000) * 60_000;
+
+/** One attribute beyond the resource's own `service.name`, so the catalog's
+ *  attrKeys — and therefore the groupBy the UI offers from them — is more than
+ *  a single key, and "attributes survived the merged-label-set path" (D375) is
+ *  a claim about two of them. */
+export const METRIC_ATTR_KEY = "deployment.environment";
+const METRIC_ATTR_VALUE = "e2e";
+
+const GAUGE_VALUE = 42;
+/** Cumulative snapshots: the first registers, the two after it are 30 apiece,
+ *  and both land in the same minute — 60 summed over that bucket. */
+const SUM_SNAPSHOTS = [1000, 1030, 1060];
+/** Cumulative snapshots whose DELTAS merge to the distribution T6 pinned
+ *  against the real engine: counts [0,10,10,10,10,0] over bounds
+ *  [0,10,20,30,40], h_sum/h_count 800/40. */
+const HIST_BOUNDS = [0, 10, 20, 30, 40];
+const HIST_SNAPSHOTS = [
+  { counts: [0, 0, 0, 0, 0, 0], sum: 0, count: 0 },
+  { counts: [0, 5, 5, 0, 0, 0], sum: 100, count: 10 },
+  { counts: [0, 10, 10, 10, 10, 0], sum: 800, count: 40 },
+];
+
+/**
+ * The three metric NAMES this leg emits for a label, carrying it the same way
+ * every row above does (D135): two workspaces seeded from this one definition
+ * are told apart by what they SAY, and a catalog listing the other tenant's
+ * names would be saying so out loud. A function rather than three constants
+ * for the same reason `dataset(label)` is one — the label is the caller's —
+ * and the drive imports it so the page it opens names the metric the export
+ * built, with no second spelling to drift.
+ */
+export const metricNames = (label) => ({
+  gauge: `${label}.queue.depth`,
+  sum: `${label}.requests.total`,
+  histogram: `${label}.request.duration`,
+});
+
+const METRIC_UNITS = { gauge: "{item}", sum: "{request}", histogram: "ms" };
+
+/**
+ * One exactly-known answer per temperament, and where each comes from:
+ *   - gauge/avg — the single point's own value;
+ *   - sum/sum   — the deltas between consecutive snapshots, summed in one
+ *                 minute, computed here from the snapshots themselves;
+ *   - histogram/p90 — linear interpolation over the MERGED delta buckets:
+ *     target 0.9 × 40 = 36 samples lands 6/10 of the way through the (30,40]
+ *     bucket, so 30 + 0.6 × 10 = 36. Pinned rather than recomputed, because a
+ *     quantile implementation in the fixture would be a second copy of the
+ *     thing under test (T6 proves this same distribution against the engine).
+ */
+const METRIC_EXPECTED = {
+  gauge: { agg: "avg", value: GAUGE_VALUE },
+  sum: { agg: "sum", value: SUM_SNAPSHOTS.slice(1).reduce((total, v, i) => total + (v - SUM_SNAPSHOTS[i]), 0) },
+  histogram: { agg: "p90", value: 36 },
+};
+
+/**
+ * What this leg says it sent, in the shape `metrics-checks.ts` asserts against.
+ * The SEEDER states it because the seeder is the only one that knows it — the
+ * bucket and the last-seen minute are functions of when this ran — and the
+ * drive passes the printed value straight through, so there is one definition
+ * of the fixture's expected answers instead of two that can drift (S2.3 L3).
+ */
+export function metricsExpectations(label) {
+  const names = metricNames(label);
+  const at = new Date(METRICS_BUCKET_MS).toISOString();
+  return ["gauge", "sum", "histogram"].map((type) => ({
+    name: names[type],
+    type,
+    unit: METRIC_UNITS[type],
+    /** The contract's ISO UTC minute — every point of this export lands in it. */
+    lastSeen: `${at.slice(0, 16)}Z`,
+    attrKeys: ["service.name", METRIC_ATTR_KEY],
+    agg: METRIC_EXPECTED[type].agg,
+    value: METRIC_EXPECTED[type].value,
+    /** `MetricSeriesPoint.t`, which is "HH:MM" UTC. */
+    bucket: at.slice(11, 16),
+    groupBy: "service.name",
+    group: `${label}-svc`,
+  }));
+}
+
+/** The export itself. uint64 wire fields go as STRINGS: a nanosecond timestamp
+ *  is past what a JS number holds exactly, and OTLP/JSON says so. */
+function metricsExport(label) {
+  const names = metricNames(label);
+  const at = (second) => `${METRICS_BUCKET_MS + second * 1_000}000000`;
+  /** An hour before the window, and CONSTANT across the snapshots: a changed
+   *  start_time is the SDK-restart signal, and ingest would then read each raw
+   *  value as the delta instead of the difference (D363 §1's reset rule). */
+  const startTimeUnixNano = `${METRICS_BUCKET_MS - 3_600_000}000000`;
+  const attributes = [{ key: METRIC_ATTR_KEY, value: { stringValue: METRIC_ATTR_VALUE } }];
+  return {
+    resourceMetrics: [
+      {
+        resource: { attributes: [{ key: "service.name", value: { stringValue: `${label}-svc` } }] },
+        scopeMetrics: [
+          {
+            metrics: [
+              {
+                name: names.gauge,
+                unit: METRIC_UNITS.gauge,
+                gauge: { dataPoints: [{ attributes, asDouble: GAUGE_VALUE, timeUnixNano: at(1) }] },
+              },
+              {
+                name: names.sum,
+                unit: METRIC_UNITS.sum,
+                sum: {
+                  aggregationTemporality: 2, // AGGREGATION_TEMPORALITY_CUMULATIVE
+                  isMonotonic: true,
+                  dataPoints: SUM_SNAPSHOTS.map((value, i) => ({
+                    attributes,
+                    asDouble: value,
+                    startTimeUnixNano,
+                    timeUnixNano: at(i + 1),
+                  })),
+                },
+              },
+              {
+                name: names.histogram,
+                unit: METRIC_UNITS.histogram,
+                histogram: {
+                  aggregationTemporality: 2,
+                  dataPoints: HIST_SNAPSHOTS.map((snapshot, i) => ({
+                    attributes,
+                    explicitBounds: HIST_BOUNDS,
+                    bucketCounts: snapshot.counts.map(String),
+                    sum: snapshot.sum,
+                    count: String(snapshot.count),
+                    startTimeUnixNano,
+                    timeUnixNano: at(i + 1),
+                  })),
+                },
+              },
+            ],
+          },
+        ],
+      },
+    ],
+  };
+}
+
+/**
+ * The key is REFUSED rather than defaulted, same posture as `--workspace` and
+ * `--label`, and it is read from the ENVIRONMENT rather than argv for the
+ * reason every secret in this stack is: `ps` publishes a command line to every
+ * process on the box, and this is a live `ok_live_` key the drive's own hygiene
+ * step then asserts reached nothing it printed or wrote.
+ */
+async function seedMetrics(label) {
+  const token = process.env.SEED_METRICS_TOKEN;
+  if (!token) {
+    throw new Error(
+      `SEED_METRICS_TOKEN is required for --leg metrics — the workspace's own key, in the environment. ${USAGE}`,
+    );
+  }
+  const body = metricsExport(label);
+  const res = await fetch(`${OTLP}/v1/metrics`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+    body: JSON.stringify(body),
+  });
+  const text = await res.text();
+  // Anything but 200 is the receiver refusing this export, and every claim the
+  // drive makes after it would be about a workspace nothing arrived in.
+  if (res.status !== 200) {
+    throw new Error(`POST ${OTLP}/v1/metrics answered ${res.status}: ${text.slice(0, 300)}`);
+  }
+  const metrics = body.resourceMetrics[0].scopeMetrics[0].metrics;
+  return {
+    endpoint: `${OTLP}/v1/metrics`,
+    series_sent: metrics.length,
+    points_sent: metrics.reduce((total, m) => total + (m.gauge ?? m.sum ?? m.histogram).dataPoints.length, 0),
+  };
+}
+
 // Seeding runs only when this file is the program, and importing it for its
 // constants must never write: the ingest user has no mutation grant, so a
 // second insert cannot be undone without `down -v`, and duplicated rows would
@@ -346,6 +576,13 @@ const readingConstants = process.env.SEED_MODULE !== undefined;
 
 if (invokedDirectly && !readingConstants && process.argv.includes("--lower-free-quota")) {
   console.log(JSON.stringify({ plan: await lowerFreeQuota() }, null, 2));
+} else if (invokedDirectly && !readingConstants && legOf(process.argv) === "metrics") {
+  const workspace = requiredArg(process.argv, "--workspace");
+  const label = requiredArg(process.argv, "--label");
+  // The token is in the environment and stays there: what this prints is what
+  // it SENT, and the expectations the drive then asserts against.
+  const sent = await seedMetrics(label);
+  console.log(JSON.stringify({ workspace, label, ...sent, expectations: metricsExpectations(label) }, null, 2));
 } else if (invokedDirectly && !readingConstants) {
   const workspace = requiredArg(process.argv, "--workspace");
   const label = requiredArg(process.argv, "--label");

@@ -18,8 +18,9 @@ import (
 
 // Signals carried by the accepted counter.
 const (
-	SignalTraces = "traces"
-	SignalLogs   = "logs"
+	SignalTraces  = "traces"
+	SignalLogs    = "logs"
+	SignalMetrics = "metrics"
 )
 
 // Drop reasons (D6, D26). Every drop in the pipeline is one of these.
@@ -65,6 +66,11 @@ const (
 	// process survives: both transports recover, count here, and answer with a
 	// terminal error rather than dying on a poison payload (D26).
 	ReasonPanic = "panic"
+	// ReasonCardinality — a metric point would have created a NEW series past
+	// the per-workspace 25k-active-series cap (packet §2). Established series
+	// never drop under this reason; only a point that would grow the set does,
+	// which is what keeps the drop deterministic instead of flapping.
+	ReasonCardinality = "cardinality"
 )
 
 // The per-workspace series of the two counters below appear on a workspace's
