@@ -16,6 +16,11 @@ export const liveWiredRoutes: readonly string[] = [
   "/app/onboarding", // quickstart: the workspace's own key, its real arrival signal
   "/app/connections", // connected sources with their D100 ingest health
   "/app/explore", // ad-hoc metric queries through T6's frozen contract (D363)
+  "/app/map", // service topology derived from the workspace's own spans
+  "/app/services", // the trace-derived catalog
+  "/app/services/", // and one service's scorecard, under the same derivation
+  "/app/users", // impacted users, keyed by enduser.id / user.id on root spans
+  "/app/issues", // error spans grouped by fingerprint
   // Settings is wired per SECTION, not per route (D106): General, Members and
   // API keys read Postgres, and the four tabs that still render demo content
   // carry their own `SampleMark` inside the suite. One route-wide badge over a
@@ -24,15 +29,12 @@ export const liveWiredRoutes: readonly string[] = [
   "/app/settings",
 ];
 
-/**
- * Routes carved back out of a wired prefix because they are still pure mock —
- * `/app/traces/diff` is an M5 surface living under the wired trace-detail
- * subtree, so it keeps the badge in live mode.
- */
-export const liveWiredRouteExclusions: readonly string[] = ["/app/traces/diff"];
-
+// The carve-out list is GONE with its last entry (S6.2): `/app/traces/diff` was
+// the one route excluded from a wired prefix, and it now reads two of the
+// workspace's own traces (D400), so nothing is carved out of anything. An empty
+// exclusion list consulted on every call is a branch that can only ever say
+// "no" — the next route that needs one brings it back with its reason.
 export function isLiveWiredRoute(pathname: string): boolean {
-  if (liveWiredRouteExclusions.includes(pathname)) return false;
   return liveWiredRoutes.some((route) =>
     route.endsWith("/") ? pathname.startsWith(route) : pathname === route,
   );

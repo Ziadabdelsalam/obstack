@@ -179,6 +179,9 @@ test("formatRate distinguishes no measurement from a measured zero", () => {
   assert.equal(formatRate(0), "0/min");
   assert.equal(formatRate(2.4), "2.4/min");
   assert.equal(formatRate(8420), "8,420/min");
+  // D421: routed through fmtPerMin (D409), which has no floor — a source that
+  // sent four spans all day is 0.003/min, distinguishable from a measured zero.
+  assert.equal(formatRate(0.003), "0.003/min");
 });
 
 // D212: the tour step points at this section by attribute; the rewrite keeps it.

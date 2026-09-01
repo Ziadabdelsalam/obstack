@@ -210,7 +210,12 @@ What it asserts, in order:
   honestly empty rather than seeded with anything;
 - **the wired surfaces, against a counted denominator** — the seeded workspace is
   counted *in ClickHouse* (`exit-seed.mjs`, 220 traces, deliberately more than
-  the 200-row page, and 245 log rows, more than the 200-row cap), so every
+  the 200-row page, and 245 log rows, more than the 200-row cap; every sixth
+  trace carries a `gateway → agent → tool` chain, two residues of the roots
+  carry an `enduser.id`, and the roots that fail carry one of two error
+  messages — one with digits that differ per trace, one with none — so the
+  surfaces wired in S6.2 have real topology, real people and real error groups
+  to render), so every
   "N of M" the UI prints is checked against a number the app did not compute:
   totals, a real page 2 disjoint from page 1, the free-text legs, the logs cap's
   truncation marker, the D42 carrier row, the real empty states, and the
@@ -261,8 +266,8 @@ What it asserts, in order:
   credential and is *not* listed), with the D100 counters as they are: cumulative
   totals with the instant they were counted at, errors that are receive-path or cardinality-cap drops
   and quota drops rendered as sampling rather than as faults (D218/D219), and no
-  invented per-minute rate anywhere on the panel. Neither of the two routes this
-  sprint registered carries a `SAMPLE DATA` badge, while `/app/costs` still does;
+  invented per-minute rate anywhere on the panel. `/app/connections` is live-wired
+  and carries no `SAMPLE DATA` badge, while `/app/costs` still does;
 - **Explain, run and refused** — she opens one of her own failed traces, presses
   *Explain this trace*, and the panel streams the **fake engine's** answer: the
   engine with the provider taken out (D168), which is the only one CI ever runs
@@ -297,6 +302,24 @@ What it asserts, in order:
   naming it and no `SAMPLE DATA` badge on the page, the D21 flip this sprint
   wires, while `/app/costs` — the unwired positive control the badge check
   above uses — still carries one;
+- **the five surfaces S6.2 wired, on that same seed (D21/D405)** — `/app/map`
+  draws the services her spans name and exactly the cross-service hops the
+  fixture chains, an edge existing only where both spans are stored;
+  `/app/services` catalogs those services from the traces themselves and one
+  service's page scores it from its own spans, naming them in her words, with
+  the one panel it cannot derive — deploy tracking — *marked* rather than
+  hidden (D362); `/app/users` names the two people her root spans carried an
+  `enduser.id` for and marks the one whose requests absorbed every failure;
+  `/app/issues` titles her failures with her own error messages and folds the
+  seven timeouts — each stamped with a different number of ms — into ONE group
+  beside the digit-free one, which is the normalization rule as an observable
+  result (D399); and `/app/traces/diff` compares two of her seeded traces by id,
+  while that same page, asked by the other stranger about the one trace only she
+  holds, says *trace not found in this workspace*. None of the five carries a
+  `SAMPLE DATA` badge or a cap banner at this scale, none renders its empty
+  state, and the D142 idiom runs over all five in his browser — his own words on
+  every one of them and zero of hers — with the reverse asserted on the two that
+  name people and services;
 - **token hygiene** — both keys the run issued through the UI are searched for,
   as literals, in everything the drive printed and everything it wrote: stdout,
   the transcript, the server log, the build log, every artifact beside them. The

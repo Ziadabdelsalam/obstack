@@ -33,10 +33,14 @@ const steps: TourStep[] = [
     body: "Pin what you personally care about: a service, two services compared, a pod, a model's spend, a queue, a pipeline. “Add widget” composes one on the spot, and the layout is kept in this browser — it is not saved to your account.",
   },
   {
+    // D404: this surface is live-wired as of S6.2, so its words are a claim
+    // about the workspace's own topology — capability only, true in both modes
+    // (the D60 `/app/logs` treatment). The demo's incident edge is gone from
+    // the copy: no live workspace has that spike to point at.
     path: "/app/map",
     target: "map",
     title: "The service map",
-    body: "Topology drawn from trace data rather than from manual config, with traffic and error rates on the edges. In the sample data the red edge to the LLM provider is the 13:05 incident: 8.1% of calls returning 429. Click any node to drill in.",
+    body: "Topology drawn from trace data rather than from manual config: services as nodes, calls between them as edges, each edge carrying its traffic and its error rate. Click any node to drill in.",
   },
   {
     path: "/app/traces",
@@ -61,10 +65,12 @@ const steps: TourStep[] = [
     body: "Search log bodies, then narrow by severity, pod, time range or on-trace-only. The TRACE tag means the line belongs to a request; one click puts it back in context.",
   },
   {
+    // D404, as above: live-wired in S6.2. The demo's 429 group is gone — and
+    // so is any promise of triage state, because this build stores none (D361).
     path: "/app/issues",
     target: "issues",
     title: "Issues — errors, grouped",
-    body: "Recurring errors grouped by fingerprint with trends and an example trace each. The 429 group spiking in the last bucket? Same incident.",
+    body: "Recurring errors grouped by fingerprint — one row per distinct error, with its trend and an example trace to open. Nothing here is acknowledged, assigned or muted: what a group says is what its errors are doing.",
   },
   {
     path: "/app/pipelines",
@@ -94,10 +100,13 @@ const steps: TourStep[] = [
     body: "Token cost joined to customers, features and models — the join obstack is built around. In the sample data Meridian costs $84/mo against $299 revenue, and draft_reply is 44% of spend.",
   },
   {
+    // D404, as above: live-wired in S6.2. The demo customer and its failure
+    // count are gone — the people on this screen are whoever the workspace's
+    // own spans carried a user id for.
     path: "/app/users",
     target: "users",
     title: "Users — who felt it",
-    body: "Failures grouped by the humans who experienced them. Meridian's ops account absorbed all 41 incident failures — that's a customer-success conversation, not just a graph.",
+    body: "Failures grouped by the people who experienced them rather than by pod or service: requests, failures and slow requests per person, and the last failure links straight to the trace it happened in.",
   },
   {
     path: "/app/connections",

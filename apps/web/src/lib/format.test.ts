@@ -4,7 +4,7 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { NOW } from "@/mock/generate";
-import { fmtCost, timeAgo } from "./format";
+import { fmtCost, fmtPerMin, timeAgo } from "./format";
 
 test("fmtCost never renders a real cost as zero", () => {
   // the smoke trace: a few hundred-thousandths of a dollar
@@ -21,6 +21,19 @@ test("fmtCost keeps the established shape for everything 4dp can express", () =>
   assert.equal(fmtCost(0.0049), "$0.0049");
   assert.equal(fmtCost(0.01), "$0.01");
   assert.equal(fmtCost(81.4), "$81.40");
+});
+
+test("fmtPerMin: a real but low rate is never printed as a zero (D13)", () => {
+  // Four spans over the 1440-minute window: 0.0028/min. One decimal would
+  // render that "0.0" — a service that sent spans, shown as silent.
+  assert.equal(fmtPerMin(4 / 1440), "0.003");
+  assert.equal(fmtPerMin(0), "0");
+  assert.equal(fmtPerMin(0.1), "0.1");
+  assert.equal(fmtPerMin(1440 / 1440), "1.0");
+  assert.equal(fmtPerMin(12.4), "12");
+  // Past 10 the decimals stop carrying information and the separator starts
+  // doing the reading: a busy edge on the map is "12,345/min", not "12345".
+  assert.equal(fmtPerMin(12_345), "12,345");
 });
 
 const iso = (ms: number) => new Date(ms).toISOString();

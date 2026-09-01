@@ -72,7 +72,7 @@ function anchor(n: Node, toward: { cx: number; cy: number }) {
   return { x: cx + dx * s, y: cy + dy * s };
 }
 
-export function ServiceMap() {
+export function ServiceMapMock() {
   const router = useRouter();
   const byId = new Map(nodes.map((n) => [n.id, n]));
 
