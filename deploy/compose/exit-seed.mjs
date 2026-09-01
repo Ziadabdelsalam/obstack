@@ -1,15 +1,19 @@
 /**
  * The evidence dataset the `e2e` drive seeds (T5, extended by F8 and S3.3).
  *
- * FOUR SEEDINGS LIVE HERE, and they are invoked separately because they answer
+ * FIVE SEEDINGS LIVE HERE, and they are invoked separately because they answer
  * different questions. `--workspace/--label` writes the ClickHouse telemetry
  * fixture described below; `--lower-free-quota` writes the single Postgres row
  * the S3.3 metering step needs (D172) and touches nothing else; `--leg metrics`
  * sends the S6.1 metrics fixture through the product's OWN front door — an OTLP
  * export to the real `/v1/metrics`, never an insert (D370); `--leg dashboards`
  * writes the S6.3 dashboard row, the one fixture in this file with no front
- * door to go through (D424). See "the quota seeding", "the metrics seeding" and
- * "the dashboards seeding" at the bottom.
+ * door to go through (D424); `--leg k8s` sends the S6.4 kubelet_stats/
+ * k8s_cluster fixture (D467) through that SAME front door as `--leg metrics` —
+ * `/app/infra` reads `metric_points_1m` exactly the way `/app/explore` does, so
+ * it has to be proven against rows that arrived the way a real DaemonSet's do,
+ * not a direct insert. See "the quota seeding", "the metrics seeding", "the
+ * dashboards seeding" and "the k8s metrics seeding" at the bottom.
  *
  * Writes a DEDICATED workspace straight into ClickHouse through the ingest
  * user, so the run asserts against data whose exact shape is known here rather
@@ -59,6 +63,7 @@
  *   SEED_METRICS_TOKEN=ok_live_… node deploy/compose/exit-seed.mjs --leg metrics \
  *     --workspace ws_1a2b3c --label zzalice
  *   node deploy/compose/exit-seed.mjs --leg dashboards --workspace ws_1a2b3c --label zzalice
+ *   SEED_METRICS_TOKEN=ok_live_… node deploy/compose/exit-seed.mjs --leg k8s --workspace ws_1a2b3c
  *   node deploy/compose/exit-seed.mjs --lower-free-quota
  */
 
@@ -79,11 +84,13 @@ const USAGE =
   "       node deploy/compose/exit-seed.mjs --leg metrics --workspace <workspace_id> --label <label>\n" +
   "         (with SEED_METRICS_TOKEN=<that workspace's own ok_live_ key> in the environment)\n" +
   "       node deploy/compose/exit-seed.mjs --leg dashboards --workspace <workspace_id> --label <label>\n" +
+  "       node deploy/compose/exit-seed.mjs --leg k8s --workspace <workspace_id>\n" +
+  "         (with SEED_METRICS_TOKEN=<that workspace's own ok_live_ key> in the environment)\n" +
   "       node deploy/compose/exit-seed.mjs --lower-free-quota";
 
 /** Which store this invocation writes to. Absent is the ClickHouse fixture, so
  *  the default invocation is exactly the one it always was. */
-const LEGS = ["clickhouse", "metrics", "dashboards"];
+const LEGS = ["clickhouse", "metrics", "dashboards", "k8s"];
 function legOf(argv) {
   const at = argv.indexOf("--leg");
   if (at === -1) return "clickhouse";
@@ -213,6 +220,10 @@ export const PROMPT_TRACE = traceId(5);
 export const LOG_TRACE = traceId(9);
 /** The D42 content-carrier trace: non-empty prompt, EMPTY body. */
 export const CARRIER_TRACE = traceId(11);
+/** The trace carrying the one UNPRICED LLM span (D467/D461/T6) — alone in a
+ * trace of its own, out of the TRACES loop's index range entirely, so it never
+ * collides with a trace some other assertion already pins by id or by count. */
+export const UNPRICED_TRACE = traceId(999);
 
 /**
  * Every sixth trace gets the cross-service chain below — and the divisor is
@@ -359,6 +370,32 @@ function dataset(label) {
       finish_reason: "stop",
       prompt: `summarise the incident ${SPAN_PROMPT_TOKEN} for the on-call engineer`,
       completion: "the checkout deploy at 14:02 is the likeliest cause",
+    }),
+  );
+
+  // ---- D467/D461/T6: ONE unpriced LLM span — a custom fine-tune `prices.json`
+  // has no row for, so ingest stamps `cost_usd: 0` on it the same way it would
+  // stamp a genuinely free call, which is the honesty hazard the costs surface
+  // must name separately. Alone in a trace of its own rather than hung under
+  // PROMPT_TRACE or the chain: this span's whole point is to be counted and
+  // priced by itself, and joining a trace whose span count or shape another
+  // assertion already pins would put this fixture at risk of the very checks
+  // it has to leave green (T4's placement constraint).
+  spans.push(
+    span(label, {
+      trace_id: UNPRICED_TRACE,
+      span_id: "s999-llm",
+      name: "chat.completion",
+      layer: "llm",
+      service: AGENT_SERVICE,
+      start_time: chTime(90_000),
+      duration_ns: String(45 * 1_000_000),
+      gen_ai_system: "custom",
+      gen_ai_request_model: "exit-custom-ft",
+      gen_ai_response_model: "",
+      input_tokens: 12,
+      output_tokens: 3,
+      cost_usd: 0,
     }),
   );
 
@@ -687,6 +724,319 @@ async function seedMetrics(label) {
   };
 }
 
+// -------------------------------------------------------- the k8s seeding
+/**
+ * The S6.4 `/app/infra` fixture (D467), through the same front door as the
+ * metrics leg beside it — an OTLP export to the real `/v1/metrics` — and for
+ * the same reason: a page that reads `metric_points_1m` proves nothing about
+ * the receiver, the resource-attribute merge (D375) or the D457 completeness
+ * rule if the rows it reads were inserted straight into ClickHouse.
+ *
+ * NO label anywhere in this leg. Every other seeding carries the label on its
+ * CONTENT (D135) because a person reads that content; nothing here is content
+ * — a node name, a pod name and a namespace are the same words whichever
+ * workspace they land in, exactly the way two clusters running the same demo
+ * Deployment would both be called `exit-app-1`. That is also why `exit-app-1`
+ * is spelled identically to the pod the logs/spans legs already use (D467) —
+ * the pod table's deep link to `/app/logs?pod=exit-app-1` is a real join, not
+ * a coincidence of two fixtures agreeing by chance.
+ *
+ * GAUGES only, one point per series unless stated: D450 whitelisted no
+ * cumulative `.time` counters for this leg, so there is no delta/reset path to
+ * exercise the way the metrics leg's sum/histogram do (D363 §1 does not apply
+ * here at all).
+ */
+
+/** Verbatim copy of `apps/web/src/lib/infra-types.ts`'s `KUBELET_METRICS`
+ *  (D450/D456) — copied, not retyped, so a rename there cannot silently drift
+ *  this fixture out from under the whitelist it targets. Order matches. */
+const KUBELET_METRICS = [
+  "k8s.node.cpu.usage",
+  "k8s.node.memory.working_set",
+  "k8s.node.memory.available",
+  "k8s.pod.cpu.usage",
+  "k8s.pod.memory.working_set",
+  "container.cpu.usage",
+  "container.memory.working_set",
+];
+const [
+  M_NODE_CPU_USAGE,
+  M_NODE_MEM_WORKING_SET,
+  M_NODE_MEM_AVAILABLE,
+  M_POD_CPU_USAGE,
+  M_POD_MEM_WORKING_SET,
+  M_CONTAINER_CPU_USAGE,
+  M_CONTAINER_MEM_WORKING_SET,
+] = KUBELET_METRICS;
+
+/** Verbatim copy of `CLUSTER_METRICS` (D450/D456), same rationale. */
+const CLUSTER_METRICS = [
+  "k8s.node.condition_ready",
+  "k8s.node.condition_memory_pressure",
+  "k8s.node.allocatable_cpu",
+  "k8s.node.allocatable_memory",
+  "k8s.pod.phase",
+  "k8s.container.restarts",
+  "k8s.container.cpu_request",
+  "k8s.container.cpu_limit",
+  "k8s.container.memory_request",
+  "k8s.container.memory_limit",
+];
+const [
+  M_NODE_CONDITION_READY,
+  M_NODE_CONDITION_MEMORY_PRESSURE,
+  M_NODE_ALLOCATABLE_CPU,
+  M_NODE_ALLOCATABLE_MEMORY,
+  M_POD_PHASE,
+  M_CONTAINER_RESTARTS,
+  M_CONTAINER_CPU_REQUEST,
+  M_CONTAINER_CPU_LIMIT,
+  M_CONTAINER_MEM_REQUEST,
+  M_CONTAINER_MEM_LIMIT,
+] = CLUSTER_METRICS;
+
+/** "Fresh" reuses the metrics leg's own three-minutes-back convention
+ *  (D467's default): the same bucket is CLOSED for the same reason there. */
+const K8S_FRESH_MS = METRICS_BUCKET_MS;
+/** `exit-app-1`'s oversized rec needs `INFRA_RECS_MIN_OBSERVED_HOURS` (12h) of
+ *  observation inside the 24h recs window (D458) — a second point 13h back
+ *  clears it (D467). */
+const K8S_OBSERVED_MS = now - 13 * 60 * 60_000;
+/** Outside `INFRA_STALE_MINUTES` (10m, D456): `exit-stale-1` exists in the
+ *  store and nowhere on the page (D467). */
+const K8S_STALE_MS = now - 30 * 60_000;
+
+/** Two nodes (D467). `ready`/`memoryPressure` are the raw `k8s.node.condition_*`
+ *  encoding (1/0/-1) `lib/infra-types.ts` decodes, not booleans. */
+const K8S_NODES = [
+  {
+    name: "exit-node",
+    cpuUsage: 1.2,
+    memWorkingSet: 6442450944,
+    memAvailable: 10737418240,
+    cpuAllocatable: 4,
+    memAllocatable: 17179869184,
+    ready: 1,
+    memoryPressure: 0,
+  },
+  {
+    name: "exit-node-2",
+    cpuUsage: 0.4,
+    memWorkingSet: 2147483648,
+    memAvailable: 6442450944,
+    cpuAllocatable: 2,
+    memAllocatable: 8589934592,
+    ready: 1,
+    memoryPressure: 0,
+  },
+];
+
+/**
+ * Five pods in `exit-ns`, one container each (D467). Fields are OPTIONAL on
+ * purpose: a real kubelet or cluster receiver only emits the metrics a pod's
+ * own shape actually produces — `exit-kubelet-only-1` never got requests or
+ * limits from the cluster collector, `exit-worker-1`/`exit-crash-1` were never
+ * given resource REQUESTS — so a field this object omits is a metric this leg
+ * never sends, the same way it would be absent on the wire. `stale: true` is
+ * the one pod stamped at `K8S_STALE_MS` instead of `K8S_FRESH_MS`.
+ */
+const K8S_PODS = [
+  {
+    // memory-limit-oversized: 107374182 / 536870912 ≈ 20% (D467/D458).
+    name: "exit-app-1",
+    node: "exit-node",
+    container: "app",
+    cpuUsage: 0.1,
+    memWorkingSet: 107374182,
+    memWorkingSetObservedAt: K8S_OBSERVED_MS,
+    cpuLimit: 0.5,
+    cpuRequest: 0.25,
+    memLimit: 536870912,
+    memRequest: 268435456,
+    restarts: 0,
+    phase: 2, // running
+  },
+  {
+    // memory-near-limit: 255013683 / 268435456 ≈ 95%; cpu-near-limit: 0.9/1 = 90%.
+    name: "exit-worker-1",
+    node: "exit-node-2",
+    container: "worker",
+    cpuUsage: 0.9,
+    memWorkingSet: 255013683,
+    cpuLimit: 1,
+    memLimit: 268435456,
+    restarts: 0,
+    phase: 2, // running
+  },
+  {
+    // ONE fresh point ⇒ observedHours < 12 ⇒ NO oversized rec despite the ratio.
+    name: "exit-crash-1",
+    node: "exit-node-2",
+    container: "app",
+    cpuUsage: 0,
+    memWorkingSet: 10485760,
+    cpuLimit: 0.2,
+    memLimit: 134217728,
+    restarts: 5,
+    phase: 1, // pending
+  },
+  {
+    // kubelet_stats names only ⇒ no phase/restarts/limits ⇒ `—` cells (D457).
+    name: "exit-kubelet-only-1",
+    node: "exit-node",
+    container: "app",
+    cpuUsage: 0.05,
+    memWorkingSet: 50_000_000,
+  },
+  {
+    // Every point at K8S_STALE_MS ⇒ ABSENT from the page (D456's 10m rule).
+    name: "exit-stale-1",
+    node: "exit-node",
+    container: "app",
+    cpuUsage: 0.1,
+    memWorkingSet: 50_000_000,
+    cpuLimit: 0.5,
+    memLimit: 200_000_000,
+    restarts: 0,
+    phase: 2, // running
+    stale: true,
+  },
+];
+
+/** uint64 wire fields go as STRINGS, same reason `metricsExport`'s `at` does. */
+const k8sNanos = (ms) => `${ms}000000`;
+const k8sAttr = (key, value) => ({ key, value: { stringValue: value } });
+
+/** One or more points on a gauge. NO datapoint attributes: D467's series are
+ *  RESOURCE-scoped, the way kubelet_stats/k8s_cluster actually emit them. */
+const k8sGauge = (name, unit, points) => ({
+  name,
+  unit,
+  gauge: { dataPoints: points.map(({ value, timeMs }) => ({ asDouble: value, timeUnixNano: k8sNanos(timeMs) })) },
+});
+const k8sPoint = (value, timeMs) => [{ value, timeMs }];
+const k8sResource = (attributes, metrics) => ({ resource: { attributes }, scopeMetrics: [{ metrics }] });
+
+/** A node's seven kubelet_stats + k8s_cluster gauges, resource attrs = just
+ *  `k8s.node.name` (D467 — no `service.name`, no uid). */
+function k8sNodeResourceMetrics(node) {
+  const at = (value) => k8sPoint(value, K8S_FRESH_MS);
+  return k8sResource([k8sAttr("k8s.node.name", node.name)], [
+    k8sGauge(M_NODE_CPU_USAGE, "{cpu}", at(node.cpuUsage)),
+    k8sGauge(M_NODE_MEM_WORKING_SET, "By", at(node.memWorkingSet)),
+    k8sGauge(M_NODE_MEM_AVAILABLE, "By", at(node.memAvailable)),
+    k8sGauge(M_NODE_CONDITION_READY, "1", at(node.ready)),
+    k8sGauge(M_NODE_CONDITION_MEMORY_PRESSURE, "1", at(node.memoryPressure)),
+    k8sGauge(M_NODE_ALLOCATABLE_CPU, "{cpu}", at(node.cpuAllocatable)),
+    k8sGauge(M_NODE_ALLOCATABLE_MEMORY, "By", at(node.memAllocatable)),
+  ]);
+}
+
+/**
+ * A pod's two resources (D467): the POD series (`k8s.namespace.name`,
+ * `k8s.pod.name`, `k8s.node.name`) and the CONTAINER series (those three plus
+ * `k8s.container.name`). `container.memory.working_set` is the one metric that
+ * can carry TWO points (`exit-app-1`'s `memWorkingSetObservedAt`); everything
+ * else is the pod's single fresh (or stale) point.
+ */
+function k8sPodResourceMetrics(pod) {
+  const freshAt = pod.stale ? K8S_STALE_MS : K8S_FRESH_MS;
+  const at = (value) => k8sPoint(value, freshAt);
+  const podAttrs = [
+    k8sAttr("k8s.namespace.name", "exit-ns"),
+    k8sAttr("k8s.pod.name", pod.name),
+    k8sAttr("k8s.node.name", pod.node),
+  ];
+  const containerAttrs = [...podAttrs, k8sAttr("k8s.container.name", pod.container)];
+
+  const podMetrics = [
+    k8sGauge(M_POD_CPU_USAGE, "{cpu}", at(pod.cpuUsage)),
+    k8sGauge(M_POD_MEM_WORKING_SET, "By", at(pod.memWorkingSet)),
+  ];
+  if (pod.phase !== undefined) podMetrics.push(k8sGauge(M_POD_PHASE, "1", at(pod.phase)));
+
+  const workingSetPoints = pod.memWorkingSetObservedAt
+    ? [
+        { value: pod.memWorkingSet, timeMs: pod.memWorkingSetObservedAt },
+        { value: pod.memWorkingSet, timeMs: freshAt },
+      ]
+    : at(pod.memWorkingSet);
+  const containerMetrics = [
+    k8sGauge(M_CONTAINER_CPU_USAGE, "{cpu}", at(pod.cpuUsage)),
+    k8sGauge(M_CONTAINER_MEM_WORKING_SET, "By", workingSetPoints),
+  ];
+  if (pod.restarts !== undefined) containerMetrics.push(k8sGauge(M_CONTAINER_RESTARTS, "1", at(pod.restarts)));
+  if (pod.cpuLimit !== undefined) containerMetrics.push(k8sGauge(M_CONTAINER_CPU_LIMIT, "{cpu}", at(pod.cpuLimit)));
+  if (pod.cpuRequest !== undefined)
+    containerMetrics.push(k8sGauge(M_CONTAINER_CPU_REQUEST, "{cpu}", at(pod.cpuRequest)));
+  if (pod.memLimit !== undefined) containerMetrics.push(k8sGauge(M_CONTAINER_MEM_LIMIT, "By", at(pod.memLimit)));
+  if (pod.memRequest !== undefined)
+    containerMetrics.push(k8sGauge(M_CONTAINER_MEM_REQUEST, "By", at(pod.memRequest)));
+
+  return [k8sResource(podAttrs, podMetrics), k8sResource(containerAttrs, containerMetrics)];
+}
+
+/** The export itself: one `resourceMetrics` entry per node, per pod and per
+ *  container (D467's "resource-scoped series"). */
+function k8sExport() {
+  return {
+    resourceMetrics: [
+      ...K8S_NODES.map(k8sNodeResourceMetrics),
+      ...K8S_PODS.flatMap(k8sPodResourceMetrics),
+    ],
+  };
+}
+
+/**
+ * What this leg says it sent, in the shape the drive reads (S2.3 L3) — no
+ * second spelling of "20%" or the pod names to drift from the fixture above.
+ * Computed from `K8S_NODES`/`K8S_PODS`, not restated by hand.
+ */
+const freshK8sPods = K8S_PODS.filter((p) => !p.stale);
+const oversizedPod = K8S_PODS.find((p) => p.name === "exit-app-1");
+const nearLimitPod = K8S_PODS.find((p) => p.name === "exit-worker-1");
+export const k8sExpectations = {
+  nodeNames: K8S_NODES.map((n) => n.name),
+  podNames: freshK8sPods.map((p) => p.name),
+  freshPodCount: freshK8sPods.length,
+  header: `${K8S_NODES.length} nodes · ${freshK8sPods.length} pods`,
+  stalePodName: K8S_PODS.find((p) => p.stale).name,
+  crashPodName: "exit-crash-1",
+  kubeletOnlyPodName: "exit-kubelet-only-1",
+  oversizedPodName: oversizedPod.name,
+  oversizedPct: Math.round((oversizedPod.memWorkingSet / oversizedPod.memLimit) * 100),
+  memoryNearLimitPodName: nearLimitPod.name,
+  memoryNearLimitPct: Math.round((nearLimitPod.memWorkingSet / nearLimitPod.memLimit) * 100),
+  cpuNearLimitPct: Math.round((nearLimitPod.cpuUsage / nearLimitPod.cpuLimit) * 100),
+};
+
+/** Same posture as `seedMetrics`: the key travels in the environment, never
+ *  argv, and this leg needs no `--label` — nothing it sends is content (see
+ *  the section header above). */
+async function seedK8s() {
+  const token = process.env.SEED_METRICS_TOKEN;
+  if (!token) {
+    throw new Error(`SEED_METRICS_TOKEN is required for --leg k8s — the workspace's own key, in the environment. ${USAGE}`);
+  }
+  const body = k8sExport();
+  const res = await fetch(`${OTLP}/v1/metrics`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+    body: JSON.stringify(body),
+  });
+  const text = await res.text();
+  if (res.status !== 200) {
+    throw new Error(`POST ${OTLP}/v1/metrics answered ${res.status}: ${text.slice(0, 300)}`);
+  }
+  const allMetrics = body.resourceMetrics.flatMap((rm) => rm.scopeMetrics[0].metrics);
+  return {
+    endpoint: `${OTLP}/v1/metrics`,
+    resources_sent: body.resourceMetrics.length,
+    series_sent: allMetrics.length,
+    points_sent: allMetrics.reduce((total, m) => total + m.gauge.dataPoints.length, 0),
+  };
+}
+
 // -------------------------------------------------- the dashboards seeding
 /**
  * The S6.3 dashboards fixture (D424/D426), and what it does differently from
@@ -835,6 +1185,11 @@ if (invokedDirectly && !readingConstants && process.argv.includes("--lower-free-
   // it SENT, and the expectations the drive then asserts against.
   const sent = await seedMetrics(label);
   console.log(JSON.stringify({ workspace, label, ...sent, expectations: metricsExpectations(label) }, null, 2));
+} else if (invokedDirectly && !readingConstants && legOf(process.argv) === "k8s") {
+  // No `--label`: nothing this leg sends is content (see the section header).
+  const workspace = requiredArg(process.argv, "--workspace");
+  const sent = await seedK8s();
+  console.log(JSON.stringify({ workspace, ...sent, expectations: k8sExpectations }, null, 2));
 } else if (invokedDirectly && !readingConstants) {
   const workspace = requiredArg(process.argv, "--workspace");
   const label = requiredArg(process.argv, "--label");
