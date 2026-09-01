@@ -7,6 +7,7 @@ import type { QueryResultRow } from "pg";
 import type { MetricAlertCondition } from "@/lib/alert-types";
 import {
   AlertRefusal,
+  MAX_ALERT_RULES_PER_WORKSPACE,
   createAlertRule,
   createNotificationChannel,
   deleteAlertRule,
@@ -139,6 +140,7 @@ type EngineOpts = {
   channels?: ReturnType<typeof channelRow>[];
   channelExists?: boolean;
   referencing?: number;
+  ruleCount?: number;
   event?: ReturnType<typeof eventRow> | null;
   onWrite?: () => never;
 };
@@ -154,6 +156,7 @@ function engine({
   channels = [channelRow()],
   channelExists = true,
   referencing = 0,
+  ruleCount = 0,
   event = eventRow(),
   onWrite,
 }: EngineOpts = {}) {
@@ -164,6 +167,9 @@ function engine({
     }
     if (sql.includes("count(*)::int AS n") && sql.includes("channel_id = $2")) {
       return [{ n: referencing }];
+    }
+    if (sql.includes("count(*)::int AS n")) {
+      return [{ n: ruleCount }];
     }
     if (sql.includes("SELECT id, name, kind, target, enabled") && sql.includes("id = $2")) {
       return channel ? [channel] : [];
@@ -316,6 +322,21 @@ test("creating or updating a rule against a channel this workspace does not hold
     await refusal(run(query), "no notification channel with this id in your workspace");
     assert.deepEqual(writes(seen), [], "a rule referencing an absent channel was written");
   }
+});
+
+// ---- D489: the rule-count cap ------------------------------------------------
+
+test("a workspace at the D489 rule cap is refused a new rule, and one below it is not", async () => {
+  const at = recordingQuery(engine({ ruleCount: MAX_ALERT_RULES_PER_WORKSPACE }));
+  await refusal(
+    createAlertRule("ws_a", ruleInput(), at.query),
+    `this workspace already has ${MAX_ALERT_RULES_PER_WORKSPACE} alert rules — the maximum`,
+  );
+  assert.deepEqual(writes(at.seen), [], "a rule was written past the cap");
+
+  const below = recordingQuery(engine({ ruleCount: MAX_ALERT_RULES_PER_WORKSPACE - 1 }));
+  await createAlertRule("ws_a", ruleInput(), below.query);
+  assert.equal(writes(below.seen).length, 1, "one rule INSERT below the cap");
 });
 
 // ---- D440: an id this workspace does not hold reads exactly as absent -------

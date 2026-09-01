@@ -238,6 +238,18 @@ const RULES_REFERENCING_CHANNEL_SQL = `
     FROM alert_rules
    WHERE workspace_id = $1 AND channel_id = $2`;
 
+/** D489: the rule-count cap closes the abuse hole the eval cadence leaves open
+ *  (event production is bounded by cadence × rule count, so rule count must be
+ *  bounded too). Generous by design — a workspace at 200 rules is a support
+ *  conversation, not a customer to fail. Counted under the same lock the
+ *  INSERT runs under. */
+export const MAX_ALERT_RULES_PER_WORKSPACE = 200;
+
+const COUNT_RULES_SQL = `
+  SELECT count(*)::int AS n
+    FROM alert_rules
+   WHERE workspace_id = $1`;
+
 const LIST_EVENTS_SQL = `
   SELECT e.id, e.rule_id, r.name AS rule_name, e.severity, e.title, e.detail, e.link, e.delivery, e.created_at
     FROM alert_events e
@@ -410,6 +422,14 @@ export async function createAlertRule(
 ): Promise<AlertRuleRow> {
   const checked = checkedRuleInput(input);
   await lockWorkspace(query, workspaceId);
+
+  const [{ n }] = await query<{ n: number }>(COUNT_RULES_SQL, [workspaceId]);
+  if (n >= MAX_ALERT_RULES_PER_WORKSPACE) {
+    throw new AlertRefusal(
+      `this workspace already has ${MAX_ALERT_RULES_PER_WORKSPACE} alert rules — the maximum`,
+    );
+  }
+
   await assertChannelExists(workspaceId, checked.channelId, query);
 
   const id = newRuleId();
