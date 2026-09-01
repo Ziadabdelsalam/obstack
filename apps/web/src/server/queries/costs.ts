@@ -45,14 +45,11 @@ const LLM_IN_WINDOW = `
       AND layer = 'llm'
       AND start_time >= now() - toIntervalHour({window_hours:UInt32})`;
 
-/**
- * D462. `points * bucketMinutes` is exactly the window in every row, so the
- * chart's grid and the numbers above it name the same span of time.
- */
-const RANGES: Record<CostsRange, { windowHours: number; bucketMinutes: number; points: number }> = {
-  "24h": { windowHours: 24, bucketMinutes: 60, points: 24 },
-  "7d": { windowHours: 24 * 7, bucketMinutes: 6 * 60, points: 28 },
-  "30d": { windowHours: 24 * 30, bucketMinutes: 24 * 60, points: 30 },
+/** D462's ranges and the bucket each one is drawn at. */
+const RANGES: Record<CostsRange, { windowHours: number; bucketMinutes: number }> = {
+  "24h": { windowHours: 24, bucketMinutes: 60 },
+  "7d": { windowHours: 24 * 7, bucketMinutes: 6 * 60 },
+  "30d": { windowHours: 24 * 30, bucketMinutes: 24 * 60 },
 };
 
 /**
@@ -229,19 +226,32 @@ export function parseCostsRange(raw: string | undefined): CostsRange {
  * The series grid is built in TypeScript (`metrics.ts`'s idiom), because an
  * hour in which this workspace made no LLM call must render as 0 rather than
  * vanish from the chart — no calls IS no cost (D460), which is the one place
- * on this page where a zero is honest. The grid is the last `points` WHOLE
- * buckets: the window reaches a little further back than the oldest one, so
- * `totals` may exceed the chart's sum by the calls in that partial bucket —
- * the totals are the window's, and the chart is the grid's.
+ * on this page where a zero is honest.
+ *
+ * D472: that grid covers EXACTLY the rolling window the totals do —
+ * `[now - windowHours, now]` — so the bars sum to the headline. Both ends are
+ * therefore partial: the first slot starts at the window's own start rather
+ * than at a bucket boundary (its `t` says so), and the last is the bucket
+ * currently filling. A grid of whole buckets would leave the calls in the
+ * oldest partial bucket counted in `totals` and drawn nowhere, which is the
+ * kind of gap a caption gets asked to explain.
  */
 export async function queryCosts(ch: ScopedClickHouse, range: CostsRange): Promise<CostsReport> {
-  const { windowHours, bucketMinutes, points } = RANGES[range];
+  const { windowHours, bucketMinutes } = RANGES[range];
   const bucketSeconds = bucketMinutes * 60;
-  const nowFlooredS = Math.floor(Date.now() / 1000 / bucketSeconds) * bucketSeconds;
-  const grid = Array.from(
-    { length: points },
-    (_, i) => nowFlooredS - (points - 1 - i) * bucketSeconds,
-  );
+  const nowS = Math.floor(Date.now() / 1000);
+  const windowStartS = nowS - windowHours * 3600;
+  // The SQL keys every row at its bucket's start, so the window's first slot is
+  // keyed at the boundary BELOW the window start — the WHERE clause has already
+  // clipped that bucket to the window, which is why the slot renders from
+  // `windowStartS` and not from the key. A bucket whose intersection with the
+  // window is empty gets no slot, so a window start that lands exactly on a
+  // boundary produces one point fewer (nothing has accumulated in the bucket
+  // that begins at `now`).
+  const keys: number[] = [];
+  for (let k = Math.floor(windowStartS / bucketSeconds) * bucketSeconds; k < nowS; k += bucketSeconds) {
+    keys.push(k);
+  }
 
   const [modelRows, serviceRows, unpricedRows, seriesRows] = await Promise.all([
     ch.queryRows<ModelRowSql>(BY_MODEL_SQL, { window_hours: windowHours, cap: COSTS_GROUP_CAP }),
@@ -256,15 +266,23 @@ export async function queryCosts(ch: ScopedClickHouse, range: CostsRange): Promi
     }),
   ]);
 
-  const byBucket = new Map(seriesRows.map((row) => [row.bucket_epoch_s, row]));
-  const series: CostsPoint[] = grid.map((epochS) => {
-    const row = byBucket.get(epochS);
-    return {
-      t: new Date(epochS * 1000).toISOString(),
-      costUsd: row ? row.cost_usd : 0,
-      calls: row ? Number(row.calls) : 0,
-    };
-  });
+  const series: CostsPoint[] = keys.map((k, i) => ({
+    t: new Date((i === 0 ? windowStartS : k) * 1000).toISOString(),
+    costUsd: 0,
+    calls: 0,
+  }));
+  for (const row of seriesRows) {
+    // Clamped, not looked up: each read evaluates its own `now()` on the
+    // server, so a row can be keyed one bucket outside a grid this process
+    // measured a second earlier. Folding it into the nearest end keeps the
+    // bars summing to the totals, which is the property D472 is about.
+    const slot = Math.min(
+      Math.max(Math.round((row.bucket_epoch_s - keys[0]) / bucketSeconds), 0),
+      series.length - 1,
+    );
+    series[slot].costUsd += row.cost_usd;
+    series[slot].calls += Number(row.calls);
+  }
 
   return {
     range,

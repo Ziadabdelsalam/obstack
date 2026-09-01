@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { COSTS_GROUP_CAP, COSTS_RANGES, DEFAULT_COSTS_RANGE, type CostsRange } from "@/lib/costs-types";
+import { COSTS_GROUP_CAP, DEFAULT_COSTS_RANGE, type CostsRange } from "@/lib/costs-types";
 import { forWorkspace } from "@/server/clickhouse";
 import type { ScopedClickHouse } from "@/server/clickhouse";
 import { parseCostsRange, queryCosts } from "./costs";
@@ -129,6 +129,25 @@ const UNPRICED_ROWS = [{ model: "acme-ft", calls: "2", total_unpriced_models: "7
 const flooredNow = (bucketMinutes: number): number =>
   Math.floor(Date.now() / 1000 / (bucketMinutes * 60)) * (bucketMinutes * 60);
 
+/**
+ * The grid is measured from `Date.now()`, so the D472 point counts are only
+ * assertable against a clock this test owns (`metrics.test.ts`'s `withFixedNow`).
+ */
+async function withFixedNow<T>(iso: string, run: () => Promise<T>): Promise<T> {
+  const real = Date.now;
+  Date.now = () => Date.parse(iso);
+  try {
+    return await run();
+  } finally {
+    Date.now = real;
+  }
+}
+
+/** Mid-bucket for all three widths: both ends of every grid are partial. */
+const NOW_OFF_BOUNDARY = "2026-09-01T10:30:00.000Z";
+/** Midnight UTC is a boundary for 1h, 6h AND 1d, so no bucket is clipped at either end. */
+const NOW_ON_BOUNDARY = "2026-09-01T00:00:00.000Z";
+
 function respond(sql: string): unknown[] {
   if (unpriced(sql)) return UNPRICED_ROWS;
   if (byModel(sql)) return MODEL_ROWS;
@@ -255,7 +274,7 @@ test("queryCosts: every row is mapped exactly, and the totals come off the same 
 
 test("queryCosts: no rows is no calls — zeroed totals, empty lists, and a chart that still has a grid", async () => {
   const { ch } = recorder(() => []);
-  const report = await queryCosts(ch, "24h");
+  const report = await withFixedNow(NOW_OFF_BOUNDARY, () => queryCosts(ch, "24h"));
 
   assert.deepEqual(report.totals, {
     costUsd: 0,
@@ -270,26 +289,92 @@ test("queryCosts: no rows is no calls — zeroed totals, empty lists, and a char
   assert.equal(report.totalModels, 0);
   assert.equal(report.totalServices, 0);
   assert.equal(report.totalUnpricedModels, 0);
-  assert.equal(report.series.length, 24);
+  assert.equal(report.series.length, 25);
   assert.deepEqual(
     report.series.map((p) => p.costUsd + p.calls),
-    Array.from({ length: 24 }, () => 0),
+    Array.from({ length: 25 }, () => 0),
   );
 });
 
-// ---- the ruled range → bucket map (D462) ----------------------------------
+// ---- the ruled range → bucket map, and the D472 window the grid covers ----
+//
+// The grid covers EXACTLY the rolling window the totals do, so both of its ends
+// are partial: the first slot starts at `now - N hours` (not at a boundary) and
+// the last is the bucket now filling. That makes the point count a function of
+// where `now` falls, which is why both cases are pinned against a frozen clock.
 
-const GRID: Record<CostsRange, { windowHours: number; bucketMinutes: number; points: number }> = {
-  "24h": { windowHours: 24, bucketMinutes: 60, points: 24 },
-  "7d": { windowHours: 168, bucketMinutes: 360, points: 28 },
-  "30d": { windowHours: 720, bucketMinutes: 1440, points: 30 },
+const GRID: Record<CostsRange, { windowHours: number; bucketMinutes: number }> = {
+  "24h": { windowHours: 24, bucketMinutes: 60 },
+  "7d": { windowHours: 168, bucketMinutes: 360 },
+  "30d": { windowHours: 720, bucketMinutes: 1440 },
 };
 
-for (const range of COSTS_RANGES) {
-  const { windowHours, bucketMinutes, points } = GRID[range];
-  test(`queryCosts(${range}): ${windowHours}h of ${bucketMinutes}-minute buckets, ${points} points`, async () => {
+/** Whole buckets in the window + the leading clipped slot + the trailing partial one. */
+const GRID_CASES: {
+  now: string;
+  range: CostsRange;
+  points: number;
+  first: string;
+  second: string;
+  last: string;
+}[] = [
+  {
+    now: NOW_OFF_BOUNDARY,
+    range: "24h",
+    points: 25,
+    first: "2026-08-31T10:30:00.000Z",
+    second: "2026-08-31T11:00:00.000Z",
+    last: "2026-09-01T10:00:00.000Z",
+  },
+  {
+    now: NOW_OFF_BOUNDARY,
+    range: "7d",
+    points: 29,
+    first: "2026-08-25T10:30:00.000Z",
+    second: "2026-08-25T12:00:00.000Z",
+    last: "2026-09-01T06:00:00.000Z",
+  },
+  {
+    now: NOW_OFF_BOUNDARY,
+    range: "30d",
+    points: 31,
+    first: "2026-08-02T10:30:00.000Z",
+    second: "2026-08-03T00:00:00.000Z",
+    last: "2026-09-01T00:00:00.000Z",
+  },
+  // A window start that lands ON a boundary clips nothing, so the grid is one
+  // point shorter: the bucket beginning at `now` has had no time to fill.
+  {
+    now: NOW_ON_BOUNDARY,
+    range: "24h",
+    points: 24,
+    first: "2026-08-31T00:00:00.000Z",
+    second: "2026-08-31T01:00:00.000Z",
+    last: "2026-08-31T23:00:00.000Z",
+  },
+  {
+    now: NOW_ON_BOUNDARY,
+    range: "7d",
+    points: 28,
+    first: "2026-08-25T00:00:00.000Z",
+    second: "2026-08-25T06:00:00.000Z",
+    last: "2026-08-31T18:00:00.000Z",
+  },
+  {
+    now: NOW_ON_BOUNDARY,
+    range: "30d",
+    points: 30,
+    first: "2026-08-02T00:00:00.000Z",
+    second: "2026-08-03T00:00:00.000Z",
+    last: "2026-08-31T00:00:00.000Z",
+  },
+];
+
+for (const { now, range, points, first, second, last } of GRID_CASES) {
+  const { windowHours, bucketMinutes } = GRID[range];
+  test(`queryCosts(${range}) at ${now}: ${windowHours}h of ${bucketMinutes}-minute buckets, ${points} points`, async () => {
     const { ch, calls } = recorder(() => []);
-    const report = await queryCosts(ch, range);
+    const report = await withFixedNow(now, () => queryCosts(ch, range));
 
     for (const call of calls) {
       assert.equal(call.params.window_hours, windowHours, "every read covers the same window");
@@ -300,31 +385,70 @@ for (const range of COSTS_RANGES) {
       series?.sql.includes("INTERVAL {bucket_minutes:UInt32} MINUTE"),
       "the bucket width is bound, never spliced (D11)",
     );
+
     assert.equal(report.series.length, points);
-    assert.equal(points * bucketMinutes * 60, windowHours * 3600, "the grid must span exactly the window it names");
+    // The chart starts where the window starts (D472) — the first slot is the
+    // window's own start, not the boundary the SQL keyed its bucket at.
+    assert.equal(report.series[0].t, first);
+    assert.equal(Date.parse(first), Date.parse(now) - windowHours * 3_600_000);
+    assert.equal(report.series[1].t, second);
+    assert.equal(report.series[points - 1].t, last);
+    // ...and it ends inside the bucket that is filling right now.
+    assert.ok(Date.parse(last) <= Date.parse(now));
+    assert.ok(Date.parse(last) + bucketMinutes * 60_000 >= Date.parse(now));
 
     const ts = report.series.map((p) => Date.parse(p.t));
     assert.ok(
-      ts.every((t, i) => i === 0 || t - ts[i - 1] === bucketMinutes * 60_000),
+      ts.slice(1).every((t) => t % (bucketMinutes * 60_000) === 0),
+      "every slot after the clipped first one starts on an epoch-floored boundary",
+    );
+    assert.ok(
+      ts.every((t, i) => i < 2 || t - ts[i - 1] === bucketMinutes * 60_000),
       "the grid is evenly spaced, with no bucket missing",
     );
-    assert.ok(ts.every((t) => t % (bucketMinutes * 60_000) === 0), "every bucket starts on an epoch-floored boundary");
-    assert.equal(report.series[points - 1].t, new Date(flooredNow(bucketMinutes) * 1000).toISOString());
+    assert.ok(ts[1] - ts[0] <= bucketMinutes * 60_000, "the first slot is a clipped bucket, never a longer one");
   });
 }
 
-test("queryCosts: a bucket the SQL returned lands on its grid slot; the rest are 0 calls, 0 cost", async () => {
-  const bucket = flooredNow(60);
-  const { ch } = recorder((sql) =>
-    isSeries(sql) ? [{ bucket_epoch_s: bucket - 3600, cost_usd: 0.75, calls: "3" }] : [],
-  );
-  const report = await queryCosts(ch, "24h");
+test("queryCosts: every returned bucket lands on a slot — the bars sum to the totals (D472)", async () => {
+  const bucket = (iso: string): number => Date.parse(iso) / 1000;
+  const rows = [
+    // The window opens at 10:30 inside this bucket; the WHERE has already
+    // clipped it, so all of it belongs to the leading slot.
+    { bucket_epoch_s: bucket("2026-08-31T10:00:00.000Z"), cost_usd: 0.5, calls: "2" },
+    { bucket_epoch_s: bucket("2026-09-01T09:00:00.000Z"), cost_usd: 0.25, calls: "1" },
+    // The bucket now filling.
+    { bucket_epoch_s: bucket("2026-09-01T10:00:00.000Z"), cost_usd: 0.125, calls: "4" },
+  ];
+  const { ch } = recorder((sql) => (isSeries(sql) ? rows : []));
+  const report = await withFixedNow(NOW_OFF_BOUNDARY, () => queryCosts(ch, "24h"));
 
-  const point = report.series[report.series.length - 2];
-  assert.equal(point.t, new Date((bucket - 3600) * 1000).toISOString());
-  assert.deepEqual(point, { t: point.t, costUsd: 0.75, calls: 3 });
+  assert.deepEqual(report.series[0], { t: "2026-08-31T10:30:00.000Z", costUsd: 0.5, calls: 2 });
+  assert.deepEqual(report.series[23], { t: "2026-09-01T09:00:00.000Z", costUsd: 0.25, calls: 1 });
+  assert.deepEqual(report.series[24], { t: "2026-09-01T10:00:00.000Z", costUsd: 0.125, calls: 4 });
   // No calls IS no cost (D460) — an empty hour is 0, not a gap and not a null.
-  assert.deepEqual(report.series[0], { t: report.series[0].t, costUsd: 0, calls: 0 });
+  assert.deepEqual(report.series[1], { t: "2026-08-31T11:00:00.000Z", costUsd: 0, calls: 0 });
+  assert.equal(
+    report.series.reduce((sum, p) => sum + p.costUsd, 0),
+    0.875,
+    "every returned bucket is drawn somewhere, so the bars sum to the headline",
+  );
+  assert.equal(report.series.reduce((sum, p) => sum + p.calls, 0), 7);
+});
+
+test("queryCosts: a bucket keyed outside the grid is folded into the nearest end, never dropped", async () => {
+  // Four statements, four server-side `now()`s: a row can be keyed one bucket
+  // below the grid this process measured. It is still money the totals counted.
+  const rows = [
+    { bucket_epoch_s: Date.parse("2026-08-31T09:00:00.000Z") / 1000, cost_usd: 0.25, calls: "1" },
+    { bucket_epoch_s: Date.parse("2026-09-01T11:00:00.000Z") / 1000, cost_usd: 0.5, calls: "2" },
+  ];
+  const { ch } = recorder((sql) => (isSeries(sql) ? rows : []));
+  const report = await withFixedNow(NOW_OFF_BOUNDARY, () => queryCosts(ch, "24h"));
+
+  assert.equal(report.series[0].calls, 1);
+  assert.equal(report.series[24].calls, 2);
+  assert.equal(report.series.reduce((sum, p) => sum + p.costUsd, 0), 0.75);
 });
 
 // ---- parseCostsRange (D462: invalid ⇒ the default, never a throw) ---------

@@ -55,6 +55,8 @@ async function clickhouseReachable(): Promise<boolean> {
 const WORKSPACE_ID = `ws_it_${randomBytes(4).toString("hex")}`;
 const WORKSPACE_B = `ws_itb_${randomBytes(4).toString("hex")}`;
 const WORKSPACE_CAP = `ws_itc_${randomBytes(4).toString("hex")}`;
+/** D472: one call 10 minutes inside each range's far edge, one 30 minutes old. */
+const WORKSPACE_EDGE = `ws_ite_${randomBytes(4).toString("hex")}`;
 
 const NS_PER_SECOND = BigInt(1_000_000_000);
 const NS_PER_MS = BigInt(1_000_000);
@@ -69,6 +71,7 @@ function chTimestamp(epochNs: bigint): string {
 
 const NOW_NS = BigInt(Date.now()) * NS_PER_MS;
 const hoursAgo = (h: number): bigint => NOW_NS - BigInt(Math.round(h * 3_600_000)) * NS_PER_MS;
+const minutesAgo = (m: number): bigint => NOW_NS - BigInt(Math.round(m * 60_000)) * NS_PER_MS;
 
 function spanRow(overrides: {
   span_id: string;
@@ -222,6 +225,35 @@ const CAP_SPANS = Array.from({ length: COSTS_GROUP_CAP + 1 }, (_, i) =>
   }),
 );
 
+/**
+ * D472: the chart covers exactly the window the totals do, so a call at either
+ * END of the window is the thing that can fall between them. Each of these sits
+ * 10 minutes inside one range's far edge — in the leading, CLIPPED slot — and
+ * the last sits in the bucket now filling. Every figure is binary-exact.
+ */
+const EDGE_SPANS = [
+  { span_id: "e1", start_time: chTimestamp(minutesAgo(24 * 60 - 10)), cost_usd: 0.5 },
+  { span_id: "e2", start_time: chTimestamp(minutesAgo(7 * 24 * 60 - 10)), cost_usd: 0.25 },
+  { span_id: "e3", start_time: chTimestamp(minutesAgo(30 * 24 * 60 - 10)), cost_usd: 0.125 },
+  { span_id: "e4", start_time: chTimestamp(minutesAgo(30)), cost_usd: 0.0625 },
+].map((edge) =>
+  spanRow({
+    workspace_id: WORKSPACE_EDGE,
+    service: "edge",
+    gen_ai_request_model: "gpt-4o",
+    input_tokens: 10,
+    output_tokens: 1,
+    ...edge,
+  }),
+);
+
+/** What each range's window reaches, and what the chart's head must therefore draw. */
+const EDGE_WINDOWS = [
+  { range: "24h" as const, costUsd: 0.5625, calls: 2, head: 0.5 },
+  { range: "7d" as const, costUsd: 0.8125, calls: 3, head: 0.25 },
+  { range: "30d" as const, costUsd: 0.9375, calls: 4, head: 0.125 },
+];
+
 test("LLM unit economics (D460/D461) against a seeded ClickHouse", async (t) => {
   if (!(await clickhouseReachable())) {
     const why = `no ClickHouse at ${CLICKHOUSE_URL}; start deploy/compose (down -v first) to run this test`;
@@ -235,7 +267,7 @@ test("LLM unit economics (D460/D461) against a seeded ClickHouse", async (t) => 
   await seed.insert({
     table: "spans",
     format: "JSONEachRow",
-    values: [...WORKSPACE_A_SPANS, ...WORKSPACE_B_SPANS, ...CAP_SPANS],
+    values: [...WORKSPACE_A_SPANS, ...WORKSPACE_B_SPANS, ...CAP_SPANS, ...EDGE_SPANS],
   });
 
   const ch = forWorkspace(WORKSPACE_ID);
@@ -325,17 +357,56 @@ test("LLM unit economics (D460/D461) against a seeded ClickHouse", async (t) => 
     assert.equal(report.unpricedModels.some((m) => m.model === "claude-haiku"), false);
   });
 
-  await t.test("the fixed grid: 24 hourly points that add up to the window's spend", async () => {
+  await t.test("the hourly grid draws the window's spend, and every empty hour as 0", async () => {
     const report = await queryCosts(ch, "24h");
-    assert.equal(report.series.length, 24);
-    // Every seeded call is 1-3h old, so all of them fall inside the grid's
-    // whole buckets and the chart accounts for the total exactly.
+    // 24 whole hours plus the leading clipped slot, unless the window opened
+    // exactly on the hour (D472) — the count is the wall clock's, the sum is not.
+    assert.ok([24, 25].includes(report.series.length), `${report.series.length} points`);
     assert.equal(report.series.reduce((sum, p) => sum + p.costUsd, 0), 0.875);
     assert.equal(report.series.reduce((sum, p) => sum + p.calls, 0), 4);
-    // An hour this workspace made no call in is 0/0 — present, not missing.
+    // The four calls are 1h, 1h, 2h and 3h old: three distinct hourly slots.
     const empty = report.series.filter((p) => p.calls === 0);
-    assert.equal(empty.length, 21);
-    assert.deepEqual([...new Set(empty.map((p) => p.costUsd))], [0]);
+    assert.equal(empty.length, report.series.length - 3);
+    assert.deepEqual([...new Set(empty.map((p) => p.costUsd))], [0], "an hour with no call is 0, not a gap");
+  });
+
+  await t.test("D472: on every range, the bars sum to the headline — both edges included", async () => {
+    const edge = forWorkspace(WORKSPACE_EDGE);
+    for (const { range, costUsd, calls, head } of EDGE_WINDOWS) {
+      const report = await queryCosts(edge, range);
+      // The far-edge call is 10 minutes INSIDE this range and outside the
+      // narrower ones: proof the window the chart draws is the window the
+      // totals count, not a grid-aligned approximation of it.
+      assert.equal(report.totals.costUsd, costUsd, `${range} totals`);
+      assert.equal(report.totals.calls, calls, `${range} calls`);
+      assert.ok(
+        Math.abs(report.series.reduce((sum, p) => sum + p.costUsd, 0) - report.totals.costUsd) < 1e-12,
+        `${range}: the series sums to ${report.series.reduce((sum, p) => sum + p.costUsd, 0)}, totals say ${report.totals.costUsd}`,
+      );
+      assert.equal(
+        report.series.reduce((sum, p) => sum + p.calls, 0),
+        report.totals.calls,
+        `${range}: every call the totals counted is drawn somewhere`,
+      );
+      // It is drawn at the HEAD: in the clipped first slot, or in the second
+      // when the clock leaves less than 10 minutes of the first one.
+      assert.equal(report.series[0].costUsd + report.series[1].costUsd, head, `${range} head`);
+      // A slot per bucket plus the clipped one, minus the boundary case.
+      const bucketMs = { "24h": 3_600_000, "7d": 21_600_000, "30d": 86_400_000 }[range];
+      const ts = report.series.map((p) => Date.parse(p.t));
+      assert.ok(ts.slice(1).every((v) => v % bucketMs === 0), `${range}: only the first slot is off-boundary`);
+    }
+  });
+
+  await t.test("D472: the same identity holds for a workspace with calls in mid-window", async () => {
+    for (const range of ["24h", "7d", "30d"] as const) {
+      const report = await queryCosts(ch, range);
+      assert.ok(
+        Math.abs(report.series.reduce((sum, p) => sum + p.costUsd, 0) - report.totals.costUsd) < 1e-12,
+        `${range}: the chart and the stat card disagree`,
+      );
+      assert.equal(report.series.reduce((sum, p) => sum + p.calls, 0), report.totals.calls, range);
+    }
   });
 
   await t.test("the range picker is a real window: 7d reaches the 25h-old call, 24h does not", async () => {
@@ -344,7 +415,7 @@ test("LLM unit economics (D460/D461) against a seeded ClickHouse", async (t) => 
     assert.equal(week.totals.costUsd, 100.875);
     assert.equal(week.totals.calls, 5);
     assert.equal(week.totalModels, 4);
-    assert.equal(week.series.length, 28);
+    assert.ok([28, 29].includes(week.series.length), `${week.series.length} points`);
     assert.equal(week.byModel[0].model, "ancient-model", "$100 outranks the rest of the week");
   });
 
