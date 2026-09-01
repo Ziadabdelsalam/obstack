@@ -91,9 +91,13 @@ const (
 	outcomeRateLimited = "rate_limited"
 )
 
-// ErrRateLimited is the typed breach of the per-workspace cap. The caller's loop
-// distinguishes it from a transport failure: a rate-limited delivery was never
-// attempted, so it is worth retrying and must not burn an attempt.
+// ErrRateLimited is the typed breach of the per-workspace cap. RULED (S7.1
+// T4 escalation 1): the deliverer counts it as an attempt MADE like any other
+// failure — `attempts` counts requests for delivery, and terminating at
+// `failed` after three is the honest end state; a not-burned reading would
+// let a persistently rate-limited event retry as `pending` forever, which is
+// the worse failure. Near-unreachable either way (a 60/min cap against a 60s
+// eval cadence needs 60 rules transitioning in one tick).
 var ErrRateLimited = errors.New("notify: workspace delivery rate cap exceeded")
 
 // Ops-only counters, the metering/retention split: these are for the operator

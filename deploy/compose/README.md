@@ -359,6 +359,24 @@ What it asserts, in order:
   none of her words on any of them. Finally the accepted counter over both
   strangers' keys is read before the leg and after it and must not have moved:
   the leg touches Postgres and nothing else;
+- **alerts, evaluated and delivered for real (S7.1, D477–D492)** — channels and
+  rules are UI rows like dashboards, so `--leg alerts` seeds them straight into
+  the disposable Postgres: two channels (one targeting the drive's own webhook
+  receiver on the host, one an RFC 2606 `.invalid` host no resolver answers)
+  and two rules over the same condition — the gauge the metrics leg exported,
+  `avg > 40 over 15m`, a crossing by construction on its value of 42. What is
+  NOT seeded is the point: the ingest binary's own evaluator claims the rules
+  on its 60s tick, reads the metric through the store, fires both, and the 5s
+  deliverer POSTs one and burns three attempts on the other. The drive settles
+  against observed state (never elapsed time) until `/app/alerts` states both
+  delivery truths — *delivered* and *delivery failed* — and the receiver holds
+  the versioned payload (`version: 1`, the rule by name at `critical`, alice's
+  workspace). The page carries no `SAMPLE DATA` badge (the flip), targets
+  render masked (`/...hook`, never the URL the seed handed over), the live rule
+  shows *firing*, and the other stranger's `/app/alerts` is the empty state
+  with none of her rules, channels or words. Compose sets
+  `OBSTACK_NOTIFIER_ALLOW_PRIVATE` for exactly this receiver (D492) — the
+  production default stays strict, refusals dial-time-proven in Go tests;
 - **token hygiene** — both keys the run issued through the UI are searched for,
   as literals, in everything the drive printed and everything it wrote: stdout,
   the transcript, the server log, the build log, every artifact beside them. The
