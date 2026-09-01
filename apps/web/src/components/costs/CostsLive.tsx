@@ -45,8 +45,13 @@ function SpendBars({ series }: { series: CostsReport["series"] }) {
           key={p.t}
           className="flex-1 rounded-t-sm"
           style={{
-            height: maxCost > 0 ? `${Math.max((p.costUsd / maxCost) * 100, p.costUsd > 0 ? 2 : 0)}%` : "0%",
-            background: "var(--color-llm)",
+            // A zero bucket is a measured zero, not a gap (`IssuesLive`'s
+            // Spark): it keeps a floor in the muted colour so an hour with no
+            // spend still occupies its slot — and so a window whose every call
+            // was unpriced renders as a grid of zeros rather than a blank box
+            // under a footnote about bars.
+            height: p.costUsd > 0 ? `${Math.max((p.costUsd / maxCost) * 100, 2)}%` : "4%",
+            background: p.costUsd > 0 ? "var(--color-llm)" : "var(--color-overlay)",
           }}
           title={`${p.t} · ${fmtCost(p.costUsd)} · ${p.calls} calls`}
         />

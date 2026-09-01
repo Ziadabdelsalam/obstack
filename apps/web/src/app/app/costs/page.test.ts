@@ -140,6 +140,47 @@ test("D461: the unpriced sentence and the zero-calls empty state are frozen and 
   );
 });
 
+/**
+ * `fmtCost(0)` already returns "—", so a fully-unpriced row would print "—"
+ * even if nobody meant it to. These pin the DELIBERATE path — the cell reads
+ * `unpricedCalls`, not the formatter's zero — so replacing `fmtCost` with a
+ * `$0.00`-printing formatter cannot silently turn this page into a liar.
+ */
+const FLAT = LIVE.replace(/\s+/g, " ");
+
+test("D461: unpriced is read from the counts, not inferred from a zero cost", () => {
+  assert.ok(
+    FLAT.includes(
+      'm.unpricedCalls === m.calls ? "—" : m.unpricedCalls > 0 ? `${fmtCost(m.costUsd)} (${m.unpricedCalls} unpriced)` : fmtCost(m.costUsd)',
+    ),
+    "an all-unpriced model row must render — from unpricedCalls === calls, and a mixed row its priced sum plus (N unpriced)",
+  );
+  const statAt = FLAT.indexOf('<Stat label="unpriced calls" value={totals.unpricedCalls');
+  assert.ok(statAt > 0, "the 'unpriced calls' stat card is missing");
+  assert.ok(
+    statAt < FLAT.indexOf("totals.unpricedCalls > 0 &&"),
+    "the stat card must sit above the unpriced section's gate — it is a count, shown at 0 too (D461)",
+  );
+  const unpricedTable = FLAT.slice(FLAT.indexOf("report.unpricedModels.map"));
+  assert.ok(unpricedTable.includes(">—</td>"), "every unpriced model's cost cell must read —, never a price");
+  assert.ok(FLAT.includes("> why </Link>"), "the not-do doc link's text must be 'why'");
+});
+
+test("D402/D475: the cap sentences fire only on truncation, and the chart renders the series as given", () => {
+  for (const gate of [
+    "report.totalModels > report.byModel.length &&",
+    "report.totalServices > report.byService.length &&",
+    "report.totalUnpricedModels > report.unpricedModels.length &&",
+  ]) {
+    assert.ok(FLAT.includes(gate), `a cap sentence must be gated on truncation: ${gate}`);
+  }
+  assert.doesNotMatch(
+    LIVE,
+    /series\.length|series\.slice\(/,
+    "the bar count is clock-dependent (D475) — the chart may neither truncate the series nor assume its length",
+  );
+});
+
 test("the range picker links mark the active range with aria-current", () => {
   assert.ok(
     LIVE.includes('aria-current={r === range ? "page" : undefined}'),
