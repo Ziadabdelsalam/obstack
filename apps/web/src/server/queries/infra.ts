@@ -46,8 +46,11 @@ import type { ScopedClickHouse } from "@/server/clickhouse";
 /** The whole whitelist (D450), bound as one parameter — never spelled into the SQL (D11). */
 const FRESH_NAMES = [...KUBELET_METRICS, ...CLUSTER_METRICS];
 
-/** The two container gauges the recs read over 24h; both are `KUBELET_METRICS` members. */
-const WINDOW_NAMES = ["container.memory.working_set", "container.cpu.usage"];
+/** The two container gauges the recs read over 24h; the type pins both to the whitelist (condition 13). */
+const WINDOW_NAMES: (typeof KUBELET_METRICS)[number][] = [
+  "container.memory.working_set",
+  "container.cpu.usage",
+];
 
 /** The statement binds exactly the two lists, so "not kubelet" is "cluster". */
 const KUBELET_NAMES = new Set<string>(KUBELET_METRICS);
