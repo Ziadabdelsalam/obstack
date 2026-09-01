@@ -108,20 +108,32 @@ test("the live dashboards graph never reaches back into the mock product (D431/D
   ] as const;
 
   for (const [what, source] of files) {
-    assert.equal(source.includes('from "@/mock/'), false, `${what} must not import any mock module`);
+    // Every ban below reads what an import RESOLVES to, never the alias
+    // someone happened to type. These files already import their siblings
+    // relatively (`./WidgetLive`, `./actions`, `./DashboardEditor`), so a check
+    // spelled `from "@/mock/` is one `../../mock/` away from banning nothing —
+    // measured: all three bans passed against the relative form of the same
+    // import before this was matched on the specifier.
+    const specifiers = [...source.matchAll(/\bfrom\s+"([^"]+)"/g)].map(([, spec]) => spec);
+
+    assert.equal(
+      specifiers.some((spec) => /(^|\/)mock\//.test(spec)),
+      false,
+      `${what} must not import any mock module`,
+    );
     // The INDIRECT routes back into the mock product: the workspace store is
     // the in-memory dashboards the mock pages mutate, `WidgetCard` calls
     // `exploreSeries()` from `@/mock/explore` internally, `AddWidgetModal`
     // picks from the fixture catalog, and `ExploreChart` drags `@/mock/explore`
-    // in the same way. None of them show up in the `@/mock/` check above.
+    // in the same way. None of them show up in the mock-path check above.
     assert.equal(
-      /from "@\/state\/workspace-store"/.test(source),
+      specifiers.some((spec) => spec.endsWith("/workspace-store")),
       false,
       `${what} must not read the mock workspace store — live dashboards live in Postgres`,
     );
     for (const mockOnly of ["WidgetCard", "AddWidgetModal", "ExploreChart"]) {
       assert.equal(
-        new RegExp(`from "@/components/[a-z]+/${mockOnly}"`).test(source),
+        specifiers.some((spec) => spec === mockOnly || spec.endsWith(`/${mockOnly}`)),
         false,
         `${what} must not import ${mockOnly} — it is mock-only by construction (D391)`,
       );
