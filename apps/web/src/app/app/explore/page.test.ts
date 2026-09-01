@@ -145,3 +145,10 @@ test("the saved widget is D433's mapping — timeseries, unpinned, titled from t
     "the title is `${metric} · ${agg}` plus ` by ${groupBy}` when grouped (D433)",
   );
 });
+
+test("D444: an empty dashboards list says so, above \"new dashboard…\"", () => {
+  assert.ok(
+    SAVE_LIVE.includes("no dashboards yet — name one below"),
+    "the empty list slot must print the exact D444 sentence, not a blank strip",
+  );
+});

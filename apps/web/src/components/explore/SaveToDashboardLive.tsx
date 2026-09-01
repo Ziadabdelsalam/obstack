@@ -138,6 +138,11 @@ export function SaveToDashboardLive({
         )}
 
         <div className="max-h-[360px] overflow-y-auto py-1.5">
+          {dashboards.length === 0 && (
+            <p className="px-4 py-2 font-mono text-[11.5px] text-faint">
+              no dashboards yet — name one below
+            </p>
+          )}
           {dashboards.map((d) => {
             const full = d.widgets.length >= MAX_WIDGETS_PER_DASHBOARD;
             return (
