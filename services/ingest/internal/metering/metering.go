@@ -299,6 +299,23 @@ func (m *Meter) RecordAcceptedMetrics(workspaceID, keyID string, points int64) {
 	})
 }
 
+// RecordAcceptedChange counts one change event a key posted (S7.2 packet,
+// D497), into the key's health cell only — accepted and its last event — the
+// RecordAcceptedMetrics posture for the same reason: change events carry no
+// quota and are not billed usage, so the ledger has no column for them and a
+// quota decision can never fire on a POST /v1/changes.
+func (m *Meter) RecordAcceptedChange(workspaceID, keyID string) {
+	at := m.now().UTC()
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	m.updateHealth(workspaceID, keyID, at, func(c *healthCell) {
+		c.accepted++
+		c.lastEventAt = at
+	})
+}
+
 // RecordDropped counts records refused or shed after auth, under the column its
 // reason names. Nothing here touches the ledger: usage is what we accepted, so a
 // drop is a health fact and never a billed one.

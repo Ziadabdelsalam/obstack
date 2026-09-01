@@ -34,6 +34,7 @@ import (
 	"google.golang.org/grpc"
 
 	"github.com/Ziadabdelsalam/observer-stack/services/ingest/internal/auth"
+	"github.com/Ziadabdelsalam/observer-stack/services/ingest/internal/changes"
 	"github.com/Ziadabdelsalam/observer-stack/services/ingest/internal/metering"
 	"github.com/Ziadabdelsalam/observer-stack/services/ingest/internal/metrics"
 )
@@ -72,6 +73,10 @@ type Meter interface {
 	// metrics ingestion writes zero usage_ledger rows and never consults the
 	// quota decision (D365).
 	RecordAcceptedMetrics(workspaceID, keyID string, points int64)
+	// RecordAcceptedChange is the change-event counterpart (D497): one
+	// accepted event is one on the key's health.accepted and its last event —
+	// the RecordAcceptedMetrics posture, never the ledger, never a quota input.
+	RecordAcceptedChange(workspaceID, keyID string)
 	RecordDropped(workspaceID, keyID string, reason metering.DropReason, records int64)
 }
 
@@ -107,6 +112,12 @@ type Config struct {
 	// be stated.
 	VercelDrainSecret string
 
+	// Changes is where POST /v1/changes writes (S7.2 packet, D493/D495): a
+	// synchronous, workspace-scoped insert whose outcome IS the response. Nil
+	// leaves the route unregistered — a receiver built without a store has no
+	// honest answer to give it.
+	Changes changes.Store
+
 	// Rand draws the sampling verdict for a log record that carries no trace id
 	// — the one record class with no trace to be whole with. Nil uses the
 	// process's own source; tests inject a deterministic one. Whatever is here
@@ -125,12 +136,16 @@ type Server struct {
 	grpcLn net.Listener
 	httpLn net.Listener
 
+	// changeLimiter is the per-workspace cap on /v1/changes (D498), owned here
+	// because it is per process: N replicas hold N buckets, stated in the packet.
+	changeLimiter *changes.Limiter
+
 	errs chan error
 }
 
 // New builds the receivers. Nothing is bound until Start.
 func New(cfg Config) *Server {
-	s := &Server{cfg: cfg, errs: make(chan error, 2)}
+	s := &Server{cfg: cfg, errs: make(chan error, 2), changeLimiter: changes.NewLimiter()}
 	s.grpc = s.newGRPCServer()
 	s.http = &http.Server{
 		Handler:           s.httpHandler(),

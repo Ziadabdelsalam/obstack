@@ -83,7 +83,21 @@ func (s *Server) httpHandler() http.Handler {
 	// configuration (D289).
 	mux.HandleFunc("POST "+integrationsPrefix+"vercel", s.vercelHandler)
 	mux.HandleFunc("POST "+integrationsPrefix+"cloudwatch", s.cloudWatchHandler)
+	// The change-event ingest (S7.2 packet, D493) — a route here for the same
+	// reasons the launch receivers are: the bearer path, the health rows and
+	// the panic recovery already exist on this listener, and the recipe then
+	// targets the host and header the quickstart documents.
+	if s.cfg.Changes != nil {
+		mux.HandleFunc("POST "+changesPath, s.changesHandler)
+	}
 	return recoverPanics(mux)
+}
+
+// answersInJSON reports whether a path speaks the integrations' plain-JSON
+// dialect rather than OTLP's google.rpc.Status — the panic recovery has to
+// answer in the caller's language.
+func answersInJSON(path string) bool {
+	return strings.HasPrefix(path, integrationsPrefix) || path == changesPath
 }
 
 // workspaceKey addresses the slot recoverPanics puts in the request context and
@@ -116,7 +130,7 @@ func recoverPanics(next http.Handler) http.Handler {
 			// integration routes get the same plain JSON they answer with
 			// everywhere else. A drain sender handed a protobuf Status would
 			// log bytes instead of a reason.
-			if strings.HasPrefix(r.URL.Path, integrationsPrefix) {
+			if answersInJSON(r.URL.Path) {
 				writeJSONError(w, http.StatusInternalServerError, "internal error handling delivery")
 				return
 			}
