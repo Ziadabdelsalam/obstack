@@ -374,10 +374,14 @@ async function lowerFreeQuota() {
  *     two after it are the deltas the 1m rollup merges into a known bucket.
  *
  * Nothing here can be undone either, but nothing here needs to be: the drive
- * points this at a workspace a signup created seconds earlier, and a second
- * run against the same one would be two more cumulative snapshots on a series
- * that already has a baseline — a different fixture, which is exactly what the
- * expectations printed below would then say.
+ * points this at a workspace a signup created seconds earlier, and never
+ * re-runs the leg against it — fresh strangers every run. A second run by
+ * hand would carry a new `startTimeUnixNano` and so hit the cumulative-reset
+ * path (D363 §1's reset rule) rather than continue the same accumulation; the
+ * expectations printed below are static, so what they'd then say — the sum's
+ * 60, among them — would be a lie about that workspace. No guard is added
+ * here on purpose: a ClickHouse read in a leg that otherwise needs nothing
+ * but a token would be machinery built only for that hand-run case.
  */
 
 /** How far back the export is stamped: well inside the contract's 1h window of
