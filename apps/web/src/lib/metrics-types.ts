@@ -62,7 +62,11 @@ export interface MetricSeries {
  * D381 (§0 amendment): `totalGroups` is the PRE-truncation distinct-group
  * count — "showing top 10 of N" needs the true N, not `series.length` (which
  * is capped at 10). With `groupBy: null` there is only ever the one
- * ungrouped series, so `totalGroups` equals `series.length` (0 or 1).
+ * ungrouped series naming the metric as a whole, so `totalGroups` equals
+ * `series.length`: `queryMetricSeries` always answers an ungrouped query
+ * with exactly that one series — honestly empty (every point null) when
+ * nothing matched, including for a (name, type) pair the workspace never
+ * emitted, rather than vanishing.
  */
 export interface MetricSeriesResult {
   series: MetricSeries[];

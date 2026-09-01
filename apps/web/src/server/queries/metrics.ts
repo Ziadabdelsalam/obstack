@@ -3,7 +3,6 @@ import type {
   MetricAgg,
   MetricCatalogEntry,
   MetricRange,
-  MetricSeries,
   MetricSeriesPoint,
   MetricSeriesQuery,
   MetricSeriesResult,
@@ -363,8 +362,8 @@ export async function queryMetricSeries(
   // D381: `totalGroups` is the PRE-truncation distinct-group count —
   // `byGroup.size` before the `.slice(0, 10)` above discarded the rest.
   // Ungrouped queries have no such "N groups" concept, so it mirrors
-  // `series.length` there instead (0 or 1, matching the synthetic
-  // ungrouped-empty fallback above).
+  // `series.length` there instead — always exactly 1, since the fallback
+  // above guarantees the one "metric as a whole" series exists.
   const totalGroups = q.groupBy === null ? series.length : byGroup.size;
   return { series, totalGroups };
 }
