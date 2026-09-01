@@ -10,6 +10,22 @@ StatefulSets with PersistentVolumeClaims, the ingest Deployment plus its two
 migration Jobs, the web workload, the `obstack-collector` DaemonSet, and a demo
 app pod.
 
+{/* D450/D451/D465 */}
+
+Since chart 0.6.0 the collector also reports the cluster it runs on: the
+DaemonSet scrapes its own node's kubelet, and a single-replica cluster
+collector (behind `collector.cluster.enabled`, default on — the same workload
+that ships Kubernetes events) watches the API server, so `/app/infra` renders
+the release's own nodes and pods with no extra configuration. The seventeen
+metric names it is fenced to, the RBAC both receivers need and the per-node
+series budget are in `deploy/collector/README.md` under "Kubernetes metrics".
+0.6.0 is a **non-additive** bump: the old `k8sEvents` values block became
+`collector.cluster.*` with deliberately no alias — a values file still setting
+the old key is silently ignored and the collector comes up enabled — and the
+singleton's objects renamed `<release>-collector-events` →
+`<release>-collector-cluster`; the chart README's "Upgrading to 0.6.0" section
+has both rules.
+
 ## Install
 
 The chart lives in this repository — there is no chart repository to add — and

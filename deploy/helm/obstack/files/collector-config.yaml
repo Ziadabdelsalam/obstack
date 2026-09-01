@@ -8,8 +8,16 @@
 #
 # T4 packages this file, byte-for-byte, as the DaemonSet's ConfigMap; it is
 # not re-derived there. It receives OTLP from instrumented apps, tails every
-# other container's stdout/stderr from the node's pod log directory, and
-# forwards both to ingest with the workspace's bearer key.
+# other container's stdout/stderr from the node's pod log directory, scrapes
+# its own node's kubelet for node/pod/container resource usage, and forwards
+# all three to ingest with the workspace's bearer key.
+#
+# The metrics leg is the node half of one pair: this file's `kubelet_stats`
+# measures what is actually being USED, and the chart's cluster collector
+# (deploy/helm/obstack/files/collector-cluster-config.yaml) reads what the
+# API server DECLARED — readiness, allocatable, phase, restarts, requests and
+# limits. Neither half is derivable from the other, and `/app/infra` renders
+# both; the split is by data source, not by size.
 #
 # The compose form (config.compose.yaml) is a second, separate file: outside
 # a cluster there is no Kubernetes API for k8sattributes to query and no
@@ -68,8 +76,103 @@ receivers:
     operators:
       - type: container
 
+  # This node's own kubelet, scraped for the node/pod/container resource
+  # usage `/app/infra` reads (D450). Node-local by construction: the
+  # DaemonSet is already running on the node whose kubelet it asks, so there
+  # is one scrape per node every 30s and no cluster-wide fan-out.
+  #
+  # `endpoint` is the node's IP (`K8S_NODE_IP`, the Downward API's
+  # `status.hostIP` — the DaemonSet supplies it), never its name: node names
+  # are not DNS-resolvable from inside a pod on every distro, the host IP
+  # always is. `insecure_skip_verify` is a requirement rather than laxity —
+  # the kubelet's serving certificate is self-signed on kind and on most
+  # managed distros, so a verifying client gets `x509: certificate signed by
+  # unknown authority` and scrapes nothing at all. The connection never
+  # leaves the node it was made on.
+  #
+  # `metrics:` names exactly the seven series the product stores. That list
+  # is what makes `validate` REJECT a typo here instead of letting a cluster
+  # ship nothing under a misspelled name and look merely idle. It does not
+  # narrow the receiver — every other default-enabled metric still leaves it,
+  # and `filter/k8s` below is what actually holds the wire to these seven.
+  kubelet_stats:
+    collection_interval: 30s
+    auth_type: serviceAccount
+    endpoint: "https://${env:K8S_NODE_IP}:10250"
+    insecure_skip_verify: true
+    metric_groups: [node, pod, container]
+    metrics:
+      k8s.node.cpu.usage:
+        enabled: true
+      k8s.node.memory.working_set:
+        enabled: true
+      k8s.node.memory.available:
+        enabled: true
+      k8s.pod.cpu.usage:
+        enabled: true
+      k8s.pod.memory.working_set:
+        enabled: true
+      container.cpu.usage:
+        enabled: true
+      container.memory.working_set:
+        enabled: true
+
 processors:
   batch: {}
+
+  # The wire contract for the metrics leg (D450): exactly these seven names
+  # leave this collector and nothing else does. `metric_groups` already
+  # bounds what the receiver collects, but a receiver's default-enabled set
+  # grows with upstream releases — this list is what stops an otelcol bump
+  # from quietly adding series to the store's active-series budget without a
+  # commit anyone reviewed. `strict` is name equality, not a prefix match, so
+  # a future `container.cpu.time` does not slip in beside `container.cpu.usage`.
+  filter/k8s:
+    metrics:
+      include:
+        match_type: strict
+        metric_names:
+          - k8s.node.cpu.usage
+          - k8s.node.memory.working_set
+          - k8s.node.memory.available
+          - k8s.pod.cpu.usage
+          - k8s.pod.memory.working_set
+          - container.cpu.usage
+          - container.memory.working_set
+
+  # Stamp, then scrub (D453).
+  #
+  # The stamp: kubeletstats sets `k8s.node.name` on NODE resources only
+  # (receiver/kubeletstatsreceiver/internal/kubelet/accumulator.go at the
+  # pinned version), so pod and container series arrive carrying no node
+  # attribute at all and nothing could say which node a pod runs on. This
+  # DaemonSet knows the answer for free — it is pinned to one node — and
+  # `K8S_NODE_NAME` (Downward API `spec.nodeName`) is that answer. `insert`
+  # rather than `upsert`: where the receiver already set the attribute, its
+  # value wins.
+  #
+  # The scrub: a pod UID and a container ID are per-restart identities, so
+  # storing them turns every restart into a NEW series against the
+  # active-series cap while adding nothing a human reads — the
+  # namespace/pod/container NAMES are what `/app/infra` groups by, and they
+  # survive a restart.
+  resource/k8s:
+    attributes:
+      # No `:-` default, deliberately, unlike the filelog exclusion above: an
+      # unset K8S_NODE_NAME expands to YAML null and the collector REFUSES to
+      # start ("Either field value, from_attribute, ... must be specified").
+      # That is the wanted behaviour — a default would stamp every series on
+      # the node with a placeholder node name, and a wrong node name reads as
+      # data rather than as the misconfiguration it is. The cost is that this
+      # file is only `validate`-able with the variable set; README.md's
+      # "Kubernetes metrics" section carries the exact command.
+      - key: k8s.node.name
+        value: "${env:K8S_NODE_NAME}"
+        action: insert
+      - key: k8s.pod.uid
+        action: delete
+      - key: container.id
+        action: delete
 
   # Attaches pod identity to OTLP-received records (D37.1/D43). The
   # association order below is measured, not stylistic:
@@ -155,4 +258,13 @@ service:
     logs:
       receivers: [otlp, file_log]
       processors: [k8s_attributes, batch]
+      exporters: [otlp_http]
+    # No `k8s_attributes` here, unlike the two above: kubeletstats reads pod
+    # identity out of the kubelet's own summary API, so namespace, pod and
+    # container names are already on the resource before any processor runs —
+    # a pod-association lookup would be asking the API server for what the
+    # node just handed over.
+    metrics:
+      receivers: [kubelet_stats]
+      processors: [filter/k8s, resource/k8s, batch]
       exporters: [otlp_http]

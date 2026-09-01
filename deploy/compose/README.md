@@ -267,7 +267,7 @@ What it asserts, in order:
   totals with the instant they were counted at, errors that are receive-path or cardinality-cap drops
   and quota drops rendered as sampling rather than as faults (D218/D219), and no
   invented per-minute rate anywhere on the panel. `/app/connections` is live-wired
-  and carries no `SAMPLE DATA` badge, while `/app/costs` still does;
+  and carries no `SAMPLE DATA` badge, while `/app/ask` still does;
 - **Explain, run and refused** — she opens one of her own failed traces, presses
   *Explain this trace*, and the panel streams the **fake engine's** answer: the
   engine with the provider taken out (D168), which is the only one CI ever runs
@@ -300,8 +300,29 @@ What it asserts, in order:
   bob's own catalog lists none of them — discovery is per tenant here too
   (D142). Then `/app/explore` renders the metric that arrived, the `<h1>`
   naming it and no `SAMPLE DATA` badge on the page, the D21 flip this sprint
-  wires, while `/app/costs` — the unwired positive control the badge check
+  wires, while `/app/ask` — the unwired positive control the badge check
   above uses — still carries one;
+- **alice's cluster goes in the same front door, and `/app/infra` renders it
+  (D459/D467)** — the k8s leg exports the kubelet_stats/k8s_cluster fixture —
+  two nodes, five pods, one already stale — to the real `/v1/metrics`
+  immediately after the metrics leg (freshness: `INFRA_STALE_MINUTES` is 10 and
+  the fixture stamps three minutes back, so the page is opened within the
+  window, not after the S6.2 legs). `/app/infra` then renders her nodes and
+  every fresh pod with no `SAMPLE DATA` badge — the header counting what the
+  export said, each pod drilling to its own logs filter, the crash-looping pod
+  carrying its real restarts and phase, the kubelet-only pod's cluster-leg
+  cells marked `—` rather than guessed (D13), the stale pod ABSENT rather than
+  "running", and the right-sizing panel stating the oversized limit as a
+  measurement — peak, limit, window, no price anywhere (D458/D362). The other
+  stranger's infra page says no cluster metrics have arrived and renders no
+  table at all;
+- **`/app/costs` is her own spend, and the fenced figures are absent (D461/D362)**
+  — the total is the one priced call the seed sent, named by its model; the
+  call no price table has a row for is counted and named as unpriced, never
+  folded in as free (bob's page, read in the window before his seed, states
+  that no LLM call has been traced rather than a `$0.00` he never spent); and
+  no customer, revenue, margin, infra dollars or billing connection appears —
+  not zeroed or marked, not on the page;
 - **the five surfaces S6.2 wired, on that same seed (D21/D405)** — `/app/map`
   draws the services her spans name and exactly the cross-service hops the
   fixture chains, an edge existing only where both spans are stored;
@@ -432,6 +453,27 @@ node deploy/compose/exit-seed.mjs --workspace ws_1a2b3c --label zzalice --leg da
 
 A second run into the same workspace is refused by `UNIQUE (workspace_id, name)`
 rather than by a guard this file could write.
+
+The k8s leg (D467) is separate and additive too, and it goes through the same
+front door as the metrics leg — the real `/v1/metrics`, the token in the
+environment and never in argv. It sends the S6.4 kubelet_stats/k8s_cluster
+fixture: two nodes and five pods whose names, header line and ratios the leg
+prints as its own expectations (the drive reads them from there, never spelled
+twice) — a crash-looping pod, a kubelet-only pod with no cluster leg, a pod
+whose memory limit is measurably oversized, and one pod stamped stale on
+purpose. It takes no `--label`, because nothing it sends is content — metric
+names and pod names are identifiers, and the filter legs match identifiers
+exactly:
+
+```bash
+SEED_METRICS_TOKEN=ok_live_… INGEST_OTLP=http://127.0.0.1:4318 \
+  node deploy/compose/exit-seed.mjs --workspace ws_1a2b3c --leg k8s
+```
+
+Like the metrics leg it has no double-run guard, and the same caveat applies:
+a second run by hand re-stamps the fixture's timestamps, so the freshness
+claims the drive makes (the stale pod absent, everything else inside
+`INFRA_STALE_MINUTES`) stop describing what the store holds.
 
 The label goes on content only — names, bodies, prompts — and never on an
 identifier, because the filter legs match services and pods exactly; and never

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
@@ -243,20 +243,38 @@ test("D65: the URL-contract literals exist in exactly one module for this surfac
 // pod's whole name. The old form searched a truncated prefix of the name in
 // message text. The companion guard in `server/data.test.ts` proves the names
 // it sends are names this surface can actually filter on.
+//
+// The surface's files are enumerated by GLOB, never by hand (S6.3-L1): D367
+// split `/app/infra` into a mock half and a live half, and a guard naming one
+// file leaves the other free to reopen exactly this. The LIVE half is the one
+// that has to carry the link — a mock-only assertion would go green on a live
+// page that dropped it — so it is named as the positive control, while the ban
+// runs over every file the glob found.
 test("D61: the infra pod link speaks the contract's pod parameter, whole name", () => {
-  const infra = readFileSync(path.join(WEB_SRC, "app/app/infra/page.tsx"), "utf8");
-  assert.ok(
-    infra.includes("`/app/logs?pod=${encodeURIComponent(p.name)}`"),
-    "the infra pod link no longer sends the whole pod name as this surface's `pod` filter (D61)",
+  const dir = path.join(WEB_SRC, "components/infra");
+  const sources = new Map(
+    readdirSync(dir)
+      .filter((f) => f.endsWith(".tsx"))
+      .map((f) => [f, readFileSync(path.join(dir, f), "utf8")] as const),
   );
   assert.ok(
-    !infra.includes("/app/logs?q="),
-    "the infra pod link is back to free text, which on this surface searches log bodies and not pod names",
+    sources.has("InfraLive.tsx") && sources.size >= 2,
+    `the sweep did not find the infra surface's files (read: ${[...sources.keys()].join(", ")})`,
   );
   assert.ok(
-    !infra.includes('p.name.split("-")'),
-    "the pod name is being truncated again — a prefix is not a value the pod filter matches",
+    sources.get("InfraLive.tsx")!.includes("`/app/logs?pod=${encodeURIComponent(p.name)}`"),
+    "the LIVE infra pod link no longer sends the whole pod name as this surface's `pod` filter (D61)",
   );
+  for (const [file, src] of sources) {
+    assert.ok(
+      !src.includes("/app/logs?q="),
+      `${file}'s pod link is back to free text, which on this surface searches log bodies and not pod names`,
+    );
+    assert.ok(
+      !src.includes('p.name.split("-")'),
+      `${file} truncates the pod name again — a prefix is not a value the pod filter matches`,
+    );
+  }
   // The link's target has to parse as the pod filter, not merely look like it.
   assert.equal(parseLogsUrl({ pod: "agent-worker-7d9fb-kx2rq" }).pod, "agent-worker-7d9fb-kx2rq");
 });

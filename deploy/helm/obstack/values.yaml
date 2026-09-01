@@ -258,34 +258,43 @@ collector:
       cpu: 200m
       memory: 256Mi
 
-  # Kubernetes cluster events (Pod scheduling failures, image pull errors,
-  # OOMKills, probe failures — the API server's own Event objects) shipped to
-  # ingest as OTLP log records, so they land in `obstack.logs` next to
-  # application logs instead of being visible only to `kubectl get events`.
+  # Everything this release reads from the Kubernetes API server rather than
+  # from a node, in one single-replica Deployment
+  # (templates/collector/cluster-deployment.yaml):
+  #
+  #   - cluster EVENTS (scheduling failures, image pull errors, OOMKills,
+  #     probe failures — the API server's own Event objects), shipped as OTLP
+  #     log records so they land in `obstack.logs` next to application logs
+  #     instead of being visible only to `kubectl get events`;
+  #   - cluster METRICS (node readiness and memory pressure, allocatable CPU
+  #     and memory, pod phase, container restarts, and each container's
+  #     requests and limits), shipped as OTLP metrics and read by `/app/infra`.
+  #     Usage comes from the DaemonSet's kubelet scrape; a LIMIT exists only in
+  #     the API server's object, so right-sizing needs this half.
+  #
+  # It is not a DaemonSet, and that is correctness rather than sizing: both
+  # receivers read the whole cluster, so a per-node copy would ship every event
+  # and every node fact once per node. README.md, "The cluster collector
+  # (events + cluster metrics)", has the full rationale.
   #
   # ON by default: a cluster whose events are missing is the case where the
-  # product has least to say about a Pod that never started, and the cost is
-  # one small extra pod. Set `enabled: false` and the whole feature leaves the
-  # release — no Deployment, no ConfigMap, and no `events` rule on the
-  # collector's ClusterRole (templates/collector/clusterrole.yaml gates that
-  # grant on this same flag, so turning the feature off narrows the RBAC
+  # product has least to say about a Pod that never started, and `/app/infra`
+  # without this half can show usage but never a limit. The cost is one small
+  # extra pod. Set `enabled: false` and the whole feature leaves the release —
+  # no Deployment, no ConfigMap, and no `events` or cluster-read rules on the
+  # collector's ClusterRole (templates/collector/clusterrole.yaml gates those
+  # grants on this same flag, so turning the feature off narrows the RBAC
   # rather than leaving a standing unused permission).
-  #
-  # This runs as its OWN single-replica Deployment
-  # (templates/collector/events-deployment.yaml), not inside the collector
-  # DaemonSet: the `k8s_events` receiver watches the API server, so every
-  # replica sees the whole cluster's event stream and a per-node DaemonSet
-  # would ship each event once per node. README.md, "The cluster-events
-  # collector", has the full rationale.
-  k8sEvents:
+  cluster:
     enabled: true
     # D283: requests AND limits, same ruling as collector.resources above on
-    # this workload's own numbers — an idle API watch plus a batch buffer is a
-    # smaller and flatter footprint than the node's log tailer, so it reserves
-    # 10m against the tailer's 50m. The limit is the one that bounds an event
-    # storm and stays where it was; the request is what the scheduler must
-    # actually find free on a node, and the chart's total of those is a budget
-    # the acceptance checks (README.md, "The node's CPU-request budget").
+    # this workload's own numbers — API watches, one 30s cluster list and a
+    # batch buffer are a smaller and flatter footprint than the node's log
+    # tailer, so it reserves 10m against the tailer's 50m. The limit is the one
+    # that bounds an event storm and stays where it was; the request is what
+    # the scheduler must actually find free on a node, and the chart's total of
+    # those is a budget the acceptance checks (README.md, "The node's
+    # CPU-request budget").
     resources:
       requests:
         cpu: 10m

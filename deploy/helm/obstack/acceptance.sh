@@ -188,6 +188,33 @@ printf '   trace_id=%s\n' "$trace_1"
 step "asserting the D37 evidence bundle (four layers, SOLID, NEARBY, zero duplicated bodies)"
 harness assert "$trace_1"
 
+# S6.4 (D466/D474): the ONLY place the collector→store k8s metrics path is
+# proven on a real kubelet and API server — `validate` cannot enumerate the
+# four dynamic k8s_cluster names, and the compose drive's cluster is a
+# fixture. The harness polls `queryInfraSnapshot` (the module `/app/infra`
+# renders from) until both receiver legs are fresh, then asserts a real node,
+# the demo pod's summed limits (D457), the D450 name-set subset and D458's
+# negative. Placed here, before the restart rider, so the snapshot describes
+# the collector pods that have been scraping since install rather than ones
+# rolled seconds ago.
+step "S6.4: the collector's k8s metrics reach the store through the real module (D450/D466)"
+kubectl rollout status "deployment/$RELEASE-collector-cluster" --timeout=180s
+demo_pod_now="$(kubectl get pod \
+  -l "app.kubernetes.io/instance=$RELEASE,app.kubernetes.io/component=demo" \
+  -o jsonpath='{.items[0].metadata.name}')"
+[ -n "$demo_pod_now" ] || fail "no demo pod found for release '$RELEASE'"
+harness k8s-metrics "$demo_pod_now"
+# D454: the widened ClusterRole is SUFFICIENT, asserted as an absence — a
+# cluster receiver missing a grant does not crash, it logs watch/list failures
+# forever and emits partial data, which is exactly the silent shape this grep
+# turns red.
+forbidden_lines="$(kubectl logs "deploy/$RELEASE-collector-cluster" | grep -cE 'forbidden|Failed to watch|Failed to list' || true)"
+if [ "$forbidden_lines" != "0" ]; then
+  kubectl logs "deploy/$RELEASE-collector-cluster" | grep -E 'forbidden|Failed to watch|Failed to list' | head -5 >&2
+  fail "the cluster collector logs $forbidden_lines RBAC failure line(s) — the D454 ClusterRole is missing a grant"
+fi
+printf '   D454: zero forbidden/Failed-to-watch/Failed-to-list lines in the cluster collector log\n'
+
 # T1 review escalation rider: file_storage checkpointing means a collector
 # restart resumes each tailed file instead of re-reading it from the top —
 # without it, every previously-shipped line would land a second time with its
@@ -215,10 +242,11 @@ harness genai-fixture
 # every check above must already have run against the pod that served them.
 #
 # The product claims "k8s events on the timeline". This proves it on a live
-# cluster instead of describing it: the chart's events collector
-# (templates/collector/events-deployment.yaml — a single-replica Deployment,
-# because k8s_events watches the cluster-wide API stream) is asserted Available
-# first, then a fresh trace is driven and the pod that served it is deleted.
+# cluster instead of describing it: the chart's cluster collector
+# (templates/collector/cluster-deployment.yaml — a single-replica Deployment,
+# because both of its receivers read the cluster-wide API) is asserted
+# Available first, then a fresh trace is driven and the pod that served it is
+# deleted.
 # The kubelet emits a `Killing` event against exactly that Pod — a Normal-Type
 # event, which EVENT_KINDS (apps/web/src/server/adapters.ts) folds to kind
 # "restart" at severity "info" — and the harness reads it back through the same
@@ -229,7 +257,7 @@ harness genai-fixture
 # Service's endpoint goes away with the pod) are the trap's to kill anyway,
 # because nothing after this line drives the demo again.
 step "S4.4: a live kubelet event lands on the trace's timeline"
-kubectl rollout status "deployment/$RELEASE-collector-events" --timeout=180s
+kubectl rollout status "deployment/$RELEASE-collector-cluster" --timeout=180s
 # By the chart's own labels, never a guessed name — demo replicas is 1
 # (templates/demo/deployment.yaml says why), so this IS the pod serving /chat.
 demo_pod="$(kubectl get pod \

@@ -1,20 +1,36 @@
-# The base rule is exactly the T1 hand-off (deploy/collector/README.md, "What
-# config.yaml assumes of its DaemonSet"): k8s_attributes runs
-# `auth_type: serviceAccount` and watches the API to resolve pod identity from
-# `pods` and `namespaces` only — it reads no labels and no owner references,
-# so `replicasets` is deliberately absent, and it still is. Adding it later is
-# what widens this rule, not a chart preference.
+# One ClusterRole for one ServiceAccount, in three parts, each with the
+# component that needs it named. Both collector workloads share an identity
+# (serviceaccount.yaml), so a widening lands here rather than as a second role.
 #
-# `events` below is precisely that: a widening, with a component that needs it
-# named. It is not for k8s_attributes — the processor's extract set is
-# unchanged — but for the `k8s_events` receiver on the events collector
-# (templates/collector/events-deployment.yaml), which reads the API server's
-# Event stream and can do nothing without `watch` on it. Both workloads share
-# one ServiceAccount, so the grant lands here rather than in a second role;
-# gating it on the same `collector.k8sEvents.enabled` flag as the workload is
-# what keeps the rule honest when the feature is off — turn the events
-# collector off and the permission goes with it, instead of leaving a standing
-# cluster-wide read nothing in the release consumes.
+# UNCONDITIONAL — the DaemonSet, which every release runs:
+#   `pods`/`namespaces` is the T1 hand-off (deploy/collector/README.md, "What
+#   config.yaml assumes of its DaemonSet"): `k8s_attributes` runs
+#   `auth_type: serviceAccount` and watches the API to resolve pod identity. It
+#   reads no labels and no owner references, which is why its own needs stop
+#   there.
+#   `nodes/stats` and `nodes/proxy` are the metrics leg's (D452/D454):
+#   `kubelet_stats` authenticates to its own node's kubelet with this
+#   ServiceAccount's token, and the kubelet authorises the summary endpoint
+#   against exactly these two subresources. `get` only — a scrape is one read,
+#   there is nothing to list or watch.
+#
+# GATED on `collector.cluster.enabled` — the cluster collector
+# (templates/collector/cluster-deployment.yaml), which a release can turn off:
+#   `events` for the `k8s_events` receiver, which can do nothing without a
+#   watch on the Event stream, and the rest for `k8s_cluster`, whose informers
+#   list and watch the objects it derives node/pod/container state from. That
+#   set is the upstream receiver's own documented ClusterRole at the pinned
+#   v0.158.0, minus the dead `extensions` API group (removed from Kubernetes in
+#   1.16) and minus the `events` already granted just above it.
+#
+# `replicasets` IS in that set, and this is the rule's one previously stated
+# absence: it used to say `replicasets` was deliberately absent because
+# `k8s_attributes` reads no owner references. That is still true of
+# `k8s_attributes` — it is the receiver below, whose informers cover the whole
+# owner chain (Deployment → ReplicaSet → Pod), that needs it, and only while
+# the feature is on. Turn `collector.cluster.enabled` off and every rule below
+# the gate goes with it, instead of leaving a standing cluster-wide read
+# nothing in the release consumes.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -26,8 +42,38 @@ rules:
   - apiGroups: [""]
     resources: ["pods", "namespaces"]
     verbs: ["get", "list", "watch"]
-  {{- if .Values.collector.k8sEvents.enabled }}
+  - apiGroups: [""]
+    resources: ["nodes/stats", "nodes/proxy"]
+    verbs: ["get"]
+  {{- if .Values.collector.cluster.enabled }}
   - apiGroups: [""]
     resources: ["events"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources:
+      - "namespaces"
+      - "namespaces/status"
+      - "nodes"
+      - "nodes/spec"
+      - "persistentvolumes"
+      - "persistentvolumeclaims"
+      - "pods"
+      - "pods/status"
+      - "replicationcontrollers"
+      - "replicationcontrollers/status"
+      - "resourcequotas"
+      - "services"
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["discovery.k8s.io"]
+    resources: ["endpointslices"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["daemonsets", "deployments", "replicasets", "statefulsets"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["batch"]
+    resources: ["jobs", "cronjobs"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["autoscaling"]
+    resources: ["horizontalpodautoscalers"]
     verbs: ["get", "list", "watch"]
   {{- end }}

@@ -3,8 +3,9 @@
 A distribution, not a fork (D14, PRD §5): `obstack-collector` is the upstream
 OpenTelemetry Collector, unmodified, configured by the two files in this
 directory. It receives OTLP (traces and logs) from instrumented apps, tails
-container stdout/stderr with the filelog receiver, attaches pod/container
-identity, and forwards everything to ingest with the workspace's bearer key.
+container stdout/stderr with the filelog receiver, scrapes its own node's
+kubelet for resource usage, attaches pod/container identity, and forwards
+everything to ingest with the workspace's bearer key.
 
 Two config files, one per topology:
 
@@ -23,8 +24,9 @@ to ingest, the filelog exclusion pattern below, and the `file_storage`
 checkpointing further down.
 
 A third config for the same image exists but is not in this directory and is
-not a topology of these two: `deploy/helm/obstack/files/collector-events-config.yaml`,
-the chart-owned cluster-events collector — see "Cluster events" below.
+not a topology of these two: `deploy/helm/obstack/files/collector-cluster-config.yaml`,
+the chart-owned cluster collector — see "Kubernetes metrics" and "Cluster
+events" below.
 
 ## Image
 
@@ -42,12 +44,16 @@ docker run --rm otel/opentelemetry-collector-k8s:0.158.0 components
 lists both `file_log` (`receiver/filelogreceiver`) and `k8s_attributes`
 (`processor/k8sattributesprocessor`), plus the `otlp` receiver and
 `otlp_http` exporter both configs use. The same distro carries `k8s_events`
-(`receiver/k8seventsreceiver`), which is why the chart's events collector
-runs on this identical pin rather than needing full contrib — confirmed the
-same way, and by `validate` rejecting an unknown component outright:
+(`receiver/k8seventsreceiver`), `kubelet_stats`
+(`receiver/kubeletstatsreceiver`) and `k8s_cluster`
+(`receiver/k8sclusterreceiver`), which is why the chart's cluster collector
+and the metrics leg run on this identical pin rather than needing full
+contrib. Note the house spelling the distro itself uses — `kubelet_stats`,
+not `kubeletstats`, the same convention as `file_log` and `k8s_attributes`;
+`validate` rejects the other spelling as an unknown component:
 
 ```bash
-docker run --rm -v "$PWD/../helm/obstack/files/collector-events-config.yaml:/etc/otelcol/config.yaml" \
+docker run --rm -v "$PWD/../helm/obstack/files/collector-cluster-config.yaml:/etc/otelcol/config.yaml" \
   otel/opentelemetry-collector-k8s:0.158.0 validate --config=/etc/otelcol/config.yaml
 ```
 
@@ -168,7 +174,10 @@ deployment's job. A DaemonSet running this file must provide:
   `pods` and `namespaces` cluster-wide — `k8s_attributes` uses
   `auth_type: serviceAccount` and watches the API to resolve pod identity.
   Nothing here reads labels or owner references, so `replicasets` is *not*
-  needed; adding it later is what widens this rule, not a chart preference.
+  needed for this processor; adding it later is what widens this rule, not a
+  chart preference. The same ServiceAccount also needs `get` on `nodes/stats`
+  and `nodes/proxy` — the two subresources the kubelet authorises the summary
+  endpoint against (see "Kubernetes metrics").
 - **`/var/log/pods` mounted read-only** from the host. On containerd nodes
   the files there are real files; where they are symlinks into
   `/var/lib/docker/containers`, that directory must be mounted read-only
@@ -191,6 +200,101 @@ deployment's job. A DaemonSet running this file must provide:
   default.
 - **The pod's own OTLP endpoints, `:4317`/`:4318`**, reachable by the apps
   that route through it.
+- **`K8S_NODE_IP`** (Downward API `status.hostIP`) and **`K8S_NODE_NAME`**
+  (`spec.nodeName`) — the kubelet scrape's endpoint and the node name stamped
+  on every series it produces. Neither has a default: an unset `K8S_NODE_NAME`
+  stops the collector at start-up rather than stamping a placeholder node name
+  on the node's whole metric stream.
+
+## Kubernetes metrics (Kubernetes only)
+
+`/app/infra` shows what each node and pod is using against what it was given.
+That is two questions with two different sources, and the split between the
+files here follows the sources rather than any packaging preference:
+
+| Question | Receiver | Where it runs |
+|---|---|---|
+| what is being USED | `kubelet_stats` | `config.yaml`, the DaemonSet — each pod scrapes **its own node's** kubelet |
+| what was DECLARED | `k8s_cluster` | `deploy/helm/obstack/files/collector-cluster-config.yaml`, the single-replica cluster collector |
+
+A limit exists only in the API server's object and usage exists only on the
+node, so neither half is derivable from the other; a cluster running only the
+DaemonSet gets usage with no limits, and `/app/infra` says so in those words
+rather than rendering a blank.
+
+**The seventeen names, and nothing else.** Both configs run a `filter/k8s`
+processor whose `strict` whitelist is the exact wire contract — seven from
+`kubelet_stats`:
+
+```
+k8s.node.cpu.usage   k8s.node.memory.working_set   k8s.node.memory.available
+k8s.pod.cpu.usage    k8s.pod.memory.working_set
+container.cpu.usage  container.memory.working_set
+```
+
+and ten from `k8s_cluster`:
+
+```
+k8s.node.condition_ready       k8s.node.condition_memory_pressure
+k8s.node.allocatable_cpu       k8s.node.allocatable_memory
+k8s.pod.phase                  k8s.container.restarts
+k8s.container.cpu_request      k8s.container.cpu_limit
+k8s.container.memory_request   k8s.container.memory_limit
+```
+
+Both receivers also list their names under `metrics:`, which is what makes a
+typo fail `validate` instead of producing a cluster that ships nothing under
+the misspelled name and merely looks idle. Four of the cluster names cannot
+be listed there: `k8s.node.condition_*` and `k8s.node.allocatable_*` are
+**built** from `node_conditions_to_report` / `allocatable_types_to_report`
+(`receiver/k8sclusterreceiver/internal/node/nodes.go:196,222` at v0.158.0),
+so shortening either list deletes the series rather than disabling a metric.
+The whitelist is what holds those four, and the kind acceptance run is what
+proves them emitted.
+
+**The node IP, and skipping verification.** The scrape dials
+`https://${K8S_NODE_IP}:10250` — the node's own address from the Downward
+API's `status.hostIP`, never its name, because node names are not
+DNS-resolvable from inside a pod on every distro while the host IP always is.
+`insecure_skip_verify: true` is a requirement rather than laxity: the
+kubelet's serving certificate is self-signed on kind and on most managed
+distros, so a verifying client gets `x509: certificate signed by unknown
+authority` and scrapes nothing at all. The connection is node-local and never
+leaves the machine it was made on. RBAC is `get` on `nodes/stats` and
+`nodes/proxy` — the two subresources the kubelet authorises the summary
+endpoint against — granted unconditionally because every release runs the
+DaemonSet; the cluster receiver's much wider `list`/`watch` set is gated on
+`collector.cluster.enabled` (`deploy/helm/obstack/README.md` has the rule).
+
+**The series budget.** Per node: 3 from the kubelet plus 4 from the cluster
+collector. Per pod: 2 plus 1. Per container: 2 plus 5. So one
+single-container pod costs about **10 series**, and a 50-node cluster running
+30 pods per node lands near **15k** — inside the store's 25k active-series
+cap, where "active" means seen within the current UTC day, so pod churn
+counts once per day rather than forever. A cluster materially larger than
+that is where the whitelist stops being enough and the cap needs revisiting.
+
+**Validating `config.yaml` off-cluster** takes two extras the other config
+does not need, both environment rather than config: `kubelet_stats` builds
+its client at start-up, so the ServiceAccount CA and token must exist, and
+`resource/k8s` refuses a null node name (deliberately — see the file):
+
+```bash
+# any readable cert will do and the token only has to be NON-EMPTY (the client
+# rejects a zero-byte one); validate never dials the kubelet
+mkdir -p /tmp/fake-sa && printf 'fake-token\n' > /tmp/fake-sa/token \
+  && openssl req -x509 -newkey rsa:2048 -keyout /dev/null -out /tmp/fake-sa/ca.crt \
+       -days 1 -nodes -subj /CN=fake >/dev/null 2>&1
+docker run --rm -e K8S_NODE_NAME=node-1 \
+  -v "$PWD/config.yaml:/etc/otelcol/config.yaml" \
+  -v /tmp/fake-sa:/var/run/secrets/kubernetes.io/serviceaccount:ro \
+  otel/opentelemetry-collector-k8s:0.158.0 validate --config=/etc/otelcol/config.yaml
+```
+
+Without them the run exits 1 on the machine rather than on this file: with no
+`K8S_NODE_NAME`, on `error with key "k8s.node.name" ... must be specified`;
+with the name set but no ServiceAccount directory, on `cert path
+/var/run/secrets/kubernetes.io/serviceaccount/ca.crt could not be read`.
 
 ## Cluster events (Kubernetes only)
 
@@ -200,25 +304,26 @@ Neither config in this directory ships Kubernetes `Event` objects —
 `k8s_events` receiver watches the API server rather than the node it runs
 on, so a DaemonSet running it would deliver the whole cluster's event stream
 once per node; that is a duplicate of the same family as D37.3's, and it
-takes the same answer — emit it once, don't deduplicate later.
+takes the same answer — emit it once, don't deduplicate later. `k8s_cluster`
+above sits on the same workload for the same reason.
 
-The chart therefore runs events in a **separate single-replica Deployment**
-with its own config, `deploy/helm/obstack/files/collector-events-config.yaml`
-(`templates/collector/events-deployment.yaml`, gated on
-`collector.k8sEvents.enabled`, default on). That config runs one receiver
+The chart therefore runs both in a **separate single-replica Deployment**
+with its own config, `deploy/helm/obstack/files/collector-cluster-config.yaml`
+(`templates/collector/cluster-deployment.yaml`, gated on
+`collector.cluster.enabled`, default on). Its logs pipeline runs one receiver
 into `batch` into the same bearer-key `otlp_http` export these files use, so
 events arrive at ingest as OTLP log records and land in `obstack.logs`. It
 reuses this collector's ServiceAccount, which is why the chart's ClusterRole
 grows `get`/`list`/`watch` on core `events` behind the same flag — a
 widening for `k8s_events`, not for `k8s_attributes`, whose extract set is
-unchanged, and `replicasets` stays absent as stated above.
+unchanged.
 
 It carries no `file_storage`: a watch has no byte offset to checkpoint, so
 events during a restart are not backfilled — an honest gap, and a cheap one
 against records the API server itself expires within the hour. Compose gets
-none of this, for the reason its header already gives: no API server to
-watch. `deploy/helm/obstack/README.md`, "The cluster-events collector", is
-the fuller account.
+none of this, for the reason its header already gives: no API server to watch
+and no kubelet to scrape. `deploy/helm/obstack/README.md`, "The cluster
+collector (events + cluster metrics)", is the fuller account.
 
 ## Checkpointing (`file_storage`) — the second duplicate door
 

@@ -1,6 +1,6 @@
 export const frontmatter = {
   title: "What obstack does not do",
-  description: "The twenty-one absences, written down so you do not have to discover them.",
+  description: "The twenty-two absences, written down so you do not have to discover them.",
 };
 
 # What obstack does not do
@@ -87,11 +87,17 @@ database underneath them.
 
 ## The product
 
-{/* D264c */}
+{/* D264c, rewritten by D465 — the sample-data list shrank to two panels */}
 
-**The dashboards, trace diff, explore, infra, map, services, users and cost
-surfaces render sample data and save nothing** — there is no persistence behind
-any of them, in either mode.
+**The services page's recent-deploys panel and the overview's top-failing table
+render sample data** — every other surface reads the signed-in workspace;
+dashboards persist since S6.3.
+
+{/* D461 */}
+
+**obstack does not guess a price** — a model with no row in its price table or
+your workspace's `pricing_overrides` is counted as unpriced on the cost page,
+never as $0.
 
 {/* M6 */}
 

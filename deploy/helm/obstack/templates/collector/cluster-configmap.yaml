@@ -1,9 +1,9 @@
-{{- if .Values.collector.k8sEvents.enabled }}
-# The events collector's config, packaged the same way configmap.yaml
+{{- if .Values.collector.cluster.enabled }}
+# The cluster collector's config, packaged the same way configmap.yaml
 # packages the DaemonSet's — `.Files.Get` over a file in `files/`, indented
 # into one `config.yaml` key.
 #
-# Unlike files/collector-config.yaml, files/collector-events-config.yaml has
+# Unlike files/collector-config.yaml, files/collector-cluster-config.yaml has
 # no `deploy/collector/` source and is therefore NOT a row in
 # services/ingest/internal/mapping/chart_contract_test.go's pair list: there
 # is no second copy for it to drift against. That file's own header states
@@ -12,11 +12,11 @@
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: {{ .Release.Name }}-collector-events
+  name: {{ .Release.Name }}-collector-cluster
   labels:
     {{- include "obstack.labels" . | nindent 4 }}
-    app.kubernetes.io/component: collector-events
+    app.kubernetes.io/component: collector-cluster
 data:
   config.yaml: |-
-{{ .Files.Get "files/collector-events-config.yaml" | indent 4 }}
+{{ .Files.Get "files/collector-cluster-config.yaml" | indent 4 }}
 {{- end }}

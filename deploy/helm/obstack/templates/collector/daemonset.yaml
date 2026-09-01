@@ -56,6 +56,26 @@ spec:
               value: {{ .Values.collector.excludeContainer | quote }}
             - name: OBSTACK_COLLECTOR_STORAGE_DIR
               value: {{ .Values.collector.storageDir | quote }}
+            # The two facts `kubelet_stats` cannot learn for itself (D452,
+            # D453), both from the Downward API because only the kubelet knows
+            # them at schedule time.
+            #
+            # The IP, not the name, is what the scrape dials: a node's name is
+            # not resolvable from inside a pod on every distro, its host IP
+            # always is, and the request never leaves the node either way.
+            #
+            # The name is what gets STAMPED on the series: kubeletstats sets
+            # k8s.node.name on node-level resources only, so without this the
+            # pod and container series carry no node at all and /app/infra
+            # cannot say where a pod is running.
+            - name: K8S_NODE_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.hostIP
+            - name: K8S_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
           ports:
             # hostPort, not routed through a Service: templates/demo/deployment.yaml
             # reaches this node's own collector via the Downward API's

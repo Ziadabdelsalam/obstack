@@ -23,6 +23,8 @@ export const liveWiredRoutes: readonly string[] = [
   "/app/services/", // and one service's scorecard, under the same derivation
   "/app/users", // impacted users, keyed by enduser.id / user.id on root spans
   "/app/issues", // error spans grouped by fingerprint
+  "/app/infra", // the workspace's own nodes and pods, from the collector's k8s metrics
+  "/app/costs", // LLM unit economics derived from this workspace's own llm spans
   // Settings is wired per SECTION, not per route (D106): General, Members and
   // API keys read Postgres, and the four tabs that still render demo content
   // carry their own `SampleMark` inside the suite. One route-wide badge over a
