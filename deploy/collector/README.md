@@ -280,8 +280,9 @@ its client at start-up, so the ServiceAccount CA and token must exist, and
 `resource/k8s` refuses a null node name (deliberately — see the file):
 
 ```bash
-# any readable cert/token pair will do; validate never dials the kubelet
-mkdir -p /tmp/fake-sa && : > /tmp/fake-sa/token \
+# any readable cert will do and the token only has to be NON-EMPTY (the client
+# rejects a zero-byte one); validate never dials the kubelet
+mkdir -p /tmp/fake-sa && printf 'fake-token\n' > /tmp/fake-sa/token \
   && openssl req -x509 -newkey rsa:2048 -keyout /dev/null -out /tmp/fake-sa/ca.crt \
        -days 1 -nodes -subj /CN=fake >/dev/null 2>&1
 docker run --rm -e K8S_NODE_NAME=node-1 \
@@ -290,9 +291,10 @@ docker run --rm -e K8S_NODE_NAME=node-1 \
   otel/opentelemetry-collector-k8s:0.158.0 validate --config=/etc/otelcol/config.yaml
 ```
 
-Without them the run exits 1 on `cert path
-/var/run/secrets/kubernetes.io/serviceaccount/ca.crt could not be read` — a
-statement about the machine, not about this file.
+Without them the run exits 1 on the machine rather than on this file: with no
+`K8S_NODE_NAME`, on `error with key "k8s.node.name" ... must be specified`;
+with the name set but no ServiceAccount directory, on `cert path
+/var/run/secrets/kubernetes.io/serviceaccount/ca.crt could not be read`.
 
 ## Cluster events (Kubernetes only)
 
