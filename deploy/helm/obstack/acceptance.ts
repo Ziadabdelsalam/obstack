@@ -142,7 +142,7 @@ function chartCpuBudget(helmArgs: string[]): void {
   // workload reads it — so the footprint below is the release's own. Anything
   // after `budget` on the command line is passed to `helm template` unchanged,
   // which is how a deployment asks what ITS values cost (`budget --set
-  // collector.k8sEvents.enabled=false`, `budget -f prod.yaml`); acceptance.sh
+  // collector.cluster.enabled=false`, `budget -f prod.yaml`); acceptance.sh
   // passes nothing, because it installs the defaults.
   const chartDir = __dirname;
   let rendered: string;

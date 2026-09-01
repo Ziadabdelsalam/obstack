@@ -1,38 +1,41 @@
-{{- if .Values.collector.k8sEvents.enabled }}
-# The cluster-events collector: a Deployment, not a second DaemonSet, and
-# `replicas: 1` is the correctness mechanism rather than a sizing choice.
-# `k8s_events` watches the API server's Event stream, which is cluster-wide —
-# every replica running it sees every event, so N replicas ship each event N
+{{- if .Values.collector.cluster.enabled }}
+# The cluster collector: a Deployment, not a second DaemonSet, and
+# `replicas: 1` is the correctness mechanism rather than a sizing choice. Both
+# of its receivers read the API server — `k8s_events` watches the Event
+# stream, `k8s_cluster` lists the cluster's own objects — so every replica
+# sees the whole cluster and N replicas ship every event and every node fact N
 # times. A DaemonSet would make N the node count and let the duplication grow
-# with the cluster. files/collector-events-config.yaml's header carries the
+# with the cluster. files/collector-cluster-config.yaml's header carries the
 # full reasoning; this file is the half that enforces it.
 #
-# It reuses the DaemonSet's ServiceAccount and ClusterRole (widened with
-# `events` by clusterrole.yaml, behind this same values gate) rather than
+# It reuses the DaemonSet's ServiceAccount and ClusterRole (widened with the
+# cluster reads by clusterrole.yaml, behind this same values gate) rather than
 # standing up a second identity for the same collector talking to the same
 # ingest with the same key.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ .Release.Name }}-collector-events
+  name: {{ .Release.Name }}-collector-cluster
   labels:
     {{- include "obstack.labels" . | nindent 4 }}
-    app.kubernetes.io/component: collector-events
+    app.kubernetes.io/component: collector-cluster
 spec:
-  # Not a tunable. See the header: a second replica double-ships every event.
+  # Not a tunable. See the header: a second replica double-ships every event
+  # and every cluster metric.
   replicas: 1
   # The default RollingUpdate would briefly run the old and new pods at once,
   # which is exactly the double-ship this file exists to prevent. Recreate
   # keeps the singleton a singleton across upgrades; a few seconds of missed
   # events on rollout is the deliberate trade, and it is the same gap the
-  # missing file_storage checkpoint already documents.
+  # missing file_storage checkpoint already documents. The metrics leg loses
+  # nothing to it — the next scrape re-lists the whole cluster.
   strategy:
     type: Recreate
   selector:
     matchLabels:
       app.kubernetes.io/name: obstack
       app.kubernetes.io/instance: {{ .Release.Name }}
-      app.kubernetes.io/component: collector-events
+      app.kubernetes.io/component: collector-cluster
   template:
     metadata:
       annotations:
@@ -40,11 +43,11 @@ spec:
         # config once at process start and the file provider does not watch
         # it, so a ConfigMap change alone would leave this pod on the old
         # pipeline until someone restarted it by hand.
-        checksum/config: {{ .Files.Get "files/collector-events-config.yaml" | sha256sum }}
+        checksum/config: {{ .Files.Get "files/collector-cluster-config.yaml" | sha256sum }}
       labels:
         app.kubernetes.io/name: obstack
         app.kubernetes.io/instance: {{ .Release.Name }}
-        app.kubernetes.io/component: collector-events
+        app.kubernetes.io/component: collector-cluster
     spec:
       serviceAccountName: {{ .Release.Name }}-collector
       # Deliberately NOT the DaemonSet's `runAsUser/runAsGroup: 0`. That
@@ -57,10 +60,11 @@ spec:
           image: {{ .Values.collector.image }}
           args: ["--config", "/etc/otelcol/config.yaml"]
           # D283: requests AND limits. Same ruling as collector.resources, on
-          # its own numbers — this pod holds one API watch and a batch buffer,
-          # a smaller and flatter footprint than the log tailer's.
+          # its own numbers — this pod holds API watches, one 30s cluster list
+          # and a batch buffer, a smaller and flatter footprint than the log
+          # tailer's.
           resources:
-            {{- toYaml .Values.collector.k8sEvents.resources | nindent 12 }}
+            {{- toYaml .Values.collector.cluster.resources | nindent 12 }}
           env:
             - name: OBSTACK_INGEST_ENDPOINT
               value: http://{{ .Release.Name }}-ingest:4318
@@ -71,8 +75,8 @@ spec:
             # this config does not run.
           ports:
             # No hostPort and no OTLP ports at all — nothing sends to this
-            # collector, it only watches the API and exports. The health port
-            # is here for the probes below and nothing else.
+            # collector, it only reads the API and exports. The health port is
+            # here for the probes below and nothing else.
             - name: health
               containerPort: 13133
           volumeMounts:
@@ -94,5 +98,5 @@ spec:
       volumes:
         - name: config
           configMap:
-            name: {{ .Release.Name }}-collector-events
+            name: {{ .Release.Name }}-collector-cluster
 {{- end }}

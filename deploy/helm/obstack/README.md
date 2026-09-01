@@ -75,6 +75,32 @@ not a gap to silently fill:**
   either way.
 - A second chart. M4 extends this one in place; a parallel chart is drift.
 
+## Upgrading to 0.6.0
+
+0.6.0 adds the Kubernetes metrics leg, and it is the first **non-additive**
+bump since 0.3.0. Two renames, no aliases:
+
+- **`collector.k8sEvents.*` is now `collector.cluster.*`.** The workload it
+  gates stopped being about events alone the moment it grew `k8s_cluster`, and
+  a flag called "events" that decides whether node readiness, pod phase and
+  container limits reach the product would be a permanent misnomer in docs and
+  in product copy. There is deliberately no alias: this chart has no
+  production installs to protect, and an alias is the cheapest way to make a
+  rename permanent. **A values file still saying `collector.k8sEvents.enabled:
+  false` will not error — Helm ignores unknown keys — it will simply have no
+  effect and the collector will come up enabled.** Grep your values files.
+- **The singleton's objects are renamed** `<release>-collector-events` →
+  `<release>-collector-cluster` (Deployment, ConfigMap, and the
+  `app.kubernetes.io/component` label). `helm upgrade` deletes the old pair
+  and creates the new one; anything selecting on the old component label —
+  a dashboard, a log query, an alert — needs updating.
+
+The ClusterRole also widens, behind that same flag, to what
+`k8sclusterreceiver`'s informers need at the pinned v0.158.0, and the
+DaemonSet gains `get` on `nodes/stats` and `nodes/proxy` unconditionally. "The
+cluster collector (events + cluster metrics)" below has the exact rule and why
+`replicasets` moved from documented-absent to gated-present.
+
 ## Upgrading from 0.2.0
 
 0.3.0 replaces the ClickHouse and Postgres Deployment+hostPath shape with
@@ -332,7 +358,7 @@ npx tsx --tsconfig apps/web/tsconfig.json --conditions react-server \
 
 # what a given deployment's values cost — anything after `budget` goes to
 # `helm template` unchanged
-… acceptance.ts budget --set collector.k8sEvents.enabled=false   # -> 980m
+… acceptance.ts budget --set collector.cluster.enabled=false     # -> 980m
 ```
 
 `OBSTACK_CPU_BUDGET_M` overrides the 1000m ceiling for one run — that is how
@@ -563,12 +589,19 @@ below) and provides exactly what `deploy/collector/README.md`'s "What
 config.yaml assumes of its DaemonSet" section states:
 
 - a `ServiceAccount` bound to a `ClusterRole` granting `get`/`list`/`watch`
-  on `pods` and `namespaces` (`k8s_attributes`' `auth_type: serviceAccount`);
+  on `pods` and `namespaces` (`k8s_attributes`' `auth_type: serviceAccount`)
+  and `get` on `nodes/stats` and `nodes/proxy` (`kubelet_stats`' scrape of the
+  node's own kubelet — "The cluster collector" below has the whole rule);
 - `/var/log/pods` and `/var/lib/docker/containers` mounted read-only;
 - `OBSTACK_COLLECTOR_API_KEY`, `OBSTACK_INGEST_ENDPOINT`,
   `OBSTACK_COLLECTOR_EXCLUDE_CONTAINER` (the demo pod's instrumented
   container name — `values.yaml`'s `collector.excludeContainer`) and
   `OBSTACK_COLLECTOR_STORAGE_DIR`;
+- `K8S_NODE_IP` (Downward API `status.hostIP`) and `K8S_NODE_NAME`
+  (`spec.nodeName`): the kubelet scrape's endpoint, and the node name stamped
+  onto pod and container series, which `kubelet_stats` sets on node-level
+  resources only. Neither has a default — an unset `K8S_NODE_NAME` stops the
+  collector at start-up rather than stamping a placeholder;
 - a writable, per-node `hostPath` at `OBSTACK_COLLECTOR_STORAGE_DIR`
   (default `/var/lib/obstack-collector`), `type: DirectoryOrCreate` — the T1
   review escalation's file_storage checkpoint, so a collector restart
@@ -598,10 +631,31 @@ pod metadata, not the connection alone. Any app instrumented against this
 chart's collector needs the same two resource attributes for the same
 reason.
 
-## The cluster-events collector
+## The cluster collector (events + cluster metrics)
 
-Kubernetes records its own account of what happened to a workload as `Event`
-objects — `FailedScheduling`, `Failed` on an image pull, `Unhealthy` from a
+One single-replica Deployment carries everything this release reads from the
+API server rather than from a node: the Event stream as logs, and the
+cluster's declared state as metrics. They share a workload because they share
+the property that decides the topology — both are cluster-wide reads, so
+exactly one replica may run them.
+
+**Cluster metrics.** `k8s_cluster` reports what the cluster was TOLD: node
+readiness and memory pressure, allocatable CPU and memory, pod phase,
+container restarts, and each container's requests and limits — ten series
+names, whitelisted `strict` in `files/collector-cluster-config.yaml`. Its
+counterpart is the DaemonSet's `kubelet_stats`, which reports what is being
+USED. `/app/infra` renders the pair, and neither half is derivable from the
+other: a limit exists only in the API server's object, usage only on the node.
+Four of the ten names — `k8s.node.condition_*` and `k8s.node.allocatable_*` —
+are BUILT from `node_conditions_to_report` / `allocatable_types_to_report`
+(`receiver/k8sclusterreceiver/internal/node/nodes.go:196,222` at the pinned
+v0.158.0) rather than toggled, so shortening either list deletes those series.
+`deploy/collector/README.md`, "Kubernetes metrics", carries the full name list
+and the series budget (≈10 per single-container pod; ≈15k for 50 nodes × 30
+pods, against a 25k active-series cap).
+
+**Cluster events.** Kubernetes records its own account of what happened to a
+workload as `Event` objects — `FailedScheduling`, `Failed` on an image pull, `Unhealthy` from a
 probe, the `Killing` that follows an OOM. They are the half of an incident
 that never reaches a container's stdout, so nothing the DaemonSet tails can
 carry them: a Pod that never started produced no logs to tail. This chart
@@ -611,17 +665,17 @@ get events`.
 
 **It is a separate single-replica Deployment, not a receiver added to the
 DaemonSet's config, and that is a correctness decision rather than a
-packaging one.** The `k8s_events` receiver watches the API server, not the
-node it happens to run on, so every replica that runs it receives the entire
-cluster's event stream. Folding it into `files/collector-config.yaml` would
-therefore ship each event once per node — a three-node cluster triple-counts
-every restart, and the over-count grows with the cluster rather than staying
-constant. That is the same class of duplicate D37.3's filelog exclusion
-exists to prevent, and it gets the same answer: don't emit it twice rather
-than deduplicate afterwards. `templates/collector/events-deployment.yaml`
-pins `replicas: 1` and `strategy: Recreate` for exactly that reason — the
-default RollingUpdate would briefly run two pods and double-ship across every
-upgrade.
+packaging one.** Both receivers watch the API server, not the node they
+happen to run on, so every replica that runs them receives the entire
+cluster's stream. Folding them into `files/collector-config.yaml` would
+therefore ship each event and each node fact once per node — a three-node
+cluster triple-counts every restart, and the over-count grows with the
+cluster rather than staying constant. That is the same class of duplicate
+D37.3's filelog exclusion exists to prevent, and it gets the same answer:
+don't emit it twice rather than deduplicate afterwards.
+`templates/collector/cluster-deployment.yaml` pins `replicas: 1` and
+`strategy: Recreate` for exactly that reason — the default RollingUpdate
+would briefly run two pods and double-ship across every upgrade.
 
 The pod is deliberately thin next to the DaemonSet's: no `hostPort` and no
 OTLP listener at all (nothing sends to it), no host mounts, and none of the
@@ -631,34 +685,53 @@ touches, so it runs as the image's default non-root user. It reuses the
 DaemonSet's ServiceAccount, the same `collector.apiKey`, and the same ingest
 endpoint; to ingest it is one more authenticated OTLP client.
 
-**RBAC.** The collector's ClusterRole gains a second rule —
-`get`/`list`/`watch` on core `events` — because a watch on the Event stream
-is the entire receiver. It is gated on the same values flag as the workload,
-so disabling the feature narrows the role rather than leaving a standing
-cluster-wide read nothing in the release consumes. The base rule is
-unchanged, and `replicasets` remains deliberately absent: this widening is
-for `k8s_events`, not for `k8s_attributes`, whose extract set did not move.
+**RBAC.** Behind the same values flag as the workload, the collector's
+ClusterRole gains `get`/`list`/`watch` on core `events` (a watch on the Event
+stream is the entire `k8s_events` receiver) plus the set `k8s_cluster`'s
+informers need: core `namespaces`, `namespaces/status`, `nodes`,
+`nodes/spec`, `persistentvolumes`, `persistentvolumeclaims`, `pods`,
+`pods/status`, `replicationcontrollers`, `replicationcontrollers/status`,
+`resourcequotas`, `services`; `discovery.k8s.io` `endpointslices`; `apps`
+`daemonsets`, `deployments`, `replicasets`, `statefulsets`; `batch` `jobs`,
+`cronjobs`; `autoscaling` `horizontalpodautoscalers`. That is the upstream
+receiver's own documented ClusterRole at the pinned v0.158.0, minus the dead
+`extensions` API group (gone from Kubernetes since 1.16) and minus the
+`events` already granted beside it — nothing wider, and nothing invented.
 
-**The switch.** `collector.k8sEvents.enabled`, default `true`:
+Gating it on the workload's flag is what keeps it honest: disabling the
+feature narrows the role rather than leaving a standing cluster-wide read
+nothing in the release consumes. The unconditional part of the rule is the
+DaemonSet's alone — `pods`/`namespaces` for `k8s_attributes`, and `get` on
+`nodes/stats` and `nodes/proxy` for the kubelet scrape.
+
+`replicasets` used to be documented here as deliberately absent, and it is now
+present: that absence was a statement about `k8s_attributes`, which reads no
+owner references and still does not. `k8s_cluster`'s informers walk the whole
+owner chain (Deployment → ReplicaSet → Pod), so the grant arrives with the
+component that needs it and leaves with the flag that turns it off.
+
+**The switch.** `collector.cluster.enabled`, default `true`:
 
 ```bash
 # the whole feature leaves the release — no Deployment, no ConfigMap, and no
-# `events` rule on the ClusterRole
-helm template obstack deploy/helm/obstack --set collector.k8sEvents.enabled=false
+# `events` or cluster-read rules on the ClusterRole
+helm template obstack deploy/helm/obstack --set collector.cluster.enabled=false
 ```
 
-**What it does not do.** There is no `file_storage` checkpoint on this
+**What it does not do.** There is no `file_storage` checkpoint on either
 pipeline, and its absence is a decision. Checkpointing exists in
 `config.yaml` because `file_log` reads files from `start_at: beginning` and a
 restart would re-ship every historical line; `k8s_events` holds no byte
 offset — it opens a watch, and a restarted watch resumes from the API
-server's current resource version. The honest cost is that events occurring
-during a restart or a `Recreate` rollout are not backfilled. Events are the
-API server's own short-lived, best-effort records (default TTL one hour), not
-a durable log, so a volume bought to chase them would be a checkpoint over
-data the cluster itself has already discarded.
+server's current resource version — and `k8s_cluster` re-lists the world
+every 30s, so a restart costs it at most one interval. The honest cost is
+that events occurring during a restart or a `Recreate` rollout are not
+backfilled. Events are the API server's own short-lived, best-effort records
+(default TTL one hour), not a durable log, so a volume bought to chase them
+would be a checkpoint over data the cluster itself has already discarded.
 
-No `transform` processor runs either. The receiver puts the involved object
+No `transform` processor runs on the events pipeline either. The receiver
+puts the involved object
 on the Resource (`k8s.object.kind`, `k8s.object.name`, `k8s.object.uid`,
 `k8s.node.name`) and the event itself on the record (`k8s.event.reason`,
 `k8s.event.uid`, `k8s.namespace.name`, …). Ingest promotes only
@@ -684,14 +757,15 @@ Both are pinned byte-for-byte by
 customer's cluster.
 
 `files/` holds a third collector config,
-`files/collector-events-config.yaml` (see "The cluster-events collector"
-above), and it is deliberately **not** a row in that test. The two files
-above are copies — they have a source outside the chart that they can drift
-away from, which is the whole thing K1 refuses. The events config has no such
-source: there is no cluster API under Compose, so `config.compose.yaml`
-grows no events receiver, and nothing outside `deploy/helm/obstack/` reads
-the file. Pinning a copy against a source that does not exist would be
-ceremony, not the K1 mechanism, so the pair list stays at two rows.
+`files/collector-cluster-config.yaml` (see "The cluster collector (events +
+cluster metrics)" above), and it is deliberately **not** a row in that test.
+The two files above are copies — they have a source outside the chart that
+they can drift away from, which is the whole thing K1 refuses. The cluster
+config has no such source: there is no cluster API under Compose, so
+`config.compose.yaml` grows neither of its receivers, and nothing outside
+`deploy/helm/obstack/` reads the file. Pinning a copy against a source that
+does not exist would be ceremony, not the K1 mechanism, so the pair list
+stays at two rows.
 
 ## Local repro on kind
 

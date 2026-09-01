@@ -1,0 +1,202 @@
+# obstack-collector — the cluster form.
+#
+# A CONFIGURATION over the same unmodified upstream image the DaemonSet runs
+# (D14, PRD §5 "distribution, not fork"): same
+# `otel/opentelemetry-collector-k8s:0.158.0` pin, same bearer-key export to
+# ingest, a different and deliberately tiny pipeline. It receives nothing over
+# the wire — it asks the Kubernetes API server two questions and forwards the
+# answers to ingest: the Event stream as OTLP log records, and the cluster's
+# own declared state (readiness, allocatable capacity, pod phase, container
+# restarts, requests and limits) as OTLP metrics.
+#
+# The two signals share this workload because they share the one property that
+# decides the topology — both are CLUSTER-WIDE reads of the API server, so
+# exactly one replica may run them. What is measured per NODE (actual CPU and
+# memory usage, from that node's kubelet) belongs to the DaemonSet instead:
+# `deploy/collector/config.yaml`'s `kubelet_stats`. Declared here, used there;
+# `/app/infra` renders the pair.
+#
+# CHART-OWNED, and the one collector config with no `deploy/collector/`
+# source. `files/collector-config.yaml` is a byte-for-byte copy pinned by
+# `services/ingest/internal/mapping/chart_contract_test.go` because it has a
+# second consumer outside the chart (the compose profile's sibling file, the
+# T1 hand-off README). This one has none: there is no cluster API under
+# Compose, so `config.compose.yaml` deliberately grows neither receiver below,
+# and nothing outside `deploy/helm/obstack/` reads this file. A copy pinned
+# against a source that does not exist is not the K1 mechanism, it is
+# ceremony — so this file lives here alone, and the contract test's pair list
+# stays at two rows.
+#
+# WHY NEITHER RECEIVER IS IN THE DAEMONSET'S CONFIG. Both watch the API
+# server, not the node they happen to be scheduled on, so every replica
+# running them receives the whole cluster's stream. Folding them into
+# `config.yaml` would ship each event and each node/pod fact once per node — a
+# three-node cluster would triple-count every Pod restart, and the duplication
+# scales with the cluster instead of staying constant. That is the same class
+# of duplicate D37.3's filelog exclusion exists to prevent, and it gets the
+# same answer: don't emit it twice, rather than deduplicate afterwards. The
+# single replica in templates/collector/cluster-deployment.yaml is the
+# mechanism.
+
+receivers:
+  # Watches the API server's Event objects and emits one log record per
+  # event. `auth_type: serviceAccount` is the same in-cluster credential
+  # `k8s_attributes` uses in config.yaml; the ServiceAccount is literally the
+  # same one (templates/collector/serviceaccount.yaml), which is why the
+  # ClusterRole grows `events` rather than a second role appearing.
+  #
+  # `namespaces` is deliberately unset: unset means every namespace, which is
+  # what a cluster-events view has to mean — an operator debugging a failing
+  # Pod does not know in advance which namespace it will be in, and a list
+  # here would silently drop the ones nobody remembered to add.
+  #
+  # No `transform` stage follows. The receiver puts the involved object on the
+  # Resource (`k8s.object.kind`, `k8s.object.name`, `k8s.object.uid`,
+  # `k8s.node.name`) and the event itself on the record (`k8s.event.reason`,
+  # `k8s.event.uid`, `k8s.namespace.name`, …) — receiver/k8seventsreceiver/
+  # k8s_event_to_logdata.go at the pinned version. Ingest promotes only
+  # `k8s.pod.name`/`k8s.namespace.name` from the Resource, so for these rows
+  # the `k8s_pod`/`k8s_namespace` columns stay empty and the web side reads
+  # the keys out of the stored `resource_attributes`/`attributes` maps exactly
+  # as they land. Rewriting them here would only move the coupling.
+  k8s_events:
+    auth_type: serviceAccount
+
+  # The cluster's DECLARED state, the half of `/app/infra` no kubelet can
+  # answer (D450): whether a node is Ready and under memory pressure, what it
+  # has allocatable, what phase each pod is in, how often each container has
+  # restarted, and the requests and limits each container was given. Usage
+  # comes from the DaemonSet; a limit exists only in the API server's object,
+  # so right-sizing is impossible without this receiver.
+  #
+  # `node_conditions_to_report` and `allocatable_types_to_report` are not
+  # cosmetic lists — they BUILD the metric names, one series per entry
+  # (`k8s.node.condition_` / `k8s.node.allocatable_` + snake_case of the
+  # value; receiver/k8sclusterreceiver/internal/node/nodes.go:196,222 at the
+  # pinned version). That is why the four names they produce cannot appear
+  # under `metrics:` below and `validate` cannot spell-check them: shorten
+  # either list and the corresponding series simply stops existing. The two
+  # entries in each are exactly what /app/infra reads — Ready and
+  # MemoryPressure, cpu and memory — and every extra entry is a new series per
+  # node against the store's active-series budget.
+  #
+  # The six names under `metrics:` are the metadata metrics, all off-by-name
+  # here for the same reason as the DaemonSet's seven: a typo fails `validate`
+  # instead of shipping nothing. `filter/k8s` below is the actual whitelist.
+  k8s_cluster:
+    auth_type: serviceAccount
+    collection_interval: 30s
+    node_conditions_to_report: [Ready, MemoryPressure]
+    allocatable_types_to_report: [cpu, memory]
+    metrics:
+      k8s.pod.phase:
+        enabled: true
+      k8s.container.restarts:
+        enabled: true
+      k8s.container.cpu_request:
+        enabled: true
+      k8s.container.cpu_limit:
+        enabled: true
+      k8s.container.memory_request:
+        enabled: true
+      k8s.container.memory_limit:
+        enabled: true
+
+processors:
+  batch: {}
+
+  # The wire contract for this collector's metrics leg (D450): exactly these
+  # ten names leave it. The first four are the dynamic ones the two
+  # `*_to_report` lists above build — they are ordinary literal names once
+  # emitted, so `strict` matches them the same as any other, even though no
+  # `metrics:` key could have enumerated them. The rest of the receiver's
+  # default-enabled set (deployment/statefulset/job/hpa counts, resource
+  # quotas, …) is real data with no reader on this product, and every series
+  # of it would count against the store's 25k active-series budget.
+  filter/k8s:
+    metrics:
+      include:
+        match_type: strict
+        metric_names:
+          - k8s.node.condition_ready
+          - k8s.node.condition_memory_pressure
+          - k8s.node.allocatable_cpu
+          - k8s.node.allocatable_memory
+          - k8s.pod.phase
+          - k8s.container.restarts
+          - k8s.container.cpu_request
+          - k8s.container.cpu_limit
+          - k8s.container.memory_request
+          - k8s.container.memory_limit
+
+  # Scrub only — nothing to stamp (D453). This collector already learns
+  # `k8s.node.name` from the API objects themselves, so unlike the DaemonSet's
+  # copy of this processor there is no node identity to supply.
+  #
+  # UIDs and container IDs are per-restart identities: keeping them would turn
+  # every pod restart into a NEW series against the active-series cap while
+  # adding nothing a human reads. The image name and tag are dropped for a
+  # second reason on top of that — they are a rollout's identity, they change
+  # on every deploy, and storing them here would put a per-deploy dimension on
+  # every container series for a page that shows usage against limits.
+  resource/k8s:
+    attributes:
+      - key: k8s.pod.uid
+        action: delete
+      - key: k8s.node.uid
+        action: delete
+      - key: container.id
+        action: delete
+      - key: container.image.name
+        action: delete
+      - key: container.image.tag
+        action: delete
+
+exporters:
+  otlp_http:
+    endpoint: "${env:OBSTACK_INGEST_ENDPOINT:-http://ingest:4318}"
+    headers:
+      # Phase-1 bearer key (D4), taken from the collector's own env (D39
+      # rider) — the same key, the same wire format and the same
+      # `values.yaml` field as the DaemonSet: to ingest this is one more
+      # authenticated OTLP client, not a second kind of sender. Production
+      # supplies it via a values file or a mounted secret — never a committed
+      # literal.
+      Authorization: "Bearer ${env:OBSTACK_COLLECTOR_API_KEY}"
+
+extensions:
+  # Explicit 0.0.0.0, same reason as config.yaml: the default
+  # (localhost:13133) only answers loopback connections, which a kubelet
+  # probe against the pod IP does not use.
+  health_check:
+    endpoint: 0.0.0.0:13133
+
+  # No `file_storage` here, and its absence is a decision rather than an
+  # omission. Checkpointing exists in config.yaml because `file_log` reads
+  # files with `start_at: beginning`, so a restart would re-ship every
+  # historical line. Neither receiver here holds a byte offset to persist —
+  # `k8s_events` opens a watch, and a restarted watch resumes from the API
+  # server's current resource version; `k8s_cluster` re-lists the world on
+  # every collection interval, so a restart costs at most one 30s gap that the
+  # next scrape closes. The cost of that is the honest one, stated in the
+  # READMEs: events occurring during a restart are not backfilled. Events are
+  # the API server's own short-lived, best-effort records (the default TTL is
+  # an hour), not a durable log, and a per-replica hostPath bought to chase
+  # them would be a checkpoint over data the cluster itself has already
+  # discarded.
+
+service:
+  extensions: [health_check]
+  pipelines:
+    # No traces pipeline: nothing here produces spans, and an empty pipeline
+    # is a config error, not a no-op.
+    logs:
+      receivers: [k8s_events]
+      processors: [batch]
+      exporters: [otlp_http]
+    # `filter/k8s` and `resource/k8s` are on this pipeline only — the events
+    # leg above ships log records, which neither processor is configured for.
+    metrics:
+      receivers: [k8s_cluster]
+      processors: [filter/k8s, resource/k8s, batch]
+      exporters: [otlp_http]

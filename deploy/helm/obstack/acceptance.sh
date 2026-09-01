@@ -215,10 +215,11 @@ harness genai-fixture
 # every check above must already have run against the pod that served them.
 #
 # The product claims "k8s events on the timeline". This proves it on a live
-# cluster instead of describing it: the chart's events collector
-# (templates/collector/events-deployment.yaml — a single-replica Deployment,
-# because k8s_events watches the cluster-wide API stream) is asserted Available
-# first, then a fresh trace is driven and the pod that served it is deleted.
+# cluster instead of describing it: the chart's cluster collector
+# (templates/collector/cluster-deployment.yaml — a single-replica Deployment,
+# because both of its receivers read the cluster-wide API) is asserted
+# Available first, then a fresh trace is driven and the pod that served it is
+# deleted.
 # The kubelet emits a `Killing` event against exactly that Pod — a Normal-Type
 # event, which EVENT_KINDS (apps/web/src/server/adapters.ts) folds to kind
 # "restart" at severity "info" — and the harness reads it back through the same
@@ -229,7 +230,7 @@ harness genai-fixture
 # Service's endpoint goes away with the pod) are the trap's to kill anyway,
 # because nothing after this line drives the demo again.
 step "S4.4: a live kubelet event lands on the trace's timeline"
-kubectl rollout status "deployment/$RELEASE-collector-events" --timeout=180s
+kubectl rollout status "deployment/$RELEASE-collector-cluster" --timeout=180s
 # By the chart's own labels, never a guessed name — demo replicas is 1
 # (templates/demo/deployment.yaml says why), so this IS the pod serving /chat.
 demo_pod="$(kubectl get pod \

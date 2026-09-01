@@ -7,10 +7,12 @@
 # pod log convention nor a Kubernetes API to query, so this file tails
 # Docker's own json-file logs instead and carries no k8s_attributes stage —
 # there is nothing for it to ask. The same absence is why there is no
-# `k8s_events` receiver here either: cluster events are a Kubernetes-only
-# signal, shipped by the chart's own events collector
-# (deploy/helm/obstack/files/collector-events-config.yaml), and Compose has no
-# API server to watch for them.
+# `k8s_events` receiver here either — nor a `kubelet_stats` or `k8s_cluster`
+# one: cluster events, node/pod usage and the cluster's declared state are all
+# Kubernetes-only signals, shipped by the chart's own collectors
+# (deploy/helm/obstack/files/collector-cluster-config.yaml and the DaemonSet's
+# metrics pipeline), and Compose has neither an API server to watch nor a
+# kubelet to scrape.
 #
 # Brought up with `deploy/collector/up.sh` (wraps
 # `docker compose --profile collector up`) — see deploy/compose/README.md.
