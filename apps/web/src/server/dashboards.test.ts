@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
 import type { QueryResultRow } from "pg";
 import {
@@ -533,4 +536,41 @@ test("a delete names the workspace and the id — and answers with the workspace
   assert.match(remove.sql, /DELETE FROM dashboards/);
   assert.match(remove.sql, /WHERE workspace_id = \$1 AND id = \$2/);
   assert.deepEqual(remove.params, ["ws_a", "dash_00112233445566aa"]);
+});
+
+// ---- D441: the action surface is mutations, and nothing but mutations ----
+
+// Source text, not an import: `actions.ts` is a `"use server"` module and
+// importing it here would pull `server/session.ts` and `next/headers` into a
+// runner that has no request (the `explore/page.test.ts` fallback, D54(iii)).
+const ACTIONS = readFileSync(
+  path.join(path.dirname(fileURLToPath(import.meta.url)), "../components/dashboards/actions.ts"),
+  "utf8",
+);
+
+test("the dashboards action surface exposes the seven mutations and no read (D441)", () => {
+  // A Server Function is a POST endpoint. A dashboard READ has no business
+  // being one: every surface that shows dashboards reads `server/dashboards.ts`
+  // on its own request, so there is one definition of what it shows — and this
+  // file's store has no reachable read outside a rendered page.
+  const exported = [...ACTIONS.matchAll(/export async function (\w+)/g)].map((m) => m[1]);
+  assert.deepEqual(exported, [
+    "createDashboard",
+    "renameDashboard",
+    "deleteDashboard",
+    "addWidget",
+    "removeWidget",
+    "moveWidget",
+    "setWidgetPinned",
+  ]);
+
+  // The name check above would pass a read smuggled in under another name, so
+  // the call itself is banned too — as is the pooled read path a read needs.
+  for (const banned of ["store.listDashboards", "store.getDashboard", "queryRows"]) {
+    assert.equal(
+      ACTIONS.includes(banned),
+      false,
+      `actions.ts reaches for ${banned} — reads belong to the page (D441)`,
+    );
+  }
 });

@@ -3,7 +3,7 @@
 import type { Dashboard, DashboardActionResult, NewDashboardWidget } from "@/lib/dashboard-types";
 import { dataMode } from "@/server/data";
 import * as store from "@/server/dashboards";
-import { queryRows, withTransaction, type TxQuery } from "@/server/postgres";
+import { withTransaction, type TxQuery } from "@/server/postgres";
 import { getSessionContext } from "@/server/session";
 
 /**
@@ -14,10 +14,16 @@ import { getSessionContext } from "@/server/session";
  * the session HERE, on every call: the client names a dashboard and a widget,
  * never a workspace.
  *
+ * MUTATIONS ONLY (D441). Reading dashboards is the PAGE's job — the live
+ * branches of `dashboards/page.tsx`, `dashboards/[id]/page.tsx`, `app/page.tsx`
+ * and `explore/page.tsx` call `server/dashboards.ts` directly on their own
+ * request — so there is exactly one definition of what a surface shows, and no
+ * read of this store is reachable as a POST endpoint at all.
+ *
  * `null` is the answer when there is no workspace to act in — mock mode, which
  * has none and must not touch Postgres at all (D114's byte invariance), or a
- * caller with no session. The surface says so rather than showing an empty list,
- * which would read as "this workspace has no dashboards yet".
+ * caller with no session. The surface says so rather than silently doing
+ * nothing, which would read as a mutation that worked.
  *
  * Every mutation runs inside `withTransaction` so the store's advisory lock
  * (D197/D199) actually holds across its read→write: the lock is
@@ -51,16 +57,6 @@ async function mutate(
     if (failure instanceof store.DashboardRefusal) return { refused: failure.message };
     throw failure;
   }
-}
-
-export async function listDashboards(): Promise<Dashboard[] | null> {
-  const workspaceId = await activeWorkspace();
-  return workspaceId === null ? null : store.listDashboards(workspaceId, queryRows);
-}
-
-export async function getDashboard(id: string): Promise<Dashboard | null> {
-  const workspaceId = await activeWorkspace();
-  return workspaceId === null ? null : store.getDashboard(workspaceId, id, queryRows);
 }
 
 export async function createDashboard(name: string): Promise<DashboardActionResult> {
