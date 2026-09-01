@@ -58,7 +58,7 @@ function diffHref(aId: string, bId: string): string {
   return `/app/traces/diff?${params.toString()}`;
 }
 
-function TraceSummary({ t, label }: { t: Trace; label: string }) {
+function TraceSummary({ t, label, caption }: { t: Trace; label: string; caption?: string }) {
   return (
     <div className="rounded-lg border border-line bg-surface p-3">
       <p className="font-mono text-[9.5px] uppercase tracking-widest text-faint">{label}</p>
@@ -69,6 +69,7 @@ function TraceSummary({ t, label }: { t: Trace; label: string }) {
       <p className="mt-1 font-mono text-[11px] text-mid">
         {fmtMs(t.durationMs)} · {t.spanCount} spans · {t.services.length} services
       </p>
+      {caption && <p className="mt-1 font-mono text-[10.5px] text-faint">{caption}</p>}
       <Link
         href={`/app/traces/${t.id}`}
         className="mt-1 inline-flex items-center gap-1 font-mono text-[10.5px] hover:underline"
@@ -100,15 +101,21 @@ function EmptySlot({ label, note }: { label: string; note: string }) {
  *   "trace not found in this workspace" is true wherever it renders (D13).
  * - `b` is null when no second trace is picked yet, which is the state the
  *   trace-detail compare link arrives in.
+ *
+ * `aAutoPicked` (D416, amending D400): `page.tsx` sets this true exactly when
+ * `?a=` was absent — the auto-pick above happened silently, and slot A must
+ * say so rather than presenting the most recent trace as if it had been named.
  */
 export function TraceDiffLive({
   a,
   b,
   recent,
+  aAutoPicked,
 }: {
   a: Trace | null;
   b: Trace | null;
   recent: Trace[];
+  aAutoPicked: boolean;
 }) {
   const rows = a && b ? rowsFor(a, b) : [];
   const maxDur = Math.max(...rows.map((r) => Math.max(r.a ?? 0, r.b ?? 0)), 1);
@@ -157,7 +164,11 @@ export function TraceDiffLive({
 
       <div className="mb-4 grid gap-2 sm:grid-cols-2">
         {a ? (
-          <TraceSummary t={a} label="trace a" />
+          <TraceSummary
+            t={a}
+            label="trace a"
+            caption={aAutoPicked ? "most recent trace — pick another to compare" : undefined}
+          />
         ) : (
           <EmptySlot label="trace a" note="trace not found in this workspace" />
         )}

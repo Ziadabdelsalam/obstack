@@ -22,6 +22,10 @@ import { dataForSession, dataMode } from "@/server/data";
  * keeps `TraceDiffLive`'s "trace not found in this workspace" true wherever it
  * renders. An id that IS named and misses — unknown, or another workspace's,
  * which the scoped read cannot see (D113) — resolves to null and says so.
+ *
+ * D416: that auto-pick is silent about being one unless we say so — `aAutoPicked`
+ * is true exactly when `?a=` was absent (the same falsy check the fallback
+ * below already runs), and `TraceDiffLive` captions slot A with it only then.
  */
 export default async function TraceDiffPage({
   searchParams,
@@ -38,6 +42,9 @@ export default async function TraceDiffPage({
   const params = await searchParams;
   const aId = typeof params.a === "string" ? params.a : "";
   const bId = typeof params.b === "string" ? params.b : "";
+  // D416: the same falsy check that drives the recent[0] fallback just below —
+  // whenever that fallback fires, slot A must caption itself as auto-picked.
+  const aAutoPicked = !aId;
 
   const data = await dataForSession();
   // Three independent reads, in parallel: the two sides and the picker's rows.
@@ -53,6 +60,7 @@ export default async function TraceDiffPage({
       a={aId ? aTrace ?? null : recent[0] ?? null}
       b={bId ? bTrace ?? null : null}
       recent={recent}
+      aAutoPicked={aAutoPicked}
     />
   );
 }

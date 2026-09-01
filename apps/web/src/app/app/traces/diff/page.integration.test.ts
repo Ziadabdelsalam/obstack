@@ -193,7 +193,7 @@ test("the live diff over two seeded traces (D400)", async (t) => {
   });
 
   await t.test("the rows fold both traces by span name, with the deltas and the only-in-A row", () => {
-    const text = strings(TraceDiffLive({ a, b, recent })).join(" ");
+    const text = strings(TraceDiffLive({ a, b, recent, aAutoPicked: false })).join(" ");
     for (const name of ["POST /chat", "llm.call", "cache.lookup"]) {
       assert.ok(text.includes(name), `the diff never rendered the "${name}" row`);
     }
@@ -216,7 +216,7 @@ test("the live diff over two seeded traces (D400)", async (t) => {
     assert.equal(foreign, undefined, "a scoped read returned another workspace's trace");
     // What the page does with that: pass null, and the surface says so rather
     // than silently comparing something else.
-    const text = strings(TraceDiffLive({ a: null, b, recent })).join(" ");
+    const text = strings(TraceDiffLive({ a: null, b, recent, aAutoPicked: false })).join(" ");
     assert.ok(
       text.includes("trace not found in this workspace"),
       "an unresolved side must be named, not blank",
@@ -229,9 +229,24 @@ test("the live diff over two seeded traces (D400)", async (t) => {
   });
 
   await t.test("no second trace picked yet: the picker and 'pick a second trace', no table", () => {
-    const text = strings(TraceDiffLive({ a, b: null, recent })).join(" ");
+    const text = strings(TraceDiffLive({ a, b: null, recent, aAutoPicked: false })).join(" ");
     assert.ok(text.includes("pick a second trace"));
     assert.ok(!text.includes("only in A"), "no comparison is rendered against a trace nobody picked");
     assert.ok(text.includes(idB), "the picker must still offer this workspace's other trace");
+  });
+
+  // D416: `page.tsx` is a source-text test's job (page.test.ts) — this is the
+  // seeded half, over the SAME resolved trace A, toggling only `aAutoPicked`.
+  await t.test("D416: an auto-picked A is captioned; a named ?a= carries no caption", () => {
+    const autoPicked = strings(TraceDiffLive({ a, b, recent, aAutoPicked: true })).join(" ");
+    assert.ok(
+      autoPicked.includes("most recent trace — pick another to compare"),
+      "an auto-picked A (?a= absent) must caption itself",
+    );
+    const named = strings(TraceDiffLive({ a, b, recent, aAutoPicked: false })).join(" ");
+    assert.ok(
+      !named.includes("most recent trace — pick another to compare"),
+      "a named ?a= must never carry the auto-pick caption",
+    );
   });
 });

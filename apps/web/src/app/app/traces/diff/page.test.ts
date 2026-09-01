@@ -105,6 +105,30 @@ test("the live branch resolves both sides in parallel through the facade, and th
   assert.match(code, /b=\{bId \? bTrace \?\? null : null\}/);
 });
 
+test("D416: the page tells TraceDiffLive whether A was auto-picked, and slot A knows how to caption it", () => {
+  assert.match(
+    PAGE,
+    /const aAutoPicked = !aId;/,
+    "aAutoPicked must read the ABSENCE of ?a= — never whether the resolved A happens to be recent[0], which would caption an explicitly named most-recent id",
+  );
+  assert.match(
+    PAGE,
+    /aAutoPicked=\{aAutoPicked\}/,
+    "the page must pass whether A was auto-picked (an absent ?a=) to TraceDiffLive",
+  );
+  assert.ok(
+    LIVE.includes("most recent trace — pick another to compare"),
+    "D416: slot A must carry this exact caption when it was auto-picked",
+  );
+  // The seeded test next door proves WHEN the caption prop is handed over; only
+  // the text can show that the slot renders what it was handed.
+  assert.match(
+    LIVE,
+    /\{caption && </,
+    "TraceSummary must render the caption it is given, not just accept it",
+  );
+});
+
 test("D400: the compare entry point is an href from the page — the mock corpus is out of the client bundle", () => {
   assert.equal(
     EXPLORER.includes('from "@/mock/'),
