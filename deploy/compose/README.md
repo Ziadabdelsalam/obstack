@@ -320,6 +320,24 @@ What it asserts, in order:
   state, and the D142 idiom runs over all five in his browser — his own words on
   every one of them and zero of hers — with the reverse asserted on the two that
   name people and services;
+- **dashboards, the one fixture with no front door (D424/D425/D427)** — a
+  dashboard is a row somebody creates in the UI, so `--leg dashboards` writes it
+  straight into the disposable Postgres: one dashboard for alice, four widgets,
+  one per kind, all four over the metrics the leg above exported. `/app/dashboards`
+  then names it with no `SAMPLE DATA` badge, and the dashboard's own page renders
+  all four kinds by their titles with the fold named on each — the stat folds the
+  gauge to the 42 the export sent, *as of* the minute it was stamped, and the
+  top-n and table fold the cumulative sum to its 60 in the one group the export's
+  resource named. `/app`'s watch slot is asserted **inside its own
+  `data-tour="watches"` slice**, never over the page (the page carries SAMPLE
+  chips of its own above it): it says *pinned from your dashboards · 1*, renders
+  that one pinned widget and none of the three she did not pin, and claims no
+  sample content. The other stranger gets the same three URLs empty in the ruled
+  words — *no dashboards yet*, *no dashboard with this id in your workspace* for
+  her id (never her row, never a 500), *nothing pinned to the overview yet* — and
+  none of her words on any of them. Finally the accepted counter over both
+  strangers' keys is read before the leg and after it and must not have moved:
+  the leg touches Postgres and nothing else;
 - **token hygiene** — both keys the run issued through the UI are searched for,
   as literals, in everything the drive printed and everything it wrote: stdout,
   the transcript, the server log, the build log, every artifact beside them. The
@@ -399,6 +417,21 @@ for nothing:
 SEED_METRICS_TOKEN=ok_live_… INGEST_OTLP=http://127.0.0.1:4318 \
   node deploy/compose/exit-seed.mjs --workspace ws_1a2b3c --label zzalice --leg metrics
 ```
+
+The dashboards leg (D424) is separate and additive too, and it is the only
+direct-SQL seed in this file: a dashboard is a row somebody creates in the UI,
+and no exporter, endpoint or API can put one there, so there is no front door to
+prefer. It writes ONE row into the disposable Postgres with the app's own shape
+(`dash_`/`wdg_` ids, `widgets` exactly `lib/dashboard-types.ts`'s
+`DashboardWidget[]`), and it must run AFTER the metrics leg — every widget names
+one of the metrics that export sent:
+
+```bash
+node deploy/compose/exit-seed.mjs --workspace ws_1a2b3c --label zzalice --leg dashboards
+```
+
+A second run into the same workspace is refused by `UNIQUE (workspace_id, name)`
+rather than by a guard this file could write.
 
 The label goes on content only — names, bodies, prompts — and never on an
 identifier, because the filter legs match services and pods exactly; and never

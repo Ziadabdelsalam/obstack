@@ -16,6 +16,8 @@ export const liveWiredRoutes: readonly string[] = [
   "/app/onboarding", // quickstart: the workspace's own key, its real arrival signal
   "/app/connections", // connected sources with their D100 ingest health
   "/app/explore", // ad-hoc metric queries through T6's frozen contract (D363)
+  "/app/dashboards", // the workspace's own dashboard rows, from Postgres (D424)
+  "/app/dashboards/", // and one of them, its widgets read through that same contract
   "/app/map", // service topology derived from the workspace's own spans
   "/app/services", // the trace-derived catalog
   "/app/services/", // and one service's scorecard, under the same derivation

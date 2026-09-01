@@ -183,6 +183,8 @@ import {
   CARRIER_TOKEN,
   CARRIER_TRACE,
   CHAIN_SERVICES,
+  DASHBOARD_NAME,
+  dashboardWidgets,
   endUserIds,
   errorSignatures,
   EVIDENCE_FREE_QUOTA,
@@ -2759,6 +2761,198 @@ try {
     );
   }
 
+  // ---------------------------------------------------- dashboards (S6.3)
+  /**
+   * PLACED HERE, and both halves of the placement are load-bearing. It is AFTER
+   * the metrics leg because every widget below names one of the three metrics
+   * that export sent — a dashboard over metrics that never arrived renders four
+   * honest empty cards and proves nothing about the fold (D427). And it is the
+   * one seeding in this run that goes STRAIGHT INTO POSTGRES: a dashboard is a
+   * row somebody creates in the UI, and no exporter, endpoint or API can put
+   * one there, so there is no front door to prefer (D115/D370's rule, and its
+   * only exception).
+   *
+   * That the leg touches Postgres ALONE is measured rather than reasoned about:
+   * `api_key_health.accepted` is the column every ingest path increments and
+   * the one two claims above read exactly, so both strangers' totals are read
+   * before this step and again after it, and must be the same number.
+   */
+  step("alice's dashboard is seeded straight into Postgres — the one row no front door can write (D115/D424)");
+  /** Every accepted event on either stranger's keys, summed by the drive's own
+   *  statement for the reason the ClickHouse denominators are (D71(b)). */
+  const acceptedOnTheirKeys = async () =>
+    Number(
+      (
+        await pgOne(
+          `SELECT coalesce(sum(accepted), 0) AS accepted
+             FROM api_key_health WHERE workspace_id = ANY($1)`,
+          [[alice.workspaceId, bob.workspaceId]],
+        )
+      )?.accepted ?? 0,
+    );
+  const acceptedBefore = await acceptedOnTheirKeys();
+  const dashboardSeed = spawnSync(
+    "node",
+    [
+      join(composeDir, "exit-seed.mjs"),
+      "--leg",
+      "dashboards",
+      "--workspace",
+      alice.workspaceId,
+      "--label",
+      ACTORS.alice.label,
+    ],
+    { cwd: repoRoot, env: { ...process.env, OBSTACK_POSTGRES_DSN: PG_DSN }, encoding: "utf8" },
+  );
+  writeFileSync(join(OUT, "seed-dashboards-alice.json"), `${dashboardSeed.stdout ?? ""}${dashboardSeed.stderr ?? ""}`);
+  must(dashboardSeed.status === 0, `exit-seed.mjs --leg dashboards failed: ${dashboardSeed.stderr}`);
+  const seeded = JSON.parse(dashboardSeed.stdout).dashboard;
+  console.log(`   ${dashboardSeed.stdout.trim().split("\n").join("\n   ")}`);
+  const dashboardId = seeded.id;
+  /** The titles from the seeder's own definition, never spelled twice (S2.3 L3). */
+  const widgetTitles = dashboardWidgets(ACTORS.alice.label).map((w) => w.title);
+  check(
+    "the row Postgres stored is the one this drive is about to open — a `dash_` id, the four widget titles from one definition, exactly one of them pinned (D425/D437)",
+    /^dash_[0-9a-f]{16}$/.test(dashboardId) &&
+      seeded.name === DASHBOARD_NAME &&
+      Number(seeded.widgets) === widgetTitles.length &&
+      Number(seeded.pinned) === 1 &&
+      seeded.titles.join("|") === widgetTitles.join("|"),
+    `${dashboardId} · ${seeded.name} · ${seeded.widgets} widget(s) · ${seeded.pinned} pinned · ${seeded.titles?.join(", ")}`,
+  );
+
+  step("/app/dashboards is live-wired: alice's own dashboard, the four kinds, and the fold on every card (D21/D367/D427)");
+  const list = await pageFor(alice, "/app/dashboards");
+  check(
+    "the list names the dashboard the seed wrote and carries no SAMPLE badge — while /app/costs above still does, which is what makes this absence a fact",
+    list.status === 200 &&
+      list.html.includes(DASHBOARD_NAME) &&
+      !list.html.includes("SAMPLE DATA") &&
+      !list.html.includes("no dashboards yet"),
+    `HTTP ${list.status} · badge ${list.html.includes("SAMPLE DATA")} · named ${list.html.includes(DASHBOARD_NAME)} · ` +
+      `empty state ${list.html.includes("no dashboards yet")}`,
+  );
+
+  const board = await pageFor(alice, `/app/dashboards/${dashboardId}`);
+  check(
+    "the dashboard renders all four kinds by their own titles, with no SAMPLE badge and not one card failing its read (D428)",
+    board.status === 200 &&
+      !board.html.includes("SAMPLE DATA") &&
+      widgetTitles.every((title) => board.html.includes(title)) &&
+      !board.html.includes("no dashboard with this id") &&
+      // React escapes the apostrophe in "couldn't", so the claim is made on the
+      // half of that sentence the HTML carries verbatim.
+      !board.html.includes("load this widget") &&
+      !board.html.includes("no points in the last"),
+    `HTTP ${board.status} · badge ${board.html.includes("SAMPLE DATA")} · ` +
+      `missing: ${widgetTitles.filter((t) => !board.html.includes(t)).join(", ") || "none"}`,
+  );
+
+  /**
+   * One widget card's own HTML. The cards render in widget order and a title
+   * appears exactly ONCE on a server-rendered page (the edit controls that
+   * repeat it are behind client state), so a card is what lies between its
+   * title and the next one — the S6.2-L3 slice idiom, on a grid instead of an
+   * SVG. Scoped because a bare "42" counted over the page would also match a
+   * clock in a caption; `>42<` inside the card is the rendered VALUE.
+   *
+   * The LAST card is bounded by `</main>` rather than by the document, and the
+   * reason was measured on the red run: everything after that tag is Next's
+   * flight payload, which restates every prop this page rendered from — titles
+   * and values included — so a slice running to `</body>` would be asserting
+   * against the SERIALIZED TREE beside the DOM it means to read.
+   */
+  const cardOf = (html, i) =>
+    (html.split(widgetTitles[i])[1] ?? "").split(widgetTitles[i + 1] ?? "</main>")[0];
+  const gauge = metricsSent.expectations.find((e) => e.type === "gauge");
+  const cumulative = metricsSent.expectations.find((e) => e.type === "sum");
+  check(
+    `the stat card folds that gauge to the ONE number the export sent — ${gauge.value}, as of the minute it was stamped — and names the fold that produced it (D427)`,
+    cardOf(board.html, 0).includes(`>${gauge.value}<`) &&
+      cardOf(board.html, 0).includes(`latest · as of ${gauge.bucket} · last 1h`),
+    cardOf(board.html, 0).slice(0, 300),
+  );
+  check(
+    `the top-n and table cards both fold the cumulative sum to its ${cumulative.value} in the one group the export's resource named, each captioned with its own fold (D427)`,
+    [cardOf(board.html, 2), cardOf(board.html, 3)].every(
+      (card) =>
+        card.includes(cumulative.group) &&
+        card.includes(`>${cumulative.value}<`) &&
+        card.includes("sum · last 1h · ") &&
+        card.includes(" buckets had data"),
+    ),
+    `topn ${cardOf(board.html, 2).slice(0, 200)} ··· table ${cardOf(board.html, 3).slice(0, 200)}`,
+  );
+
+  step("the overview's watch slot is a VIEW over the pinned flag — one widget, from a dashboard, no row of its own (D425/D434)");
+  const overview = await pageFor(alice, "/app");
+  /** The watch slot's own HTML: from the anchor the product tour spotlights to
+   *  the end of the page region, which is where it ends (it is the last thing
+   *  in `<main>`). `/app` carries SAMPLE chips of its own ABOVE this slot and
+   *  Next's flight payload restates all of them BELOW `</main>`, so both bounds
+   *  are load-bearing and every claim here is about the SLICE (S6.2-L3). */
+  const watchSlice = (html) => (html.split('data-tour="watches"')[1] ?? "").split("</main>")[0];
+  const watch = watchSlice(overview.html);
+  check(
+    "it counts the one widget alice pinned and renders it there — her stat's own title and its folded value — rather than the empty state",
+    overview.status === 200 &&
+      watch.includes("pinned from your dashboards · 1") &&
+      watch.includes(widgetTitles[0]) &&
+      watch.includes(`>${gauge.value}<`) &&
+      !watch.includes("nothing pinned to the overview yet"),
+    `HTTP ${overview.status} · header ${watch.includes("pinned from your dashboards · 1")} · ` +
+      `title ${watch.includes(widgetTitles[0])} · value ${watch.includes(`>${gauge.value}<`)} · slice ${watch.length}B`,
+  );
+  check(
+    "and the three widgets she did NOT pin are absent from it — a view over the flag, not over the array",
+    widgetTitles.slice(1).every((title) => !watch.includes(title)),
+    widgetTitles.slice(1).filter((title) => watch.includes(title)).join(", "),
+  );
+  check(
+    "nothing in that slice claims to be sample content, while the same page above it still does — which is what makes the absence a fact about the slot (D21/F6)",
+    !watch.includes("still renders sample content") &&
+      overview.html.includes("still renders sample content"),
+    `slice ${labelHits(watch, "still renders sample content")} · page ${labelHits(overview.html, "still renders sample content")}`,
+  );
+
+  step("and for the other stranger the same three URLs are empty — in the words D436 ruled, never hers (D142)");
+  const bobList = await pageFor(bob, "/app/dashboards");
+  check(
+    "/app/dashboards in bob's browser says he has none, and does not name hers",
+    bobList.status === 200 &&
+      bobList.html.includes("no dashboards yet — create one, or save a chart from Explore") &&
+      !bobList.html.includes(DASHBOARD_NAME) &&
+      labelHits(bobList.html, aliceLabel) === 0,
+    `HTTP ${bobList.status} · sentence ${bobList.html.includes("no dashboards yet")} · ` +
+      `${labelHits(bobList.html, aliceLabel)}× ${aliceLabel}`,
+  );
+  const bobBoard = await pageFor(bob, `/app/dashboards/${dashboardId}`);
+  check(
+    "her dashboard's own id, asked for by him, answers exactly what an invented id answers — never her row, never a 500 (D436)",
+    bobBoard.status === 200 &&
+      bobBoard.html.includes("no dashboard with this id in your workspace") &&
+      !bobBoard.html.includes(DASHBOARD_NAME) &&
+      labelHits(bobBoard.html, aliceLabel) === 0,
+    `HTTP ${bobBoard.status} · sentence ${bobBoard.html.includes("no dashboard with this id in your workspace")} · ` +
+      `${labelHits(bobBoard.html, aliceLabel)}× ${aliceLabel}`,
+  );
+  const bobWatch = watchSlice((await pageFor(bob, "/app")).html);
+  check(
+    "and his overview's watch slot is the empty state, in the very slice hers renders a widget in",
+    bobWatch.includes("nothing pinned to the overview yet — pin a widget from any dashboard") &&
+      !bobWatch.includes("pinned from your dashboards · 1") &&
+      labelHits(bobWatch, aliceLabel) === 0,
+    `sentence ${bobWatch.includes("nothing pinned to the overview yet")} · ` +
+      `${labelHits(bobWatch, aliceLabel)}× ${aliceLabel} in his slice`,
+  );
+
+  const acceptedAfter = await acceptedOnTheirKeys();
+  check(
+    `and none of this went near ingest: the accepted counter over both strangers' keys is where it was, ${acceptedBefore} → ${acceptedAfter} (D368)`,
+    acceptedAfter === acceptedBefore,
+    `api_key_health.accepted moved by ${acceptedAfter - acceptedBefore}`,
+  );
+
   step("a plan change round-trips: checkout → return → reconcile → redirect → ONE paint says Pro (D168/D189)");
   await openTab(alice, "Billing & usage", `document.querySelector("main")?.textContent.includes("change plan")`);
   must(await alice.evaluate(clickText("Upgrade to Pro")), "the Billing & usage tab offers no Pro upgrade");
@@ -3022,6 +3216,11 @@ try {
     "/app/users",
     "/app/issues",
     `/app/traces/diff?a=${PROMPT_TRACE}`,
+    // S6.3 (D21/D367): the dashboards list and one dashboard's own page joined
+    // that list this sprint, and the id below is the row alice actually holds —
+    // an anonymous browser must not reach it either.
+    "/app/dashboards",
+    `/app/dashboards/${dashboardId}`,
   ]) {
     await alice.goto(path, `document.body.textContent.length > 0`);
     const state = await alice.evaluate(STATE);
