@@ -382,6 +382,11 @@ export function ExploreLive({
           onSaved={(dashboard) => {
             setShowSave(false);
             setToast({ id: dashboard.id, name: dashboard.name });
+            // Nothing revalidates in the actions (actions.ts): the caller
+            // refreshes, so the `dashboards` list this page shows — widget
+            // counts, "full" at 12, a dashboard just created — is the store's
+            // answer after this save, not before it.
+            router.refresh();
           }}
         />
       )}

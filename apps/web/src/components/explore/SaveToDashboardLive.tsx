@@ -49,26 +49,36 @@ export function SaveToDashboardLive({
   const save = async (dashboardId: string) => {
     setPending(true);
     setRefused(null);
-    const result = await addWidget(dashboardId, {
-      title,
-      kind: "timeseries",
-      metric: query.metric,
-      type: query.type,
-      agg: query.agg,
-      range: query.range,
-      groupBy: query.groupBy,
-      pinned: false,
-    });
-    setPending(false);
-    if (result === null) {
-      setRefused("no active session to save into");
-      return;
+    try {
+      const result = await addWidget(dashboardId, {
+        title,
+        kind: "timeseries",
+        metric: query.metric,
+        type: query.type,
+        agg: query.agg,
+        range: query.range,
+        groupBy: query.groupBy,
+        pinned: false,
+      });
+      if (result === null) {
+        setRefused("no active session to save into");
+        return;
+      }
+      if ("refused" in result) {
+        setRefused(result.refused);
+        return;
+      }
+      onSaved(result.dashboard);
+    } catch {
+      // Only refusals arrive as `{refused}` (actions.ts); everything else
+      // throws, and in a click handler a throw reaches no error boundary. The
+      // reason stays in the server log and one sentence lands here, rather than
+      // a modal stuck mid-save with every button disabled (the
+      // `SavedViewsMenu.tsx` posture).
+      setRefused("that widget could not be saved.");
+    } finally {
+      setPending(false);
     }
-    if ("refused" in result) {
-      setRefused(result.refused);
-      return;
-    }
-    onSaved(result.dashboard);
   };
 
   const createAndSave = async (e: FormEvent) => {
@@ -77,18 +87,24 @@ export function SaveToDashboardLive({
     if (!trimmed) return;
     setPending(true);
     setRefused(null);
-    const created = await createDashboard(trimmed);
-    if (created === null) {
+    try {
+      const created = await createDashboard(trimmed);
+      if (created === null) {
+        setRefused("no active session to save into");
+        return;
+      }
+      if ("refused" in created) {
+        setRefused(created.refused);
+        return;
+      }
+      // A refused create stops here — never an add against a dashboard that
+      // does not exist. `save` owns its own failures and never throws.
+      await save(created.dashboard.id);
+    } catch {
+      setRefused("that dashboard could not be created.");
+    } finally {
       setPending(false);
-      setRefused("no active session to save into");
-      return;
     }
-    if ("refused" in created) {
-      setPending(false);
-      setRefused(created.refused);
-      return;
-    }
-    await save(created.dashboard.id);
   };
 
   return (

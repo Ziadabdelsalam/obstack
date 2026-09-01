@@ -1,82 +1,50 @@
-"use client";
+import { redirect } from "next/navigation";
+import { connection } from "next/server";
+import { DashboardDetailLive } from "@/components/dashboards/DashboardDetailLive";
+import { DashboardDetailMock } from "@/components/dashboards/DashboardDetailMock";
+import { forWorkspace } from "@/server/clickhouse";
+import { dataMode } from "@/server/data";
+import { getDashboard } from "@/server/dashboards";
+import { queryRows } from "@/server/postgres";
+import { getSessionContext } from "@/server/session";
+import { listMetricCatalog } from "@/server/queries/metrics";
+import { loadWidgetResults } from "@/server/widget-results";
 
-import { use, useState } from "react";
-import Link from "next/link";
-import { Plus } from "lucide-react";
-import { useWorkspace } from "@/state/workspace-store";
-import { WidgetCard } from "@/components/dashboards/WidgetCard";
-import { AddWidgetModal } from "@/components/dashboards/AddWidgetModal";
+/**
+ * One dashboard, live-wired (D367/D431), same shape as the list beside it. The
+ * mock branch hands `DashboardDetailMock` the `params` PROMISE rather than
+ * awaiting it here (`services/[id]/page.tsx:33`): the moved body awaits it
+ * exactly as it always did, which is what keeps the mock branch ahead of every
+ * await on this page and its DOM unchanged (D438).
+ *
+ * The page does ALL the reading (D428) — the row from Postgres, the metric
+ * catalog the add-widget form offers, and one metrics read per widget — and
+ * `DashboardDetailLive` renders resolved props with no fetching of its own.
+ * An id this workspace does not hold arrives as `null` and is a sentence, not
+ * a 500 and never another tenant's row (D436).
+ */
+export default async function DashboardDetailPage({
+  params,
+}: {
+  params: Promise<{ id: string }>;
+}) {
+  if (dataMode !== "live") return <DashboardDetailMock params={params} />;
+  await connection();
 
-export default function DashboardDetailPage({ params }: { params: Promise<{ id: string }> }) {
-  const { id } = use(params);
-  const { dashboards, addWidget, removeWidget, moveWidget } = useWorkspace();
-  const [editing, setEditing] = useState(false);
-  const [showAdd, setShowAdd] = useState(false);
+  const session = await getSessionContext();
+  if (!session) redirect("/login");
 
-  const dashboard = dashboards.find((d) => d.id === id);
+  const { id } = await params;
+  const ch = forWorkspace(session.workspaceId);
+  // The row and the catalog are independent; the widget reads are not — they
+  // need the row's widget array — so the chain joins the same `Promise.all`
+  // instead of waiting for the catalog first (D428).
+  const row = getDashboard(session.workspaceId, id, queryRows);
+  const [dashboard, catalog, loads] = await Promise.all([
+    row,
+    listMetricCatalog(ch),
+    row.then((d) => loadWidgetResults(ch, d?.widgets ?? [])),
+  ]);
 
-  if (!dashboard) {
-    return (
-      <div className="px-5 py-4">
-        <div className="rounded-lg border border-line bg-surface p-6 text-center">
-          <p className="font-mono text-[13px] text-mid">Dashboard not found.</p>
-          <Link href="/app/dashboards" className="mt-3 inline-block font-mono text-[12px] text-faint hover:text-ink">
-            ← back to dashboards
-          </Link>
-        </div>
-      </div>
-    );
-  }
-
-  return (
-    <div className="px-5 py-4">
-      <div className="mb-4 flex items-center justify-between">
-        <div>
-          <h1 className="font-display text-[19px] font-semibold text-ink">{dashboard.name}</h1>
-          <p className="mt-0.5 font-mono text-[11px] text-faint">
-            {dashboard.owner} · updated {dashboard.updated}
-          </p>
-        </div>
-        <div className="flex items-center gap-2">
-          {editing && (
-            <button
-              type="button"
-              onClick={() => setShowAdd(true)}
-              className="flex items-center gap-1.5 rounded-md border border-line-strong bg-raised px-3 py-1.5 font-mono text-[12px] text-ink hover:bg-overlay"
-            >
-              <Plus className="h-3.5 w-3.5" />
-              Add widget
-            </button>
-          )}
-          <button
-            type="button"
-            onClick={() => setEditing((e) => !e)}
-            className="rounded-md border border-line px-3 py-1.5 font-mono text-[12px] text-faint hover:text-ink"
-          >
-            {editing ? "Done" : "Edit"}
-          </button>
-        </div>
-      </div>
-
-      {dashboard.widgets.length === 0 ? (
-        <div className="rounded-lg border border-dashed border-line p-8 text-center">
-          <p className="font-mono text-[12.5px] text-faint">Add your first widget</p>
-        </div>
-      ) : (
-        <div className="grid gap-3 md:grid-cols-2">
-          {dashboard.widgets.map((w) => (
-            <WidgetCard
-              key={w.id}
-              widget={w}
-              editing={editing}
-              onRemove={() => removeWidget(dashboard.id, w.id)}
-              onMove={(dir) => moveWidget(dashboard.id, w.id, dir)}
-            />
-          ))}
-        </div>
-      )}
-
-      {showAdd && <AddWidgetModal onAdd={(w) => addWidget(dashboard.id, w)} onClose={() => setShowAdd(false)} />}
-    </div>
-  );
+  return <DashboardDetailLive dashboard={dashboard} catalog={catalog} loads={loads} />;
 }

@@ -120,3 +120,28 @@ test("SaveToDashboardLive stays on the live side of the mock/live boundary (D391
     "markup is copied from SaveToDashboardModal (D391), never imported",
   );
 });
+
+test("the saved widget is D433's mapping — timeseries, unpinned, titled from the query", () => {
+  // Source-text, like every other guard here: a client component with a server
+  // action cannot be imported under `--conditions react-server`. `kind` and
+  // `pinned` are both valid contract values in any shape, so the compiler
+  // cannot hold this — only these assertions can.
+  assert.ok(
+    /kind:\s*"timeseries"/.test(SAVE_LIVE),
+    "explore saves bars over TIME, so the kind is always timeseries (D433)",
+  );
+  assert.equal(
+    /kind:\s*"(topn|stat|table)"/.test(SAVE_LIVE),
+    false,
+    "no chart-type state reaches this modal — there is no second kind to save (D433)",
+  );
+  assert.ok(
+    /pinned:\s*false/.test(SAVE_LIVE),
+    "pinning is an editor action on the dashboard (D425), never a save-time choice",
+  );
+  assert.ok(
+    SAVE_LIVE.includes("`${query.metric} · ${query.agg}`") &&
+      SAVE_LIVE.includes("` by ${query.groupBy}`"),
+    "the title is `${metric} · ${agg}` plus ` by ${groupBy}` when grouped (D433)",
+  );
+});

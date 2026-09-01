@@ -1,50 +1,31 @@
-"use client";
+import { redirect } from "next/navigation";
+import { connection } from "next/server";
+import { DashboardsLive } from "@/components/dashboards/DashboardsLive";
+import { DashboardsMock } from "@/components/dashboards/DashboardsMock";
+import { dataMode } from "@/server/data";
+import { listDashboards } from "@/server/dashboards";
+import { queryRows } from "@/server/postgres";
+import { getSessionContext } from "@/server/session";
 
-import Link from "next/link";
-import { useRouter } from "next/navigation";
-import { Plus } from "lucide-react";
-import { useWorkspace } from "@/state/workspace-store";
+/**
+ * The dashboards list, live-wired (D367/D431): a server component branching on
+ * `dataMode` (the `services/page.tsx:22` idiom), never the `data.ts` facade —
+ * the live branch reads `server/dashboards.ts` directly (D441: reads are the
+ * page's, the actions file is mutations only) and hands `DashboardsLive`
+ * nothing but resolved props. The mock branch renders `DashboardsMock`
+ * verbatim, with zero props and before any await, so the rendered DOM there is
+ * unchanged (D438).
+ *
+ * The workspace comes from the session and from nowhere else (D113): a
+ * dashboard is visible to every member of its workspace and to nobody else,
+ * which is the whole of this sprint's ACL.
+ */
+export default async function DashboardsPage() {
+  if (dataMode !== "live") return <DashboardsMock />;
+  await connection();
 
-export default function DashboardsPage() {
-  const { dashboards, createDashboard } = useWorkspace();
-  const router = useRouter();
+  const session = await getSessionContext();
+  if (!session) redirect("/login");
 
-  const onNew = () => {
-    const id = createDashboard("Untitled dashboard");
-    router.push(`/app/dashboards/${id}`);
-  };
-
-  return (
-    <div className="px-5 py-4">
-      <div className="mb-4 flex items-center justify-between">
-        <h1 className="font-display text-[19px] font-semibold text-ink">Dashboards</h1>
-        <button
-          type="button"
-          onClick={onNew}
-          className="flex items-center gap-1.5 rounded-md border border-line-strong bg-raised px-3 py-1.5 font-mono text-[12px] text-ink hover:bg-overlay"
-        >
-          <Plus className="h-3.5 w-3.5" />
-          New dashboard
-        </button>
-      </div>
-
-      <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-3">
-        {dashboards.map((d) => (
-          <Link
-            key={d.id}
-            href={`/app/dashboards/${d.id}`}
-            className="rounded-lg border border-line bg-surface p-3.5 hover:border-line-strong hover:bg-raised"
-          >
-            <h2 className="font-mono text-[13.5px] font-medium text-ink">{d.name}</h2>
-            <p className="mt-1 font-mono text-[11px] text-faint">
-              {d.owner} · updated {d.updated}
-            </p>
-            <p className="mt-2.5 font-mono text-[10.5px] text-mid">
-              {d.widgets.length} widget{d.widgets.length === 1 ? "" : "s"}
-            </p>
-          </Link>
-        ))}
-      </div>
-    </div>
-  );
+  return <DashboardsLive dashboards={await listDashboards(session.workspaceId, queryRows)} />;
 }
