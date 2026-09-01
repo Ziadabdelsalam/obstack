@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { ScopedClickHouse } from "@/server/clickhouse";
-import { activeSeriesCount, SERIES_CAP } from "./series-cap";
+import { activeSeriesCount } from "./series-cap";
 
 // run with: npm test --workspace apps/web -- series-cap
 //
@@ -10,11 +10,10 @@ import { activeSeriesCount, SERIES_CAP } from "./series-cap";
 // own unscoped-SQL tripwire is proven once, generically, in
 // metrics.test.ts/tenancy.test.ts — this file's SQL is fixed rather than
 // caller-built, so what it proves instead is that THIS statement carries the
-// placeholder (below), not that the generic refusal mechanism exists.
-
-test("SERIES_CAP mirrors write.go's DefaultSeriesCap", () => {
-  assert.equal(SERIES_CAP, 25_000);
-});
+// placeholder (below), not that the generic refusal mechanism exists. The cap
+// NUMBER is not restated here: series-cap.parity.test.ts pins it against
+// write.go's DefaultSeriesCap by reading the Go source (D385), and a literal
+// 25_000 beside it would only be a third place to edit.
 
 type Call = { sql: string; params: Record<string, unknown> };
 

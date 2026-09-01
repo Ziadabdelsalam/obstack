@@ -258,7 +258,7 @@ What it asserts, in order:
 - **connections shows that key** — `/app/connections` lists the key events
   actually arrived on (the settings key, which nothing was ever sent on, is a
   credential and is *not* listed), with the D100 counters as they are: cumulative
-  totals with the instant they were counted at, errors that are receive-path only
+  totals with the instant they were counted at, errors that are receive-path or cardinality-cap drops
   and quota drops rendered as sampling rather than as faults (D218/D219), and no
   invented per-minute rate anywhere on the panel. Neither of the two routes this
   sprint registered carries a `SAMPLE DATA` badge, while `/app/costs` still does;
