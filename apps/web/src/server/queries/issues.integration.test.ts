@@ -251,3 +251,89 @@ test("listIssues (D399) against a seeded ClickHouse", async (t) => {
     assert.deepEqual(await listIssues(forWorkspace(WORKSPACE_B)), { issues: [], total: 0 });
   });
 });
+
+/**
+ * D414 (advisor rider on T4): the D402 cap was proven with 12 issues under
+ * `ISSUE_CAP` — this proves the banner's number when the cap actually bites,
+ * the same shape as T1's `WORKSPACE_C` (topology.integration.test.ts): a
+ * fresh workspace of this run, one signature more than the cap. Distinct
+ * span `name`s under one service/layer/message are the simplest way to 51
+ * distinct fingerprints (service, layer, name, normalized) without needing
+ * 51 distinct messages.
+ */
+const WORKSPACE_CAP = `ws_itc_${randomBytes(4).toString("hex")}`;
+const CAP_SERVICE = "issues-it-cap";
+const CAP_SIGNATURES = Array.from({ length: 51 }, (_, i) => `cap-signature-${String(i).padStart(2, "0")}`);
+
+test("listIssues (D414): the D402 cap at scale — 51 signatures, ISSUE_CAP rows, true total", async (t) => {
+  if (!(await clickhouseReachable())) {
+    t.skip(`no ClickHouse at ${CLICKHOUSE_URL}; start deploy/compose (down -v first) to run this test`);
+    return;
+  }
+
+  const { listIssues, ISSUE_CAP } = await import("./issues");
+
+  // One signature gets a second occurrence (count 2); the other 50 get one
+  // each — so the cap's ranking has something to prove beyond "50 rows came
+  // back", and the count-2 signature is unambiguously the one that must
+  // survive the cap.
+  await seed.insert({
+    table: "spans",
+    format: "JSONEachRow",
+    values: CAP_SIGNATURES.flatMap((name, i) =>
+      Array.from({ length: i === 0 ? 2 : 1 }, () => ({
+        workspace_id: WORKSPACE_CAP,
+        trace_id: `it${randomBytes(6).toString("hex")}`,
+        span_id: `it${String(nextSpan++).padStart(14, "0")}`,
+        parent_span_id: "",
+        name,
+        kind: "internal",
+        service: CAP_SERVICE,
+        layer: "tool",
+        start_time: hoursAgo(1),
+        duration_ns: "1000000",
+        status_code: "error",
+        status_message: "cap fixture: same message, distinguished only by span name",
+      })),
+    ),
+  });
+
+  const { issues, total } = await listIssues(forWorkspace(WORKSPACE_CAP));
+
+  await t.test("exactly ISSUE_CAP rows return, and total is the pre-LIMIT count of all 51 signatures", () => {
+    assert.equal(issues.length, ISSUE_CAP, "the LIMIT must cap the returned rows at ISSUE_CAP");
+    assert.equal(issues.length, 50);
+    assert.equal(
+      total,
+      51,
+      "count() OVER () must count every signature seeded, not the rows the LIMIT left (the D402 banner's N)",
+    );
+  });
+
+  await t.test("the rows are the 50 highest-count signatures, per ISSUES_SQL's own ORDER BY", () => {
+    // occurrences DESC: the one signature seeded twice ranks first, ahead of
+    // every count-1 signature.
+    assert.equal(issues[0].count, 2, "the count-2 signature must rank first and must be present");
+    assert.equal(issues[0].service, CAP_SERVICE);
+    for (let i = 1; i < issues.length; i++) {
+      assert.equal(issues[i].count, 1, `row ${i} must be one of the count-1 signatures`);
+    }
+    assert.equal(
+      new Set(issues.map((i) => i.fingerprint)).size,
+      50,
+      "fingerprints must be distinct across the returned rows",
+    );
+    // Fifty count-1 signatures compete for the 49 slots the count-2 row
+    // leaves — `ORDER BY occurrences DESC, fingerprint` decides which ONE of
+    // the fifty is dropped, and that choice is the engine's SQL-computed
+    // hash, not this test's to predict (D414: "assert only what it orders
+    // by"). What the ORDER BY DOES promise, and what this test can assert,
+    // is that the ties come back sorted by fingerprint ascending.
+    const tieFingerprints = issues.slice(1).map((i) => i.fingerprint);
+    assert.deepEqual(
+      tieFingerprints,
+      [...tieFingerprints].sort(),
+      "count-1 rows must be ordered by fingerprint ascending, the SQL's own tie-break",
+    );
+  });
+});
