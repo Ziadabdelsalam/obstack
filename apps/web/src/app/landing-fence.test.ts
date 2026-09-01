@@ -767,7 +767,7 @@ test("(b'') every prerendered page is accounted for", (t) => {
   assert.equal(new Set(perSurface).size, perSurface.length, "two surfaces claim the same prerendered page");
   assert.deepEqual(perSurface.filter(IN_APP_OUT_OF_SCOPE), [], "a surface claims an in-app page");
   // And the docs surface really is the whole corpus, not one page of it.
-  assert.equal(SURFACES.docs.pages().length, 14, "the docs surface no longer covers all 14 published pages");
+  assert.equal(SURFACES.docs.pages().length, 15, "the docs surface no longer covers all 15 published pages");
 });
 
 // ────────────────────────────────────────────── (c) the sample-label invariant

@@ -472,7 +472,11 @@ test("D322: the docs render the snippets, and no page carries a copy of one", ()
     }
     // An unresolved interpolation is a template that reached the page instead
     // of a value — the `tabCode` guard above, applied to the rendered corpus.
-    assert.equal(page.source.includes("${"), false, `${page.file}: an unresolved interpolation`);
+    // `${{ … }}` is not one: it is GitHub Actions' own expression syntax, which
+    // the deploy-hook recipe (S7.2, connectors/github-actions) has to carry
+    // verbatim for a reader to paste it. A JS template hole is `${` followed
+    // by anything BUT a second brace.
+    assert.equal(/\$\{(?!\{)/.test(page.source), false, `${page.file}: an unresolved interpolation`);
     for (const [i, line] of page.source.split("\n").entries()) {
       assert.equal(
         copied.test(line),

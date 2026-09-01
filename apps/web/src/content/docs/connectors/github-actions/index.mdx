@@ -1,0 +1,116 @@
+export const frontmatter = {
+  title: "GitHub Actions deploys",
+  description: "The change-event route: one authenticated POST, the document it takes, and the one workflow step that records a deploy.",
+};
+
+# GitHub Actions deploys
+
+**Status, stated plainly.** The route is built and CI-exercised — the e2e drive
+runs the exact step below against a real ingest and reads the deploy back off
+the product. The catalog card still says *coming soon*, for the same reason the
+Vercel and CloudWatch cards do: the hosted endpoint a workflow would point at is
+not public until launch. **A self-hoster can use it today**, against their own
+ingest.
+
+## The route
+
+Post one change event at a time to `POST /v1/changes` on your ingest — the
+same listener the OTLP exporters use.
+
+An API key is what a client sends as `Authorization: Bearer <token>`, and it
+names the workspace every record in that request is written into. Issue the key
+in the product, exactly as you would for an SDK; there is no second credential
+concept here. The body is one JSON object, `Content-Type: application/json`,
+uncompressed, at most 64 KiB.
+
+## The document
+
+{/* D499: this table is pinned to the Go validator (services/ingest/internal/changes/document.go) and to lib/change-types.ts by lib/change-types.test.ts — a field renamed on any side goes red. */}
+
+| Field | Required | What it is |
+| --- | --- | --- |
+| `kind` | yes | one of `deploy`, `config`, `scale`, `secret`, `flag`, `infra` |
+| `title` | yes | 1–200 characters; the line the timeline shows |
+| `detail` | no | up to 2000 characters; newlines allowed |
+| `who` | no | up to 120 characters; who did it |
+| `service` | no | up to 120 characters; the service name **exactly as your spans report it** — that equality is what puts a deploy on the service's own page |
+| `ref` | no | up to 128 characters; a sha, a tag, a version |
+| `source` | no | up to 60 characters; where the event came from, shown as a label |
+| `at` | no | RFC 3339; when it happened. Absent means now. Any past time is accepted (a backfill is history); more than five minutes in the future is refused |
+| `link` | no | an object with both `label` and `href`, or neither |
+| `link.label` | with link | up to 60 characters |
+| `link.href` | with link | an absolute `http` or `https` URL, up to 2048 characters — the workflow run, the commit. Nothing else is accepted |
+| `external_id` | no | up to 200 characters; your idempotency handle, see below |
+
+Unknown fields are refused, not ignored: a misspelled field name in a workflow
+would otherwise drop the deploy's service silently, which is the one failure a
+write API must not have. Every refusal is a `400` whose body names the field
+and the reason, in one sentence.
+
+**Never put a secret's value in a `secret` event.** The route stores what it
+is given and renders every field to every member of the workspace; a rotation
+event says that a secret rotated, and nothing more.
+
+## What the route answers
+
+- `201` — written. The body carries the new row's `id` and `"deduplicated": false`.
+- `200` — already held. The workspace already had this `external_id`; the body
+  carries the **original** row's `id` and `"deduplicated": true`, and nothing
+  was changed. First write wins, so a retried step is safe.
+- `400` — the document is outside the contract; the body names the field.
+- `401` — missing or unknown key.
+- `413` / `415` — over 64 KiB, or not `application/json`.
+- `429` — over the cap: 60 events a minute per workspace, with `Retry-After`.
+- `503` — the write did not happen. A `2xx` is a committed row; there is no
+  accepted-then-lost.
+
+Change events never count toward your plan's quota and are never sampled.
+
+## The step
+
+Add this to the job that deploys, after the deploy succeeds. It uses only
+`curl` and `jq`, both on every GitHub-hosted runner. Edit `service` to the
+name your spans report; everything else is the runner's own context. The
+`external_id` is the run and its attempt, so a retried step deduplicates and a
+re-run job is a new deploy.
+
+Set `OBSTACK_INGEST_URL` as a repository variable (your ingest's OTLP/HTTP base
+URL) and `OBSTACK_API_KEY` as a repository secret.
+
+{/* recipe:start — the e2e drive extracts the `run:` block below and executes it verbatim against a real ingest (S7.2 T7); edit the step, and the proof runs the edit. */}
+
+```yaml
+- name: Record the deploy in obstack
+  if: success()
+  env:
+    OBSTACK_INGEST_URL: ${{ vars.OBSTACK_INGEST_URL }}
+    OBSTACK_API_KEY: ${{ secrets.OBSTACK_API_KEY }}
+  run: |
+    curl -fsS -X POST "$OBSTACK_INGEST_URL/v1/changes" \
+      -H "Authorization: Bearer $OBSTACK_API_KEY" \
+      -H "Content-Type: application/json" \
+      -d "$(jq -cn --arg sha "$(printf '%.7s' "$GITHUB_SHA")" --arg who "$GITHUB_ACTOR" \
+        --arg service "checkout" \
+        --arg ext "github:$GITHUB_REPOSITORY:run:$GITHUB_RUN_ID:$GITHUB_RUN_ATTEMPT" \
+        --arg run "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+        '{kind:"deploy", service:$service, ref:$sha, title:("deploy " + $sha), who:$who,
+          source:"github-actions", external_id:$ext, link:{label:"workflow run", href:$run}}')"
+```
+
+{/* recipe:end */}
+
+## Where it shows
+
+The event is on the changes timeline (`/app/changes`) of the workspace the key
+names, newest first by `at`. A `deploy` event whose `service`
+equals a service's trace-derived name is also on that service's page, under
+*Recent deploys* — the panel that carried a sample-data mark until this route
+existed.
+
+## What this is not
+
+One generic route and one documented step. There is no connector catalog of
+deploy providers, no polling of anyone's API, no feature-flag SDK, and no way
+to type a change in by hand — a change event is something a system reports.
+Other CI systems use the same route with the same document; only the step's
+wrapper differs.
