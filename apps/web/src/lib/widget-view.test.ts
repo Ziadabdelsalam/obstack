@@ -3,6 +3,7 @@ import test from "node:test";
 import type { MetricSeriesPoint, MetricSeriesResult } from "./metrics-types";
 import type { Dashboard, DashboardWidget } from "./dashboard-types";
 import {
+  cardCaption,
   foldCaption,
   foldSeries,
   groupRows,
@@ -197,6 +198,42 @@ test("groupRows: totalGroups is passed through untouched (D381), independent of 
 test("groupsCaption: showing {shown} of {totalGroups} groups only when truncated", () => {
   assert.equal(groupsCaption(10, 47), "showing 10 of 47 groups");
   assert.equal(groupsCaption(3, 3), null);
+});
+
+// ---- cardCaption: ONE caption per topn/table card ----------------------------
+
+// Two groups whose gaps do not line up: the card had data in 2 of the 3
+// buckets even though neither group did on its own.
+const TWO_SPARSE_GROUPS: MetricSeriesResult = {
+  series: [
+    {
+      group: "svc-a",
+      points: [
+        { t: "00:00", v: 1 },
+        { t: "00:05", v: null },
+        { t: "00:10", v: null },
+      ],
+    },
+    {
+      group: "svc-b",
+      points: [
+        { t: "00:00", v: null },
+        { t: "00:05", v: 2 },
+        { t: "00:10", v: null },
+      ],
+    },
+  ],
+  totalGroups: 2,
+};
+
+test("cardCaption: one caption for the whole card, counting buckets with data anywhere on it", () => {
+  const w = widget({ kind: "topn", agg: "sum", groupBy: "service.name" });
+  assert.equal(cardCaption(TWO_SPARSE_GROUPS, w), "sum · last 6h · 2 of 3 buckets had data");
+});
+
+test("cardCaption: for last, as of is the newest bucket with any data on the card", () => {
+  const w = widget({ kind: "table", agg: "last", groupBy: "service.name" });
+  assert.equal(cardCaption(TWO_SPARSE_GROUPS, w), "latest · as of 00:05 · last 6h");
 });
 
 // ---- pinnedWidgets: dashboard order, then widget index ----------------------

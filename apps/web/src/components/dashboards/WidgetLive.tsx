@@ -1,10 +1,9 @@
 "use client";
 
-import { useMemo } from "react";
 import Link from "next/link";
 import { CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { layerColor } from "@/lib/layers";
-import { foldCaption, groupRows, groupsCaption, isEmptyResult, statView } from "@/lib/widget-view";
+import { cardCaption, groupRows, groupsCaption, isEmptyResult, statView } from "@/lib/widget-view";
 import type { DashboardWidget, WidgetLoad } from "@/lib/dashboard-types";
 import type { MetricSeriesResult } from "@/lib/metrics-types";
 
@@ -56,14 +55,11 @@ const PALETTE = Object.values(layerColor);
 
 function TimeseriesBody({ result, widget }: { result: MetricSeriesResult; widget: DashboardWidget }) {
   const names = result.series.map((s) => s.group ?? widget.metric);
-  const data = useMemo(
-    () =>
-      result.series[0]?.points.map((p, i) => ({
-        t: p.t,
-        ...Object.fromEntries(names.map((name, si) => [name, result.series[si]?.points[i]?.v ?? null])),
-      })) ?? [],
-    [result, names],
-  );
+  const data =
+    result.series[0]?.points.map((p, i) => ({
+      t: p.t,
+      ...Object.fromEntries(names.map((name, si) => [name, result.series[si]?.points[i]?.v ?? null])),
+    })) ?? [];
   const caption = groupsCaption(result.series.length, result.totalGroups);
 
   return (
@@ -126,26 +122,24 @@ function TopNBody({ result, widget }: { result: MetricSeriesResult; widget: Dash
       {caption && <p className="mb-2 font-mono text-[10px] text-faint">{caption}</p>}
       <div className="space-y-2.5">
         {rows.map((r, i) => (
-          <div key={r.group}>
-            <div className="flex items-center gap-2">
-              <span className="w-28 shrink-0 truncate font-mono text-[10.5px] text-mid">{r.group}</span>
-              <div className="h-2.5 flex-1 overflow-hidden rounded-full bg-overlay">
-                <div
-                  className="h-full rounded-full"
-                  style={{
-                    width: `${Math.max(2, ((r.fold.value ?? 0) / max) * 100)}%`,
-                    background: PALETTE[i % PALETTE.length],
-                  }}
-                />
-              </div>
-              <span className="w-14 shrink-0 text-right font-mono text-[10.5px] text-ink">
-                {r.fold.value === null ? "—" : fmtVal(r.fold.value)}
-              </span>
+          <div key={r.group} className="flex items-center gap-2">
+            <span className="w-28 shrink-0 truncate font-mono text-[10.5px] text-mid">{r.group}</span>
+            <div className="h-2.5 flex-1 overflow-hidden rounded-full bg-overlay">
+              <div
+                className="h-full rounded-full"
+                style={{
+                  width: `${Math.max(2, ((r.fold.value ?? 0) / max) * 100)}%`,
+                  background: PALETTE[i % PALETTE.length],
+                }}
+              />
             </div>
-            <p className="mt-0.5 pl-28 font-mono text-[9.5px] text-faint">{foldCaption(r.fold, widget.range)}</p>
+            <span className="w-14 shrink-0 text-right font-mono text-[10.5px] text-ink">
+              {r.fold.value === null ? "—" : fmtVal(r.fold.value)}
+            </span>
           </div>
         ))}
       </div>
+      <p className="mt-2.5 font-mono text-[10px] text-faint">{cardCaption(result, widget)}</p>
     </div>
   );
 }
@@ -179,6 +173,7 @@ function TableBody({ result, widget }: { result: MetricSeriesResult; widget: Das
           ))}
         </tbody>
       </table>
+      <p className="mt-2.5 font-mono text-[10px] text-faint">{cardCaption(result, widget)}</p>
     </div>
   );
 }

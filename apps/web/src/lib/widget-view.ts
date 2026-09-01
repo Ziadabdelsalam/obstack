@@ -80,6 +80,22 @@ export function foldCaption(fold: Fold, range: MetricRange): string {
   return `${fold.kind} · last ${range} · ${fold.n} of ${fold.total} buckets had data`;
 }
 
+/**
+ * The ONE caption a topn/table CARD carries (D427: "caption on every
+ * stat/topn/table card"). Every series in a result shares one bucket grid
+ * (`queryMetricSeries` builds a single grid for all of them), so the card can
+ * say honestly how many of those buckets had data ANYWHERE on it; the
+ * per-group `n/N` stays on the row (the table's `buckets` column). For `last`,
+ * `t` is the newest bucket with any data on the card.
+ */
+export function cardCaption(result: MetricSeriesResult, widget: DashboardWidget): string {
+  const grid: MetricSeriesPoint[] = (result.series[0]?.points ?? []).map((p, i) => ({
+    t: p.t,
+    v: result.series.some((s) => (s.points[i]?.v ?? null) !== null) ? 1 : null,
+  }));
+  return foldCaption(foldSeries(grid, widget.agg), widget.range);
+}
+
 /** Zero series, or every point in every series null — the D436 empty card, no chart. */
 export function isEmptyResult(result: MetricSeriesResult): boolean {
   return result.series.length === 0 || result.series.every((s) => s.points.every((p) => p.v === null));
