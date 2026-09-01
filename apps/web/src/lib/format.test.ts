@@ -4,7 +4,7 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { NOW } from "@/mock/generate";
-import { fmtCost, fmtPerMin, timeAgo } from "./format";
+import { fmtBytes, fmtCores, fmtCost, fmtPerMin, timeAgo } from "./format";
 
 test("fmtCost never renders a real cost as zero", () => {
   // the smoke trace: a few hundred-thousandths of a dollar
@@ -64,6 +64,37 @@ test("an ingested row is aged against the request's clock, not the mock one (D64
   // control row is what turns red if the mock clock is ever restored here.
   assert.equal(timeAgo(fresh, NOW), "just now");
   assert.equal(timeAgo(aged, NOW), "just now");
+});
+
+test("fmtBytes steps the unit, so a container limit reads as the manifest wrote it (D468)", () => {
+  // The two limits the kind acceptance asserts on the demo pod (D466): 128Mi +
+  // 32Mi of container limits, and their pod-level sum.
+  assert.equal(fmtBytes(134_217_728), "128 MiB");
+  assert.equal(fmtBytes(33_554_432), "32 MiB");
+  assert.equal(fmtBytes(167_772_160), "160 MiB");
+  // Under a MiB the unit steps down rather than the number rounding to nothing.
+  assert.equal(fmtBytes(921_600), "900 KiB");
+  assert.equal(fmtBytes(1024 ** 2), "1 MiB");
+  // One decimal starts at GiB: whole GiB would print a 1.7 GiB node and a 2.4
+  // GiB one as the same "2 GiB".
+  assert.equal(fmtBytes(1024 ** 3), "1.0 GiB");
+  assert.equal(fmtBytes(1.7 * 1024 ** 3), "1.7 GiB");
+  assert.equal(fmtBytes(2.4 * 1024 ** 3), "2.4 GiB");
+  // A measured zero is a zero (the infra surface renders a MISSING metric as
+  // "—" before it ever reaches a formatter, D13).
+  assert.equal(fmtBytes(0), "0 KiB");
+});
+
+test("fmtCores speaks millicores under a core and trims decimals above one (D468)", () => {
+  assert.equal(fmtCores(0.55), "550m");
+  assert.equal(fmtCores(0.05), "50m");
+  assert.equal(fmtCores(0.999), "999m");
+  assert.equal(fmtCores(0), "0m");
+  assert.equal(fmtCores(1), "1");
+  assert.equal(fmtCores(1.5), "1.5");
+  assert.equal(fmtCores(2), "2");
+  assert.equal(fmtCores(1.234), "1.23");
+  assert.equal(fmtCores(3.999), "4");
 });
 
 /** Every source under `src/`, collected by walking — nothing is listed by hand. */

@@ -67,3 +67,32 @@ export function fmtClock(iso: string): string {
   const d = new Date(iso);
   return `${String(d.getUTCHours()).padStart(2, "0")}:${String(d.getUTCMinutes()).padStart(2, "0")}:${String(d.getUTCSeconds()).padStart(2, "0")}`;
 }
+
+/**
+ * Bytes in the unit a reader of a container limit thinks in (D468): the same
+ * binary units Kubernetes accepts on the manifest, so a "128 MiB memory limit"
+ * on the infra page is the `128Mi` someone wrote.
+ *
+ * The unit steps rather than the number: a working set of 41 943 040 reads as
+ * "40 MiB", not as "0.0 GiB". One decimal starts at GiB, where the whole-number
+ * form would round a 1.7 GiB node down to the same "2 GiB" as a 2.4 GiB one.
+ */
+export function fmtBytes(n: number): string {
+  if (n < 1024 ** 2) return `${Math.round(n / 1024)} KiB`;
+  if (n < 1024 ** 3) return `${Math.round(n / 1024 ** 2)} MiB`;
+  return `${(n / 1024 ** 3).toFixed(1)} GiB`;
+}
+
+/**
+ * CPU in the unit the value was written in (D468): under a core, the millicores
+ * of a `cpu: 550m` request; at or above one, the cores of `cpu: "2"`. Decimals
+ * are trimmed rather than padded, so a 2-core limit is "2" and not "2.00".
+ *
+ * The unit belongs to the CALL SITE for cores exactly as it does for
+ * `fmtPerMin` — "0.55 CPU limit" would be the sentence's job to spell, and
+ * "550m" carries its own.
+ */
+export function fmtCores(n: number): string {
+  if (n < 1) return `${Math.round(n * 1000)}m`;
+  return String(Number(n.toFixed(2)));
+}
