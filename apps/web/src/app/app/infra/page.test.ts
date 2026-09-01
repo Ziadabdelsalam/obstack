@@ -139,7 +139,7 @@ test("D459: the four states are on the live surface with their exact sentences",
 
 test("D459: the pod table's columns are the ruled ones, and `age` is not among them", () => {
   const headers = [...LIVE.matchAll(/<th[^>]*>([^<]+)<\/th>/g)].map((m) => m[1].trim());
-  assert.deepEqual(headers, ["pod", "node", "phase", "restarts", "memory", "cpu", "drill"]);
+  assert.deepEqual(headers, ["pod", "node", "phase", "restarts", "memory", "cpu", "logs"]);
   // Scope fence (run-goal condition 10): the metric stream carries no pod age,
   // and "restarts" carries no window because the cluster collector reports the
   // container's lifetime count.

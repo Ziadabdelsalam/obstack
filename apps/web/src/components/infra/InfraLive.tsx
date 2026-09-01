@@ -231,7 +231,7 @@ export function InfraLive({ snapshot }: { snapshot: InfraSnapshot }) {
                 <th className="py-2 text-right font-medium">restarts</th>
                 <th className="w-[190px] py-2 pl-6 font-medium">memory</th>
                 <th className="py-2 pl-6 font-medium">cpu</th>
-                <th className="py-2 pr-3.5 text-right font-medium">drill</th>
+                <th className="py-2 pr-3.5 text-right font-medium">logs</th>
               </tr>
             </thead>
             <tbody>
