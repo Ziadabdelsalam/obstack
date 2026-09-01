@@ -26,11 +26,9 @@ export function WatchWidgetsLive({
 }) {
   return (
     <div data-tour="watches">
-      <div className="mt-4 mb-2 flex items-center justify-between">
-        <h2 className="font-mono text-[11px] uppercase tracking-widest text-faint">
-          pinned from your dashboards · {pinned.length}
-        </h2>
-      </div>
+      <h2 className="mt-4 mb-2 font-mono text-[11px] uppercase tracking-widest text-faint">
+        pinned from your dashboards · {pinned.length}
+      </h2>
 
       {pinned.length === 0 ? (
         <section className="rounded-lg border border-dashed border-line-strong bg-surface/50 p-6 text-center">

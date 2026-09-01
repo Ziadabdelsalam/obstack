@@ -49,7 +49,9 @@ test("D428/D438: WatchWidgetsLive is a props-fed server component, zero mock/sto
     "WatchWidgetsLive must not read the in-memory dashboards store — D425 is a Postgres-backed view",
   );
   assert.ok(
-    WATCH_LIVE.includes('data-tour="watches"'),
-    "WatchWidgetsLive must carry the same tour anchor as the mock WatchWidgets, so the tour spotlights something in live mode too",
+    // The ROOT element, not the mention of it in the file's doc comment: the
+    // anchor only spotlights anything if it is on rendered DOM (D434).
+    WATCH_LIVE.includes('<div data-tour="watches">'),
+    "WatchWidgetsLive's root must carry the same tour anchor as the mock WatchWidgets, so the tour spotlights something in live mode too",
   );
 });
