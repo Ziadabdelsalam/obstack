@@ -215,6 +215,7 @@ jobs:
           kubectl get events --sort-by=.metadata.creationTimestamp | tail -40 || true
           helm status obstack || true
           kubectl logs ds/obstack-collector --tail=80 || true
+          kubectl logs deploy/obstack-collector-cluster --tail=80 || true
           kubectl logs deploy/obstack-ingest --tail=40 || true
           kubectl logs deploy/obstack-demo -c demo-agent --tail=40 || true
           kubectl logs statefulset/obstack-postgres --tail=40 || true

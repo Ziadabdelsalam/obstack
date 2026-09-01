@@ -88,12 +88,27 @@ test("/app/dashboards and one dashboard under it are live-wired", () => {
   assert.equal(isLiveWiredRoute("/app/dashboards/dash_0123456789abcdef"), true);
 });
 
-// D205: the e2e drive's SAMPLE-badge positive control is `/app/costs`, and this
-// sprint wires neither it nor any other unwired route — a registration that
-// silently vacated that control would leave the drive asserting nothing. The
-// line goes red the moment `/app/costs` (or the `/app/` subtree) is registered.
-test("/app/costs stays unwired — the drive's positive control (D205)", () => {
-  assert.equal(isLiveWiredRoute("/app/costs"), false);
+// S6.4 T7 (D21/D367/D463): `/app/infra` renders the nodes and pods the
+// workspace's own collector reports through the S6.1 metric store, and
+// `/app/costs` renders the LLM spend its own traces carry, so the SAMPLE badge
+// must be gone from both — registration, not the pages (S2.0 L1). Exact
+// entries, no trailing slash: nothing lives under either path, and a
+// trailing-slash entry would wire a subtree that does not exist.
+test("/app/infra and /app/costs are live-wired, exactly", () => {
+  assert.equal(isLiveWiredRoute("/app/infra"), true);
+  assert.equal(isLiveWiredRoute("/app/infra/anything"), false);
+  assert.equal(isLiveWiredRoute("/app/costs"), true);
+  assert.equal(isLiveWiredRoute("/app/costs/anything"), false);
+});
+
+// D205/D463: the e2e drive's SAMPLE-badge positive control moved to `/app/ask`
+// when this sprint wired `/app/costs`, which had held the job since S3.1. The
+// control has to be a route that is genuinely not wired, and a registration
+// that silently vacated it would leave the drive asserting nothing — so this
+// line goes red the moment `/app/ask` (or the `/app/` subtree) is registered,
+// which is the moment the drive needs to pick its next one.
+test("/app/ask stays unwired — the drive's positive control (D205/D463)", () => {
+  assert.equal(isLiveWiredRoute("/app/ask"), false);
 });
 
 // S4.4 T1 (D321): the THIRD class. `/app/docs` reads no workspace data in

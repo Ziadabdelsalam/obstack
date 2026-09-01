@@ -188,6 +188,33 @@ printf '   trace_id=%s\n' "$trace_1"
 step "asserting the D37 evidence bundle (four layers, SOLID, NEARBY, zero duplicated bodies)"
 harness assert "$trace_1"
 
+# S6.4 (D466/D474): the ONLY place the collector→store k8s metrics path is
+# proven on a real kubelet and API server — `validate` cannot enumerate the
+# four dynamic k8s_cluster names, and the compose drive's cluster is a
+# fixture. The harness polls `queryInfraSnapshot` (the module `/app/infra`
+# renders from) until both receiver legs are fresh, then asserts a real node,
+# the demo pod's summed limits (D457), the D450 name-set subset and D458's
+# negative. Placed here, before the restart rider, so the snapshot describes
+# the collector pods that have been scraping since install rather than ones
+# rolled seconds ago.
+step "S6.4: the collector's k8s metrics reach the store through the real module (D450/D466)"
+kubectl rollout status "deployment/$RELEASE-collector-cluster" --timeout=180s
+demo_pod_now="$(kubectl get pod \
+  -l "app.kubernetes.io/instance=$RELEASE,app.kubernetes.io/component=demo" \
+  -o jsonpath='{.items[0].metadata.name}')"
+[ -n "$demo_pod_now" ] || fail "no demo pod found for release '$RELEASE'"
+harness k8s-metrics "$demo_pod_now"
+# D454: the widened ClusterRole is SUFFICIENT, asserted as an absence — a
+# cluster receiver missing a grant does not crash, it logs watch/list failures
+# forever and emits partial data, which is exactly the silent shape this grep
+# turns red.
+forbidden_lines="$(kubectl logs "deploy/$RELEASE-collector-cluster" | grep -cE 'forbidden|Failed to watch|Failed to list' || true)"
+if [ "$forbidden_lines" != "0" ]; then
+  kubectl logs "deploy/$RELEASE-collector-cluster" | grep -E 'forbidden|Failed to watch|Failed to list' | head -5 >&2
+  fail "the cluster collector logs $forbidden_lines RBAC failure line(s) — the D454 ClusterRole is missing a grant"
+fi
+printf '   D454: zero forbidden/Failed-to-watch/Failed-to-list lines in the cluster collector log\n'
+
 # T1 review escalation rider: file_storage checkpointing means a collector
 # restart resumes each tailed file instead of re-reading it from the top —
 # without it, every previously-shipped line would land a second time with its

@@ -4,7 +4,7 @@
  * the chart, so the exit is asserted through the same
  * `apps/web/src/server/data.ts` facade the app renders from).
  *
- * Four commands, all invoked by `acceptance.sh` (CI runs that same script —
+ * Five commands, all invoked by `acceptance.sh` (CI runs that same script —
  * S2.1 L3):
  *
  *   budget              — the only one that touches no cluster at all: render
@@ -26,6 +26,14 @@
  *                         through the same facade, so the product's "k8s
  *                         events on the timeline" claim is asserted rather
  *                         than asserted-about.
+ *   k8s-metrics <demo_pod>
+ *                       — the S6.4 exit evidence (D466): the collector's two
+ *                         k8s receivers on a LIVE cluster reach
+ *                         `queryInfraSnapshot` — the module `/app/infra`
+ *                         renders from — with a real node and the demo pod,
+ *                         the store's k8s name set a subset of the D450
+ *                         whitelist, and D458 proven NEGATIVE on a cluster
+ *                         observed for minutes, not hours.
  *
  * Standalone, from the repo root (CLICKHOUSE_URL etc. must point at the
  * cluster — acceptance.sh's port-forwards, by default):
@@ -36,6 +44,11 @@ import { execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { parseAllDocuments } from "yaml";
 import type { K8sEvent, Trace } from "@/lib/types";
+import {
+  CLUSTER_METRICS,
+  INFRA_RECS_MIN_OBSERVED_HOURS,
+  KUBELET_METRICS,
+} from "@/lib/infra-types";
 import { NEARBY_LOG_WINDOW_S } from "@/lib/nearby-logs";
 import {
   awaitWholeTrace,
@@ -55,6 +68,13 @@ const ARRIVAL_TIMEOUT_MS = 60_000;
 
 /** The fixture rides the same two batch hops; polling stops at first sight. */
 const FIXTURE_TIMEOUT_MS = 30_000;
+
+/** Both k8s receivers scrape on a 30s interval (deploy/collector/config.yaml,
+ *  D450) and the points ride the same two batch hops, so the first full
+ *  snapshot is at worst one interval per receiver plus arrival. 180s is
+ *  headroom for a cluster collector that was rolled out seconds ago; the poll
+ *  stops at first sight. */
+const K8S_METRICS_TIMEOUT_MS = 180_000;
 
 /** The `Killing` event is emitted by the kubelet a second or two after the
  *  delete, then rides the events collector's batch and ingest's 1s batch. The
@@ -588,6 +608,134 @@ LIMIT 10`;
   console.log("acceptance: PASS");
 }
 
+/**
+ * S6.4 (D466): the kind cluster is the ONLY place the four dynamic
+ * k8s_cluster names (`condition_*`/`allocatable_*`) and the collector→store
+ * metrics path are proven on a REAL kubelet and API server — `validate`
+ * cannot enumerate dynamic names (D474), and the compose drive's cluster is a
+ * fixture. Asserted through `queryInfraSnapshot`, the exact module
+ * `/app/infra` renders from (D17's facade posture: no page render here — the
+ * kind cluster has no session — so the claim stops at the module boundary the
+ * page itself trusts).
+ *
+ * The numbers are the chart's own: the demo pod's two containers both carry
+ * limits (values.yaml `demo.resources` + `demo.sidecarResources`), so D457's
+ * completeness rule must SUM them — 128Mi + 32Mi = 167772160 bytes and
+ * 500m + 50m = 0.55 cores — rather than render the pod's limit as one
+ * container's. And D458 is proven negative live: a cluster observed for
+ * minutes cannot clear `INFRA_RECS_MIN_OBSERVED_HOURS`, so an oversized-limit
+ * rec here would mean the observation floor is not being enforced.
+ */
+async function k8sMetrics(demoPod: string): Promise<void> {
+  const { queryInfraSnapshot } = await import("@/server/queries/infra");
+  const { forWorkspace } = await import("@/server/clickhouse");
+  const ch = forWorkspace(DEMO_WORKSPACE);
+
+  const deadline = Date.now() + K8S_METRICS_TIMEOUT_MS;
+  let snapshot = await queryInfraSnapshot(ch);
+  while (!(snapshot.hasKubeletMetrics && snapshot.hasClusterMetrics)) {
+    if (Date.now() > deadline) {
+      fail(
+        `k8s metrics did not reach the store within ${K8S_METRICS_TIMEOUT_MS / 1000}s — ` +
+          `hasKubeletMetrics=${snapshot.hasKubeletMetrics} hasClusterMetrics=${snapshot.hasClusterMetrics} ` +
+          `(one leg alone means one receiver's pipeline is dead, not a slow scrape)`,
+      );
+    }
+    await sleep(2_000);
+    snapshot = await queryInfraSnapshot(ch);
+  }
+
+  // D450's RESULT, verbatim: the store's k8s name set is a non-empty subset of
+  // the seventeen and nothing else. The list is READ from `lib/infra-types.ts`
+  // — the one home every metric-name literal has (run-goal condition 13) — so
+  // a whitelist edit and this assertion cannot drift apart.
+  const WHITELIST = new Set<string>([...KUBELET_METRICS, ...CLUSTER_METRICS]);
+  const K8S_NAMES_SQL = `
+SELECT DISTINCT name
+FROM obstack.metric_points_1m
+WHERE workspace_id = {workspace_id:String}
+  AND (name LIKE 'k8s.%' OR name LIKE 'container.%')`;
+  const stored = (await ch.queryRows<{ name: string }>(K8S_NAMES_SQL)).map((r) => r.name);
+  const strays = stored.filter((n) => !WHITELIST.has(n));
+  if (stored.length === 0) fail("zero k8s metric names in the store after the snapshot went fresh");
+  if (strays.length > 0) {
+    fail(
+      `the store holds k8s names outside the D450 whitelist — filter/k8s is not the fence it claims: ${strays.join(", ")}`,
+    );
+  }
+
+  const problems: string[] = [];
+
+  // A node the API server also names, with the cluster leg's allocatable and
+  // condition decoded — 1 → true, never "anything fresh → ready" (D13).
+  const clusterNodes = execFileSync(
+    "kubectl",
+    ["get", "nodes", "-o", "jsonpath={.items[*].metadata.name}"],
+    { encoding: "utf8" },
+  )
+    .trim()
+    .split(/\s+/);
+  const node = snapshot.nodes.find((n) => clusterNodes.includes(n.name));
+  if (!node) {
+    problems.push(
+      `no snapshot node matches the cluster's own (${clusterNodes.join(", ")}) — got ${snapshot.nodes.map((n) => n.name).join(", ") || "none"}`,
+    );
+  } else {
+    if (node.ready !== true) problems.push(`node ${node.name}: ready = ${node.ready}, want true`);
+    if (!(node.cpuAllocatableCores !== null && node.cpuAllocatableCores > 0)) {
+      problems.push(`node ${node.name}: cpuAllocatableCores = ${node.cpuAllocatableCores}, want > 0`);
+    }
+  }
+
+  const pod = snapshot.pods.find((p) => p.name === demoPod);
+  if (!pod) {
+    problems.push(`demo pod ${demoPod} is not in the snapshot (${snapshot.totalPods} pod(s) total)`);
+  } else {
+    if (pod.phase !== "running") problems.push(`${demoPod}: phase = ${pod.phase}, want "running"`);
+    if (pod.memLimitBytes !== 167772160) {
+      problems.push(
+        `${demoPod}: memLimitBytes = ${pod.memLimitBytes}, want 167772160 (128Mi + 32Mi — BOTH containers, D457)`,
+      );
+    }
+    if (pod.cpuLimitCores !== 0.55) {
+      problems.push(`${demoPod}: cpuLimitCores = ${pod.cpuLimitCores}, want 0.55 (500m + 50m, D457)`);
+    }
+    if (!(pod.memWorkingSetBytes !== null && pod.memWorkingSetBytes > 0)) {
+      problems.push(`${demoPod}: memWorkingSetBytes = ${pod.memWorkingSetBytes}, want > 0`);
+    }
+  }
+
+  const oversized = snapshot.recs.filter((r) => r.kind === "memory-limit-oversized");
+  if (oversized.length > 0) {
+    problems.push(
+      `${oversized.length} memory-limit-oversized rec(s) on a cluster observed for minutes — ` +
+        `INFRA_RECS_MIN_OBSERVED_HOURS is not being enforced (D458): ` +
+        oversized.map((r) => `${r.namespace}/${r.pod}/${r.container}`).join(", "),
+    );
+  }
+
+  if (problems.length > 0) {
+    for (const p of problems) console.error(`acceptance:   - ${p}`);
+    fail("the k8s metrics landed but the D466 snapshot assertions failed");
+  }
+
+  const live = pod as NonNullable<typeof pod>;
+  const liveNode = node as NonNullable<typeof node>;
+  console.log(
+    `acceptance:   D450 name set: ${stored.length} distinct k8s name(s) in the store, all inside the 17-name whitelist`,
+  );
+  console.log(
+    `acceptance:   D466 node ${liveNode.name}: ready=${liveNode.ready} allocatable=${liveNode.cpuAllocatableCores} cores (${snapshot.totalNodes} node(s), ${snapshot.totalPods} pod(s))`,
+  );
+  console.log(
+    `acceptance:   D466 pod ${demoPod}: phase=${live.phase} limits ${live.cpuLimitCores} cores / ${live.memLimitBytes} bytes (both containers, D457) · working set ${live.memWorkingSetBytes} bytes`,
+  );
+  console.log(
+    `acceptance:   D458 negative: ${snapshot.totalRecs} rec(s), zero memory-limit-oversized under the ${INFRA_RECS_MIN_OBSERVED_HOURS}h observation floor`,
+  );
+  console.log("acceptance: PASS");
+}
+
 async function main(): Promise<void> {
   // The facade resolves its mode at import time (D13) and the clickhouse
   // module reads its env on first query — set everything before either import
@@ -607,8 +755,9 @@ async function main(): Promise<void> {
   if (command === "assert" && arg) return assertTrace(arg);
   if (command === "genai-fixture" && !arg) return genaiFixture();
   if (command === "events" && arg && arg2) return clusterEvents(arg, arg2);
+  if (command === "k8s-metrics" && arg && !arg2) return k8sMetrics(arg);
   fail(
-    "usage: acceptance.ts budget [helm template args…] | acceptance.ts assert <trace_id> | acceptance.ts genai-fixture | acceptance.ts events <trace_id> <pod>",
+    "usage: acceptance.ts budget [helm template args…] | acceptance.ts assert <trace_id> | acceptance.ts genai-fixture | acceptance.ts events <trace_id> <pod> | acceptance.ts k8s-metrics <demo_pod>",
   );
 }
 

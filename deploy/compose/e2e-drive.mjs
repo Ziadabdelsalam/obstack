@@ -1247,8 +1247,12 @@ try {
   );
   check("and nothing from the mock stream appears in it", !emptyLogs.html.includes("kafka-broker-2"), "mock pods present");
 
+  // S6.4 (D463): the control is `/app/ask`. It was `/app/costs` from S3.1 until
+  // this sprint wired that route, and a control is only a control while the
+  // route under it is genuinely unwired — `live-routes.test.ts` holds the other
+  // half of that pair, going red the day `/app/ask` is wired too.
   step("the SAMPLE badge still exists (positive control — an unwired route)");
-  const unwired = await pageFor(alice, "/app/costs");
+  const unwired = await pageFor(alice, "/app/ask");
   check(
     "an unwired route still carries the badge, so its absence above is a fact",
     unwired.html.includes("SAMPLE DATA"),
@@ -1498,6 +1502,24 @@ try {
     "and a search for a token that exists in alice's workspace finds nothing in bob's",
     rowsIn(bobSearch.html) === 0 && bobSearch.html.includes("0 of 0 traces"),
     `${rowsIn(bobSearch.html)} row(s)`,
+  );
+
+  // S6.4 (D461): PLACED HERE, and it can only be here. The one seeding
+  // definition is one shape seeded twice (D135), so the moment bob's workspace
+  // is seeded he holds the same two LLM spans she does — the priced one and the
+  // unpriced one — and the zero-calls empty state stops being true of anybody.
+  // This window, after his signup and before his seed, is the only place the
+  // drive can read it, and reading it here also costs nothing: a workspace with
+  // no LLM span in it is exactly what the sentence is about.
+  const bobCosts = await pageFor(bob, "/app/costs");
+  check(
+    "and his cost page states that no LLM call has been traced in his workspace, rather than a $0.00 he never spent (D13/D461)",
+    bobCosts.status === 200 &&
+      bobCosts.html.includes("No LLM calls in this workspace") &&
+      bobCosts.html.includes("traces in the last 24 hours.") &&
+      !bobCosts.html.includes("SAMPLE DATA"),
+    `HTTP ${bobCosts.status} · badge ${bobCosts.html.includes("SAMPLE DATA")} · ` +
+      `${bobCosts.html.match(/No LLM calls[^<]*/)?.[0] ?? "no empty sentence"}`,
   );
 
   // On /app/traces, which is the surface alice's view was saved on — a menu on
@@ -1975,7 +1997,7 @@ try {
   );
   const hub = await alice.evaluate(CONNECTIONS);
   check(
-    "no SAMPLE badge on /app/connections either — a live-wired route, while /app/costs above still carries one (D21/D106)",
+    "no SAMPLE badge on /app/connections either — a live-wired route, while /app/ask above still carries one (D21/D106)",
     !hub.badge,
     "badge present",
   );
@@ -2469,6 +2491,25 @@ try {
    * (D365/D368 — metrics are not billed, and quota cannot fire on them, which
    * is also why this step works at all while alice is over her free quota).
    */
+  /** Every accepted event on either stranger's keys, summed by the drive's own
+   *  statement for the reason the ClickHouse denominators are (D71(b)).
+   *  Defined here, before the first leg whose points increment it, because the
+   *  dashboards leg below both baselines against this number and needs the two
+   *  metric legs' points SETTLED into it first (S6.4 — the metering flush is
+   *  periodic and holds its batch across a failed transaction, so "sent
+   *  minutes ago" is not "flushed"). */
+  const acceptedOnTheirKeys = async () =>
+    Number(
+      (
+        await pgOne(
+          `SELECT coalesce(sum(accepted), 0) AS accepted
+             FROM api_key_health WHERE workspace_id = ANY($1)`,
+          [[alice.workspaceId, bob.workspaceId]],
+        )
+      )?.accepted ?? 0,
+    );
+  const acceptedBeforeMetricLegs = await acceptedOnTheirKeys();
+
   step("alice's metrics go in the FRONT DOOR: three OTLP temperaments on the real /v1/metrics (D370)");
   const metricsSeed = spawnSync(
     "node",
@@ -2499,6 +2540,161 @@ try {
     "the export the seeder sent is the one this drive is about to open a page on — same three names, from one definition (D115)",
     metricsSent.expectations.map((e) => e.name).sort().join(",") === Object.values(aliceMetrics).sort().join(","),
     `${metricsSent.expectations.map((e) => `${e.name}:${e.type}`).join(" ")} vs ${Object.values(aliceMetrics).join(" ")}`,
+  );
+
+  // ------------------------------------------------------ k8s + costs (S6.4)
+  /**
+   * PLACED IMMEDIATELY AFTER THE LEG ABOVE, for its reason and for one more.
+   * The accepted-count rationale is the same one: metric points DO increment
+   * `api_key_health.accepted` (D368 — RecordAcceptedMetrics), so like the leg
+   * above this one must run after the two claims that read that column
+   * exactly; and like that leg it touches `usage_ledger` and quota for
+   * nothing (D365 — metrics are not billed). The second reason is FRESHNESS —
+   * `INFRA_STALE_MINUTES` is 10
+   * and the fixture stamps its points three minutes back (D467), so the cluster
+   * this seeds has about six minutes before `/app/infra` stops rendering it at
+   * all. The page is therefore opened on the next lines, not after the S6.2
+   * five and the dashboards leg, which together take minutes.
+   *
+   * Same front door as the leg above, for the same reason: the real
+   * `/v1/metrics` with alice's own key, in the environment and never in argv.
+   * No `--label` — nothing this leg sends is content (D467).
+   */
+  step("alice's cluster goes in the same FRONT DOOR: two nodes, five pods, one of them already stale (D467)");
+  const k8sSeed = spawnSync(
+    "node",
+    [join(composeDir, "exit-seed.mjs"), "--leg", "k8s", "--workspace", alice.workspaceId],
+    {
+      cwd: repoRoot,
+      env: { ...process.env, SEED_METRICS_TOKEN: firstToken, INGEST_OTLP },
+      encoding: "utf8",
+    },
+  );
+  writeFileSync(join(OUT, "seed-k8s-alice.json"), `${k8sSeed.stdout ?? ""}${k8sSeed.stderr ?? ""}`);
+  must(k8sSeed.status === 0, `exit-seed.mjs --leg k8s failed: ${k8sSeed.stderr}`);
+  const k8sSent = JSON.parse(k8sSeed.stdout);
+  console.log(`   ${k8sSeed.stdout.trim().split("\n").join("\n   ")}`);
+  /** What the seeder says it sent, in its own words (S2.3 L3) — the pod names,
+   *  the header and the ratios below are read from here, never spelled twice. */
+  const k8s = k8sSent.expectations;
+
+  /**
+   * ARRIVAL IS A BATCH AWAY, AND A PAGE CANNOT POLL. Ingest flushes on its own
+   * schedule and the 1m rollup is written by a materialized view on that same
+   * insert, so the store is asked — for the seeder's OWN point count — until
+   * every point is in `metric_points_1m`, the one table `queryInfraSnapshot`
+   * reads. A deadline rather than a sleep: a pipeline that never delivers says
+   * so here, instead of turning into an empty cluster three claims later.
+   */
+  const K8S_ARRIVAL_MS = 30_000;
+  const K8S_STORED_SQL =
+    `SELECT count() FROM obstack.metric_points_1m WHERE workspace_id = '${alice.workspaceId}' ` +
+    `AND (name LIKE 'k8s.%' OR name LIKE 'container.%')`;
+  const k8sDeadline = Date.now() + K8S_ARRIVAL_MS;
+  let k8sStored = 0;
+  for (;;) {
+    k8sStored = await chCount(K8S_STORED_SQL);
+    if (k8sStored >= k8sSent.points_sent || Date.now() > k8sDeadline) break;
+    await sleep(1_000);
+  }
+  check(
+    `all ${k8sSent.points_sent} point(s) of that export reached metric_points_1m — the one table the infra page reads`,
+    k8sStored >= k8sSent.points_sent,
+    `${k8sStored} row(s) after ${K8S_ARRIVAL_MS / 1000}s`,
+  );
+
+  step("/app/infra is live-wired: her own nodes and pods, the stale one absent (D21/D367/D459)");
+  const infra = await pageFor(alice, "/app/infra");
+  const infraH1 = infra.html.match(/<h1[^>]*>([^<]*)<\/h1>/)?.[1];
+  check(
+    "the page renders her cluster with no SAMPLE badge — the D21 flip this sprint wires, while /app/ask above still carries one",
+    infra.status === 200 && infraH1 === "Infrastructure" && !infra.html.includes("SAMPLE DATA"),
+    `HTTP ${infra.status} · <h1>${infraH1}</h1> · badge ${infra.html.includes("SAMPLE DATA")}`,
+  );
+  check(
+    `the header counts what the export actually said, the stale pod already excluded: ${k8s.header}`,
+    infra.html.includes(k8s.header),
+    infra.html.match(/[0-9]+ nodes · [0-9]+ pods[^<]*/)?.[0] ?? "no header line",
+  );
+  check(
+    "both nodes and every fresh pod render, each pod drilling to its OWN logs filter (D61)",
+    k8s.nodeNames.every((n) => infra.html.includes(n)) &&
+      k8s.podNames.every((p) => infra.html.includes(`exit-ns/${p}`)) &&
+      k8s.podNames.every((p) => infra.html.includes(`href="/app/logs?pod=${p}"`)),
+    `missing: ${[...k8s.nodeNames, ...k8s.podNames].filter((n) => !infra.html.includes(n)).join(", ") || "none"}`,
+  );
+  /** A pod's own row, from its name cell to the end of the row: "5" and
+   *  "pending" anywhere on a page of twenty cells would be nobody's claim. */
+  const podRow = (name) => {
+    const at = infra.html.indexOf(`exit-ns/${name}`);
+    return at === -1 ? "" : infra.html.slice(at, infra.html.indexOf("</tr>", at));
+  };
+  check(
+    `${k8s.crashPodName} carries its own ${k8s.crashRestarts} restarts and its real phase, both from the cluster leg`,
+    podRow(k8s.crashPodName).includes(`>${k8s.crashRestarts}</td>`) &&
+      podRow(k8s.crashPodName).includes(">pending</td>"),
+    podRow(k8s.crashPodName).slice(0, 240) || `${k8s.crashPodName} has no row`,
+  );
+  check(
+    `${k8s.kubeletOnlyPodName} renders on the kubelet leg alone, with the cells the cluster leg would fill marked missing rather than guessed (D13/D459)`,
+    podRow(k8s.kubeletOnlyPodName).includes(">—</td>"),
+    podRow(k8s.kubeletOnlyPodName).slice(0, 240) || `${k8s.kubeletOnlyPodName} has no row`,
+  );
+  check(
+    `${k8s.stalePodName} is in the store and nowhere on the page — a series nobody has reported lately is ABSENT, not "running" (D456)`,
+    !infra.html.includes(k8s.stalePodName),
+    "the stale pod rendered",
+  );
+  check(
+    "the right-sizing panel states the oversized limit as a MEASUREMENT — peak, limit and window, and no price anywhere (D458/D362)",
+    infra.html.includes(
+      `exit-ns/${k8s.oversizedPodName}/app peaked at ${k8s.oversizedPct}% of its 512 MiB memory limit`,
+    ),
+    infra.html.match(/[^>]*peaked at[^<]*/)?.[0] ?? "no recommendation rendered",
+  );
+
+  step("/app/infra for a workspace with no collector: the ruled sentence, and no cluster invented for it (D459)");
+  const bobInfra = await pageFor(bob, "/app/infra");
+  check(
+    "bob's infra page says no cluster metrics have arrived, renders no table at all, and carries none of her nodes",
+    bobInfra.status === 200 &&
+      bobInfra.html.includes("No cluster metrics yet.") &&
+      !bobInfra.html.includes("<table") &&
+      !bobInfra.html.includes("exit-node") &&
+      !bobInfra.html.includes("SAMPLE DATA"),
+    `HTTP ${bobInfra.status} · sentence ${bobInfra.html.includes("No cluster metrics yet.")} · ` +
+      `table ${bobInfra.html.includes("<table")} · her nodes ${bobInfra.html.includes("exit-node")}`,
+  );
+
+  step("/app/costs is live-wired: LLM spend derived from her own traces, every fenced figure ABSENT (D21/D362/D461)");
+  const costs = await pageFor(alice, "/app/costs");
+  check(
+    "her spend is the one PRICED call the seed sent, named by the model that made it, with no SAMPLE badge",
+    costs.status === 200 &&
+      !costs.html.includes("SAMPLE DATA") &&
+      costs.html.includes("$0.000031") &&
+      costs.html.includes("gpt-4o-mini"),
+    `HTTP ${costs.status} · badge ${costs.html.includes("SAMPLE DATA")} · ` +
+      `total ${costs.html.includes("$0.000031")} · model ${costs.html.includes("gpt-4o-mini")}`,
+  );
+  check(
+    "and the call no price table has a row for is COUNTED AND NAMED as unpriced, never folded into that total as free (D461)",
+    costs.html.includes("exit-custom-ft") &&
+      costs.html.includes("1 calls across 1 models carry no price row, so their cost is unknown — not $0."),
+    costs.html.match(/[0-9]+ calls across [^<]*/)?.[0] ?? "no unpriced sentence",
+  );
+  // D362 as a RESULT: the fenced-out figures are not zeroed, estimated or
+  // marked — they are not on the page. The words are the mock's own (customer,
+  // infra $, margin, revenue, the billing connection it names). Searched with
+  // the <script> blocks stripped, because Next embeds its built-in not-found
+  // page — inline `margin:0` styles and all — in every page's RSC flight
+  // payload, and a CSS property the reader never sees is not the mock's word.
+  const costsVisible = costs.html.replace(/<script[\s\S]*?<\/script>/g, "");
+  const fenced = ["Meridian", "$412", "margin", "revenue", "Stripe"].filter((w) => costsVisible.includes(w));
+  check(
+    "no customer, no revenue, no margin, no infra dollars and no billing connection — obstack holds no input for any of them (D362)",
+    fenced.length === 0,
+    `present: ${fenced.join(", ")}`,
   );
 
   /**
@@ -2563,7 +2759,7 @@ try {
     `HTTP ${explore.status} · <h1>${exploreH1}</h1> · sent ${aliceMetrics.gauge}`,
   );
   check(
-    "and it carries no SAMPLE badge — while /app/costs above still does, which is what makes this absence a fact",
+    "and it carries no SAMPLE badge — while /app/ask above still does, which is what makes this absence a fact",
     !explore.html.includes("SAMPLE DATA"),
     "badge present on a live-wired route",
   );
@@ -2584,7 +2780,7 @@ try {
    * Read through `pageFor`, server-rendered HTML carrying her session, because
    * every claim below is about what a page SAYS: the seeded words her workspace
    * holds, and the total absence of the other stranger's (D142). The badge's
-   * positive control is `/app/costs`, asserted once above — these five state
+   * positive control is `/app/ask`, asserted once above — these five state
    * its absence against that same fact rather than re-proving it.
    */
   step("the five surfaces this sprint wired render alice's own workspace (D21/D367/D405)");
@@ -2778,19 +2974,32 @@ try {
    * before this step and again after it, and must be the same number.
    */
   step("alice's dashboard is seeded straight into Postgres — the one row no front door can write (D115/D424)");
-  /** Every accepted event on either stranger's keys, summed by the drive's own
-   *  statement for the reason the ClickHouse denominators are (D71(b)). */
-  const acceptedOnTheirKeys = async () =>
-    Number(
-      (
-        await pgOne(
-          `SELECT coalesce(sum(accepted), 0) AS accepted
-             FROM api_key_health WHERE workspace_id = ANY($1)`,
-          [[alice.workspaceId, bob.workspaceId]],
-        )
-      )?.accepted ?? 0,
-    );
-  const acceptedBefore = await acceptedOnTheirKeys();
+  /**
+   * The before-read must not race the metering flush: the two metric legs'
+   * points increment this same column, the flush is periodic (FLUSH_MS,
+   * mirroring the Go constant) and a failed flush transaction holds its whole
+   * batch for a later retry — measured once: both legs' 60 points landed
+   * MINUTES after the sends, inside this very pair, turning "the dashboards
+   * leg touched nothing" red about a number that was right. So the drive
+   * first waits until every metric point it sent this run is IN the column —
+   * a deadline, not a sleep, and a stronger claim while it is here: the
+   * settled delta must be exactly the points the two seeds reported, no more.
+   */
+  const expectedMetricPoints = metricsSent.points_sent + k8sSent.points_sent;
+  const settleDeadline = Date.now() + 30_000;
+  let acceptedBefore = await acceptedOnTheirKeys();
+  while (
+    acceptedBefore - acceptedBeforeMetricLegs < expectedMetricPoints &&
+    Date.now() < settleDeadline
+  ) {
+    await sleep(1_000);
+    acceptedBefore = await acceptedOnTheirKeys();
+  }
+  check(
+    `every metric point this run sent is metered before the leg that must not move the counter — ${expectedMetricPoints} point(s) over the two legs, exactly (D368)`,
+    acceptedBefore - acceptedBeforeMetricLegs === expectedMetricPoints,
+    `moved by ${acceptedBefore - acceptedBeforeMetricLegs} after ${(Date.now() - (settleDeadline - 30_000)) / 1000}s`,
+  );
   const dashboardSeed = spawnSync(
     "node",
     [
@@ -2824,7 +3033,7 @@ try {
   step("/app/dashboards is live-wired: alice's own dashboard, the four kinds, and the fold on every card (D21/D367/D427)");
   const list = await pageFor(alice, "/app/dashboards");
   check(
-    "the list names the dashboard the seed wrote and carries no SAMPLE badge — while /app/costs above still does, which is what makes this absence a fact",
+    "the list names the dashboard the seed wrote and carries no SAMPLE badge — while /app/ask above still does, which is what makes this absence a fact",
     list.status === 200 &&
       list.html.includes(DASHBOARD_NAME) &&
       !list.html.includes("SAMPLE DATA") &&
