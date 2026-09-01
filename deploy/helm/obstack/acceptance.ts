@@ -632,17 +632,31 @@ async function k8sMetrics(demoPod: string): Promise<void> {
   const ch = forWorkspace(DEMO_WORKSPACE);
 
   const deadline = Date.now() + K8S_METRICS_TIMEOUT_MS;
+  // The settle waits for the legs AND for the demo pod's first working-set
+  // sample: a freshly started pod's kubelet summary reports its memory as 0
+  // until a stats window has accumulated, so "the legs are here" is minutes
+  // ahead of "this pod's gauges are real" (two CI occurrences on record —
+  // master 96084bd, PR #33 — both green on the very next scrape). The D466
+  // assertion below is UNCHANGED and still fails hard at the deadline; this
+  // loop only refuses to judge the snapshot before the kubelet has one.
+  const demoPodSettled = (s: Awaited<ReturnType<typeof queryInfraSnapshot>>) => {
+    const pod = s.pods.find((p) => p.name === demoPod);
+    return pod !== undefined && pod.memWorkingSetBytes !== null && pod.memWorkingSetBytes > 0;
+  };
   let snapshot = await queryInfraSnapshot(ch);
-  while (!(snapshot.hasKubeletMetrics && snapshot.hasClusterMetrics)) {
-    if (Date.now() > deadline) {
-      fail(
-        `k8s metrics did not reach the store within ${K8S_METRICS_TIMEOUT_MS / 1000}s — ` +
-          `hasKubeletMetrics=${snapshot.hasKubeletMetrics} hasClusterMetrics=${snapshot.hasClusterMetrics} ` +
-          `(one leg alone means one receiver's pipeline is dead, not a slow scrape)`,
-      );
-    }
+  while (
+    !(snapshot.hasKubeletMetrics && snapshot.hasClusterMetrics && demoPodSettled(snapshot)) &&
+    Date.now() <= deadline
+  ) {
     await sleep(2_000);
     snapshot = await queryInfraSnapshot(ch);
+  }
+  if (!(snapshot.hasKubeletMetrics && snapshot.hasClusterMetrics)) {
+    fail(
+      `k8s metrics did not reach the store within ${K8S_METRICS_TIMEOUT_MS / 1000}s — ` +
+        `hasKubeletMetrics=${snapshot.hasKubeletMetrics} hasClusterMetrics=${snapshot.hasClusterMetrics} ` +
+        `(one leg alone means one receiver's pipeline is dead, not a slow scrape)`,
+    );
   }
 
   // D450's RESULT, verbatim: the store's k8s name set is a non-empty subset of

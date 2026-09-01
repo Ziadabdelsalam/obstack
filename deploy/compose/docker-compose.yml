@@ -103,6 +103,19 @@ services:
       # Host-layer name, container-layer name — the established two-layer
       # pattern (OBSTACK_POSTGRES_PASSWORD → POSTGRES_PASSWORD).
       OBSTACK_VERCEL_DRAIN_SECRET: ${OBSTACK_VERCEL_DRAIN_SECRET:-}
+      # D492 — the notifier's egress policy escape hatch, COMPOSE-ONLY. The
+      # strict default (unset) refuses plain HTTP, literal IPs and every
+      # private/link-local/metadata resolution at dial time; this stack sets
+      # it because the e2e drive's own webhook receiver lives on the host —
+      # a private address, plain HTTP — and delivery would otherwise be
+      # unprovable here. Production never sets this; the deploy touchpoint
+      # verifies its absence.
+      OBSTACK_NOTIFIER_ALLOW_PRIVATE: "true"
+    # The drive's receiver is reached as host.docker.internal — native on
+    # Docker Desktop, mapped to the gateway here so the Linux CI runner
+    # resolves it the same way.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
       - "127.0.0.1:4317:4317" # OTLP/gRPC
       - "127.0.0.1:4318:4318" # OTLP/HTTP

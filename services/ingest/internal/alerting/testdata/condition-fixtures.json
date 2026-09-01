@@ -1,0 +1,252 @@
+[
+  {
+    "name": "valid/metric gauge avg over 5m, no filters",
+    "condition": { "source": "metric", "metric": "system.cpu.utilization", "type": "gauge", "agg": "avg", "window": "5m", "op": ">", "threshold": 0.9, "filters": {} },
+    "valid": true
+  },
+  {
+    "name": "valid/metric gauge last over 1h, less-than",
+    "condition": { "source": "metric", "metric": "queue.depth", "type": "gauge", "agg": "last", "window": "1h", "op": "<", "threshold": 1, "filters": {} },
+    "valid": true
+  },
+  {
+    "name": "valid/metric gauge min over 30m, negative threshold",
+    "condition": { "source": "metric", "metric": "kafka.consumer.lag", "type": "gauge", "agg": "min", "window": "30m", "op": "<", "threshold": -50, "filters": {} },
+    "valid": true
+  },
+  {
+    "name": "valid/metric gauge max over 1h, zero threshold",
+    "condition": { "source": "metric", "metric": "k8s.pod.restarts", "type": "gauge", "agg": "max", "window": "1h", "op": ">", "threshold": 0, "filters": { "k8s.namespace.name": "prod" } },
+    "valid": true
+  },
+  {
+    "name": "valid/metric sum sum over 15m",
+    "condition": { "source": "metric", "metric": "http.server.errors", "type": "sum", "agg": "sum", "window": "15m", "op": ">", "threshold": 25, "filters": {} },
+    "valid": true
+  },
+  {
+    "name": "valid/metric sum rate over 5m with two filters",
+    "condition": { "source": "metric", "metric": "http.requests", "type": "sum", "agg": "rate", "window": "5m", "op": ">", "threshold": 100, "filters": { "service.name": "checkout", "env": "prod" } },
+    "valid": true
+  },
+  {
+    "name": "valid/metric sum rate over 30m, fractional threshold",
+    "condition": { "source": "metric", "metric": "llm.tokens", "type": "sum", "agg": "rate", "window": "30m", "op": ">", "threshold": 12.5, "filters": {} },
+    "valid": true
+  },
+  {
+    "name": "valid/metric histogram p50 over 5m",
+    "condition": { "source": "metric", "metric": "http.server.duration", "type": "histogram", "agg": "p50", "window": "5m", "op": ">", "threshold": 250, "filters": {} },
+    "valid": true
+  },
+  {
+    "name": "valid/metric histogram p90 over 1h",
+    "condition": { "source": "metric", "metric": "http.server.duration", "type": "histogram", "agg": "p90", "window": "1h", "op": ">", "threshold": 500, "filters": {} },
+    "valid": true
+  },
+  {
+    "name": "valid/metric histogram p95 over 15m with a filter",
+    "condition": { "source": "metric", "metric": "http.server.duration", "type": "histogram", "agg": "p95", "window": "15m", "op": ">", "threshold": 800, "filters": { "http.route": "/v1/tickets/bulk" } },
+    "valid": true
+  },
+  {
+    "name": "valid/metric histogram p99 over 30m",
+    "condition": { "source": "metric", "metric": "db.client.duration", "type": "histogram", "agg": "p99", "window": "30m", "op": ">", "threshold": 1500, "filters": {} },
+    "valid": true
+  },
+  {
+    "name": "valid/metric histogram avg over 30m, less-than",
+    "condition": { "source": "metric", "metric": "http.server.duration", "type": "histogram", "agg": "avg", "window": "30m", "op": "<", "threshold": 10, "filters": {} },
+    "valid": true
+  },
+  {
+    "name": "invalid/trace with an unknown key",
+    "condition": { "source": "trace", "signal": "error_rate_pct", "service": "checkout", "window": "15m", "op": ">", "threshold": 5, "runbook": null },
+    "valid": false
+  },
+  {
+    "name": "valid/trace error_rate_pct, service set, 15m",
+    "condition": { "source": "trace", "signal": "error_rate_pct", "service": "checkout", "window": "15m", "op": ">", "threshold": 5 },
+    "valid": true
+  },
+  {
+    "name": "valid/trace error_rate_pct, all services, 30m",
+    "condition": { "source": "trace", "signal": "error_rate_pct", "service": null, "window": "30m", "op": ">", "threshold": 2.5 },
+    "valid": true
+  },
+  {
+    "name": "valid/trace p95_ms, all services, 1h",
+    "condition": { "source": "trace", "signal": "p95_ms", "service": null, "window": "1h", "op": ">", "threshold": 900 },
+    "valid": true
+  },
+  {
+    "name": "valid/trace p95_ms, service set, 5m, less-than",
+    "condition": { "source": "trace", "signal": "p95_ms", "service": "api-gateway", "window": "5m", "op": "<", "threshold": 20 },
+    "valid": true
+  },
+  {
+    "name": "invalid/metric with an unknown key",
+    "condition": { "source": "metric", "metric": "http.requests", "type": "sum", "agg": "rate", "window": "5m", "op": ">", "threshold": 100, "filters": {}, "cadence": 30 },
+    "valid": false
+  },
+  {
+    "name": "invalid/metric carrying the trace variant's service key",
+    "condition": { "source": "metric", "metric": "http.requests", "type": "sum", "agg": "rate", "window": "5m", "op": ">", "threshold": 100, "filters": {}, "service": "checkout" },
+    "valid": false
+  },
+  {
+    "name": "invalid/trace carrying the metric variant's filters key",
+    "condition": { "source": "trace", "signal": "p95_ms", "service": null, "window": "5m", "op": ">", "threshold": 100, "filters": {} },
+    "valid": false
+  },
+  {
+    "name": "invalid/metric missing filters",
+    "condition": { "source": "metric", "metric": "http.requests", "type": "sum", "agg": "rate", "window": "5m", "op": ">", "threshold": 100 },
+    "valid": false
+  },
+  {
+    "name": "invalid/metric missing threshold",
+    "condition": { "source": "metric", "metric": "http.requests", "type": "sum", "agg": "rate", "window": "5m", "op": ">", "filters": {} },
+    "valid": false
+  },
+  {
+    "name": "invalid/trace missing threshold",
+    "condition": { "source": "trace", "signal": "p95_ms", "service": null, "window": "5m", "op": ">" },
+    "valid": false
+  },
+  {
+    "name": "invalid/trace missing service (absent is not the same as null)",
+    "condition": { "source": "trace", "signal": "p95_ms", "window": "5m", "op": ">", "threshold": 100 },
+    "valid": false
+  },
+  {
+    "name": "invalid/missing source",
+    "condition": { "metric": "http.requests", "type": "sum", "agg": "rate", "window": "5m", "op": ">", "threshold": 100, "filters": {} },
+    "valid": false
+  },
+  {
+    "name": "invalid/unknown source",
+    "condition": { "source": "logs", "window": "5m", "op": ">", "threshold": 100 },
+    "valid": false
+  },
+  {
+    "name": "invalid/agg rate on a gauge (VALID_AGGS violation)",
+    "condition": { "source": "metric", "metric": "system.cpu.utilization", "type": "gauge", "agg": "rate", "window": "5m", "op": ">", "threshold": 1, "filters": {} },
+    "valid": false
+  },
+  {
+    "name": "invalid/agg sum on a histogram (VALID_AGGS violation)",
+    "condition": { "source": "metric", "metric": "http.server.duration", "type": "histogram", "agg": "sum", "window": "5m", "op": ">", "threshold": 1, "filters": {} },
+    "valid": false
+  },
+  {
+    "name": "invalid/agg avg on a sum (VALID_AGGS violation)",
+    "condition": { "source": "metric", "metric": "http.requests", "type": "sum", "agg": "avg", "window": "5m", "op": ">", "threshold": 1, "filters": {} },
+    "valid": false
+  },
+  {
+    "name": "invalid/agg p95 on a gauge (VALID_AGGS violation)",
+    "condition": { "source": "metric", "metric": "system.cpu.utilization", "type": "gauge", "agg": "p95", "window": "5m", "op": ">", "threshold": 1, "filters": {} },
+    "valid": false
+  },
+  {
+    "name": "invalid/unknown metric type",
+    "condition": { "source": "metric", "metric": "http.requests", "type": "counter", "agg": "sum", "window": "5m", "op": ">", "threshold": 1, "filters": {} },
+    "valid": false
+  },
+  {
+    "name": "invalid/window 10m is not in the D482 vocabulary",
+    "condition": { "source": "metric", "metric": "http.requests", "type": "sum", "agg": "rate", "window": "10m", "op": ">", "threshold": 100, "filters": {} },
+    "valid": false
+  },
+  {
+    "name": "invalid/window 24h is a MetricRange, not an alert window (D482)",
+    "condition": { "source": "trace", "signal": "p95_ms", "service": null, "window": "24h", "op": ">", "threshold": 100 },
+    "valid": false
+  },
+  {
+    "name": "invalid/window 6h is a MetricRange, not an alert window (D482)",
+    "condition": { "source": "metric", "metric": "http.requests", "type": "sum", "agg": "rate", "window": "6h", "op": ">", "threshold": 100, "filters": {} },
+    "valid": false
+  },
+  {
+    "name": "invalid/threshold null",
+    "condition": { "source": "trace", "signal": "p95_ms", "service": null, "window": "5m", "op": ">", "threshold": null },
+    "valid": false
+  },
+  {
+    "name": "invalid/threshold as a string",
+    "condition": { "source": "trace", "signal": "p95_ms", "service": null, "window": "5m", "op": ">", "threshold": "100" },
+    "valid": false
+  },
+  {
+    "name": "invalid/threshold non-finite (1e999 parses to Infinity)",
+    "condition": { "source": "trace", "signal": "p95_ms", "service": null, "window": "5m", "op": ">", "threshold": 1e999 },
+    "valid": false
+  },
+  {
+    "name": "invalid/op >= is not in the vocabulary",
+    "condition": { "source": "trace", "signal": "error_rate_pct", "service": null, "window": "5m", "op": ">=", "threshold": 5 },
+    "valid": false
+  },
+  {
+    "name": "invalid/op as a number",
+    "condition": { "source": "metric", "metric": "http.requests", "type": "sum", "agg": "rate", "window": "5m", "op": 1, "threshold": 100, "filters": {} },
+    "valid": false
+  },
+  {
+    "name": "invalid/empty metric name",
+    "condition": { "source": "metric", "metric": "", "type": "sum", "agg": "rate", "window": "5m", "op": ">", "threshold": 100, "filters": {} },
+    "valid": false
+  },
+  {
+    "name": "invalid/whitespace-only metric name",
+    "condition": { "source": "metric", "metric": "   ", "type": "sum", "agg": "rate", "window": "5m", "op": ">", "threshold": 100, "filters": {} },
+    "valid": false
+  },
+  {
+    "name": "invalid/filters with a non-string value",
+    "condition": { "source": "metric", "metric": "http.requests", "type": "sum", "agg": "rate", "window": "5m", "op": ">", "threshold": 100, "filters": { "env": 3 } },
+    "valid": false
+  },
+  {
+    "name": "invalid/filters as an array",
+    "condition": { "source": "metric", "metric": "http.requests", "type": "sum", "agg": "rate", "window": "5m", "op": ">", "threshold": 100, "filters": ["env"] },
+    "valid": false
+  },
+  {
+    "name": "invalid/filters null",
+    "condition": { "source": "metric", "metric": "http.requests", "type": "sum", "agg": "rate", "window": "5m", "op": ">", "threshold": 100, "filters": null },
+    "valid": false
+  },
+  {
+    "name": "invalid/trace signal p99_ms is not one of the two",
+    "condition": { "source": "trace", "signal": "p99_ms", "service": null, "window": "5m", "op": ">", "threshold": 100 },
+    "valid": false
+  },
+  {
+    "name": "invalid/trace service empty string",
+    "condition": { "source": "trace", "signal": "p95_ms", "service": "", "window": "5m", "op": ">", "threshold": 100 },
+    "valid": false
+  },
+  {
+    "name": "invalid/trace service as a number",
+    "condition": { "source": "trace", "signal": "p95_ms", "service": 7, "window": "5m", "op": ">", "threshold": 100 },
+    "valid": false
+  },
+  {
+    "name": "invalid/condition is an array",
+    "condition": [],
+    "valid": false
+  },
+  {
+    "name": "invalid/condition is a string",
+    "condition": "error_rate_pct > 5 over 15m",
+    "valid": false
+  },
+  {
+    "name": "invalid/condition is null",
+    "condition": null,
+    "valid": false
+  }
+]

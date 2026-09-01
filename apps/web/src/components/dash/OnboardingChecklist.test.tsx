@@ -146,8 +146,9 @@ test("every row sends the reader somewhere the product actually wired", () => {
       `"${s.label}" points at ${s.href}, which is not a live-wired route — an unbuilt errand on the setup checklist`,
     );
   }
-  // Not vacuous: the two routes this replaced are exactly what the predicate
-  // refuses, which is the reason the rows changed.
+  // Not vacuous: an unwired route is exactly what the predicate refuses,
+  // which is the reason the rows changed. (/app/alerts left this pair at
+  // S7.1 when it wired; /app/oncall replaces it as the second control.)
   assert.equal(isLiveWiredRoute("/app/slos"), false);
-  assert.equal(isLiveWiredRoute("/app/alerts"), false);
+  assert.equal(isLiveWiredRoute("/app/oncall"), false);
 });

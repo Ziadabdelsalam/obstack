@@ -86,11 +86,12 @@ const USAGE =
   "       node deploy/compose/exit-seed.mjs --leg dashboards --workspace <workspace_id> --label <label>\n" +
   "       node deploy/compose/exit-seed.mjs --leg k8s --workspace <workspace_id>\n" +
   "         (with SEED_METRICS_TOKEN=<that workspace's own ok_live_ key> in the environment)\n" +
+  "       node deploy/compose/exit-seed.mjs --leg alerts --workspace <workspace_id> --label <label> --target <receiver url>\n" +
   "       node deploy/compose/exit-seed.mjs --lower-free-quota";
 
 /** Which store this invocation writes to. Absent is the ClickHouse fixture, so
  *  the default invocation is exactly the one it always was. */
-const LEGS = ["clickhouse", "metrics", "dashboards", "k8s"];
+const LEGS = ["clickhouse", "metrics", "dashboards", "k8s", "alerts"];
 function legOf(argv) {
   const at = argv.indexOf("--leg");
   if (at === -1) return "clickhouse";
@@ -1135,6 +1136,92 @@ export function dashboardWidgets(label) {
   ];
 }
 
+// ----------------------------------------------------- the alerts seeding
+/**
+ * The S7.1 alerts fixture. Channels and rules are UI-created rows the same
+ * way dashboards are — no exporter, no OTLP endpoint, no API can put one
+ * there — so this leg writes them in the app's own shape (`chan_`/`rule_`
+ * ids, condition exactly `lib/alert-types.ts`'s structured form) straight
+ * into the DISPOSABLE compose Postgres, the dashboards-leg precedent above.
+ *
+ * What stays REAL and unseeded is everything the sprint exists to prove: the
+ * rules land with `state='ok'` and `next_eval_at=now()`, and it is T4's
+ * evaluator inside the ingest binary that claims them, reads the metrics the
+ * `--leg metrics` export actually sent, crosses the threshold, writes the
+ * events, and delivers them — one to the drive's own receiver (`--target`),
+ * one to a channel whose host does not resolve, so BOTH delivery truths are
+ * facts the feed must state (D485/D13).
+ *
+ * The condition rides the gauge the metrics leg exports (value 42, sent
+ * minutes before this leg runs): `avg > 40 over 15m` is a crossing by
+ * construction, on data that went through the front door.
+ */
+
+export const ALERT_LIVE_CHANNEL = "drive webhook";
+export const ALERT_DEAD_CHANNEL = "dead webhook";
+export const ALERT_LIVE_RULE = "Exit gauge threshold";
+export const ALERT_DEAD_RULE = "Exit dead-letter proof";
+/** The unresolvable host: RFC 2606 reserves .invalid, so no resolver answers. */
+export const ALERT_DEAD_TARGET = "http://alerts-dead.invalid/hook";
+
+/** The one condition, from the seeder's own metric names (S2.3 L3). */
+export const alertCondition = (label) => ({
+  source: "metric",
+  metric: metricNames(label).gauge,
+  type: "gauge",
+  agg: "avg",
+  window: "15m",
+  op: ">",
+  threshold: 40,
+  filters: {},
+});
+
+const INSERT_CHANNEL_SQL = `
+  INSERT INTO notification_channels (workspace_id, id, name, kind, target)
+       VALUES ($1, $2, $3, 'webhook', $4)
+    RETURNING id, name`;
+
+const INSERT_RULE_SQL = `
+  INSERT INTO alert_rules (workspace_id, id, name, condition, severity, channel_id)
+       VALUES ($1, $2, $3, $4::jsonb, $5, $6)
+    RETURNING id, name, state, next_eval_at <= now() AS due`;
+
+async function seedAlerts(workspace, label, target) {
+  const condition = alertCondition(label);
+  const client = new pg.Client({ connectionString: PG_DSN });
+  await client.connect();
+  try {
+    const channel = async (name, url) =>
+      (await client.query(INSERT_CHANNEL_SQL, [workspace, newId("chan"), name, url])).rows[0];
+    const rule = async (name, severity, channelId) =>
+      (
+        await client.query(INSERT_RULE_SQL, [
+          workspace,
+          newId("rule"),
+          name,
+          JSON.stringify(condition),
+          severity,
+          channelId,
+        ])
+      ).rows[0];
+
+    const live = await channel(ALERT_LIVE_CHANNEL, target);
+    const dead = await channel(ALERT_DEAD_CHANNEL, ALERT_DEAD_TARGET);
+    // The RED half of this leg's proof (S2.0 L1): withholding the RULES —
+    // channels land, nothing can fire — must fail the three downstream drive
+    // assertions and never this seeder's own status. Proven 2026-09-02:
+    // 243/3, exactly the event/delivery/receiver trio red. Not for CI.
+    if (process.env.RED_WITHHOLD_RULES) return { condition, liveRule: null, deadRule: null };
+    return {
+      condition,
+      liveRule: await rule(ALERT_LIVE_RULE, "critical", live.id),
+      deadRule: await rule(ALERT_DEAD_RULE, "warning", dead.id),
+    };
+  } finally {
+    await client.end();
+  }
+}
+
 /**
  * The app's own column list, with `widgets` BOUND rather than interpolated: the
  * array carries a label the caller chose, and pasting it into statement text
@@ -1188,6 +1275,11 @@ if (invokedDirectly && !readingConstants && process.argv.includes("--lower-free-
   // it SENT, and the expectations the drive then asserts against.
   const sent = await seedMetrics(label);
   console.log(JSON.stringify({ workspace, label, ...sent, expectations: metricsExpectations(label) }, null, 2));
+} else if (invokedDirectly && !readingConstants && legOf(process.argv) === "alerts") {
+  const workspace = requiredArg(process.argv, "--workspace");
+  const label = requiredArg(process.argv, "--label");
+  const target = requiredArg(process.argv, "--target");
+  console.log(JSON.stringify({ workspace, label, alerts: await seedAlerts(workspace, label, target) }, null, 2));
 } else if (invokedDirectly && !readingConstants && legOf(process.argv) === "k8s") {
   // No `--label`: nothing this leg sends is content (see the section header).
   const workspace = requiredArg(process.argv, "--workspace");

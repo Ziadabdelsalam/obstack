@@ -174,6 +174,7 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
+import { createServer } from "node:http";
 import { connect } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -181,6 +182,10 @@ import { fileURLToPath } from "node:url";
 import pg from "pg";
 import {
   CARRIER_TOKEN,
+  ALERT_DEAD_CHANNEL,
+  ALERT_DEAD_RULE,
+  ALERT_LIVE_CHANNEL,
+  ALERT_LIVE_RULE,
   CARRIER_TRACE,
   CHAIN_SERVICES,
   DASHBOARD_NAME,
@@ -3162,6 +3167,116 @@ try {
     `api_key_health.accepted moved by ${acceptedAfter - acceptedBefore}`,
   );
 
+  // ---------------------------------------------------- alerts (S7.1)
+  /* Rules and channels are seeded the way dashboards are (UI rows, no front
+   * door to prefer) — and everything the sprint exists to prove stays real:
+   * T4's evaluator inside the ingest container claims the rules on its own
+   * tick, reads the gauge the metrics leg SENT through the front door,
+   * crosses `avg > 40 over 15m` on its value of 42, writes both events, and
+   * the deliverer POSTs one to this drive's own receiver and burns three
+   * attempts on a host that does not resolve — so `delivered` and `failed`
+   * are both facts the feed must state (D485/D13), not styles it can render. */
+  step("the alerts leg: a rule over alice's own gauge fires; both delivery truths become facts (D477–D492)");
+  const hooks = [];
+  const receiver = createServer((req, res) => {
+    let body = "";
+    req.on("data", (chunk) => (body += chunk));
+    req.on("end", () => {
+      hooks.push({ path: req.url, body });
+      res.writeHead(200);
+      res.end("ok");
+    });
+  });
+  await new Promise((ready) => receiver.listen(0, "0.0.0.0", ready));
+  const hookTarget = `http://host.docker.internal:${receiver.address().port}/hook`;
+
+  const alertSeed = spawnSync(
+    "node",
+    [
+      join(composeDir, "exit-seed.mjs"),
+      "--leg",
+      "alerts",
+      "--workspace",
+      alice.workspaceId,
+      "--label",
+      ACTORS.alice.label,
+      "--target",
+      hookTarget,
+    ],
+    { cwd: repoRoot, env: { ...process.env, OBSTACK_POSTGRES_DSN: PG_DSN }, encoding: "utf8" },
+  );
+  writeFileSync(join(OUT, "seed-alerts-alice.json"), `${alertSeed.stdout ?? ""}${alertSeed.stderr ?? ""}`);
+  must(alertSeed.status === 0, `exit-seed.mjs --leg alerts failed: ${alertSeed.stderr}`);
+  console.log(`   ${alertSeed.stdout.trim().split("\n").join("\n   ")}`);
+
+  /* Settle against OBSERVED state, never elapsed time (the S6.4 flush-race
+   * lesson): the evaluator's next tick is ≤60s out, the deliverer's ≤5s
+   * behind it, and the dead channel needs three 5s rounds to reach `failed`.
+   * The loop leaves on the page STATING both truths and the receiver holding
+   * the POST — or on the deadline, and the checks below then say which claim
+   * died. */
+  const alertsDeadline = Date.now() + 120_000;
+  let alertsPage = { status: 0, html: "" };
+  for (;;) {
+    alertsPage = await pageFor(alice, "/app/alerts");
+    const settled =
+      alertsPage.html.includes(">delivered<") &&
+      alertsPage.html.includes("delivery failed") &&
+      hooks.length > 0;
+    if (settled || Date.now() > alertsDeadline) break;
+    await sleep(2_000);
+  }
+  receiver.close();
+
+  check(
+    "/app/alerts renders both fired events at their rules' own severities, and the live rule shows firing (D484)",
+    alertsPage.status === 200 &&
+      alertsPage.html.includes(`${ALERT_LIVE_RULE}:`) &&
+      alertsPage.html.includes(`${ALERT_DEAD_RULE}:`) &&
+      alertsPage.html.includes("· firing"),
+    `HTTP ${alertsPage.status} · live title ${alertsPage.html.includes(`${ALERT_LIVE_RULE}:`)} · ` +
+      `dead title ${alertsPage.html.includes(`${ALERT_DEAD_RULE}:`)} · firing ${alertsPage.html.includes("· firing")}`,
+  );
+  check(
+    "both delivery truths are stated in the feed: `delivered` on the live channel, `delivery failed` on the dead one (D485/D490)",
+    alertsPage.html.includes(">delivered<") && alertsPage.html.includes("delivery failed"),
+    `delivered ${alertsPage.html.includes(">delivered<")} · failed ${alertsPage.html.includes("delivery failed")}`,
+  );
+  const hook = hooks.length > 0 ? JSON.parse(hooks[0].body) : null;
+  check(
+    "the receiver holds the deliverer's actual POST: the versioned document, the rule by name at its severity, alice's workspace (D486)",
+    hook !== null &&
+      hook.version === 1 &&
+      hook.rule?.name === ALERT_LIVE_RULE &&
+      hook.rule?.severity === "critical" &&
+      hook.workspace === alice.workspaceId &&
+      typeof hook.event?.title === "string" &&
+      hook.event.title.startsWith(`${ALERT_LIVE_RULE}:`),
+    hooks.length === 0 ? "the receiver was never called" : `got ${hooks[0].body.slice(0, 200)}`,
+  );
+  check(
+    "no SAMPLE badge on /app/alerts — the D21 flip this sprint wires, while /app/ask above still carries one",
+    !alertsPage.html.includes("SAMPLE DATA"),
+    `badge ${alertsPage.html.includes("SAMPLE DATA")}`,
+  );
+  check(
+    "the channel targets render MASKED and the raw target renders nowhere (D487): `/...hook`, never the URL the seed handed over",
+    alertsPage.html.includes("/...hook") && !alertsPage.html.includes(hookTarget),
+    `masked ${alertsPage.html.includes("/...hook")} · raw ${alertsPage.html.includes(hookTarget)}`,
+  );
+  const bobAlerts = await pageFor(bob, "/app/alerts");
+  check(
+    "bob's /app/alerts is the empty state: none of her rules, channels, events or label reach his workspace (D7/D11)",
+    bobAlerts.status === 200 &&
+      !bobAlerts.html.includes(ALERT_LIVE_RULE) &&
+      !bobAlerts.html.includes(ALERT_LIVE_CHANNEL) &&
+      !bobAlerts.html.includes(ALERT_DEAD_CHANNEL) &&
+      labelHits(bobAlerts.html, aliceLabel) === 0 &&
+      bobAlerts.html.includes("no alert events yet"),
+    `HTTP ${bobAlerts.status} · rule ${bobAlerts.html.includes(ALERT_LIVE_RULE)} · ` +
+      `${labelHits(bobAlerts.html, aliceLabel)}× ${aliceLabel} · empty ${bobAlerts.html.includes("no alert events yet")}`,
+  );
+
   step("a plan change round-trips: checkout → return → reconcile → redirect → ONE paint says Pro (D168/D189)");
   await openTab(alice, "Billing & usage", `document.querySelector("main")?.textContent.includes("change plan")`);
   must(await alice.evaluate(clickText("Upgrade to Pro")), "the Billing & usage tab offers no Pro upgrade");
@@ -3430,6 +3545,10 @@ try {
     // an anonymous browser must not reach it either.
     "/app/dashboards",
     `/app/dashboards/${dashboardId}`,
+    // S7.1 (D21/D367): alerts joined liveWiredRoutes this sprint — rules,
+    // evaluated events and channel names are workspace data an anonymous
+    // browser must not reach.
+    "/app/alerts",
   ]) {
     await alice.goto(path, `document.body.textContent.length > 0`);
     const state = await alice.evaluate(STATE);
