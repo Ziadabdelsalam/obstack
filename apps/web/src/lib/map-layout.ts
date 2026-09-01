@@ -2,17 +2,21 @@
  * Where each service sits on the live map (D396) — a pure function of the
  * topology's SHAPE, never of its traffic.
  *
- * A column per layer in `layerOrder` order, rows by service name in codepoint
- * order, and nothing else: `position = f(layer, name-rank)`. That is what makes
- * the map readable across refreshes — a service keeps its lane while its span
- * count, error rate and latency move underneath it, and two renders of the same
- * services produce the same picture on every machine (plain `<`, never
+ * A column per layer PRESENT in the topology, in `layerOrder` order, rows by
+ * service name in codepoint order, and nothing else:
+ * `position = f(layer-rank among the layers present, name-rank)`. That is what
+ * makes the map readable across refreshes — a service keeps its lane while its
+ * span count, error rate and latency move underneath it, and two renders of the
+ * same services produce the same picture on every machine (plain `<`, never
  * `localeCompare`, whose order depends on the runtime's locale data).
  *
- * The column is the layer's index in `layerOrder`, not its index among the
- * layers that happen to be present: compacting the columns would make a
- * service's position depend on which OTHER layers sent spans, so an unrelated
- * new service could shift every node on the map.
+ * The columns are COMPACT (D408): `layerOrder` is the ordering, not the
+ * indexing, so a workspace of api and infra services draws two ADJACENT
+ * columns rather than columns 0 and 4 with ~970 viewBox units of dead space
+ * between them. The price is that the workspace's first `tool` span inserts a
+ * column and shifts the layers after it one place right — but that is the
+ * topology's shape changing, which is the one thing this layout is a function
+ * of, and it is paid once when the layer appears rather than on any refresh.
  */
 
 import { layerOrder } from "./layers";
@@ -45,7 +49,10 @@ export function mapLayout(nodes: readonly { service: string; layer: Layer }[]): 
   let right = 0;
   let bottom = 0;
 
-  layerOrder.forEach((layer, column) => {
+  const present = new Set(nodes.map((n) => n.layer));
+  const columns = layerOrder.filter((layer) => present.has(layer));
+
+  columns.forEach((layer, column) => {
     const services = nodes
       .filter((n) => n.layer === layer)
       .map((n) => n.service)

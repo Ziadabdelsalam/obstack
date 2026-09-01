@@ -24,6 +24,25 @@ export function fmtCost(usd: number): string {
 }
 
 /**
+ * A rate per minute, in display form — the ONE formatter for it (D409), shared
+ * by the service catalog, the service detail and the live map.
+ *
+ * Precision follows the magnitude, because a per-minute rate over a 24h window
+ * gets very small: four spans all day really is 0.003/min, and one decimal
+ * would print that as "0.0" — a service that sent spans, rendered as silent.
+ * There is no `<0.01` floor either: we hold the number, so we print it (D13).
+ *
+ * The unit belongs to the CALL SITE — a table whose column header already says
+ * "spans/min" would otherwise repeat it in every cell.
+ */
+export function fmtPerMin(n: number): string {
+  if (n === 0) return "0";
+  if (n >= 10) return Math.round(n).toLocaleString("en-US");
+  if (n >= 0.1) return n.toFixed(1);
+  return n.toFixed(3);
+}
+
+/**
  * An age against an explicit reference clock (D50/D64) — the request's server
  * time in live mode, the mock clock in mock mode — sampled once per request by
  * the page and threaded down, exactly as `/app/logs` ages its rows.

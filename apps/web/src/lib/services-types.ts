@@ -7,7 +7,8 @@ import type { Layer } from "./types";
  * services.ts` is `server-only` (real SQL, a `ScopedClickHouse`), but the
  * components that render its answers need the shapes to type their props.
  * Nothing here reaches for the server: one type import, the window and cap
- * constants, and the pure formatter for the rate they define.
+ * constants, and the shapes. `spansPerMin` is rendered by `fmtPerMin` in
+ * `lib/format.ts`, with every other number this app prints (D409).
  *
  * Everything below is derived from spans the workspace actually sent. The
  * fixture catalog's `team`, `tier`, `runtime`, `sloStatus`, `score.*`, `grade`
@@ -23,19 +24,6 @@ import type { Layer } from "./types";
  * 7d needs a rollup, and a rollup is DDL.
  */
 export const WINDOW_HOURS = 24;
-
-/**
- * `spansPerMin` in display form, beside the divisor it is defined by: precision
- * follows the magnitude so a real but low rate is never printed as a zero. A
- * service with four spans in the window really does average 0.003/min, and
- * "0.0" would be the surface claiming it sent nothing (D13).
- */
-export function fmtPerMin(perMin: number): string {
-  if (perMin === 0) return "0";
-  if (perMin >= 10) return perMin.toFixed(0);
-  if (perMin >= 0.1) return perMin.toFixed(1);
-  return perMin.toFixed(3);
-}
 
 /** D402: the catalog's GROUP BY is unbounded, so it ships a cap and says so. */
 export const SERVICE_CAP = 100;

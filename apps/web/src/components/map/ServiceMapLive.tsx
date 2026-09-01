@@ -1,4 +1,4 @@
-import { fmtMs } from "@/lib/format";
+import { fmtMs, fmtPerMin } from "@/lib/format";
 import { layerColor, layerLabel, layerOrder } from "@/lib/layers";
 import { mapLayout, NODE_H, NODE_W, type NodePosition } from "@/lib/map-layout";
 import { TRACES_PATH } from "@/lib/traces-filter";
@@ -40,19 +40,6 @@ const statusLegend: Record<TopologyStatus, string> = {
   warn: `degraded ${WARN_ERROR_PCT}–${ERR_ERROR_PCT}%`,
   err: `erroring ≥${ERR_ERROR_PCT}%`,
 };
-
-/**
- * A per-minute rate over a 24h window gets very small: one call all day is
- * 0.0007/min, and `toFixed(2)` would print that as "0.00/min" — a real hop
- * rendered as no traffic. Below what two decimals can express, say so.
- */
-function perMin(n: number): string {
-  if (n >= 10) return `${Math.round(n).toLocaleString("en-US")}/min`;
-  if (n >= 0.1) return `${n.toFixed(1)}/min`;
-  if (n >= 0.01) return `${n.toFixed(2)}/min`;
-  if (n > 0) return `<0.01/min`;
-  return "0/min";
-}
 
 /** SVG text neither wraps nor truncates; the full name rides along in the group's `aria-label`. */
 function clip(text: string, max: number): string {
@@ -178,7 +165,7 @@ export function ServiceMapLive({ topology }: { topology: Topology }) {
                       fontSize={8.5}
                       fontFamily="var(--font-jetbrains)"
                     >
-                      {perMin(e.callsPerMin)}
+                      {fmtPerMin(e.callsPerMin)}/min
                     </text>
                     <text
                       textAnchor="middle"
@@ -227,7 +214,7 @@ export function ServiceMapLive({ topology }: { topology: Topology }) {
                       {clip(n.service, 22)}
                     </text>
                     <text x={12} y={34} fill="var(--color-faint)" fontSize={8.5} fontFamily="var(--font-jetbrains)">
-                      {perMin(n.spansPerMin)} · p95 {fmtMs(n.p95Ms)}
+                      {fmtPerMin(n.spansPerMin)}/min · p95 {fmtMs(n.p95Ms)}
                     </text>
                     <text
                       x={12}

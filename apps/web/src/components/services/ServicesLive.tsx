@@ -1,6 +1,6 @@
 import Link from "next/link";
-import { fmtCost, fmtMs } from "@/lib/format";
-import { fmtPerMin, SERVICE_CAP, WINDOW_HOURS, type ServiceList } from "@/lib/services-types";
+import { fmtCost, fmtMs, fmtPerMin } from "@/lib/format";
+import { SERVICE_CAP, WINDOW_HOURS, type ServiceList } from "@/lib/services-types";
 import { LayerChip } from "@/components/ui/LayerChip";
 
 /**

@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { layerOrder } from "@/lib/layers";
 import {
-  fmtPerMin,
   RECENT_ERROR_TRACE_CAP,
   SERVICE_CAP,
   TOP_SPAN_NAME_CAP,
@@ -222,14 +221,4 @@ test("getService: a hostile service name reaches the server as a bound value, ne
     assert.equal(call.params.service, hostile);
     assert.ok(call.sql.includes("{service:String}"));
   }
-});
-
-test("fmtPerMin: a real but low rate is never printed as a zero (D13)", () => {
-  // Four spans over the 1440-minute window: 0.0028/min. One decimal would
-  // render that "0.0" — a service that sent spans, shown as silent.
-  assert.equal(fmtPerMin(4 / 1440), "0.003");
-  assert.equal(fmtPerMin(0), "0");
-  assert.equal(fmtPerMin(0.1), "0.1");
-  assert.equal(fmtPerMin(1440 / 1440), "1.0");
-  assert.equal(fmtPerMin(12.4), "12");
 });

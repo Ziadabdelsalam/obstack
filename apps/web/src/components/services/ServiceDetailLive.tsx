@@ -1,7 +1,6 @@
 import Link from "next/link";
-import { fmtCost, fmtMs } from "@/lib/format";
+import { fmtCost, fmtMs, fmtPerMin } from "@/lib/format";
 import {
-  fmtPerMin,
   RECENT_ERROR_TRACE_CAP,
   TOP_SPAN_NAME_CAP,
   WINDOW_HOURS,
