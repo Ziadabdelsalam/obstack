@@ -7,6 +7,7 @@ import type { ConnectedSource } from "@/mock/types";
 import { categories, connectors, type Connector } from "./connectors";
 import { ConnectModal, type ModalEndpoints } from "./ConnectModal";
 import { OTLP_GRPC_ENDPOINT, OTLP_HTTP_ENDPOINT } from "@/lib/ingest-endpoint";
+import { fmtPerMin } from "@/lib/format";
 
 const sourceStatus: Record<
   ConnectedSource["status"],
@@ -52,13 +53,13 @@ export interface LiveSource {
 }
 
 /**
- * The rate as it reads: one decimal below ten so a slow source is not rounded
- * to "0/min" while it is demonstrably sending, whole numbers above it.
+ * The rate as it reads — routed through the ONE per-minute formatter (D409),
+ * now shared with the map and the service catalog/detail rather than hedging
+ * its own precision here.
  */
 export function formatRate(ratePerMin: number | null): string {
   if (ratePerMin === null) return "—";
-  if (ratePerMin > 0 && ratePerMin < 10) return `${ratePerMin.toFixed(1)}/min`;
-  return `${Math.round(ratePerMin).toLocaleString("en-US")}/min`;
+  return `${fmtPerMin(ratePerMin)}/min`;
 }
 
 /**
@@ -304,7 +305,7 @@ export function ConnectionsHub({
                     {st.label}
                   </span>
                   <span className="w-24 text-right font-mono text-[11px] text-mid">
-                    {s.ratePerMin.toLocaleString("en-US")}/min
+                    {formatRate(s.ratePerMin)}
                   </span>
                   <span className="w-20 text-right font-mono text-[11px] text-faint">
                     {s.lastEvent}
