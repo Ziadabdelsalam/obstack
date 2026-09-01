@@ -96,8 +96,8 @@ const steps: TourStep[] = [
   {
     path: "/app/costs",
     target: "costs",
-    title: "Costs — AI unit economics",
-    body: "Token cost joined to customers, features and models — the join obstack is built around. In the sample data Meridian costs $84/mo against $299 revenue, and draft_reply is 44% of spend.",
+    title: "Costs — LLM unit economics",
+    body: "Token spend by model, straight from your traces and priced at ingest from the model and token counts. A model with no price row is counted and named as unpriced — never shown as free.",
   },
   {
     // D404, as above: live-wired in S6.2. The demo customer and its failure

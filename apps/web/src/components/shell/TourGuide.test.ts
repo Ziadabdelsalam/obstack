@@ -257,3 +257,20 @@ test("D404: the /app/users tour step promises capability, not a named customer's
     assert.ok(surfaceFile(file).includes('data-tour="users"'), `${file} dropped data-tour="users", so the step spotlights nothing there`);
   }
 });
+
+/** Comments stripped, so a future explanatory comment quoting the old demo
+ * figures cannot pass this guard by hiding them outside the step's live text. */
+const stripComments = (src: string): string =>
+  src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^[ \t]*\/\/.*$/gm, "");
+
+test("D404 (S6.4): the /app/costs tour step promises capability, not the demo's customer economics", () => {
+  const step = stripComments(stepSource("/app/costs"));
+  for (const fact of ["Meridian", "$84", "$299", "44%", "draft_reply"]) {
+    assert.ok(!step.includes(fact), `the costs tour step still narrates "${fact}" — a fact about the demo fixture, not about a live workspace`);
+  }
+  assert.ok(step.includes('target: "costs"'), "the step stopped targeting the costs anchor");
+  assert.ok(step.includes("unpriced"), "the step stopped naming unpriced calls, never shown as free (D461)");
+  for (const file of ["costs/CostsLive.tsx", "costs/CostsMock.tsx"]) {
+    assert.ok(surfaceFile(file).includes('data-tour="costs"'), `${file} dropped data-tour="costs", so the step spotlights nothing there`);
+  }
+});
