@@ -995,13 +995,16 @@ function k8sExport() {
 const freshK8sPods = K8S_PODS.filter((p) => !p.stale);
 const oversizedPod = K8S_PODS.find((p) => p.name === "exit-app-1");
 const nearLimitPod = K8S_PODS.find((p) => p.name === "exit-worker-1");
+const crashPod = K8S_PODS.find((p) => p.name === "exit-crash-1");
 export const k8sExpectations = {
   nodeNames: K8S_NODES.map((n) => n.name),
   podNames: freshK8sPods.map((p) => p.name),
   freshPodCount: freshK8sPods.length,
   header: `${K8S_NODES.length} nodes · ${freshK8sPods.length} pods`,
   stalePodName: K8S_PODS.find((p) => p.stale).name,
-  crashPodName: "exit-crash-1",
+  crashPodName: crashPod.name,
+  /** D469's arm reads the restart count as text — from the fixture, not retyped. */
+  crashRestarts: crashPod.restarts,
   kubeletOnlyPodName: "exit-kubelet-only-1",
   oversizedPodName: oversizedPod.name,
   oversizedPct: Math.round((oversizedPod.memWorkingSet / oversizedPod.memLimit) * 100),
