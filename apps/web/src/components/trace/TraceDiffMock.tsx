@@ -60,7 +60,7 @@ function TraceSummary({ t, label }: { t: Trace; label: string }) {
   );
 }
 
-export function TraceDiff() {
+export function TraceDiffMock() {
   const params = useSearchParams();
   const defaultB = allTraces.find(
     (t) => t.rootName === slowTrace.rootName && t.status === "ok" && t.id !== slowTrace.id,

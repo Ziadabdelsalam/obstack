@@ -2,7 +2,9 @@ import { notFound } from "next/navigation";
 import { connection } from "next/server";
 import { dataForSession, dataMode, referenceNowMs } from "@/server/data";
 import { TraceExplorer } from "@/components/trace/TraceExplorer";
+import { allTraces } from "@/mock/traces";
 import { usage } from "@/mock/workspace";
+import type { Trace } from "@/lib/types";
 
 /**
  * The Explain leg of this page, resolved per mode. Live mode reads the ONE
@@ -28,6 +30,29 @@ async function explainLeg(): Promise<{ live: boolean; used: number; quota: numbe
   return { live: true, ...(await getExplainQuota(session.workspaceId, queryRows)) };
 }
 
+/**
+ * The compare link, resolved per mode (D400) — the diff surface now works on
+ * both sides, so live mode gets one too instead of the F8 blank.
+ *
+ * Mock mode keeps the demo's own answer, unchanged: the healthy run with the
+ * same root name, out of the mock corpus, linked as `?a=&b=` — the same href
+ * and therefore the same DOM as before. The lookup moved HERE from
+ * `TraceExplorer` (D391(b): a page-level mock import beside the `dataMode`
+ * branch is the ratified shape) because the explorer is a client component, so
+ * the corpus it read was being shipped to the browser on live trace pages too.
+ *
+ * Live mode links with this trace as side A and no partner: which run to
+ * compare against is the workspace's to choose, and the diff's own picker is
+ * where that choice happens.
+ */
+function compareLink(trace: Trace): { href: string } | null {
+  if (dataMode === "live") return { href: `/app/traces/diff?a=${trace.id}` };
+  const partner = allTraces.find(
+    (t) => t.rootName === trace.rootName && t.status === "ok" && t.id !== trace.id,
+  );
+  return partner ? { href: `/app/traces/diff?a=${trace.id}&b=${partner.id}` } : null;
+}
+
 export default async function TracePage({
   params,
 }: {
@@ -46,15 +71,13 @@ export default async function TracePage({
   const data = await dataForSession();
   const trace = await data.getTrace(id);
   if (!trace) notFound();
-  // the healthy-run comparison is a mock-corpus lookup, so live traces get no
-  // compare link — a diff against a run that never happened (F8)
   // The "started" stat is an age, so it takes the request's clock (D50/D64) —
   // the same one the list ages its rows against.
   return (
     <TraceExplorer
       trace={trace}
       nowMs={referenceNowMs()}
-      compareEnabled={dataMode !== "live"}
+      compare={compareLink(trace)}
       explain={await explainLeg()}
     />
   );

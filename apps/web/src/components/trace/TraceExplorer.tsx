@@ -7,7 +7,6 @@ import { fmtCost, fmtMs, fmtTokens, timeAgo } from "@/lib/format";
 import { layerColor } from "@/lib/layers";
 import { NEARBY_LOG_CAP, NEARBY_LOG_WINDOW_S } from "@/lib/nearby-logs";
 import { StatusPill } from "@/components/ui/StatusPill";
-import { allTraces } from "@/mock/traces";
 import type { Explanation, Trace } from "@/lib/types";
 import { Waterfall } from "./Waterfall";
 import { SpanDetail } from "./SpanDetail";
@@ -28,10 +27,13 @@ function Stat({ label, value }: { label: string; value: string }) {
 }
 
 /**
- * `compareEnabled` is false in live mode (F8): the healthy-run comparison picks
- * its counterpart out of the mock corpus, so on an ingested trace it would offer
- * a diff against a run that never happened. Defaults to true — mock mode and the
- * diff surface are unchanged.
+ * `compare` is the diff link, already resolved (D400): the page computes it per
+ * mode — mock mode picks the healthy counterpart out of the mock corpus, live
+ * mode links to the diff with this trace as side A — and null means this trace
+ * has nothing to compare against. It arrives as an href rather than a flag
+ * because the mock corpus is what a partner lookup needs, and this is a client
+ * component: reading `@/mock/traces` here shipped the whole demo dataset to the
+ * browser on a live trace page.
  *
  * `explain` is the page's answer to both Explain questions, because both are
  * server facts: `live` says a run is fetched on demand from the route rather
@@ -42,13 +44,13 @@ function Stat({ label, value }: { label: string; value: string }) {
 export function TraceExplorer({
   trace,
   nowMs,
-  compareEnabled = true,
+  compare,
   explain,
 }: {
   trace: Trace;
   /** the request's reference clock, per mode (D50/D64) — never sampled here */
   nowMs: number;
-  compareEnabled?: boolean;
+  compare: { href: string } | null;
   explain: { live: boolean; used: number; quota: number };
 }) {
   const firstError = useMemo(
@@ -70,15 +72,6 @@ export function TraceExplorer({
   const [view, setView] = useState<"waterfall" | "replay">("waterfall");
   const hasAgent = trace.spans.some((s) => s.layer === "agent");
 
-  const compareWith = useMemo(
-    () =>
-      compareEnabled
-        ? allTraces.find(
-            (t) => t.rootName === trace.rootName && t.status === "ok" && t.id !== trace.id,
-          )
-        : undefined,
-    [trace, compareEnabled],
-  );
   // There was a "share" button here that opened a modal around a made-up
   // `https://obstack.dev/share/…` link (D231.4). Public trace sharing is not
   // built, so the affordance and the URL are gone rather than re-worded — "copy
@@ -157,9 +150,9 @@ export function TraceExplorer({
             {copied ? <Check className="h-3.5 w-3.5" style={{ color: "var(--color-ok)" }} /> : <Link2 className="h-3.5 w-3.5" />}
             {copied ? "copied" : "copy link"}
           </button>
-          {compareWith && (
+          {compare && (
             <Link
-              href={`/app/traces/diff?a=${trace.id}&b=${compareWith.id}`}
+              href={compare.href}
               className="flex items-center gap-1.5 rounded-md border border-line bg-raised px-2.5 py-1.5 text-[12px] text-mid hover:border-line-strong hover:text-ink"
             >
               <GitCompareArrows className="h-3.5 w-3.5" />
