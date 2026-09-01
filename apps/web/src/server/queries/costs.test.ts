@@ -288,7 +288,7 @@ const GRID: Record<CostsRange, { windowHours: number; bucketMinutes: number; poi
 for (const range of COSTS_RANGES) {
   const { windowHours, bucketMinutes, points } = GRID[range];
   test(`queryCosts(${range}): ${windowHours}h of ${bucketMinutes}-minute buckets, ${points} points`, async () => {
-    const { ch, calls } = recorder((sql) => (isSeries(sql) ? [] : []));
+    const { ch, calls } = recorder(() => []);
     const report = await queryCosts(ch, range);
 
     for (const call of calls) {
