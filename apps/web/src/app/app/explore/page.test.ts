@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
+import { resolvedImports } from "@/test-utils/import-specifiers";
 
 // run with: npm test --workspace apps/web
 //
@@ -20,10 +21,13 @@ import test from "node:test";
 // `ConnectionsHub.test.tsx` fallback for exactly this situation (D54(iii):
 // no DOM harness in this repo, and here, no import path either).
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const read = (file: string) => readFileSync(path.join(HERE, file), "utf8");
+const resolve = (file: string) => path.join(HERE, file);
+const read = (file: string) => readFileSync(resolve(file), "utf8");
 const PAGE = read("page.tsx");
 const MOCK = read("../../../components/explore/ExploreMock.tsx");
+const LIVE_PATH = resolve("../../../components/explore/ExploreLive.tsx");
 const LIVE = read("../../../components/explore/ExploreLive.tsx");
+const SAVE_LIVE_PATH = resolve("../../../components/explore/SaveToDashboardLive.tsx");
 const SAVE_LIVE = read("../../../components/explore/SaveToDashboardLive.tsx");
 
 test("the mock branch renders ExploreMock, verbatim and with zero props, before any live-only read runs", () => {
@@ -64,8 +68,12 @@ test("ExploreMock is the untouched client body — it takes no props and owns it
 });
 
 test("A2: the live branch never imports mock data, and saves through SaveToDashboardLive, never the mock modal (D433)", () => {
+  // Every ban below reads what an import RESOLVES to, never the alias
+  // someone happened to type (`resolvedImports`, D448) — a check spelled
+  // `from "@/mock/` is one `../../mock/` away from banning nothing.
+  const specs = resolvedImports(LIVE, LIVE_PATH);
   assert.equal(
-    LIVE.includes('from "@/mock/explore"') || LIVE.includes('from "@/mock/'),
+    specs.some((spec) => /(^|\/)mock\//.test(spec)),
     false,
     "the live chart must not depend on any mock module",
   );
@@ -73,14 +81,14 @@ test("A2: the live branch never imports mock data, and saves through SaveToDashb
   // `ExploreChart` calls `exploreSeries()` internally (so importing it drags
   // `@/mock/explore` into the live graph without ever naming it), and
   // `state/workspace-store` is the mock workspace `SaveToDashboardModal`
-  // reads. Neither shows up in the `@/mock/` check above.
+  // reads. Neither shows up in the mock-path check above.
   assert.equal(
-    /from "@\/components\/explore\/ExploreChart"/.test(LIVE),
+    specs.includes("@/components/explore/ExploreChart"),
     false,
     "the live chart is a props-fed sibling (D367) — reusing ExploreChart drags @/mock/explore in through its own exploreSeries() call",
   );
   assert.equal(
-    /from "@\/state\/workspace-store"/.test(LIVE),
+    specs.includes("@/state/workspace-store"),
     false,
     "live filters live in the URL, never in the mock workspace store",
   );
@@ -93,24 +101,25 @@ test("A2: the live branch never imports mock data, and saves through SaveToDashb
   // absence — this is the sabotage check. Deleting the import from
   // ExploreLive.tsx must turn this assertion red.
   assert.ok(
-    /from "@\/components\/explore\/SaveToDashboardLive"/.test(LIVE),
+    specs.includes("@/components/explore/SaveToDashboardLive"),
     "the live save-to-dashboard button must be wired through SaveToDashboardLive (D433)",
   );
 });
 
 test("SaveToDashboardLive stays on the live side of the mock/live boundary (D391/D433)", () => {
+  const specs = resolvedImports(SAVE_LIVE, SAVE_LIVE_PATH);
   assert.equal(
-    SAVE_LIVE.includes('from "@/mock/explore"') || SAVE_LIVE.includes('from "@/mock/'),
+    specs.some((spec) => /(^|\/)mock\//.test(spec)),
     false,
     "the live save modal must not depend on any mock module",
   );
   assert.equal(
-    /from "@\/components\/explore\/ExploreChart"/.test(SAVE_LIVE),
+    specs.includes("@/components/explore/ExploreChart"),
     false,
     "the live save modal has no chart to render",
   );
   assert.equal(
-    /from "@\/state\/workspace-store"/.test(SAVE_LIVE),
+    specs.includes("@/state/workspace-store"),
     false,
     "the live save modal lists the dashboards prop, never the mock workspace store",
   );

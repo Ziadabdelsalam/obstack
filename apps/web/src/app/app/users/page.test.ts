@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
+import { resolvedImports } from "@/test-utils/import-specifiers";
 
 // run with: npm test --workspace apps/web
 //
@@ -15,9 +16,11 @@ import test from "node:test";
 // is still source-text, per D391(a): "no @/mock/ in the live graph" is a
 // SOURCE-TEXT rule on `UsersLive.tsx`, never a transitive-graph claim).
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const read = (file: string) => readFileSync(path.join(HERE, file), "utf8");
+const resolve = (file: string) => path.join(HERE, file);
+const read = (file: string) => readFileSync(resolve(file), "utf8");
 const PAGE = read("page.tsx");
 const MOCK = read("../../../components/users/UsersMock.tsx");
+const LIVE_PATH = resolve("../../../components/users/UsersLive.tsx");
 const LIVE = read("../../../components/users/UsersLive.tsx");
 
 test("the mock branch renders UsersMock, verbatim and with zero props, before any live-only read runs", () => {
@@ -54,8 +57,10 @@ test("UsersMock is the untouched page body, moved verbatim (D367)", () => {
 });
 
 test("A2/D392: the live component never imports mock data and never ships client JS (no \"use client\")", () => {
+  // Ban reads what the import RESOLVES to, never the alias someone happened
+  // to type (`resolvedImports`, D448).
   assert.equal(
-    LIVE.includes('from "@/mock/'),
+    resolvedImports(LIVE, LIVE_PATH).some((spec) => /(^|\/)mock\//.test(spec)),
     false,
     "UsersLive must not depend on any mock module",
   );

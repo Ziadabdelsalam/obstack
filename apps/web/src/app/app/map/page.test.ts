@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
+import { resolvedImports } from "@/test-utils/import-specifiers";
 
 // run with: npm test --workspace apps/web
 //
@@ -14,9 +15,11 @@ import test from "node:test";
 // textual anyway — that the live file names no mock module, that it is not a
 // client component, and that the mock branch returns before any live-only read.
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const read = (file: string) => readFileSync(path.join(HERE, file), "utf8");
+const resolve = (file: string) => path.join(HERE, file);
+const read = (file: string) => readFileSync(resolve(file), "utf8");
 const PAGE = read("page.tsx");
 const MOCK = read("../../../components/map/ServiceMapMock.tsx");
+const LIVE_PATH = resolve("../../../components/map/ServiceMapLive.tsx");
 const LIVE = read("../../../components/map/ServiceMapLive.tsx");
 
 test("the mock branch renders ServiceMapMock, with zero props, before any live-only read runs", () => {
@@ -56,7 +59,14 @@ test("ServiceMapMock is the untouched demo body — same client component, same 
 });
 
 test("A2/D392: the live map imports no mock data and is a server component", () => {
-  assert.equal(LIVE.includes('from "@/mock/'), false, "the live map must not depend on any mock module");
+  // Every ban below reads what an import RESOLVES to, never the alias
+  // someone happened to type (`resolvedImports`, D448).
+  const specs = resolvedImports(LIVE, LIVE_PATH);
+  assert.equal(
+    specs.some((spec) => /(^|\/)mock\//.test(spec)),
+    false,
+    "the live map must not depend on any mock module",
+  );
   // The directive only counts as one when it opens the file, which is exactly
   // what this asserts — the prose below it is free to name it.
   assert.equal(
@@ -65,7 +75,7 @@ test("A2/D392: the live map imports no mock data and is a server component", () 
     "D392: selection is a URL, so the live map ships no client JS at all",
   );
   assert.equal(
-    /from "@\/components\/map\/ServiceMapMock"/.test(LIVE),
+    specs.includes("@/components/map/ServiceMapMock"),
     false,
     "the live map is a props-fed sibling (D367), never a reuse of the demo's hardcoded picture",
   );

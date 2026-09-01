@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
+import { resolvedImports } from "@/test-utils/import-specifiers";
 
 // run with: npm test --workspace apps/web
 //
@@ -14,12 +15,14 @@ import test from "node:test";
 // `--conditions react-server` build does not export (measured in
 // `explore/page.test.ts`, the precedent this file follows).
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const read = (file: string) => readFileSync(path.join(HERE, file), "utf8");
+const resolve = (file: string) => path.join(HERE, file);
+const read = (file: string) => readFileSync(resolve(file), "utf8");
 
 const LIST_PAGE = read("page.tsx");
 const DETAIL_PAGE = read("[id]/page.tsx");
 
-const component = (name: string) => read(`../../../components/dashboards/${name}.tsx`);
+const componentPath = (name: string) => resolve(`../../../components/dashboards/${name}.tsx`);
+const component = (name: string) => readFileSync(componentPath(name), "utf8");
 const LIST_MOCK = component("DashboardsMock");
 const DETAIL_MOCK = component("DashboardDetailMock");
 const LIST_LIVE = component("DashboardsLive");
@@ -99,22 +102,23 @@ test("the mock bodies are master's two page bodies, byte for byte, modulo the ex
 
 test("the live dashboards graph never reaches back into the mock product (D431/D391)", () => {
   const files = [
-    ["DashboardsLive.tsx", LIST_LIVE],
-    ["DashboardDetailLive.tsx", DETAIL_LIVE],
-    ["DashboardEditor.tsx", EDITOR],
-    ["AddWidgetLive.tsx", ADD_WIDGET],
+    ["DashboardsLive.tsx", LIST_LIVE, componentPath("DashboardsLive")],
+    ["DashboardDetailLive.tsx", DETAIL_LIVE, componentPath("DashboardDetailLive")],
+    ["DashboardEditor.tsx", EDITOR, componentPath("DashboardEditor")],
+    ["AddWidgetLive.tsx", ADD_WIDGET, componentPath("AddWidgetLive")],
     // T2's hand-off: the card the live pages render is part of the same graph.
-    ["WidgetLive.tsx", WIDGET],
+    ["WidgetLive.tsx", WIDGET, componentPath("WidgetLive")],
   ] as const;
 
-  for (const [what, source] of files) {
+  for (const [what, source, filePath] of files) {
     // Every ban below reads what an import RESOLVES to, never the alias
-    // someone happened to type. These files already import their siblings
-    // relatively (`./WidgetLive`, `./actions`, `./DashboardEditor`), so a check
-    // spelled `from "@/mock/` is one `../../mock/` away from banning nothing —
-    // measured: all three bans passed against the relative form of the same
-    // import before this was matched on the specifier.
-    const specifiers = [...source.matchAll(/\bfrom\s+"([^"]+)"/g)].map(([, spec]) => spec);
+    // someone happened to type (`resolvedImports`, D448). These files already
+    // import their siblings relatively (`./WidgetLive`, `./actions`,
+    // `./DashboardEditor`), so a check spelled `from "@/mock/` is one
+    // `../../mock/` away from banning nothing — measured: all three bans
+    // passed against the relative form of the same import before this was
+    // matched on the resolved specifier.
+    const specifiers = resolvedImports(source, filePath);
 
     assert.equal(
       specifiers.some((spec) => /(^|\/)mock\//.test(spec)),
