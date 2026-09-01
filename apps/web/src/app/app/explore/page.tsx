@@ -2,7 +2,7 @@ import { redirect } from "next/navigation";
 import { connection } from "next/server";
 import { ExploreLive } from "@/components/explore/ExploreLive";
 import { ExploreMock } from "@/components/explore/ExploreMock";
-import type { MetricAgg, MetricRange, MetricSeriesQuery } from "@/lib/metrics-types";
+import { VALID_AGGS, type MetricAgg, type MetricRange, type MetricSeriesQuery } from "@/lib/metrics-types";
 import { forWorkspace } from "@/server/clickhouse";
 import { dataMode } from "@/server/data";
 import { listMetricCatalog, queryMetricSeries } from "@/server/queries/metrics";
@@ -11,18 +11,6 @@ import { activeSeriesCount, SERIES_CAP } from "./series-cap";
 
 const RANGES: MetricRange[] = ["1h", "6h", "24h"];
 const isRange = (v: unknown): v is MetricRange => RANGES.includes(v as MetricRange);
-
-/** Validity by type (D363 §0) — used only to keep a stale/hand-edited deep
- *  link from ever reaching `queryMetricSeries` with a combination it would
- *  refuse; the UI itself never offers one (`ExploreLive`'s own copy of this
- *  table). Kept here rather than imported: this file is the one place both
- *  the server-only validity rule and the client vocabulary would otherwise
- *  need a shared module for a five-line table. */
-const VALID_AGGS: Record<"gauge" | "sum" | "histogram", MetricAgg[]> = {
-  gauge: ["avg", "min", "max", "last"],
-  sum: ["sum", "rate"],
-  histogram: ["p50", "p90", "p95", "p99", "avg"],
-};
 
 /**
  * Explore, live-wired (D367): a server component branching on `dataMode` (the

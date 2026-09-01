@@ -5,8 +5,8 @@
  * `server-only` (it holds real SQL and a `ScopedClickHouse`), but T7's client
  * components still need the shapes it returns to type their props — a client
  * component cannot import a `server-only` module for a type alone (S1.5/D10
- * precedent). This file carries no imports and no runtime behavior, so it can
- * be pulled into either side of the server/client boundary.
+ * precedent). This file carries no imports and one plain data constant, so it
+ * can be pulled into either side of the server/client boundary.
  */
 
 /** One row of the discovered metric catalog — never fixture-fed. */
@@ -27,6 +27,17 @@ export type MetricRange = "1h" | "6h" | "24h";
 
 /** Validity by type: gauge -> avg|min|max|last; sum -> sum|rate; histogram -> pXX|avg. */
 export type MetricAgg = "avg" | "min" | "max" | "last" | "sum" | "rate" | "p50" | "p90" | "p95" | "p99";
+
+/** The one agg-validity table (D390): gauge -> avg|min|max|last; sum -> sum|rate;
+ *  histogram -> p50|p90|p95|p99|avg. `server/queries/metrics.ts` enforces it
+ *  (an invalid pair is the module's only request error); the explore page
+ *  and ExploreLive read it for the deep-link guard and the agg vocabulary,
+ *  so the UI can never offer what the server refuses. */
+export const VALID_AGGS: Record<MetricCatalogEntry["type"], readonly MetricAgg[]> = {
+  gauge: ["avg", "min", "max", "last"],
+  sum: ["sum", "rate"],
+  histogram: ["p50", "p90", "p95", "p99", "avg"],
+};
 
 export interface MetricSeriesQuery {
   metric: string;

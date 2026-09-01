@@ -16,12 +16,13 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import type {
-  MetricAgg,
-  MetricCatalogEntry,
-  MetricRange,
-  MetricSeriesQuery,
-  MetricSeriesResult,
+import {
+  VALID_AGGS,
+  type MetricAgg,
+  type MetricCatalogEntry,
+  type MetricRange,
+  type MetricSeriesQuery,
+  type MetricSeriesResult,
 } from "@/lib/metrics-types";
 import { layerColor } from "@/lib/layers";
 
@@ -75,21 +76,6 @@ function MiniTooltip({
     </div>
   );
 }
-
-/**
- * Validity by type (D363 §0), duplicated here as UI vocabulary rather than
- * imported: `server/queries/metrics.ts`'s `VALID_AGGS` lives behind
- * `server-only` and this is a client component (S1.5/D10 — the same reason
- * `metrics-types.ts` states the rule in prose at all). The server is still the
- * authority — an out-of-range deep link is a request the page answers with an
- * honest empty result, never a crash — this list only keeps the chips from
- * ever OFFERING a combination the contract would refuse.
- */
-const AGG_OPTIONS: Record<MetricCatalogEntry["type"], MetricAgg[]> = {
-  gauge: ["avg", "min", "max", "last"],
-  sum: ["sum", "rate"],
-  histogram: ["p50", "p90", "p95", "p99", "avg"],
-};
 
 const RANGE_OPTIONS: { value: MetricRange; label: string }[] = [
   { value: "1h", label: "1h" },
@@ -237,7 +223,7 @@ export function ExploreLive({
             <button
               key={`${m.name}:${m.type}`}
               type="button"
-              onClick={() => navigate(m.name, m.type, query.range, AGG_OPTIONS[m.type][0], null)}
+              onClick={() => navigate(m.name, m.type, query.range, VALID_AGGS[m.type][0], null)}
               className={`flex w-full items-center justify-between gap-2 rounded-md px-2 py-1.5 text-left font-mono text-[11.5px] ${
                 m.name === query.metric && m.type === query.type
                   ? "bg-raised text-ink"
@@ -266,7 +252,7 @@ export function ExploreLive({
         <div className="mb-4 flex flex-wrap gap-5 rounded-lg border border-line bg-surface p-3.5">
           <ChipGroup
             label="aggregation"
-            options={AGG_OPTIONS[selected.type].map((a) => ({ value: a, label: a }))}
+            options={VALID_AGGS[selected.type].map((a) => ({ value: a, label: a }))}
             value={query.agg}
             onChange={(agg) => navigate(query.metric, query.type, query.range, agg, query.groupBy)}
           />

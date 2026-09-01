@@ -1,11 +1,12 @@
 import "server-only";
-import type {
-  MetricAgg,
-  MetricCatalogEntry,
-  MetricRange,
-  MetricSeriesPoint,
-  MetricSeriesQuery,
-  MetricSeriesResult,
+import {
+  VALID_AGGS,
+  type MetricAgg,
+  type MetricCatalogEntry,
+  type MetricRange,
+  type MetricSeriesPoint,
+  type MetricSeriesQuery,
+  type MetricSeriesResult,
 } from "@/lib/metrics-types";
 import type { ScopedClickHouse } from "@/server/clickhouse";
 
@@ -135,13 +136,6 @@ const RANGES: Record<MetricRange, { bucketMinutes: number; points: number }> = {
   "1h": { bucketMinutes: 1, points: 60 },
   "6h": { bucketMinutes: 5, points: 72 },
   "24h": { bucketMinutes: 15, points: 96 },
-};
-
-/** Validity by type (D363 §0, binding): an agg outside its type's set is a request error, never a silent coercion. */
-const VALID_AGGS: Record<MetricType, MetricAgg[]> = {
-  gauge: ["avg", "min", "max", "last"],
-  sum: ["sum", "rate"],
-  histogram: ["p50", "p90", "p95", "p99", "avg"],
 };
 
 /**
