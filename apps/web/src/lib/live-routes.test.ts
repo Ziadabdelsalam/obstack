@@ -76,6 +76,18 @@ test("/app/explore is live-wired, exactly", () => {
   assert.equal(isLiveWiredRoute("/app/explore/anything"), false);
 });
 
+// S6.3 T6 (D21/D367/D431): the list reads this workspace's own `dashboards`
+// rows and a dashboard's page reads its widgets through the metrics contract,
+// so the SAMPLE badge must be gone from BOTH — registration, not the pages
+// (S2.0 L1). Wired twice for the `/app/services` reason: the exact entry is the
+// list, the trailing-slash entry is one dashboard's own page under it, which is
+// a different page. Drop either line and the drive's badge claim on that URL
+// goes red, which is exactly what `SampleDataBadge` would then do on it.
+test("/app/dashboards and one dashboard under it are live-wired", () => {
+  assert.equal(isLiveWiredRoute("/app/dashboards"), true);
+  assert.equal(isLiveWiredRoute("/app/dashboards/dash_0123456789abcdef"), true);
+});
+
 // D205: the e2e drive's SAMPLE-badge positive control is `/app/costs`, and this
 // sprint wires neither it nor any other unwired route — a registration that
 // silently vacated that control would leave the drive asserting nothing. The

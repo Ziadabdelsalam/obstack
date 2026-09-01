@@ -1,13 +1,15 @@
 /**
  * The evidence dataset the `e2e` drive seeds (T5, extended by F8 and S3.3).
  *
- * THREE SEEDINGS LIVE HERE, one per store, and they are invoked separately
- * because they answer different questions. `--workspace/--label` writes the
- * ClickHouse telemetry fixture described below; `--lower-free-quota` writes the
- * single Postgres row the S3.3 metering step needs (D172) and touches nothing
- * else; `--leg metrics` sends the S6.1 metrics fixture through the product's
- * OWN front door — an OTLP export to the real `/v1/metrics`, never an insert
- * (D370). See "the quota seeding" and "the metrics seeding" at the bottom.
+ * FOUR SEEDINGS LIVE HERE, and they are invoked separately because they answer
+ * different questions. `--workspace/--label` writes the ClickHouse telemetry
+ * fixture described below; `--lower-free-quota` writes the single Postgres row
+ * the S3.3 metering step needs (D172) and touches nothing else; `--leg metrics`
+ * sends the S6.1 metrics fixture through the product's OWN front door — an OTLP
+ * export to the real `/v1/metrics`, never an insert (D370); `--leg dashboards`
+ * writes the S6.3 dashboard row, the one fixture in this file with no front
+ * door to go through (D424). See "the quota seeding", "the metrics seeding" and
+ * "the dashboards seeding" at the bottom.
  *
  * Writes a DEDICATED workspace straight into ClickHouse through the ingest
  * user, so the run asserts against data whose exact shape is known here rather
@@ -56,9 +58,11 @@
  *   node deploy/compose/exit-seed.mjs --workspace ws_1a2b3c --label zzalice
  *   SEED_METRICS_TOKEN=ok_live_… node deploy/compose/exit-seed.mjs --leg metrics \
  *     --workspace ws_1a2b3c --label zzalice
+ *   node deploy/compose/exit-seed.mjs --leg dashboards --workspace ws_1a2b3c --label zzalice
  *   node deploy/compose/exit-seed.mjs --lower-free-quota
  */
 
+import { randomBytes } from "node:crypto";
 import pg from "pg";
 
 const CH = process.env.CLICKHOUSE_URL ?? "http://127.0.0.1:8123";
@@ -74,11 +78,12 @@ const USAGE =
   "usage: node deploy/compose/exit-seed.mjs --workspace <workspace_id> --label <label>\n" +
   "       node deploy/compose/exit-seed.mjs --leg metrics --workspace <workspace_id> --label <label>\n" +
   "         (with SEED_METRICS_TOKEN=<that workspace's own ok_live_ key> in the environment)\n" +
+  "       node deploy/compose/exit-seed.mjs --leg dashboards --workspace <workspace_id> --label <label>\n" +
   "       node deploy/compose/exit-seed.mjs --lower-free-quota";
 
 /** Which store this invocation writes to. Absent is the ClickHouse fixture, so
  *  the default invocation is exactly the one it always was. */
-const LEGS = ["clickhouse", "metrics"];
+const LEGS = ["clickhouse", "metrics", "dashboards"];
 function legOf(argv) {
   const at = argv.indexOf("--leg");
   if (at === -1) return "clickhouse";
@@ -682,6 +687,132 @@ async function seedMetrics(label) {
   };
 }
 
+// -------------------------------------------------- the dashboards seeding
+/**
+ * The S6.3 dashboards fixture (D424/D426), and what it does differently from
+ * the metrics leg beside it is forced rather than chosen: a dashboard is a row
+ * somebody CREATES IN THE UI, and no exporter, no OTLP endpoint and no API can
+ * put one there. There is no front door to prefer, so this leg writes the row
+ * with the app's own shape — `dash_<16 hex>`, `wdg_<16 hex>`, `widgets` exactly
+ * `lib/dashboard-types.ts`'s `DashboardWidget[]` (D437) — straight into the
+ * DISPOSABLE compose Postgres, on the `--lower-free-quota` posture.
+ *
+ * It runs AFTER the metrics leg and depends on it: every widget names one of
+ * the three metrics that export sent, by the same `metricNames(label)` the
+ * drive reads, and groups by `service.name`, the resource attribute it carried.
+ * A dashboard over metrics that never arrived would render four honest empty
+ * cards and prove nothing about the fold (D427).
+ *
+ * Nothing here can be undone, and nothing here needs a guard against a second
+ * run: `UNIQUE (workspace_id, name)` is the guard, and Postgres raising 23505
+ * is a clearer refusal than a SELECT this file could run first.
+ */
+
+/** The name the row carries — its identity inside the workspace (0009's UNIQUE). */
+export const DASHBOARD_NAME = "Exit dashboard";
+
+/** The ids the app itself mints (D116/D437), minted the same way here. */
+const newId = (prefix) => `${prefix}_${randomBytes(8).toString("hex")}`;
+
+/**
+ * ONE dashboard's four widgets, one per kind (D426's `WIDGET_KINDS`), so the
+ * drive sees every renderer over data whose exact answer is known:
+ *   - stat, `last` on the gauge — the single point's own value, captioned
+ *     `latest · as of {t} · last 1h` (D427);
+ *   - timeseries, `avg` on that same gauge;
+ *   - top-n and table, `sum` on the cumulative sum grouped by `service.name` —
+ *     the one group the export's resource named, captioned
+ *     `sum · last 1h · {n} of {N} buckets had data`.
+ *
+ * Exactly ONE is pinned (D425), which is what makes the overview's
+ * `pinned from your dashboards · 1` a number about this fixture. There is no
+ * watch row and no reserved dashboard to seed: the overview is a VIEW over that
+ * flag, never a row of its own.
+ *
+ * The TITLES carry the label the way every other word this seeder writes does
+ * (D135) — two workspaces seeded from this one definition are told apart by
+ * what their dashboards say — and they are exported because the drive asserts
+ * the titles it opens the page on and must not spell them a second time
+ * (S2.3 L3). Each is distinguishable from the others as a SUBSTRING too: the
+ * drive slices one card out of the page by the title above it.
+ */
+export function dashboardWidgets(label) {
+  const names = metricNames(label);
+  return [
+    {
+      title: `${label} depth right now`,
+      kind: "stat",
+      metric: names.gauge,
+      type: "gauge",
+      agg: "last",
+      range: "1h",
+      groupBy: null,
+      pinned: true,
+    },
+    {
+      title: `${label} depth over the hour`,
+      kind: "timeseries",
+      metric: names.gauge,
+      type: "gauge",
+      agg: "avg",
+      range: "1h",
+      groupBy: null,
+      pinned: false,
+    },
+    {
+      title: `${label} requests by service`,
+      kind: "topn",
+      metric: names.sum,
+      type: "sum",
+      agg: "sum",
+      range: "1h",
+      groupBy: "service.name",
+      pinned: false,
+    },
+    {
+      title: `${label} requests, tabulated`,
+      kind: "table",
+      metric: names.sum,
+      type: "sum",
+      agg: "sum",
+      range: "1h",
+      groupBy: "service.name",
+      pinned: false,
+    },
+  ];
+}
+
+/**
+ * The app's own column list, with `widgets` BOUND rather than interpolated: the
+ * array carries a label the caller chose, and pasting it into statement text
+ * would make this the one place in this file where that label could end a
+ * statement. What comes back is what Postgres stored, counted from the stored
+ * array — never from the one this process built.
+ */
+const INSERT_DASHBOARD_SQL = `
+  INSERT INTO dashboards (workspace_id, id, name, widgets)
+       VALUES ($1, $2, $3, $4::jsonb)
+    RETURNING id, name, jsonb_array_length(widgets) AS widgets,
+              (SELECT count(*)::int FROM jsonb_array_elements(widgets) w
+                WHERE (w ->> 'pinned')::boolean IS TRUE) AS pinned`;
+
+async function seedDashboard(workspace, label) {
+  const widgets = dashboardWidgets(label).map((w) => ({ id: newId("wdg"), ...w }));
+  const client = new pg.Client({ connectionString: PG_DSN });
+  await client.connect();
+  try {
+    const { rows } = await client.query(INSERT_DASHBOARD_SQL, [
+      workspace,
+      newId("dash"),
+      DASHBOARD_NAME,
+      JSON.stringify(widgets),
+    ]);
+    return { ...rows[0], titles: widgets.map((w) => w.title) };
+  } finally {
+    await client.end();
+  }
+}
+
 // Seeding runs only when this file is the program, and importing it for its
 // constants must never write: the ingest user has no mutation grant, so a
 // second insert cannot be undone without `down -v`, and duplicated rows would
@@ -693,6 +824,10 @@ const readingConstants = process.env.SEED_MODULE !== undefined;
 
 if (invokedDirectly && !readingConstants && process.argv.includes("--lower-free-quota")) {
   console.log(JSON.stringify({ plan: await lowerFreeQuota() }, null, 2));
+} else if (invokedDirectly && !readingConstants && legOf(process.argv) === "dashboards") {
+  const workspace = requiredArg(process.argv, "--workspace");
+  const label = requiredArg(process.argv, "--label");
+  console.log(JSON.stringify({ workspace, label, dashboard: await seedDashboard(workspace, label) }, null, 2));
 } else if (invokedDirectly && !readingConstants && legOf(process.argv) === "metrics") {
   const workspace = requiredArg(process.argv, "--workspace");
   const label = requiredArg(process.argv, "--label");

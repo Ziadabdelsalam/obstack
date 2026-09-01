@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
+import { resolvedImports } from "@/test-utils/import-specifiers";
 
 // run with: npm test --workspace apps/web
 //
@@ -15,7 +16,8 @@ import test from "node:test";
 // `TraceDiffLive`) lives in `page.integration.test.ts` next door, which shims
 // that one function per D156 and can therefore import the component.
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const read = (file: string) => readFileSync(path.join(HERE, file), "utf8");
+const resolve = (file: string) => path.join(HERE, file);
+const read = (file: string) => readFileSync(resolve(file), "utf8");
 // Comments state what moved and why, so a scan for a moved thing has to read
 // the code without them (the `ExplainPanel.test.tsx` treatment).
 const strip = (s: string) =>
@@ -24,6 +26,8 @@ const strip = (s: string) =>
 // Every assertion below reads the STRIPPED text: each of these files explains
 // in prose what it must not contain, and a scan that counted those sentences
 // would pass on a file that had re-imported the thing they name.
+const LIVE_PATH = resolve("../../../../components/trace/TraceDiffLive.tsx");
+const EXPLORER_PATH = resolve("../../../../components/trace/TraceExplorer.tsx");
 const PAGE = strip(read("page.tsx"));
 const MOCK_RAW = read("../../../../components/trace/TraceDiffMock.tsx");
 const MOCK = strip(MOCK_RAW);
@@ -71,7 +75,14 @@ test("TraceDiffMock is the untouched client body — no props, its own state, it
 });
 
 test("A2/D392: the live diff is a server component that reads no mock module", () => {
-  assert.equal(LIVE.includes('from "@/mock/'), false, "the live diff must not depend on any mock module");
+  // Ban reads what the import RESOLVES to, never the alias someone happened
+  // to type (`resolvedImports`, D448). `strip()` only removes comments, so
+  // the specifiers below are read from the same code the earlier checks used.
+  assert.equal(
+    resolvedImports(LIVE, LIVE_PATH).some((spec) => /(^|\/)mock\//.test(spec)),
+    false,
+    "the live diff must not depend on any mock module",
+  );
   assert.equal(LIVE.includes('"use client"'), false, "D392: the live diff is a server component — selection is a URL");
   assert.equal(
     /useState|useMemo|useSearchParams|onChange=/.test(LIVE),
@@ -131,7 +142,7 @@ test("D416: the page tells TraceDiffLive whether A was auto-picked, and slot A k
 
 test("D400: the compare entry point is an href from the page — the mock corpus is out of the client bundle", () => {
   assert.equal(
-    EXPLORER.includes('from "@/mock/'),
+    resolvedImports(EXPLORER, EXPLORER_PATH).some((spec) => /(^|\/)mock\//.test(spec)),
     false,
     "TraceExplorer is a client component: importing the mock corpus ships it to every live trace page",
   );

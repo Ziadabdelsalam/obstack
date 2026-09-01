@@ -1,0 +1,264 @@
+"use client";
+
+import { useState, useTransition } from "react";
+import { X } from "lucide-react";
+import {
+  MAX_NAME_CHARS,
+  MAX_WIDGETS_PER_DASHBOARD,
+  METRIC_RANGES,
+  WIDGET_KINDS,
+  type WidgetKind,
+} from "@/lib/dashboard-types";
+import { VALID_AGGS, type MetricAgg, type MetricCatalogEntry, type MetricRange } from "@/lib/metrics-types";
+import { addWidget } from "./actions";
+
+/**
+ * The live add-widget form (D428). Every choice it offers comes from the
+ * DISCOVERED catalog passed as a prop — the metric and its type as one key
+ * (D384), only the aggregations valid for that type (`VALID_AGGS`, D390), only
+ * the contract's ranges, and only the attribute keys that metric was actually
+ * seen with. So this form cannot construct a widget the metrics contract would
+ * refuse to answer, and the store's own validation (D430) stays the boundary
+ * rather than the UI's manners: a refusal is printed here VERBATIM, in the form
+ * the reader is still looking at.
+ *
+ * The mock `AddWidgetModal` picks from the fixture catalog and is untouched
+ * (D391/D438) — this is its live sibling, not a shared component.
+ */
+
+const OVERLAY = "fixed inset-0 z-50 flex items-start justify-center bg-black/60 pt-[10vh]";
+const FIELD =
+  "w-full rounded-md border border-line bg-raised px-2.5 py-1.5 font-mono text-[12px] text-ink placeholder:text-faint focus:border-line-strong focus:outline-none";
+const LABEL = "mb-1.5 block font-mono text-[10px] uppercase tracking-widest text-faint";
+
+export function AddWidgetLive({
+  dashboardId,
+  catalog,
+  full,
+  onAdded,
+  onClose,
+}: {
+  dashboardId: string;
+  catalog: MetricCatalogEntry[];
+  /** The dashboard is already at MAX_WIDGETS_PER_DASHBOARD — the store would refuse. */
+  full: boolean;
+  onAdded: () => void;
+  onClose: () => void;
+}) {
+  const [at, setAt] = useState(0);
+  const [kind, setKind] = useState<WidgetKind>("timeseries");
+  const [aggChoice, setAggChoice] = useState<MetricAgg | null>(null);
+  const [range, setRange] = useState<MetricRange>("1h");
+  const [groupChoice, setGroupChoice] = useState<string | null>(null);
+  const [title, setTitle] = useState<string | null>(null);
+  const [pinned, setPinned] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [pending, run] = useTransition();
+
+  const metric = catalog[at] ?? null;
+  // Every dependent choice is DERIVED from the selected metric rather than
+  // reset by an effect: switching metric can never leave an agg or a group-by
+  // behind that this metric was never seen with.
+  const aggs = metric ? VALID_AGGS[metric.type] : [];
+  const agg: MetricAgg | null = metric ? (aggChoice && aggs.includes(aggChoice) ? aggChoice : aggs[0]) : null;
+  const groupBy =
+    metric && kind !== "stat" && groupChoice && metric.attrKeys.includes(groupChoice) ? groupChoice : null;
+  const needsGroup = (kind === "topn" || kind === "table") && groupBy === null;
+  const defaultTitle = metric && agg ? `${metric.name} · ${agg}` : "";
+
+  const add = () => {
+    if (!metric || !agg) return;
+    run(async () => {
+      try {
+        const result = await addWidget(dashboardId, {
+          title: (title ?? defaultTitle).trim(),
+          kind,
+          metric: metric.name,
+          type: metric.type,
+          agg,
+          range,
+          groupBy,
+          pinned,
+        });
+        if (result === null) {
+          return setNotice("dashboards belong to a workspace, and this session has none");
+        }
+        if ("refused" in result) return setNotice(result.refused);
+        onAdded();
+      } catch (failure) {
+        console.error("[dashboards] add widget", failure);
+        setNotice("that widget could not be confirmed — reload to see what the store holds");
+      }
+    });
+  };
+
+  return (
+    <div className={OVERLAY} onClick={onClose} role="dialog" aria-modal="true" aria-label="Add widget">
+      <div
+        className="w-full max-w-md overflow-hidden rounded-xl border border-line-strong bg-surface shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between border-b border-line px-4 py-3">
+          <h2 className="font-mono text-[12px] uppercase tracking-widest text-faint">Add widget</h2>
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="Close"
+            className="rounded p-0.5 text-faint hover:bg-raised hover:text-ink"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+
+        {!metric ? (
+          <div className="px-4 py-6 text-center">
+            <p className="font-mono text-[12.5px] text-faint">
+              no metrics in this workspace yet — send some and they appear here
+            </p>
+          </div>
+        ) : (
+          <div className="space-y-3.5 px-4 py-4">
+            <div>
+              <label htmlFor="widget-metric" className={LABEL}>
+                Metric
+              </label>
+              {/* D384: a metric is keyed (name, type) — the option carries both. */}
+              <select
+                id="widget-metric"
+                value={at}
+                onChange={(e) => setAt(Number(e.target.value))}
+                className={FIELD}
+              >
+                {catalog.map((m, i) => (
+                  <option key={`${m.name}\u0000${m.type}`} value={i}>
+                    {m.name} · {m.type}
+                    {m.unit ? ` · ${m.unit}` : ""}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div>
+              <p className={LABEL}>Widget type</p>
+              <div className="flex flex-wrap gap-1.5">
+                {WIDGET_KINDS.map((k) => (
+                  <button
+                    key={k}
+                    type="button"
+                    onClick={() => setKind(k)}
+                    // The chosen kind is a border colour to a sighted reader and
+                    // nothing at all without it — this is what says "selected".
+                    aria-pressed={kind === k}
+                    className={`rounded-md border px-2.5 py-1 font-mono text-[11px] ${
+                      kind === k ? "border-line-strong bg-raised text-ink" : "border-line text-faint hover:text-ink"
+                    }`}
+                  >
+                    {k}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label htmlFor="widget-agg" className={LABEL}>
+                  Aggregation
+                </label>
+                <select
+                  id="widget-agg"
+                  value={agg ?? ""}
+                  onChange={(e) => setAggChoice(e.target.value as MetricAgg)}
+                  className={FIELD}
+                >
+                  {aggs.map((a) => (
+                    <option key={a} value={a}>
+                      {a}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label htmlFor="widget-range" className={LABEL}>
+                  Range
+                </label>
+                <select
+                  id="widget-range"
+                  value={range}
+                  onChange={(e) => setRange(e.target.value as MetricRange)}
+                  className={FIELD}
+                >
+                  {METRIC_RANGES.map((r) => (
+                    <option key={r} value={r}>
+                      last {r}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            <div>
+              <label htmlFor="widget-group" className={LABEL}>
+                Group by
+              </label>
+              <select
+                id="widget-group"
+                value={groupBy ?? ""}
+                onChange={(e) => setGroupChoice(e.target.value || null)}
+                disabled={kind === "stat"}
+                className={`${FIELD} disabled:opacity-40`}
+              >
+                <option value="">none</option>
+                {metric.attrKeys.map((key) => (
+                  <option key={key} value={key}>
+                    {key}
+                  </option>
+                ))}
+              </select>
+              {kind === "stat" && (
+                <p className="mt-1 font-mono text-[10.5px] text-faint">a stat has no group-by</p>
+              )}
+              {needsGroup && (
+                <p className="mt-1 font-mono text-[10.5px] text-warn">top-n and table need a group-by</p>
+              )}
+            </div>
+
+            <div>
+              <label htmlFor="widget-title" className={LABEL}>
+                Title
+              </label>
+              <input
+                id="widget-title"
+                value={title ?? defaultTitle}
+                onChange={(e) => setTitle(e.target.value)}
+                maxLength={MAX_NAME_CHARS}
+                className={FIELD}
+              />
+            </div>
+
+            <label className="flex items-center gap-2 font-mono text-[11.5px] text-mid">
+              <input type="checkbox" checked={pinned} onChange={(e) => setPinned(e.target.checked)} />
+              pin to the overview
+            </label>
+
+            {/* D402/D430: the cap speaks in the sentence the store refuses with. */}
+            {full && (
+              <p className="font-mono text-[11px] text-warn">
+                this dashboard is full ({MAX_WIDGETS_PER_DASHBOARD} widgets)
+              </p>
+            )}
+            {notice && <p className="font-mono text-[11px] text-warn">{notice}</p>}
+
+            <button
+              type="button"
+              onClick={add}
+              disabled={pending || full || needsGroup}
+              className="w-full rounded-md border border-line-strong bg-raised px-3 py-2 font-mono text-[12px] text-ink hover:bg-overlay disabled:opacity-40 disabled:hover:bg-raised"
+            >
+              Add widget
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}

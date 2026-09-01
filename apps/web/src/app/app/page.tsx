@@ -3,13 +3,18 @@ import { redirect } from "next/navigation";
 import { connection } from "next/server";
 import { ArrowUpRight } from "lucide-react";
 import { topFailing } from "@/mock/metrics";
+import { pinnedWidgets } from "@/lib/widget-view";
+import { forWorkspace } from "@/server/clickhouse";
+import { listDashboards } from "@/server/dashboards";
 import { dataForSession, dataMode, type WorkspaceData } from "@/server/data";
 import { listOrgMembers } from "@/server/invites";
 import { getOnboardingStatus } from "@/server/onboarding";
 import { queryRows } from "@/server/postgres";
 import { getSessionContext } from "@/server/session";
+import { loadWidgetResults } from "@/server/widget-results";
 import { LatencyChart, RequestsChart, TokensChart } from "@/components/dash/Charts";
 import { WatchWidgets } from "@/components/dash/WatchWidgets";
+import { WatchWidgetsLive } from "@/components/dash/WatchWidgetsLive";
 import {
   DEMO_CHECKLIST_FLAGS,
   OnboardingChecklist,
@@ -17,6 +22,7 @@ import {
 } from "@/components/dash/OnboardingChecklist";
 import { LayerChip } from "@/components/ui/LayerChip";
 import { SampleMark } from "@/components/ui/SampleMark";
+import type { PinnedWidget, WidgetLoad } from "@/lib/dashboard-types";
 import type { Layer } from "@/lib/types";
 
 /**
@@ -26,29 +32,6 @@ import type { Layer } from "@/lib/types";
  * that widget to real data.
  */
 const SAMPLE_TITLE = "this widget still renders sample content — not from your ingested telemetry";
-
-/**
- * Marks a widget that renders nothing until it has hydrated (and can vanish
- * again when dismissed). The marker carries no `<div>` of its own and every
- * such widget's root is one, so the wrapper hides itself whenever the widget is
- * absent — a lone SAMPLE chip with no widget under it would be its own lie.
- */
-function SampleWidget({
-  className = "",
-  children,
-}: {
-  className?: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <div className={`[&:not(:has(div))]:hidden ${className}`}>
-      <p className="mb-1">
-        <SampleMark title={SAMPLE_TITLE} />
-      </p>
-      {children}
-    </div>
-  );
-}
 
 function Card({
   title,
@@ -126,6 +109,32 @@ async function liveChecklistFlags(data: WorkspaceData): Promise<ChecklistFlags> 
   };
 }
 
+interface WatchData {
+  pinned: PinnedWidget[];
+  loads: WidgetLoad[];
+}
+
+/** Mock mode's watch slot is `WatchWidgets` itself (no read at all, D425/D428). */
+const EMPTY_WATCH: WatchData = { pinned: [], loads: [] };
+
+/**
+ * The overview's pinned widgets (D425): a VIEW over every widget flagged
+ * `pinned` across this workspace's dashboards, dashboard-list order then
+ * widget order (`lib/widget-view.ts`'s `pinnedWidgets`), each one's own
+ * metrics read isolated to its own slot (D428) so one bad widget never blanks
+ * the rest of the row. The session read mirrors `liveChecklistFlags` above
+ * and `services/page.tsx`'s `getSessionContext` idiom — request-scoped, so a
+ * second call here costs nothing extra.
+ */
+async function liveWatchWidgets(): Promise<WatchData> {
+  const session = await getSessionContext();
+  if (!session) redirect("/login");
+  const dashboards = await listDashboards(session.workspaceId, queryRows);
+  const pinned = pinnedWidgets(dashboards);
+  const loads = await loadWidgetResults(forWorkspace(session.workspaceId), pinned.map((p) => p.widget));
+  return { pinned, loads };
+}
+
 export default async function OverviewPage() {
   const live = dataMode === "live";
   // Live numbers must not be baked into a static prerender (D27a) — connection()
@@ -135,9 +144,10 @@ export default async function OverviewPage() {
   // the label below is the workspace these numbers were queried under, not a
   // second resolution that could disagree with them (D13/D21).
   const data = await dataForSession();
-  const [{ points, stats }, checklist] = await Promise.all([
+  const [{ points, stats }, checklist, { pinned, loads }] = await Promise.all([
     data.getOverview(),
     live ? liveChecklistFlags(data) : DEMO_CHECKLIST_FLAGS,
+    live ? liveWatchWidgets() : EMPTY_WATCH,
   ]);
   return (
     <div className="px-5 py-4">
@@ -240,13 +250,7 @@ export default async function OverviewPage() {
         </Card>
       </div>
 
-      {live ? (
-        <SampleWidget className="mt-4">
-          <WatchWidgets />
-        </SampleWidget>
-      ) : (
-        <WatchWidgets />
-      )}
+      {live ? <WatchWidgetsLive pinned={pinned} loads={loads} /> : <WatchWidgets />}
     </div>
   );
 }

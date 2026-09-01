@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
+import { resolvedImports } from "@/test-utils/import-specifiers";
 
 // run with: npm test --workspace apps/web
 //
@@ -14,7 +15,8 @@ import test from "node:test";
 // `next/link` and `lucide-react` into a `--conditions react-server` process,
 // where React exports no `createContext` (explore/page.test.ts, D54(iii)).
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const read = (file: string) => readFileSync(path.join(HERE, file), "utf8");
+const resolve = (file: string) => path.join(HERE, file);
+const read = (file: string) => readFileSync(resolve(file), "utf8");
 
 /**
  * Comments stripped, so every claim below is a claim about the CODE. All six
@@ -26,6 +28,10 @@ const read = (file: string) => readFileSync(path.join(HERE, file), "utf8");
 const code = (src: string): string =>
   src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^[ \t]*\/\/.*$/gm, "");
 
+const LIST_PAGE_PATH = resolve("page.tsx");
+const DETAIL_PAGE_PATH = resolve("[id]/page.tsx");
+const LIST_LIVE_PATH = resolve("../../../components/services/ServicesLive.tsx");
+const DETAIL_LIVE_PATH = resolve("../../../components/services/ServiceDetailLive.tsx");
 const LIST_PAGE = code(read("page.tsx"));
 const DETAIL_PAGE = code(read("[id]/page.tsx"));
 const LIST_MOCK = code(read("../../../components/services/ServicesMock.tsx"));
@@ -60,34 +66,48 @@ test("both pages branch on dataMode and return the moved mock body first, with t
 });
 
 test("D401: the detail page's ONE mock import is the deploys fixture, and the catalog fixture stays in the mock branch", () => {
+  // Every ban below reads what an import RESOLVES to, never the alias
+  // someone happened to type (`resolvedImports`, D448).
   assert.equal(
-    LIST_PAGE.includes("@/mock/"),
+    resolvedImports(LIST_PAGE, LIST_PAGE_PATH).some((spec) => /(^|\/)mock\//.test(spec)),
     false,
     "the catalog page reads no fixture at all — ServicesMock owns that import",
   );
-  const detailMockImports = DETAIL_PAGE.match(/@\/mock\//g) ?? [];
+  const detailMockSpecs = resolvedImports(DETAIL_PAGE, DETAIL_PAGE_PATH).filter((spec) =>
+    /(^|\/)mock\//.test(spec),
+  );
   assert.equal(
-    detailMockImports.length,
+    detailMockSpecs.length,
     1,
-    `services/[id]/page.tsx must name exactly one @/mock/ module, found ${detailMockImports.length}`,
+    `services/[id]/page.tsx must name exactly one mock module, found ${detailMockSpecs.length}`,
+  );
+  // The catalog fixture is the mock branch's alone (a live page reaching for
+  // it would be the fabricated service list this whole task exists to
+  // replace) — asserted by naming the ONE mock module allowed, not by
+  // excluding catalog's alias spelling.
+  assert.equal(
+    detailMockSpecs[0],
+    "@/mock/intelligence",
+    "the one mock import must be the deploys fixture D362/D401 keeps rendering",
   );
   assert.ok(
     DETAIL_PAGE.includes('import { deploys } from "@/mock/intelligence";'),
     "the one mock import must be the deploys fixture D362/D401 keeps rendering",
   );
-  // The catalog fixture is the mock branch's alone: a live page reaching for it
-  // would be the fabricated service list this whole task exists to replace.
-  assert.equal(DETAIL_PAGE.includes("@/mock/catalog"), false);
   assert.ok(LIST_MOCK.includes('from "@/mock/catalog"'));
   assert.ok(DETAIL_MOCK.includes('from "@/mock/catalog"'));
 });
 
 test("A2/D392: neither Live component imports mock data or ships client JS", () => {
-  for (const [label, src] of [
-    ["ServicesLive.tsx", LIST_LIVE],
-    ["ServiceDetailLive.tsx", DETAIL_LIVE],
+  for (const [label, src, filePath] of [
+    ["ServicesLive.tsx", LIST_LIVE, LIST_LIVE_PATH],
+    ["ServiceDetailLive.tsx", DETAIL_LIVE, DETAIL_LIVE_PATH],
   ] as const) {
-    assert.equal(src.includes("@/mock/"), false, `${label} must not depend on any mock module`);
+    assert.equal(
+      resolvedImports(src, filePath).some((spec) => /(^|\/)mock\//.test(spec)),
+      false,
+      `${label} must not depend on any mock module`,
+    );
     assert.equal(
       src.includes('"use client"'),
       false,
