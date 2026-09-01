@@ -21,6 +21,7 @@ const REPO_ROOT = path.resolve(HERE, "../../../../..");
 
 const TOUR_GUIDE = path.join(HERE, "TourGuide.tsx");
 const LOGS_EXPLORER = path.join(HERE, "../logs/LogsExplorer.tsx");
+const COMPONENTS = path.resolve(HERE, "..");
 
 /**
  * The claim, never written out as a literal in this file: the sweep below reads
@@ -189,4 +190,70 @@ test("D60: the /app/logs tour step promises capability, not a tail or a pod inve
     readFileSync(LOGS_EXPLORER, "utf8").includes('data-tour="logs"'),
     "LogsExplorer dropped data-tour=\"logs\", so the step spotlights nothing on the wired surface",
   );
+});
+
+/**
+ * One step's source, sliced out of the array the way the `/app/logs` test above
+ * does it — the tour is a `"use client"` module the react-server runner cannot
+ * import (D54(ii)), so the copy is read as text.
+ */
+function stepSource(path: string): string {
+  const source = readFileSync(TOUR_GUIDE, "utf8");
+  const start = source.indexOf(`path: "${path}"`);
+  assert.ok(start > 0, `the tour no longer has a ${path} step — the wired surface lost its annotation`);
+  return source.slice(start, source.indexOf("},", start));
+}
+
+/**
+ * S6.2 (D404): `/app/map`, `/app/issues` and `/app/users` read the signed-in
+ * workspace's own spans in live mode now, so each step's words became a claim
+ * about REAL data — and all three were narrating the sample incident: the red
+ * edge returning 429 at 13:05, the 429 group spiking in the last bucket, and a
+ * named customer's account absorbing 41 failures. None of that is true of a
+ * workspace that just connected an exporter.
+ *
+ * The three tests below are the `/app/logs` test's shape, one per surface (the
+ * D60 treatment): the demo's facts are gone, the step still names its anchor,
+ * and BOTH components behind the route still carry that anchor — the live one
+ * and the frozen mock one, because the tour walks the same step in both modes
+ * and a step that spotlights nothing is a card floating over a screen.
+ */
+const surfaceFile = (relative: string) => readFileSync(path.join(COMPONENTS, relative), "utf8");
+
+test("D404: the /app/map tour step promises capability, not the demo's incident edge", () => {
+  const step = stepSource("/app/map");
+  for (const fact of ["8.1", "429", "13:05", "LLM provider"]) {
+    assert.ok(!step.includes(fact), `the map tour step still narrates "${fact}" — a fact about the demo fixture, not about a live workspace`);
+  }
+  assert.ok(step.includes('target: "map"'), "the step stopped targeting the map anchor");
+  assert.ok(step.includes("error rate"), "the step stopped describing what an edge carries");
+  for (const file of ["map/ServiceMapLive.tsx", "map/ServiceMapMock.tsx"]) {
+    assert.ok(surfaceFile(file).includes('data-tour="map"'), `${file} dropped data-tour="map", so the step spotlights nothing there`);
+  }
+});
+
+test("D404: the /app/issues tour step promises capability, not the demo's 429 group", () => {
+  const step = stepSource("/app/issues");
+  for (const fact of ["429", "Same incident", "spiking"]) {
+    assert.ok(!step.includes(fact), `the issues tour step still narrates "${fact}" — a fact about the demo fixture, not about a live workspace`);
+  }
+  assert.ok(step.includes('target: "issues"'), "the step stopped targeting the issues anchor");
+  // D361: this build stores no triage state, so the step says so rather than
+  // implying a workflow the surface does not have.
+  assert.ok(step.includes("acknowledged"), "the step stopped saying that nothing here is acknowledged (D361)");
+  for (const file of ["issues/IssuesLive.tsx", "issues/IssuesMock.tsx"]) {
+    assert.ok(surfaceFile(file).includes('data-tour="issues"'), `${file} dropped data-tour="issues", so the step spotlights nothing there`);
+  }
+});
+
+test("D404: the /app/users tour step promises capability, not a named customer's failure count", () => {
+  const step = stepSource("/app/users");
+  for (const fact of ["Meridian", "41", "ops account"]) {
+    assert.ok(!step.includes(fact), `the users tour step still narrates "${fact}" — a fact about the demo fixture, not about a live workspace`);
+  }
+  assert.ok(step.includes('target: "users"'), "the step stopped targeting the users anchor");
+  assert.ok(step.includes("last failure"), "the step stopped describing the click-through to the failing trace");
+  for (const file of ["users/UsersLive.tsx", "users/UsersMock.tsx"]) {
+    assert.ok(surfaceFile(file).includes('data-tour="users"'), `${file} dropped data-tour="users", so the step spotlights nothing there`);
+  }
 });

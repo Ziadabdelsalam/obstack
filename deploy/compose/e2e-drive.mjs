@@ -182,6 +182,9 @@ import pg from "pg";
 import {
   CARRIER_TOKEN,
   CARRIER_TRACE,
+  CHAIN_SERVICES,
+  endUserIds,
+  errorSignatures,
   EVIDENCE_FREE_QUOTA,
   LOG_BODY_TOKEN,
   LOG_TRACE,
@@ -1970,7 +1973,7 @@ try {
   );
   const hub = await alice.evaluate(CONNECTIONS);
   check(
-    "no SAMPLE badge on /app/connections either — the second of this sprint's two routes to register (D106)",
+    "no SAMPLE badge on /app/connections either — a live-wired route, while /app/costs above still carries one (D21/D106)",
     !hub.badge,
     "badge present",
   );
@@ -2568,6 +2571,194 @@ try {
     "the cap banner rendered for a workspace nowhere near it",
   );
 
+  // ------------------------------------------------- the S6.2 five (D21/D405)
+  /**
+   * PLACED HERE and reading only: everything these five surfaces answer from is
+   * already in the store — alice's seed, the quickstart trace her own key
+   * carried, and the traffic the metering steps sent — and none of them writes
+   * anything, so no accepted count, ledger row or health counter moves under
+   * them (the reason the metrics step above is placed where it is).
+   *
+   * Read through `pageFor`, server-rendered HTML carrying her session, because
+   * every claim below is about what a page SAYS: the seeded words her workspace
+   * holds, and the total absence of the other stranger's (D142). The badge's
+   * positive control is `/app/costs`, asserted once above — these five state
+   * its absence against that same fact rather than re-proving it.
+   */
+  step("the five surfaces this sprint wired render alice's own workspace (D21/D367/D405)");
+  const aliceLabel = ACTORS.alice.label;
+  const bobLabel = ACTORS.bob.label;
+  const [aliceUser1, aliceUser2] = endUserIds(aliceLabel);
+  const aliceSignatures = errorSignatures(aliceLabel);
+  const [, CHAIN_AGENT] = CHAIN_SERVICES;
+  /** The service her quickstart export named — hers alone, and label-bearing. */
+  const firstService = `${FIRST_LABEL}-svc`;
+
+  const map = await pageFor(alice, "/app/map");
+  // The map's own SVG, sliced off the page at its tour anchor: edges are the
+  // only `<line>` inside it (a node is a rect, a circle and three texts), while
+  // the shell around it draws icons made of lines. So this counts hops, and it
+  // counts them where the map is.
+  const mapSvg = map.html.split('data-tour="map"')[1]?.split("</svg>")[0] ?? "";
+  const mapEdges = (mapSvg.match(/<line /g) ?? []).length;
+  check(
+    "/app/map draws the services alice's own spans name — the fixture's three and her quickstart's — with no SAMPLE badge",
+    map.status === 200 &&
+      !map.html.includes("SAMPLE DATA") &&
+      CHAIN_SERVICES.every((service) => mapSvg.includes(service)) &&
+      mapSvg.includes(firstService),
+    `HTTP ${map.status} · badge ${map.html.includes("SAMPLE DATA")} · ` +
+      `missing: ${CHAIN_SERVICES.filter((s) => !mapSvg.includes(s)).join(", ") || "none"} · quickstart ${mapSvg.includes(firstService)}`,
+  );
+  check(
+    `and it draws exactly the ${CHAIN_SERVICES.length - 1} cross-service hops the fixture chains — an edge exists only where BOTH spans are stored`,
+    mapEdges === CHAIN_SERVICES.length - 1,
+    `${mapEdges} edge(s) drawn`,
+  );
+  check(
+    "neither the empty state nor a cap banner on a workspace this far under the cap (D402)",
+    !map.html.includes("No service has sent a span") && !map.html.includes("services by span volume"),
+    "an empty state or a cap banner rendered over real, uncapped data",
+  );
+
+  const services = await pageFor(alice, "/app/services");
+  check(
+    "/app/services catalogs those same services from the traces themselves, with no SAMPLE badge and no cap banner",
+    services.status === 200 &&
+      !services.html.includes("SAMPLE DATA") &&
+      CHAIN_SERVICES.every((service) => services.html.includes(service)) &&
+      services.html.includes(firstService) &&
+      !services.html.includes("services by span volume") &&
+      !services.html.includes("no service has sent a span"),
+    `HTTP ${services.status} · badge ${services.html.includes("SAMPLE DATA")} · ` +
+      `missing: ${[...CHAIN_SERVICES, firstService].filter((s) => !services.html.includes(s)).join(", ") || "none"} · ` +
+      `cap banner ${services.html.includes("services by span volume")} · ` +
+      `empty state ${services.html.includes("no service has sent a span")}`,
+  );
+
+  const detail = await pageFor(alice, `/app/services/${CHAIN_AGENT}`);
+  check(
+    `/app/services/${CHAIN_AGENT} scores that service from its own spans and names them in alice's words`,
+    detail.status === 200 &&
+      !detail.html.includes("SAMPLE DATA") &&
+      detail.html.includes(`POST /chat ${aliceLabel}`) &&
+      detail.html.includes(`agent.plan ${aliceLabel}`) &&
+      !detail.html.includes("No spans from"),
+    `HTTP ${detail.status} · ${labelHits(detail.html, aliceLabel)}× ${aliceLabel}`,
+  );
+  check(
+    "and the one panel it cannot derive from traces is MARKED rather than hidden (D362/D401)",
+    detail.html.includes("deploy tracking arrives with the changes feed"),
+    "the deploys panel renders unmarked, or not at all",
+  );
+
+  const users = await pageFor(alice, "/app/users");
+  check(
+    "/app/users names the two people her root spans carried an enduser.id for, with no SAMPLE badge and no cap banner",
+    users.status === 200 &&
+      !users.html.includes("SAMPLE DATA") &&
+      users.html.includes(aliceUser1) &&
+      users.html.includes(aliceUser2) &&
+      !users.html.includes("users by requests") &&
+      !users.html.includes("set one on your root span"),
+    `HTTP ${users.status} · ${aliceUser1} ${users.html.includes(aliceUser1)} · ${aliceUser2} ${users.html.includes(aliceUser2)}`,
+  );
+  check(
+    "the one whose requests absorbed every failure is the one marked AT RISK, and that failure links to the trace it happened in",
+    users.html.includes("AT RISK") && users.html.includes(`POST /chat ${aliceLabel}`),
+    "no at-risk user, or no last failure named",
+  );
+
+  const issues = await pageFor(alice, "/app/issues");
+  check(
+    "/app/issues titles her failures with the error messages her own spans carry, with no SAMPLE badge and no cap banner",
+    issues.status === 200 &&
+      !issues.html.includes("SAMPLE DATA") &&
+      issues.html.includes(aliceSignatures.declined) &&
+      !issues.html.includes("by occurrences in the last") &&
+      !issues.html.includes("No errors in the last"),
+    `HTTP ${issues.status} · badge ${issues.html.includes("SAMPLE DATA")} · ` +
+      `declined signature ${issues.html.includes(aliceSignatures.declined)} · ` +
+      `cap banner ${issues.html.includes("by occurrences in the last")} · ` +
+      `empty state ${issues.html.includes("No errors in the last")}`,
+  );
+  // The grouping rule as an observable result (D399), read off the rendered
+  // words rather than counted: the seven timeout failures carry seven different
+  // numbers of ms, so if digits did NOT collapse this page would show seven
+  // rows of one instead of one row of seven — and one of those numbers would be
+  // on it. `&lt;num&gt;` is the placeholder as HTML actually carries it.
+  const rawTimeoutOnPage = issues.html.match(new RegExp(`${aliceSignatures.timeoutPrefix} [0-9]+ms`))?.[0];
+  check(
+    "and the seven timeouts — each stamped with a different number of ms — are ONE group of seven, beside the digit-free four (D399)",
+    issues.html.includes(`${aliceSignatures.timeoutPrefix} &lt;num&gt;ms ${aliceLabel}`) &&
+      issues.html.includes("7× in 24h") &&
+      issues.html.includes("4× in 24h") &&
+      rawTimeoutOnPage === undefined,
+    `normalized title ${issues.html.includes(`${aliceSignatures.timeoutPrefix} &lt;num&gt;ms ${aliceLabel}`)} · ` +
+      `7× ${issues.html.includes("7× in 24h")} · 4× ${issues.html.includes("4× in 24h")} · raw ${rawTimeoutOnPage ?? "none"}`,
+  );
+
+  const diff = await pageFor(alice, `/app/traces/diff?a=${PROMPT_TRACE}&b=${LOG_TRACE}`);
+  check(
+    "/app/traces/diff compares two of her own seeded traces — both ids on the page, neither slot empty, no SAMPLE badge",
+    diff.status === 200 &&
+      !diff.html.includes("SAMPLE DATA") &&
+      diff.html.includes(PROMPT_TRACE) &&
+      diff.html.includes(LOG_TRACE) &&
+      diff.html.includes(`chat.completion ${aliceLabel}`) &&
+      !diff.html.includes("trace not found in this workspace") &&
+      !diff.html.includes("pick a second trace"),
+    `HTTP ${diff.status} · a ${diff.html.includes(PROMPT_TRACE)} · b ${diff.html.includes(LOG_TRACE)}`,
+  );
+  // The diff's tenancy half needs an id the two workspaces do NOT share, and
+  // the seeded ones are deliberately identical in both (the negative probe's
+  // property, above) — so it is asked with the trace alice's own key carried
+  // over OTLP, which landed in her workspace and in no other.
+  const bobDiff = await pageFor(bob, `/app/traces/diff?a=${FIRST_TRACE_ID}`);
+  const aliceDiff = await pageFor(alice, `/app/traces/diff?a=${FIRST_TRACE_ID}`);
+  check(
+    "asked by the other stranger about a trace only she holds, that same URL resolves to nothing and says so — while for her it renders, in her words",
+    bobDiff.html.includes("trace not found in this workspace") &&
+      labelHits(bobDiff.html, FIRST_LABEL) === 0 &&
+      !aliceDiff.html.includes("trace not found in this workspace") &&
+      aliceDiff.html.includes(`${FIRST_LABEL} POST /checkout`),
+    `bob ${bobDiff.status} · alice ${aliceDiff.status} · ${labelHits(bobDiff.html, FIRST_LABEL)}× ${FIRST_LABEL} on bob's page`,
+  );
+
+  step("content-aware disjointness, on the five new surfaces (the D142 idiom, extended)");
+  const bobUsers = endUserIds(bobLabel);
+  const bobSignatures = errorSignatures(bobLabel);
+  for (const [path, own] of [
+    ["/app/map", CHAIN_SERVICES],
+    ["/app/services", CHAIN_SERVICES],
+    [`/app/services/${CHAIN_AGENT}`, [`POST /chat ${bobLabel}`, `agent.plan ${bobLabel}`]],
+    ["/app/users", bobUsers],
+    ["/app/issues", [bobSignatures.declined]],
+  ]) {
+    const his = await pageFor(bob, path);
+    check(
+      `${path} in bob's browser renders his own workspace and zero of alice's words`,
+      his.status === 200 &&
+        own.every((word) => his.html.includes(word)) &&
+        labelHits(his.html, aliceLabel) === 0 &&
+        labelHits(his.html, FIRST_LABEL) === 0,
+      `HTTP ${his.status} · missing his own: ${own.filter((w) => !his.html.includes(w)).join(", ") || "none"} · ` +
+        `${labelHits(his.html, aliceLabel)}× ${aliceLabel} · ${labelHits(his.html, FIRST_LABEL)}× ${FIRST_LABEL}`,
+    );
+  }
+  // And the same claim the other way round on the two surfaces that name people
+  // and services: hers carry her words (asserted above) and none of his.
+  for (const [path, html] of [
+    ["/app/map", map.html],
+    ["/app/users", users.html],
+  ]) {
+    check(
+      `${path} in alice's browser carries zero of ${bobLabel}'s`,
+      labelHits(html, bobLabel) === 0,
+      `${labelHits(html, bobLabel)}× ${bobLabel}`,
+    );
+  }
+
   step("a plan change round-trips: checkout → return → reconcile → redirect → ONE paint says Pro (D168/D189)");
   await openTab(alice, "Billing & usage", `document.querySelector("main")?.textContent.includes("change plan")`);
   must(await alice.evaluate(clickText("Upgrade to Pro")), "the Billing & usage tab offers no Pro upgrade");
@@ -2821,8 +3012,16 @@ try {
     // The list is `liveWiredRoutes` itself (apps/web/src/lib/live-routes.ts):
     // a route that reads the workspace's real data is a route an anonymous
     // browser must not reach, so wiring one here is the other half of wiring
-    // it there — /app/explore joined that list this sprint (D21/D367).
+    // it there — /app/explore joined that list in S6.1, and the five below in
+    // S6.2 (D21/D367), the diff among them now that nothing is carved out of
+    // the wired `/app/traces/` subtree (D400).
     "/app/explore",
+    "/app/map",
+    "/app/services",
+    `/app/services/${CHAIN_AGENT}`,
+    "/app/users",
+    "/app/issues",
+    `/app/traces/diff?a=${PROMPT_TRACE}`,
   ]) {
     await alice.goto(path, `document.body.textContent.length > 0`);
     const state = await alice.evaluate(STATE);

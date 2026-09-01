@@ -6,9 +6,31 @@ test("live-wired registry matches wired prefixes minus named exceptions", () => 
   assert.equal(isLiveWiredRoute("/app"), true);
   assert.equal(isLiveWiredRoute("/app/traces"), true);
   assert.equal(isLiveWiredRoute("/app/traces/3a55f0efeeb800e757fd61001b7cff2e"), true);
-  assert.equal(isLiveWiredRoute("/app/traces/diff"), false);
   assert.equal(isLiveWiredRoute("/app/alerts"), false);
-  assert.equal(isLiveWiredRoute("/app/services"), false);
+});
+
+// S6.2 (D21/D367): the five trace-derived surfaces read the signed-in
+// workspace's own spans in live mode, so the SAMPLE badge must be gone from all
+// of them — registration, not the pages (S2.0 L1). `/app/services` is wired
+// TWICE on purpose: the exact entry for the catalog, the trailing-slash entry
+// for a service's own scorecard under it, which is a different page.
+test("the S6.2 five are live-wired, the services subtree included", () => {
+  assert.equal(isLiveWiredRoute("/app/map"), true);
+  assert.equal(isLiveWiredRoute("/app/map/anything"), false);
+  assert.equal(isLiveWiredRoute("/app/services"), true);
+  assert.equal(isLiveWiredRoute("/app/services/exit-agent"), true);
+  assert.equal(isLiveWiredRoute("/app/users"), true);
+  assert.equal(isLiveWiredRoute("/app/users/anything"), false);
+  assert.equal(isLiveWiredRoute("/app/issues"), true);
+  assert.equal(isLiveWiredRoute("/app/issues/anything"), false);
+});
+
+// S6.2 T5 (D400): the diff renders two of the workspace's REAL traces, so the
+// carve-out that kept it badged inside the wired `/app/traces/` subtree is gone
+// — and with it the whole exclusion list, which held nothing else. This line is
+// what goes red if a carve-out is ever reintroduced silently.
+test("/app/traces/diff is wired by the trace subtree — nothing is carved out of it", () => {
+  assert.equal(isLiveWiredRoute("/app/traces/diff"), true);
 });
 
 // T3 (E11/E15): `/app/logs` reads `obstack.logs` in live mode, so the SAMPLE

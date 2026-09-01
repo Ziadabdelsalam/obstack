@@ -26,6 +26,16 @@
  * span's `prompt` column, LOG_BODY_TOKEN only inside one log row's `body`.
  * Neither appears in any name, service, model or id.
  *
+ * S6.2 (D405) deepened the SPAN fixture — no new traces, no new log rows, no
+ * tokens or cost — so the five surfaces wired that sprint have something of
+ * their own to render: a `gateway → agent → tool` chain under every sixth root
+ * (the only parent→child pairs whose two spans sit in different services, so
+ * the only edges `/app/map` can draw), `enduser.id` on two residues of the root
+ * spans (`/app/users`), and two error signatures on the roots that already
+ * failed — one carrying digits that differ per trace, one carrying none, so
+ * `/app/issues` shows exactly two groups if and only if it normalizes numbers
+ * away. All three are label-derived like every other word here (D135).
+ *
  * TWO required arguments, no defaults and no env reads (D96/D113/D135), because
  * both are values only the caller can know:
  *
@@ -159,6 +169,11 @@ function span(label, overrides) {
     name: labelled(row.name, label),
     prompt: labelled(row.prompt, label),
     completion: labelled(row.completion, label),
+    // The error message is CONTENT too (S6.2/D405): `/app/issues` renders it as
+    // an issue's title, so it carries the label like every other rendered word
+    // — and `labelled` leaves the empty default empty, so only spans that
+    // actually failed say anything.
+    status_message: labelled(row.status_message, label),
   };
 }
 
@@ -195,6 +210,68 @@ export const LOG_TRACE = traceId(9);
 export const CARRIER_TRACE = traceId(11);
 
 /**
+ * Every sixth trace gets the cross-service chain below — and the divisor is
+ * load-bearing twice over. It is a multiple of 3, so a chained trace is always
+ * one whose root is `exit-gateway` (`i % 3 === 0`), which is what makes the
+ * chain a hop BETWEEN services; and it is 6 rather than 3, so half the gateway
+ * traces keep no `exit-agent` span at all and `/app/traces?service=exit-agent`
+ * still counts fewer traces than the workspace holds (D405 invariant 2).
+ */
+const CHAIN_EVERY = 6;
+
+/**
+ * The two error signatures the failing roots carry (D405). They differ in the
+ * one way `/app/issues` must NOT split on — digits — and in the one way it
+ * must: the words. `TIMEOUT_MESSAGE` is a function because every trace that
+ * carries it carries a different number, so the seven of them collapse into
+ * ONE issue only if the fingerprint really does normalize digits away (D399);
+ * `DECLINED_MESSAGE` has no digits at all and is its own group.
+ */
+const timeoutMessage = (i) => `upstream timeout after ${(i + 1) * 13}ms`;
+const DECLINED_MESSAGE = "payment declined at the processor";
+
+/**
+ * What those two signatures look like on `/app/issues`, exported so the drive
+ * ASSERTS the words this file writes instead of restating them (S2.3 L3).
+ * `timeoutPrefix` is the part of the timeout signature that survives
+ * normalization intact — everything after it is the digits that collapse — so
+ * finding it exactly once is finding the seven variants merged into one issue.
+ * `declined` carries no digits and therefore renders whole, label included.
+ */
+export const errorSignatures = (label) => ({
+  timeoutPrefix: "upstream timeout after",
+  declined: labelled(DECLINED_MESSAGE, label),
+});
+
+/** The two people `/app/users` names for a label, in the order they are seeded. */
+export const endUserIds = (label) => [`${label}-user-1`, `${label}-user-2`];
+
+/**
+ * The chain's services, root first. Exported for the same reason: `/app/map`
+ * draws one edge per hop between them, and `/app/services` lists all three.
+ */
+export const CHAIN_SERVICES = ["exit-gateway", "exit-agent", "exit-tool"];
+const [GATEWAY_SERVICE, AGENT_SERVICE, TOOL_SERVICE] = CHAIN_SERVICES;
+
+/**
+ * `enduser.id` on a SUBSET of the root spans, two users per label (D405).
+ *
+ * The id is CONTENT — `/app/users` renders it as the person's name — so it
+ * derives from the label like every other word this fixture writes (D135),
+ * while ids, services, pods and counts stay identical between two seedings
+ * (D115). Two residues out of five, so most roots carry no identity at all and
+ * the surface's population is a real subset; `i % 5 === 2` is also exactly the
+ * residue the failing roots (`i % 20 === 7`) fall in, which is what gives
+ * user-1 failures to be at risk over and user-2 none.
+ */
+function endUserAttributes(i, label) {
+  const [first, second] = endUserIds(label);
+  if (i % 5 === 2) return { "enduser.id": first };
+  if (i % 5 === 3) return { "enduser.id": second };
+  return {};
+}
+
+/**
  * The whole fixture, built for one label. Ids, counts, tokens, layers, services
  * and pods are identical whatever the label is — this is one shape seeded twice,
  * not two fixtures — and only the rendered words differ (D135).
@@ -206,14 +283,54 @@ function dataset(label) {
   const spans = [];
   for (let i = 0; i < TRACES; i++) {
     const msAgo = (i + 2) * 60_000;
+    const failing = i % 20 === 7;
+    const gateway = i % 3 === 0;
     spans.push(
       span(label, {
         trace_id: traceId(i),
         span_id: `s${i}-root`,
         start_time: chTime(msAgo),
         duration_ns: String((120 + i) * 1_000_000),
-        status_code: i % 20 === 7 ? "error" : "ok",
-        service: i % 3 === 0 ? "exit-gateway" : "exit-agent",
+        status_code: failing ? "error" : "ok",
+        // Which signature a failure carries follows the service it failed in,
+        // so each of the two groups `/app/issues` shows is one service's.
+        status_message: failing ? (gateway ? DECLINED_MESSAGE : timeoutMessage(i)) : "",
+        service: gateway ? GATEWAY_SERVICE : AGENT_SERVICE,
+        attributes: endUserAttributes(i, label),
+      }),
+    );
+  }
+
+  // ---- the cross-service chain (D405): gateway → agent → tool, hung under
+  // every sixth root. These are the only parent→child pairs in the fixture
+  // whose two spans sit in DIFFERENT services, so they are the only edges
+  // `/app/map` can draw — and both sides are stored, which is what the surface
+  // says an edge requires. They carry no tokens, no cost and no new trace id:
+  // the chain deepens traces that already exist rather than adding any.
+  for (let i = 0; i < TRACES; i += CHAIN_EVERY) {
+    const msAgo = (i + 2) * 60_000;
+    spans.push(
+      span(label, {
+        trace_id: traceId(i),
+        span_id: `s${i}-agent`,
+        parent_span_id: `s${i}-root`,
+        name: "agent.plan",
+        kind: "client",
+        layer: "agent",
+        service: AGENT_SERVICE,
+        start_time: chTime(msAgo - 1_000),
+        duration_ns: String(60 * 1_000_000),
+      }),
+      span(label, {
+        trace_id: traceId(i),
+        span_id: `s${i}-tool`,
+        parent_span_id: `s${i}-agent`,
+        name: "tool.lookup",
+        kind: "client",
+        layer: "tool",
+        service: TOOL_SERVICE,
+        start_time: chTime(msAgo - 2_000),
+        duration_ns: String(20 * 1_000_000),
       }),
     );
   }
@@ -610,6 +727,12 @@ if (invokedDirectly && !readingConstants && process.argv.includes("--lower-free-
         span_rows: spans.length,
         log_rows: logs.length,
         renderable_log_rows: logs.filter((l) => l.body !== "").length,
+        // The S6.2 additions, counted the same way everything else here is: from
+        // the rows that were actually built, never from the rule that built them.
+        chained_traces: new Set(spans.filter((s) => s.service === TOOL_SERVICE).map((s) => s.trace_id)).size,
+        end_user_ids: endUserIds(label),
+        end_user_root_spans: spans.filter((s) => s.attributes["enduser.id"] !== undefined).length,
+        error_signature_rows: spans.filter((s) => s.status_message !== "").length,
         prompt_trace: PROMPT_TRACE,
         log_trace: LOG_TRACE,
         carrier_trace: CARRIER_TRACE,
