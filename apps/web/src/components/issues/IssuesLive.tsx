@@ -106,7 +106,7 @@ export function IssuesLive({ issues, total }: { issues: Issue[]; total: number }
                 </div>
                 <div className="mt-1.5 flex flex-wrap items-center gap-x-4 gap-y-1">
                   <LayerChip layer={issue.layer} />
-                  <span className="font-mono text-[10.5px] text-faint">{issue.service}</span>
+                  <span className="font-mono text-[10.5px] text-faint">{issue.service || "—"}</span>
                   <span className="font-mono text-[10.5px] text-faint">
                     first seen in this {WINDOW_HOURS}h window {issue.firstSeenAt} · last{" "}
                     {issue.lastSeenAt} · {issue.count}× in {WINDOW_HOURS}h

@@ -43,15 +43,17 @@ async function clickhouseReachable(): Promise<boolean> {
 }
 
 /**
- * Three workspaces of this run's own, never the compose dev default `ws_demo`
+ * Four workspaces of this run's own, never the compose dev default `ws_demo`
  * (traces.integration.test.ts precedent) — the seeding user has no mutation
  * grant, so nothing here can be cleaned up afterwards. `WORKSPACE_B` is the
  * D403 tenant: it holds spans with the SAME trace_id and span_ids as A's.
  * `WORKSPACE_C` is the D402 tenant: one service more than the cap.
+ * `WORKSPACE_D` is the D423 tenant: its root span carries no service name.
  */
 const WORKSPACE_ID = `ws_it_${randomBytes(4).toString("hex")}`;
 const WORKSPACE_B = `ws_itb_${randomBytes(4).toString("hex")}`;
 const WORKSPACE_C = `ws_itc_${randomBytes(4).toString("hex")}`;
+const WORKSPACE_D = `ws_itd_${randomBytes(4).toString("hex")}`;
 
 const NS_PER_SECOND = BigInt(1_000_000_000);
 const NS_PER_MS = BigInt(1_000_000);
@@ -293,6 +295,25 @@ const FIXTURE = [
       start_time: minutesAgo(10),
     }),
   ),
+
+  // --- workspace D: a root span carrying no `service.name`, and its named
+  // child (D423). Its own tenant on purpose: dropped into workspace A the child
+  // would have moved a layer count the probes above pin.
+  spanRow({
+    workspace_id: WORKSPACE_D,
+    trace_id: TRACE,
+    span_id: `${GATEWAY_SPAN.slice(0, 6)}d1`,
+    service: "",
+    start_time: minutesAgo(10),
+  }),
+  spanRow({
+    workspace_id: WORKSPACE_D,
+    trace_id: TRACE,
+    span_id: `${GATEWAY_SPAN.slice(0, 6)}d2`,
+    parent_span_id: `${GATEWAY_SPAN.slice(0, 6)}d1`,
+    service: "topo-named",
+    start_time: minutesAgo(10),
+  }),
 ];
 
 test("the span topology (D396) against a seeded ClickHouse", async (t) => {
@@ -367,6 +388,25 @@ test("the span topology (D396) against a seeded ClickHouse", async (t) => {
   await t.test("totalServices counts the window's services, and nodeCap states the cap applied", () => {
     assert.equal(topology.totalServices, 4);
     assert.equal(topology.nodeCap, 40);
+  });
+
+  // D423(a): a span with no `service.name` does not name a service — the rule
+  // `trace_summaries_mv` already applies, now applied to the map. NODES_SQL's
+  // `service != ''` is the load-bearing half: without it this tenant reports a
+  // nameless node and a totalServices of 2 that `/app/services` disagrees with.
+  // The absent edge is over-determined — the edge read's own `service != ''`
+  // drops the unnamed parent before the join, AND `queryTopology` draws edges
+  // only between RENDERED nodes — so removing either edge-side predicate alone
+  // leaves this green.
+  await t.test("a span with no service name is not a service: no node, no edge, no place in the total", async () => {
+    const unnamed = await queryTopology(forWorkspace(WORKSPACE_D));
+    assert.deepEqual(
+      unnamed.nodes.map((n) => n.service),
+      ["topo-named"],
+      "the unnamed root is not a node; its named child is",
+    );
+    assert.deepEqual(unnamed.edges, [], "no hop is drawn out of a service the map will not name");
+    assert.equal(unnamed.totalServices, 1, "the D402 banner counts named services only");
   });
 
   // D402: the banner's N is the engine's, computed in the same statement. Under

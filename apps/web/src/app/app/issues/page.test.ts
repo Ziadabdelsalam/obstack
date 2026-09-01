@@ -97,3 +97,10 @@ test("D394/D402/D404: the window, the cap statement and the tour anchor are all 
   );
   assert.ok(LIVE.includes('data-tour="issues"'), "the live surface keeps the tour anchor (D404)");
 });
+
+test("D423(b): an unnamed service renders the house absence glyph, not an empty string", () => {
+  assert.ok(
+    LIVE.includes('issue.service || "—"'),
+    'IssuesLive must render issue.service with the "—" fallback for an empty service (D423(b))',
+  );
+});

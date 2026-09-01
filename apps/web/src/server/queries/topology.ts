@@ -11,6 +11,9 @@ import {
 import type { Layer } from "@/lib/types";
 import type { ScopedClickHouse } from "@/server/clickhouse";
 
+/** A span carrying no `service.name` does not name a service — the `trace_summaries_mv`'s own rule (`groupUniqArrayIf(toString(service), service != '')`), applied to the map (D423). */
+const NAMED_SERVICE = "service != ''";
+
 /**
  * The service map's two reads over `obstack.spans` (D396). No range argument
  * (D394): the window is `WINDOW_HOURS`, bound as a parameter so the surface and
@@ -35,7 +38,7 @@ SELECT
     service,
     toString(count())                                               AS spans,
     toString(countIf(status_code = 'error'))                        AS error_spans,
-    toUInt32(ifNotFinite(quantile(0.95)(duration_ns / 1000000), 0)) AS p95_ms,
+    ifNotFinite(quantile(0.95)(duration_ns) / 1e6, 0)               AS p95_ms,
     countIf(parent_span_id = '') > 0                                AS is_entry,
     arraySort(
         x -> (-x.2, indexOf({layer_order:Array(String)}, x.1)),
@@ -48,6 +51,7 @@ SELECT
 FROM obstack.spans
 WHERE workspace_id = {workspace_id:String}
   AND start_time >= now() - toIntervalHour({window_hours:UInt32})
+  AND ${NAMED_SERVICE}
 GROUP BY service
 ORDER BY count() DESC, service ASC
 LIMIT {node_cap:UInt32}`;
@@ -78,12 +82,14 @@ FROM (
     WHERE workspace_id = {workspace_id:String}
       AND start_time >= now() - toIntervalHour({window_hours:UInt32})
       AND parent_span_id != ''
+      AND ${NAMED_SERVICE}
 ) AS c
 INNER JOIN (
     SELECT trace_id, span_id, service
     FROM obstack.spans
     WHERE workspace_id = {workspace_id:String}
       AND start_time >= now() - toIntervalHour({window_hours:UInt32})
+      AND ${NAMED_SERVICE}
 ) AS p
 ON c.trace_id = p.trace_id AND c.parent_span_id = p.span_id
 WHERE c.service != p.service
