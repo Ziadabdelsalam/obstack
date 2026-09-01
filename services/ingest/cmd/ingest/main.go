@@ -23,11 +23,13 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
+	"github.com/Ziadabdelsalam/observer-stack/services/ingest/internal/alerting"
 	"github.com/Ziadabdelsalam/observer-stack/services/ingest/internal/auth"
 	"github.com/Ziadabdelsalam/observer-stack/services/ingest/internal/config"
 	"github.com/Ziadabdelsalam/observer-stack/services/ingest/internal/keystore"
 	"github.com/Ziadabdelsalam/observer-stack/services/ingest/internal/metering"
 	"github.com/Ziadabdelsalam/observer-stack/services/ingest/internal/migrate"
+	"github.com/Ziadabdelsalam/observer-stack/services/ingest/internal/notify"
 	"github.com/Ziadabdelsalam/observer-stack/services/ingest/internal/pgmigrate"
 	"github.com/Ziadabdelsalam/observer-stack/services/ingest/internal/pricing"
 	"github.com/Ziadabdelsalam/observer-stack/services/ingest/internal/receive"
@@ -277,6 +279,73 @@ func run() error {
 		meter.Run(meterCtx)
 	}()
 
+	// Boot did not used to be able to fail past this point, and now it can:
+	// the alerting engine reads config and dials ClickHouse below. unwindBoot
+	// stops whatever is already running, in the SAME order the shutdown path
+	// uses, so a failed boot leaves nothing spinning against a pool the
+	// deferred Close is about to take away. stopAlerting is nil until the two
+	// loops exist, which is exactly the window this has to survive.
+	var stopAlerting func()
+	unwindBoot := func() {
+		stopMeter()
+		<-meterStopped
+		if stopAlerting != nil {
+			stopAlerting()
+		}
+		stopSweeper()
+		closeCtx, cancelClose := context.WithTimeout(context.Background(), shutdownTimeout)
+		writer.Close(closeCtx)
+		cancelClose()
+	}
+
+	// The alerting engine is two loops on one cancel (D477/D490): the evaluator
+	// claims due rules every 60s and writes transitions as pending events, and
+	// the deliverer drains those events every 5s through the notifier. They
+	// share nothing but the pool and the shutdown signal — a wedged endpoint
+	// cannot stall evaluation, and a slow evaluation cannot delay a delivery.
+	//
+	// The egress policy is resolved HERE, at boot, and propagated like any
+	// other configuration error (D492): a malformed
+	// OBSTACK_NOTIFIER_ALLOW_PRIVATE must fail the process, not the first
+	// delivery that reads it.
+	notifyPolicy, err := notify.PolicyFromEnv()
+	if err != nil {
+		unwindBoot()
+		return err
+	}
+	slog.Info("notifier egress policy",
+		"allow_private", notifyPolicy.AllowPrivate, "env", notify.EnvAllowPrivate)
+
+	// Like the sweeper, the evaluator connects and pings before anything is
+	// bound: a process that claims to evaluate alerts must be able to read the
+	// telemetry they are about.
+	evaluator, err := alerting.New(connectCtx, alerting.Config{
+		DSN:  cfg.ClickHouseDSN,
+		Pool: pool,
+	})
+	if err != nil {
+		unwindBoot()
+		return err
+	}
+	alertCtx, stopAlerts := context.WithCancel(context.Background())
+	evalStopped := make(chan struct{})
+	go func() {
+		defer close(evalStopped)
+		evaluator.Run(alertCtx)
+	}()
+	deliverer := alerting.NewDeliverer(pool, notify.New(notifyPolicy))
+	deliverStopped := make(chan struct{})
+	go func() {
+		defer close(deliverStopped)
+		deliverer.Run(alertCtx)
+	}()
+	stopAlerting = func() {
+		stopAlerts()
+		<-evalStopped
+		<-deliverStopped
+		evaluator.Close()
+	}
+
 	receiver := receive.New(receive.Config{
 		GRPCAddr: cfg.OTLPGRPCAddr,
 		HTTPAddr: cfg.OTLPHTTPAddr,
@@ -296,12 +365,7 @@ func run() error {
 	slog.Info("vercel drain signature verification",
 		"enabled", cfg.VercelDrainSecret != "", "env", config.EnvVercelDrainSecret)
 	if err := receiver.Start(); err != nil {
-		stopMeter()
-		<-meterStopped
-		stopSweeper()
-		closeCtx, cancelClose := context.WithTimeout(context.Background(), shutdownTimeout)
-		writer.Close(closeCtx)
-		cancelClose()
+		unwindBoot()
 		return err
 	}
 
@@ -343,6 +407,14 @@ func run() error {
 	}
 	stopMeter()
 	<-meterStopped
+	// The two alerting loops stop claiming before the pool they claim through
+	// closes (the deferred pool.Close above runs last), which is the whole
+	// ordering rule the sweeper established. Neither holds anything back: an
+	// in-flight tick is abandoned with its context and rolls back whole, so a
+	// half-evaluated tick never commits and a pending event stays pending for
+	// the next process to claim — which is exactly what the durable row is for
+	// (D490).
+	stopAlerting()
 	// The sweep stops last of the background loops and holds nothing back: an
 	// in-flight DELETE is abandoned with its context (D252), and retention is
 	// re-established whole on the next process's first sweep.
