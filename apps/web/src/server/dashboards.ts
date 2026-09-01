@@ -176,9 +176,15 @@ function storedWidget(widget: NewDashboardWidget): DashboardWidget {
     throw new DashboardRefusal(`unknown widget kind ${JSON.stringify(w.kind ?? null)}`);
   }
 
+  // `Object.hasOwn` rather than a bare lookup (D68): `type: "constructor"` walks
+  // the prototype chain into a function, whose `.includes` is not one — a
+  // TypeError the action's catch (DashboardRefusal alone) would let out as a
+  // 500, which is the measured D68 failure shape reached through a payload.
   const type = w.type as MetricCatalogEntry["type"];
-  const aggs: readonly MetricAgg[] | undefined = VALID_AGGS[type];
-  if (!aggs) throw new DashboardRefusal(`unknown metric type ${JSON.stringify(w.type ?? null)}`);
+  if (!Object.hasOwn(VALID_AGGS, type)) {
+    throw new DashboardRefusal(`unknown metric type ${JSON.stringify(w.type ?? null)}`);
+  }
+  const aggs: readonly MetricAgg[] = VALID_AGGS[type];
 
   const agg = w.agg as MetricAgg;
   if (!aggs.includes(agg)) {

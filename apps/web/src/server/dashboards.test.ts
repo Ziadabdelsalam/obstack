@@ -317,6 +317,22 @@ test("every shape refusal is judged before Postgres and costs no statement", asy
   }
 });
 
+test("a metric type borrowed from the prototype chain is refused, not thrown (D68)", async () => {
+  // `VALID_AGGS[type]` on an unchecked payload walks the chain: `constructor`
+  // answers a function whose `.includes` is not one, and that TypeError is not a
+  // `DashboardRefusal` — the action's catch would let it out as a 500. The
+  // measured D68 failure shape, reached here through a server action's payload
+  // rather than a URL.
+  for (const hostile of ["toString", "constructor", "valueOf", "hasOwnProperty", "__proto__"]) {
+    const { query, seen } = recordingQuery(engine());
+    await refusal(
+      addWidget("ws_a", "d", newWidget({ type: hostile as never }), query),
+      `unknown metric type ${JSON.stringify(hostile)}`,
+    );
+    assert.deepEqual(seen, [], `${hostile} reached the database`);
+  }
+});
+
 test("the stored widget carries exactly the contract's keys — a client's own id and workspace_id are dropped", async () => {
   const { query, seen } = recordingQuery(engine({ row: dashRow([]) }));
   // Neither the form nor Explore can produce this; a direct POST at the server
