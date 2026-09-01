@@ -4,8 +4,16 @@ import { fileURLToPath } from "node:url";
 /** `apps/web/src` — every `@/…` alias resolves relative to this directory. */
 const SRC_ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 
-/** A static `from "…"`/`from '…'` specifier, or a dynamic `import("…")` one. */
-const IMPORT_SPEC = /\bfrom\s+["']([^"']+)["']|\bimport\(\s*["']([^"']+)["']\s*\)/g;
+/**
+ * A static `from "…"`/`from '…'` specifier (so `import … from`, `import type
+ * … from` and `export … from` all count), a dynamic `import("…")` one, or a
+ * SIDE-EFFECT `import "…"` — which names no binding and so has no `from` at
+ * all. The last one is not hypothetical: `import "@/mock/catalog";` was caught
+ * by `services/page.test.ts`'s pre-D448 `src.includes("@/mock/")` and would
+ * otherwise walk straight through every ban this resolver now feeds.
+ */
+const IMPORT_SPEC =
+  /\bfrom\s+["']([^"']+)["']|\bimport\s*\(\s*["']([^"']+)["']\s*\)|\bimport\s+["']([^"']+)["']/g;
 
 /**
  * Every import specifier `source` names, with relative ones (`./…`, `../…`)
@@ -27,7 +35,7 @@ export function resolvedImports(source: string, filePath: string): string[] {
   const dir = path.dirname(filePath);
   const specifiers: string[] = [];
   for (const match of source.matchAll(IMPORT_SPEC)) {
-    const spec = match[1] ?? match[2];
+    const spec = match[1] ?? match[2] ?? match[3];
     specifiers.push(resolveOne(spec, dir));
   }
   return specifiers;

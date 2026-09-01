@@ -38,6 +38,23 @@ test("a ../../ relative specifier resolves to the SAME string as its @/ spelling
   assert.deepEqual(relative, aliased);
 });
 
+test("a SIDE-EFFECT import names a module with no `from` — and is still a ban-able specifier (D448)", () => {
+  // `services/page.test.ts`'s pre-D448 `src.includes("@/mock/")` caught this
+  // form; a resolver that only looked for `from` would have let it through.
+  assert.deepEqual(resolvedImports('import "@/mock/catalog";', DASHBOARDS_LIVE_PATH), [
+    "@/mock/catalog",
+  ]);
+  assert.deepEqual(resolvedImports('import "../../mock/catalog";', DASHBOARDS_LIVE_PATH), [
+    "@/mock/catalog",
+  ]);
+});
+
+test("`export … from` re-exports are specifiers too", () => {
+  assert.deepEqual(resolvedImports('export * from "../../mock/dashboards";', DASHBOARDS_LIVE_PATH), [
+    "@/mock/dashboards",
+  ]);
+});
+
 test("a dynamic import() specifier is resolved exactly like a static one", () => {
   assert.deepEqual(
     resolvedImports('const m = await import("../../mock/dashboards");', DASHBOARDS_LIVE_PATH),
