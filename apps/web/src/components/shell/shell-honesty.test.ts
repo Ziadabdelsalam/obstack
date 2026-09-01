@@ -232,20 +232,27 @@ test("the tour promises nothing the repo does not have", () => {
   for (const [needle, why] of fictions) {
     assert.ok(!TOUR.includes(needle), `the tour claims "${needle}" — ${why}`);
   }
-  // The watches step makes a persistence claim in either direction, so it is
-  // coupled to where the widget list actually goes: localStorage, this browser,
-  // never the server. Saying it resets on navigation would be as false as
-  // promising a synced layout.
+  // D442: the watches step no longer makes a storage-location claim — D425
+  // split the two modes' mechanisms (mock: `WatchWidgets`'s own localStorage;
+  // live: a dashboard widget's `pinned` flag in Postgres), so no ONE sentence
+  // about where the layout lives can be true in both. The guard is now two
+  // separate claims: the mock component still saves what it always did
+  // (unchanged, D438), and the tour step names no storage location and no
+  // fixture-only widget type at all — only what stays true in every mode.
   const watchWidgets = readFileSync(path.join(HERE, "../dash/WatchWidgets.tsx"), "utf8");
   assert.ok(
     watchWidgets.includes("localStorage.setItem"),
-    "the watch layout stopped being saved in the browser — the tour's sentence follows it",
+    "the mock watch board stopped being saved in the browser",
   );
   const watchStep = TOUR.slice(TOUR.indexOf('target: "watches"'));
-  assert.ok(
-    watchStep.slice(0, watchStep.indexOf("},")).includes("kept in this browser"),
-    "the watches step no longer says where the layout is kept",
-  );
+  const watchStepBody = watchStep.slice(0, watchStep.indexOf("},"));
+  for (const claim of ["this browser", "your account", "saved", "synced", "pod", "queue", "pipeline"]) {
+    assert.ok(
+      !watchStepBody.includes(claim),
+      "the watches step claims a storage location or a fixture-only widget type; it must be true in both modes (D404/D442)",
+    );
+  }
+  assert.ok(watchStepBody.includes("overview"), "the watches step stopped saying where pinned widgets show up");
   // The Explain step stopped being an invitation to a mock control and became a
   // claim about a shipped run (D232/D245): metered against the plan, evidence
   // pointing into the trace it explains, refusals stated. Each half is coupled

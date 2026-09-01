@@ -30,7 +30,7 @@ const steps: TourStep[] = [
     path: "/app",
     target: "watches",
     title: "Your watches",
-    body: "Pin what you personally care about: a service, two services compared, a pod, a model's spend, a queue, a pipeline. “Add widget” composes one on the spot, and the layout is kept in this browser — it is not saved to your account.",
+    body: "The widgets you chose to keep in view, shown on the overview above everything else. Add one you care about and it stays; remove it and it is gone — the overview shows only what you picked.",
   },
   {
     // D404: this surface is live-wired as of S6.2, so its words are a claim
