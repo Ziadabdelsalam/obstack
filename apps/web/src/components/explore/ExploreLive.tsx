@@ -1,8 +1,9 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
+import { Plus } from "lucide-react";
 import {
   Area,
   AreaChart,
@@ -24,7 +25,9 @@ import {
   type MetricSeriesQuery,
   type MetricSeriesResult,
 } from "@/lib/metrics-types";
+import type { Dashboard } from "@/lib/dashboard-types";
 import { layerColor } from "@/lib/layers";
+import { SaveToDashboardLive } from "@/components/explore/SaveToDashboardLive";
 
 /**
  * The explore live branch (D367): fed exclusively by `server/queries/metrics.ts`
@@ -38,10 +41,12 @@ import { layerColor } from "@/lib/layers";
  * this is the props-fed sibling D367 asks for, so the recharts styling below is
  * copied rather than shared.
  *
- * There is no Save-to-dashboard button here (D367/D13): `SaveToDashboardModal`
- * reads the mock workspace store, and real dashboards are S6.3. An honest
- * absence, not a disabled affordance promising a feature this build does not
- * have.
+ * Save-to-dashboard (D433) is `SaveToDashboardLive`, shown only once a query is
+ * resolved (`query !== null`): the mock's `SaveToDashboardModal` reads the mock
+ * workspace store, so its markup is copied rather than imported. The
+ * `dashboards` prop is a real, workspace-scoped read (`explore/page.tsx`'s live
+ * branch, `server/dashboards.ts`'s `listDashboards`) — dashboards this sprint
+ * finally persists in Postgres, not fixture state.
  */
 
 /* tick/grid styling copied from ExploreChart.tsx for visual consistency */
@@ -129,6 +134,7 @@ export function ExploreLive({
   result,
   seriesCap,
   capReached,
+  dashboards,
 }: {
   catalog: MetricCatalogEntry[];
   /** Resolved and deep-link-safe by `explore/page.tsx`; `null` only when the workspace has no metrics yet. */
@@ -138,9 +144,19 @@ export function ExploreLive({
   seriesCap: number;
   /** Packet §2: this workspace's active-series count has reached the cap — computed from `metric_series`, never estimated. */
   capReached: boolean;
+  /** This workspace's dashboards (D433), read by `explore/page.tsx`'s live branch and handed to `SaveToDashboardLive`. */
+  dashboards: Dashboard[];
 }) {
   const router = useRouter();
   const [chartType, setChartType] = useState<"line" | "area" | "bar">("line");
+  const [showSave, setShowSave] = useState(false);
+  const [toast, setToast] = useState<{ id: string; name: string } | null>(null);
+
+  useEffect(() => {
+    if (!toast) return;
+    const timer = setTimeout(() => setToast(null), 5000);
+    return () => clearTimeout(timer);
+  }, [toast]);
 
   // D384: keyed on (name, type) — a dual-emitted name is two independently
   // selectable catalog rows, and `query.type` (now required on the contract)
@@ -247,6 +263,14 @@ export function ExploreLive({
               {selected.unit || selected.type} · last seen {selected.lastSeen}
             </p>
           </div>
+          <button
+            type="button"
+            onClick={() => setShowSave(true)}
+            className="flex items-center gap-1.5 rounded-md border border-line-strong bg-raised px-3 py-1.5 font-mono text-[12px] text-ink hover:bg-overlay"
+          >
+            <Plus className="h-3.5 w-3.5" />
+            Save to dashboard
+          </button>
         </div>
 
         <div className="mb-4 flex flex-wrap gap-5 rounded-lg border border-line bg-surface p-3.5">
@@ -349,6 +373,30 @@ export function ExploreLive({
           </div>
         </div>
       </main>
+
+      {showSave && (
+        <SaveToDashboardLive
+          dashboards={dashboards}
+          query={query}
+          onClose={() => setShowSave(false)}
+          onSaved={(dashboard) => {
+            setShowSave(false);
+            setToast({ id: dashboard.id, name: dashboard.name });
+          }}
+        />
+      )}
+
+      {toast && (
+        <div className="fixed bottom-4 right-4 z-50 flex items-center gap-3 rounded-lg border border-line bg-overlay px-4 py-3">
+          <p className="font-mono text-[11.5px] text-ink">saved to {toast.name}</p>
+          <Link
+            href={`/app/dashboards/${toast.id}`}
+            className="font-mono text-[11.5px] text-faint underline hover:text-ink"
+          >
+            View
+          </Link>
+        </div>
+      )}
     </div>
   );
 }

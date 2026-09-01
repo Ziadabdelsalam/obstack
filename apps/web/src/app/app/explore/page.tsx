@@ -5,6 +5,8 @@ import { ExploreMock } from "@/components/explore/ExploreMock";
 import { VALID_AGGS, type MetricAgg, type MetricRange, type MetricSeriesQuery } from "@/lib/metrics-types";
 import { forWorkspace } from "@/server/clickhouse";
 import { dataMode } from "@/server/data";
+import { listDashboards } from "@/server/dashboards";
+import { queryRows } from "@/server/postgres";
 import { listMetricCatalog, queryMetricSeries } from "@/server/queries/metrics";
 import { getSessionContext } from "@/server/session";
 import { activeSeriesCount, SERIES_CAP } from "./series-cap";
@@ -38,10 +40,17 @@ export default async function ExplorePage({
   if (!session) redirect("/login");
 
   const ch = forWorkspace(session.workspaceId);
-  // Two independent reads, in parallel (the `connections/page.tsx:50` idiom):
-  // the discovered catalog and the workspace's active-series count, which the
-  // cap banner states from `metric_series` itself rather than inferring.
-  const [catalog, active] = await Promise.all([listMetricCatalog(ch), activeSeriesCount(ch)]);
+  // Three independent reads, in parallel (the `connections/page.tsx:50` idiom):
+  // the discovered catalog, the workspace's active-series count (the cap
+  // banner states this from `metric_series` itself rather than inferring), and
+  // the workspace's dashboards (D433) — `ExploreLive`'s "save to dashboard"
+  // list, read straight from `server/dashboards.ts` rather than through the
+  // mutation-only server actions in `components/dashboards/actions.ts`.
+  const [catalog, active, dashboards] = await Promise.all([
+    listMetricCatalog(ch),
+    activeSeriesCount(ch),
+    listDashboards(session.workspaceId, queryRows),
+  ]);
 
   const params = await searchParams;
   const requestedMetric = typeof params.metric === "string" ? params.metric : undefined;
@@ -65,6 +74,7 @@ export default async function ExplorePage({
         result={{ series: [], totalGroups: 0 }}
         seriesCap={SERIES_CAP}
         capReached={active >= SERIES_CAP}
+        dashboards={dashboards}
       />
     );
   }
@@ -88,6 +98,7 @@ export default async function ExplorePage({
       result={result}
       seriesCap={SERIES_CAP}
       capReached={active >= SERIES_CAP}
+      dashboards={dashboards}
     />
   );
 }

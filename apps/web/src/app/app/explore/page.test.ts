@@ -24,6 +24,7 @@ const read = (file: string) => readFileSync(path.join(HERE, file), "utf8");
 const PAGE = read("page.tsx");
 const MOCK = read("../../../components/explore/ExploreMock.tsx");
 const LIVE = read("../../../components/explore/ExploreLive.tsx");
+const SAVE_LIVE = read("../../../components/explore/SaveToDashboardLive.tsx");
 
 test("the mock branch renders ExploreMock, verbatim and with zero props, before any live-only read runs", () => {
   assert.ok(
@@ -62,7 +63,7 @@ test("ExploreMock is the untouched client body — it takes no props and owns it
   }
 });
 
-test("A2: the live branch never imports mock data, and never renders Save-to-dashboard (D367/D13)", () => {
+test("A2: the live branch never imports mock data, and saves through SaveToDashboardLive, never the mock modal (D433)", () => {
   assert.equal(
     LIVE.includes('from "@/mock/explore"') || LIVE.includes('from "@/mock/'),
     false,
@@ -86,6 +87,36 @@ test("A2: the live branch never imports mock data, and never renders Save-to-das
   assert.equal(
     /import.*SaveToDashboardModal/.test(LIVE),
     false,
-    "save-to-dashboard is an honest absence in live mode (D367/D13), not a hidden import",
+    "the mock modal reads the mock workspace store — live saves through SaveToDashboardLive instead (D433)",
+  );
+  // REQUIRED, not banned (D433): save-to-dashboard is no longer an honest
+  // absence — this is the sabotage check. Deleting the import from
+  // ExploreLive.tsx must turn this assertion red.
+  assert.ok(
+    /from "@\/components\/explore\/SaveToDashboardLive"/.test(LIVE),
+    "the live save-to-dashboard button must be wired through SaveToDashboardLive (D433)",
+  );
+});
+
+test("SaveToDashboardLive stays on the live side of the mock/live boundary (D391/D433)", () => {
+  assert.equal(
+    SAVE_LIVE.includes('from "@/mock/explore"') || SAVE_LIVE.includes('from "@/mock/'),
+    false,
+    "the live save modal must not depend on any mock module",
+  );
+  assert.equal(
+    /from "@\/components\/explore\/ExploreChart"/.test(SAVE_LIVE),
+    false,
+    "the live save modal has no chart to render",
+  );
+  assert.equal(
+    /from "@\/state\/workspace-store"/.test(SAVE_LIVE),
+    false,
+    "the live save modal lists the dashboards prop, never the mock workspace store",
+  );
+  assert.equal(
+    /import.*SaveToDashboardModal/.test(SAVE_LIVE),
+    false,
+    "markup is copied from SaveToDashboardModal (D391), never imported",
   );
 });
