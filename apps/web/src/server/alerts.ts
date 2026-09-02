@@ -48,9 +48,11 @@ export class AlertRefusal extends Error {
   }
 }
 
-/** D440: the same words for an id that never existed and for another tenant's. */
+/** D440: the same words for an id that never existed and for another tenant's.
+ *  `NO_SUCH_CHANNEL` is exported for `server/slos.ts`, which checks the same
+ *  reference and must refuse in the same words. */
 const NO_SUCH_RULE = "no alert rule with this id in your workspace";
-const NO_SUCH_CHANNEL = "no notification channel with this id in your workspace";
+export const NO_SUCH_CHANNEL = "no notification channel with this id in your workspace";
 
 const SEVERITIES: readonly AlertSeverity[] = ["critical", "warning", "info"];
 const CHANNEL_KINDS: readonly NotificationChannelKind[] = ["webhook", "slack_webhook"];
@@ -143,6 +145,8 @@ type EventRow = {
   id: string;
   rule_id: string | null;
   rule_name: string | null;
+  slo_id: string | null;
+  slo_name: string | null;
   severity: AlertSeverity;
   title: string;
   detail: string;
@@ -155,6 +159,8 @@ const toEvent = (row: EventRow): AlertEventRow => ({
   id: row.id,
   ruleId: row.rule_id,
   ruleName: row.rule_name,
+  sloId: row.slo_id,
+  sloName: row.slo_name,
   severity: row.severity,
   title: row.title,
   detail: row.detail,
@@ -238,6 +244,12 @@ const RULES_REFERENCING_CHANNEL_SQL = `
     FROM alert_rules
    WHERE workspace_id = $1 AND channel_id = $2`;
 
+/** S7.3 (D513): an SLO may reference a channel too, under the same RESTRICT. */
+const SLOS_REFERENCING_CHANNEL_SQL = `
+  SELECT count(*)::int AS n
+    FROM slos
+   WHERE workspace_id = $1 AND channel_id = $2`;
+
 /** D489: the rule-count cap closes the abuse hole the eval cadence leaves open
  *  (event production is bounded by cadence × rule count, so rule count must be
  *  bounded too). Generous by design — a workspace at 200 rules is a support
@@ -250,18 +262,25 @@ const COUNT_RULES_SQL = `
     FROM alert_rules
    WHERE workspace_id = $1`;
 
+/** ONE feed (S7.3 packet §0): a row is a rule's transition, an SLO's
+ *  transition (D511 — `slo_id` set, `rule_id` NULL) or a test notification
+ *  (both NULL). Both joins are LEFT for the same reason as before. */
 const LIST_EVENTS_SQL = `
-  SELECT e.id, e.rule_id, r.name AS rule_name, e.severity, e.title, e.detail, e.link, e.delivery, e.created_at
+  SELECT e.id, e.rule_id, r.name AS rule_name, e.slo_id, s.name AS slo_name,
+         e.severity, e.title, e.detail, e.link, e.delivery, e.created_at
     FROM alert_events e
     LEFT JOIN alert_rules r ON r.id = e.rule_id
+    LEFT JOIN slos s ON s.id = e.slo_id
    WHERE e.workspace_id = $1
    ORDER BY e.created_at DESC
    LIMIT $2`;
 
 const GET_EVENT_SQL = `
-  SELECT e.id, e.rule_id, r.name AS rule_name, e.severity, e.title, e.detail, e.link, e.delivery, e.created_at
+  SELECT e.id, e.rule_id, r.name AS rule_name, e.slo_id, s.name AS slo_name,
+         e.severity, e.title, e.detail, e.link, e.delivery, e.created_at
     FROM alert_events e
     LEFT JOIN alert_rules r ON r.id = e.rule_id
+    LEFT JOIN slos s ON s.id = e.slo_id
    WHERE e.workspace_id = $1 AND e.id = $2`;
 
 /** D488/D491: a test notification is a rule-less pending event that names its
@@ -569,7 +588,7 @@ export async function setNotificationChannelEnabled(
   return readBackChannel(workspaceId, id, query);
 }
 
-/** Drop a channel — REFUSED while any rule in this workspace references it
+/** Drop a channel — REFUSED while any rule OR SLO in this workspace references it
  *  (packet §4: the FK is `ON DELETE RESTRICT`, and this is the check-first
  *  that turns that constraint into a typed refusal instead of a 500). The
  *  check runs under the same advisory lock the delete does, so nothing can
@@ -585,17 +604,21 @@ export async function deleteNotificationChannel(
   const row = await readChannelRow(workspaceId, id, query);
 
   const [{ n }] = await query<{ n: number }>(RULES_REFERENCING_CHANNEL_SQL, [workspaceId, id]);
-  if (n > 0) {
-    throw new AlertRefusal(
-      `“${row.name}” is used by ${n} alert rule${n === 1 ? "" : "s"} — delete or repoint them first`,
-    );
+  const [{ n: slos }] = await query<{ n: number }>(SLOS_REFERENCING_CHANNEL_SQL, [workspaceId, id]);
+  if (n > 0 || slos > 0) {
+    const users = [
+      n > 0 ? `${n} alert rule${n === 1 ? "" : "s"}` : null,
+      slos > 0 ? `${slos} SLO${slos === 1 ? "" : "s"}` : null,
+    ].filter((u): u is string => u !== null);
+    const pronoun = n + slos === 1 ? "it" : "them";
+    throw new AlertRefusal(`“${row.name}” is used by ${users.join(" and ")} — delete or repoint ${pronoun} first`);
   }
 
   try {
     await query(DELETE_CHANNEL_SQL, [workspaceId, id]);
   } catch (error) {
     if ((error as { code?: string })?.code === "23503") {
-      throw new AlertRefusal(`“${row.name}” is used by an alert rule — delete or repoint it first`);
+      throw new AlertRefusal(`“${row.name}” is used by an alert rule or an SLO — delete or repoint it first`);
     }
     throw error;
   }

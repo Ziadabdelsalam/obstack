@@ -243,7 +243,7 @@ test("deleting a channel referenced by a rule is refused by Postgres, and succee
 
     await refusal(
       withTransaction((q) => deleteNotificationChannel(a, channel.id, q)),
-      `“#incidents” is used by 1 alert rule — delete or repoint them first`,
+      `“#incidents” is used by 1 alert rule — delete or repoint it first`,
     );
     assert.equal(await channelCount(a), 1, "a refused delete still removed the row");
 
