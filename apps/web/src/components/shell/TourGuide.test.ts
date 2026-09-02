@@ -263,6 +263,19 @@ test("D404: the /app/users tour step promises capability, not a named customer's
 const stripComments = (src: string): string =>
   src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^[ \t]*\/\/.*$/gm, "");
 
+test("D404 (S7.3, D515): the /app/slos tour step promises capability, not the demo's burned afternoon", () => {
+  const step = stripComments(stepSource("/app/slos"));
+  for (const fact of ["31%", "chat latency", "afternoon", "monthly budget"]) {
+    assert.ok(!step.toLowerCase().includes(fact.toLowerCase()), `the slos tour step still narrates "${fact}" — a fact about the demo fixture, not about a live workspace`);
+  }
+  assert.ok(step.includes('target: "slos"'), "the step stopped targeting the slos anchor");
+  assert.ok(step.includes("error budget"), "the step stopped naming the error budget");
+  assert.ok(step.includes("your own traces"), "the step stopped saying whose traces are measured");
+  for (const file of ["slos/SlosLive.tsx", "slos/SlosMock.tsx"]) {
+    assert.ok(surfaceFile(file).includes('data-tour="slos"'), `${file} dropped data-tour="slos", so the step spotlights nothing there`);
+  }
+});
+
 test("D404 (S6.4): the /app/costs tour step promises capability, not the demo's customer economics", () => {
   const step = stripComments(stepSource("/app/costs"));
   for (const fact of ["Meridian", "$84", "$299", "44%", "draft_reply"]) {

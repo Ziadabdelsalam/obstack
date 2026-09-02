@@ -88,10 +88,14 @@ const steps: TourStep[] = [
     body: "The sample incident laid out end to end — pipelines, alerts, metrics and traces on one timeline, which is what the stitching is meant to show. This screen is a design, not a working incident tool: nothing here is generated from your data yet.",
   },
   {
+    // D515 (S7.3): this surface is live-wired, so its words are a claim about
+    // the workspace's own objectives — capability only, true in both modes
+    // (the D404 treatment). The demo's burned afternoon is gone from the copy:
+    // no live workspace has that afternoon to point at.
     path: "/app/slos",
     target: "slos",
     title: "SLOs — error budgets",
-    body: "Objectives with burn-down: chat latency is AT RISK because today burned 31% of the monthly budget in one afternoon. SLOs turn incidents into a number your team can manage.",
+    body: "Objectives over your own traces — availability or latency against a target over a rolling window. Each card computes attainment and the error budget consumed, and says healthy, at risk or breached: a number your team can manage, not one somebody typed.",
   },
   {
     path: "/app/costs",
