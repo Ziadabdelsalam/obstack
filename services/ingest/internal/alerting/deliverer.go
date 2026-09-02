@@ -131,14 +131,20 @@ func (d *Deliverer) Run(ctx context.Context) {
 // event rows — Postgres refuses a lock on the nullable side of an outer join,
 // and locking a channel or a rule here would block the web tier's edits behind
 // a webhook's response time for no gain.
+//
+// S7.3 (D512): a third LEFT JOIN, to the SLO an event may belong to instead of
+// a rule (D511 — never both, the 0012 CHECK). Its name, objective fields and
+// status ride into the payload's additive `slo` key.
 const claimPendingSQL = `
 	SELECT e.id, e.workspace_id, e.rule_id, e.channel_id, e.title, e.detail, e.link,
 	       e.attempts, e.created_at,
 	       c.kind, c.target, c.enabled,
-	       r.name, r.severity, r.condition
+	       r.name, r.severity, r.condition,
+	       e.slo_id, s.name, s.indicator, s.target::float8, s.eval_window, s.status
 	  FROM alert_events e
 	  LEFT JOIN notification_channels c ON c.id = e.channel_id
 	  LEFT JOIN alert_rules r ON r.id = e.rule_id
+	  LEFT JOIN slos s ON s.id = e.slo_id
 	 WHERE e.delivery = 'pending' AND e.attempts < $1
 	 ORDER BY e.created_at, e.id
 	 LIMIT $2
@@ -165,6 +171,13 @@ type pendingEvent struct {
 	ruleName      *string
 	ruleSeverity  *string
 	ruleCondition []byte
+
+	sloID        *string
+	sloName      *string
+	sloIndicator []byte
+	sloTarget    *float64
+	sloWindow    *string
+	sloStatus    *string
 }
 
 // deliverable reports whether this event has somewhere to go. A NULL
@@ -211,7 +224,8 @@ func claimPending(ctx context.Context, tx pgx.Tx) ([]pendingEvent, error) {
 		if err := rows.Scan(&e.id, &e.workspaceID, &e.ruleID, &e.channelID, &e.title, &e.detail,
 			&e.link, &e.attempts, &e.createdAt,
 			&e.channelKind, &e.channelTarget, &e.channelEnabled,
-			&e.ruleName, &e.ruleSeverity, &e.ruleCondition); err != nil {
+			&e.ruleName, &e.ruleSeverity, &e.ruleCondition,
+			&e.sloID, &e.sloName, &e.sloIndicator, &e.sloTarget, &e.sloWindow, &e.sloStatus); err != nil {
 			return nil, fmt.Errorf("scan pending alert event: %w", err)
 		}
 		pending = append(pending, e)
@@ -299,6 +313,17 @@ func payloadFor(e pendingEvent) notify.Payload {
 			rule.Condition = conditionSummary(cond)
 		}
 		p.Rule = rule
+	}
+	// S7.3 (D512): an SLO's transition names the SLO instead — `rule` stays
+	// null. The objective is the Go restatement (slo_text.go's seam); a
+	// document that no longer parses leaves it empty rather than stopping
+	// the delivery, the same reasoning as the rule's condition.
+	if e.sloID != nil && e.sloName != nil && e.sloStatus != nil {
+		slo := &notify.SloPayload{Name: *e.sloName, Status: *e.sloStatus}
+		if ind, err := ParseIndicator(e.sloIndicator); err == nil && e.sloTarget != nil && e.sloWindow != nil {
+			slo.Objective = sloObjective(ind, *e.sloTarget, *e.sloWindow)
+		}
+		p.Slo = slo
 	}
 	return p
 }

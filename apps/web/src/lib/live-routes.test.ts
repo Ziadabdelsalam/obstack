@@ -6,9 +6,16 @@ test("live-wired registry matches wired prefixes minus named exceptions", () => 
   assert.equal(isLiveWiredRoute("/app"), true);
   assert.equal(isLiveWiredRoute("/app/traces"), true);
   assert.equal(isLiveWiredRoute("/app/traces/3a55f0efeeb800e757fd61001b7cff2e"), true);
-  // The unwired control moved from /app/alerts (wired, S7.1) to /app/slos —
-  // the next M6 surface in line, still badged today.
-  assert.equal(isLiveWiredRoute("/app/slos"), false);
+  // The unwired control moved from /app/slos (wired, S7.3) to /app/incidents —
+  // the next M6 surface in line (S7.4), still badged today.
+  assert.equal(isLiveWiredRoute("/app/incidents"), false);
+});
+
+// S7.3 (D21/D514): slos reads the workspace's own objectives, measured by the
+// ingest binary's evaluator, in live mode — wired exactly, not as a subtree.
+test("/app/slos is live-wired, exactly and not as a subtree", () => {
+  assert.equal(isLiveWiredRoute("/app/slos"), true);
+  assert.equal(isLiveWiredRoute("/app/slos/anything"), false);
 });
 
 // S7.1 (D21/D367): alerts reads the workspace's own rules, evaluated events

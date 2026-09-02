@@ -175,7 +175,7 @@ func TestQAA6InheritedFilesAreUndriftedByS33(t *testing.T) {
 
 	// The versions, in the order Run applies them.
 	got := queryText(ctx, t, dsn, "SELECT string_agg(version, ',' ORDER BY version) FROM schema_migrations")
-	const want = "0001_workspaces,0002_saved_views,0003_auth,0004_api_keys,0005_metering,0006_explain_quota,0007_health_windows,0008_metrics_health,0009_dashboards,0010_alerts,0011_change_events"
+	const want = "0001_workspaces,0002_saved_views,0003_auth,0004_api_keys,0005_metering,0006_explain_quota,0007_health_windows,0008_metrics_health,0009_dashboards,0010_alerts,0011_change_events,0012_slos"
 	if got != want {
 		t.Errorf("applied set = %q, want %q", got, want)
 	}

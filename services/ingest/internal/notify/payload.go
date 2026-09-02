@@ -44,6 +44,11 @@ type Payload struct {
 	// notification is the one that exists. A rule of empty strings would be a
 	// severity we invented, so the absence is spelled `null`.
 	Rule *RulePayload `json:"rule"`
+	// Slo is the SLO whose transition this is (S7.3, D511/D512), or nil for
+	// a rule's event and for a test notification. ADDED at version 1 — the
+	// document evolves by addition only, and a receiver written before this
+	// key existed sees one more key it did not ask for and nothing else.
+	Slo *SloPayload `json:"slo"`
 	// Event is the thing that happened.
 	Event EventPayload `json:"event"`
 	// Workspace is the workspace id the rule and event belong to.
@@ -61,6 +66,17 @@ type RulePayload struct {
 	// produced by the one shared formatter (D481). It is presentation: it is
 	// rendered, never stored and never parsed, here or anywhere.
 	Condition string `json:"condition"`
+}
+
+// SloPayload is the SLO as its author defined it, and where it stands.
+type SloPayload struct {
+	// Name is the SLO's name, unique within the workspace.
+	Name string `json:"name"`
+	// Objective is the human-readable objective ("99.9% of traces without an
+	// error span over 30d · all services"). Presentation, never parsed.
+	Objective string `json:"objective"`
+	// Status is the status the transition landed in: healthy, at-risk, breached.
+	Status string `json:"status"`
 }
 
 // EventPayload is the state transition that produced this delivery.

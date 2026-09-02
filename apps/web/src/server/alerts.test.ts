@@ -108,6 +108,8 @@ const eventRow = (over: Record<string, unknown> = {}) => ({
   id: "evt_00112233445566aa",
   rule_id: null,
   rule_name: null,
+  slo_id: null,
+  slo_name: null,
   severity: "info",
   title: "Test notification",
   detail: `Manual test notification for channel “#incidents”.`,
@@ -140,6 +142,7 @@ type EngineOpts = {
   channels?: ReturnType<typeof channelRow>[];
   channelExists?: boolean;
   referencing?: number;
+  referencingSlos?: number;
   ruleCount?: number;
   event?: ReturnType<typeof eventRow> | null;
   onWrite?: () => never;
@@ -156,6 +159,7 @@ function engine({
   channels = [channelRow()],
   channelExists = true,
   referencing = 0,
+  referencingSlos = 0,
   ruleCount = 0,
   event = eventRow(),
   onWrite,
@@ -166,7 +170,7 @@ function engine({
       return channelExists ? [{ id: CHANNEL_ID }] : [];
     }
     if (sql.includes("count(*)::int AS n") && sql.includes("channel_id = $2")) {
-      return [{ n: referencing }];
+      return [{ n: sql.includes("FROM slos") ? referencingSlos : referencing }];
     }
     if (sql.includes("count(*)::int AS n")) {
       return [{ n: ruleCount }];
@@ -195,6 +199,17 @@ function engine({
 }
 
 // ---- D7/D11/D113: every statement is bound to the workspace it was handed ----
+
+// S7.3 (packet §0): ONE feed — the events read joins the SLO's name beside the rule's.
+test("the events feed joins both producers and maps sloId/sloName on every row", async () => {
+  const { query, seen } = recordingQuery(engine({ event: eventRow({ rule_id: null, rule_name: null, slo_id: "slo_00112233445566aa", slo_name: "API availability" }) }));
+  const [row] = await listAlertEvents("ws_a", 50, query);
+  assert.match(seen[0].sql, /LEFT JOIN alert_rules r ON r.id = e.rule_id/);
+  assert.match(seen[0].sql, /LEFT JOIN slos s ON s.id = e.slo_id/);
+  assert.equal(row.sloId, "slo_00112233445566aa");
+  assert.equal(row.sloName, "API availability");
+  assert.equal(row.ruleId, null);
+});
 
 test("every read statement is bound to the workspace it was handed", async () => {
   const { query, seen } = recordingQuery(engine());
@@ -444,9 +459,27 @@ test("deleting a channel referenced by a rule is refused, and deletable once the
 
 test("the referencing-rule count is scoped to this workspace and this channel", async () => {
   const { query, seen } = recordingQuery(engine({ referencing: 1 }));
-  await refusal(deleteNotificationChannel("ws_a", CHANNEL_ID, query), `“#incidents” is used by 1 alert rule — delete or repoint them first`);
-  const count = seen.find((s) => s.sql.includes("channel_id = $2"));
-  assert.deepEqual(count?.params, ["ws_a", CHANNEL_ID]);
+  await refusal(deleteNotificationChannel("ws_a", CHANNEL_ID, query), `“#incidents” is used by 1 alert rule — delete or repoint it first`);
+  const counts = seen.filter((s) => s.sql.includes("channel_id = $2"));
+  assert.equal(counts.length, 2, "both the rule count and the SLO count are taken");
+  for (const count of counts) assert.deepEqual(count.params, ["ws_a", CHANNEL_ID]);
+  assert.ok(counts.some((s) => s.sql.includes("FROM alert_rules")));
+  assert.ok(counts.some((s) => s.sql.includes("FROM slos")));
+});
+
+// S7.3 (D513): an SLO's channel reference is under the same RESTRICT and the
+// same check-first — the sentence names what holds the channel.
+test("deleting a channel referenced by an SLO is refused too, and the sentence names both kinds when both hold it", async () => {
+  const slo = recordingQuery(engine({ referencing: 0, referencingSlos: 1 }));
+  await refusal(deleteNotificationChannel("ws_a", CHANNEL_ID, slo.query), `“#incidents” is used by 1 SLO — delete or repoint it first`);
+  assert.deepEqual(writes(slo.seen), [], "a channel referenced by an SLO was deleted");
+
+  const both = recordingQuery(engine({ referencing: 2, referencingSlos: 3 }));
+  await refusal(
+    deleteNotificationChannel("ws_a", CHANNEL_ID, both.query),
+    `“#incidents” is used by 2 alert rules and 3 SLOs — delete or repoint them first`,
+  );
+  assert.deepEqual(writes(both.seen), []);
 });
 
 test("a 23503 foreign key violation at DELETE time is also refused, not a 500 (the check-first's backstop)", async () => {
@@ -456,7 +489,7 @@ test("a 23503 foreign key violation at DELETE time is also refused, not a 500 (t
   const { query, seen } = recordingQuery(engine({ referencing: 0, onWrite: fkViolation }));
   await refusal(
     deleteNotificationChannel("ws_a", CHANNEL_ID, query),
-    `“#incidents” is used by an alert rule — delete or repoint it first`,
+    `“#incidents” is used by an alert rule or an SLO — delete or repoint it first`,
   );
   assert.match(seen[seen.length - 1].sql, /DELETE FROM notification_channels/);
 });
@@ -483,6 +516,8 @@ test("sendTestNotification inserts exactly one pending, rule-less event naming t
 
   assert.equal(result.ruleId, null);
   assert.equal(result.ruleName, null);
+  assert.equal(result.sloId, null);
+  assert.equal(result.sloName, null);
   assert.equal(result.severity, "info");
   assert.equal(result.delivery, "pending");
 });

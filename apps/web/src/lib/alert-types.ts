@@ -266,6 +266,10 @@ export interface AlertEventRow {
   ruleId: string | null;
   /** The rule's name at read time, or null for a rule-less (test) event. */
   ruleName: string | null;
+  /** D511/D513 (S7.3): set when the event is an SLO's transition — `ruleId` is then null. */
+  sloId: string | null;
+  /** The SLO's name at read time, or null. */
+  sloName: string | null;
   severity: AlertSeverity;
   title: string;
   detail: string;

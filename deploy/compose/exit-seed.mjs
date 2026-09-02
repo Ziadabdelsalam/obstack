@@ -87,11 +87,13 @@ const USAGE =
   "       node deploy/compose/exit-seed.mjs --leg k8s --workspace <workspace_id>\n" +
   "         (with SEED_METRICS_TOKEN=<that workspace's own ok_live_ key> in the environment)\n" +
   "       node deploy/compose/exit-seed.mjs --leg alerts --workspace <workspace_id> --label <label> --target <receiver url>\n" +
+  "       node deploy/compose/exit-seed.mjs --leg slos --workspace <workspace_id> --label <label> [--target <receiver url>]\n" +
+  "         (with --target: the measured pair on a channel; without: one objective on a workspace with no traces)\n" +
   "       node deploy/compose/exit-seed.mjs --lower-free-quota";
 
 /** Which store this invocation writes to. Absent is the ClickHouse fixture, so
  *  the default invocation is exactly the one it always was. */
-const LEGS = ["clickhouse", "metrics", "dashboards", "k8s", "alerts"];
+const LEGS = ["clickhouse", "metrics", "dashboards", "k8s", "alerts", "slos"];
 function legOf(argv) {
   const at = argv.indexOf("--leg");
   if (at === -1) return "clickhouse";
@@ -1223,6 +1225,89 @@ async function seedAlerts(workspace, label, target) {
 }
 
 /**
+ * The S7.3 SLO fixture (packet §5.3). SLOs are UI-created rows like rules, so
+ * this leg writes them in the app's own shape (`slo_` ids, the indicator
+ * exactly `lib/slo-types.ts`'s structured form, target as the NUMERIC the DDL
+ * holds) straight into the DISPOSABLE compose Postgres.
+ *
+ * What stays REAL and unseeded is everything the sprint exists to prove: the
+ * rows land in the honest `no-data` state with `next_eval_at = now()`, and it
+ * is the ingest binary's evaluator (T4, on the S7.1 ticker) that claims them,
+ * reads the traces the clickhouse leg seeded through `trace_summaries`,
+ * computes attainment and budget, writes the status, and — for the one with a
+ * channel — emits the breach through the S7.1 deliverer to the drive's own
+ * receiver (`--target`).
+ *
+ * Three objectives, each a different truth by construction:
+ *   - availability at 99.99% over 7d, on the channel: the seeded dataset fails
+ *     one trace in twenty, so this is BREACHED and delivered;
+ *   - latency at 50% under ten minutes over 30d, NO channel: every seeded
+ *     trace is milliseconds long, so this is HEALTHY, silent (D511) — and on a
+ *     free workspace the 30d window renders the D507 clip note;
+ *   - (without --target) availability scoped to a service the workspace's
+ *     traces never name: NO DATA, never a number (D508) — on a workspace that
+ *     HAS traces, which is the sharper proof: no-data is per objective, and an
+ *     empty window is not a measured 100%.
+ */
+
+export const SLO_CHANNEL = "slo webhook";
+export const SLO_AVAILABILITY = "Exit availability objective";
+export const SLO_AVAILABILITY_TARGET = 99.99;
+export const SLO_AVAILABILITY_WINDOW = "7d";
+export const SLO_LATENCY = "Exit latency objective";
+export const SLO_LATENCY_TARGET = 50;
+export const SLO_LATENCY_THRESHOLD_MS = 600000;
+export const SLO_LATENCY_WINDOW = "30d";
+export const SLO_EMPTY = "Exit empty objective";
+/** A service no seeded span names (the chain is exit-gateway/agent/tool). */
+export const SLO_EMPTY_SERVICE = "exit-nothing";
+
+const INSERT_SLO_SQL = `
+  INSERT INTO slos (workspace_id, id, name, indicator, target, eval_window, channel_id)
+       VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7)
+    RETURNING id, name, status, next_eval_at <= now() AS due`;
+
+async function seedSlos(workspace, target) {
+  const client = new pg.Client({ connectionString: PG_DSN });
+  await client.connect();
+  try {
+    const slo = async (name, indicator, targetPct, window, channelId) =>
+      (
+        await client.query(INSERT_SLO_SQL, [
+          workspace,
+          newId("slo"),
+          name,
+          JSON.stringify(indicator),
+          targetPct,
+          window,
+          channelId,
+        ])
+      ).rows[0];
+
+    // The RED half of this leg's proof (S2.0 L1): withholding the SLO rows —
+    // the channel lands, nothing is measured — must fail the page, feed and
+    // receiver assertions downstream and never this seeder's own status.
+    const withheld = Boolean(process.env.RED_WITHHOLD_SLOS);
+
+    if (target === null) {
+      // The empty objective: one SLO, no channel, scoped to a service with no traces.
+      return { channel: null, slos: withheld ? [] : [await slo(SLO_EMPTY, { kind: "availability", service: SLO_EMPTY_SERVICE }, SLO_AVAILABILITY_TARGET, SLO_AVAILABILITY_WINDOW, null)] };
+    }
+    const channel = (await client.query(INSERT_CHANNEL_SQL, [workspace, newId("chan"), SLO_CHANNEL, target])).rows[0];
+    if (withheld) return { channel, slos: [] };
+    return {
+      channel,
+      slos: [
+        await slo(SLO_AVAILABILITY, { kind: "availability", service: null }, SLO_AVAILABILITY_TARGET, SLO_AVAILABILITY_WINDOW, channel.id),
+        await slo(SLO_LATENCY, { kind: "latency", service: null, thresholdMs: SLO_LATENCY_THRESHOLD_MS }, SLO_LATENCY_TARGET, SLO_LATENCY_WINDOW, null),
+      ],
+    };
+  } finally {
+    await client.end();
+  }
+}
+
+/**
  * The app's own column list, with `widgets` BOUND rather than interpolated: the
  * array carries a label the caller chose, and pasting it into statement text
  * would make this the one place in this file where that label could end a
@@ -1280,6 +1365,12 @@ if (invokedDirectly && !readingConstants && process.argv.includes("--lower-free-
   const label = requiredArg(process.argv, "--label");
   const target = requiredArg(process.argv, "--target");
   console.log(JSON.stringify({ workspace, label, alerts: await seedAlerts(workspace, label, target) }, null, 2));
+} else if (invokedDirectly && !readingConstants && legOf(process.argv) === "slos") {
+  const workspace = requiredArg(process.argv, "--workspace");
+  const label = requiredArg(process.argv, "--label");
+  const at = process.argv.indexOf("--target");
+  const target = at === -1 ? null : process.argv[at + 1];
+  console.log(JSON.stringify({ workspace, label, slos: await seedSlos(workspace, target) }, null, 2));
 } else if (invokedDirectly && !readingConstants && legOf(process.argv) === "k8s") {
   // No `--label`: nothing this leg sends is content (see the section header).
   const workspace = requiredArg(process.argv, "--workspace");
