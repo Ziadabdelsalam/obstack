@@ -96,6 +96,16 @@ const (
 
 	// planQueryTimeout bounds the Postgres read that starts a sweep.
 	planQueryTimeout = 30 * time.Second
+
+	// pgBatch is how many rows one Postgres delete statement takes (D501). A
+	// bounded batch keeps the lock and the WAL burst small on a table the
+	// product reads while the sweep runs; the loop repeats until a batch comes
+	// back short, so the pass still drains everything past the window.
+	pgBatch = 5000
+
+	// pgStatementTimeout bounds one Postgres delete batch: 5000 index-found rows
+	// is milliseconds, so anything near this is a lock we should not wait on.
+	pgStatementTimeout = 30 * time.Second
 )
 
 // plansSQL resolves every workspace to its retention, absent row = free — the
@@ -137,9 +147,35 @@ var deletes = []struct {
 	{"metric_series", `DELETE FROM obstack.metric_series WHERE workspace_id = ? AND last_seen < now() - toIntervalDay(?)`},
 }
 
+// The Postgres leg (S7.2 packet, D501 — the D489 carry-forward): the product
+// tables that grow by the workspace's own activity are swept on the same
+// per-workspace pass, to the same plan window, as the telemetry. alert_events
+// cuts on created_at (an event is when it was emitted); change_events cuts on
+// at, the event's OWN time — retention is "how far back the product shows",
+// so a backfilled event older than the window is outside it however recently
+// it arrived. Each statement deletes one bounded batch by ctid so the loop
+// below can drain a backlog without one statement holding the table.
+var pgDeletes = []struct {
+	table string
+	sql   string
+}{
+	{"alert_events", `DELETE FROM alert_events WHERE ctid IN (
+		SELECT ctid FROM alert_events WHERE workspace_id = $1 AND created_at < now() - make_interval(days => $2) LIMIT 5000)`},
+	{"change_events", `DELETE FROM change_events WHERE ctid IN (
+		SELECT ctid FROM change_events WHERE workspace_id = $1 AND at < now() - make_interval(days => $2) LIMIT 5000)`},
+}
+
 // Ops-only counters, the metering flusher's split: what a customer sees is the
 // data's absence, these are for the operator watching the loop itself.
 var (
+	// pgRowsDeleted is per table because, unlike ClickHouse's lightweight
+	// DELETE, a Postgres delete reports what it removed — so here the honest
+	// number exists and is kept.
+	pgRowsDeleted = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "obstack_ingest_retention_postgres_rows_deleted_total",
+		Help: "Rows the retention sweep deleted from the Postgres product tables (alert_events, change_events), past each workspace's plan window.",
+	}, []string{"table"})
+
 	sweeps = promauto.NewCounter(prometheus.CounterOpts{
 		Name: "obstack_ingest_retention_sweeps_total",
 		Help: "Retention sweeps completed, including sweeps in which some statements failed.",
@@ -165,6 +201,9 @@ type Sweeper struct {
 	plans func(ctx context.Context) ([]workspaceRetention, error)
 	// del issues one table's delete for one workspace.
 	del func(ctx context.Context, table, sql, workspaceID string, days int32) error
+	// pgDel issues one Postgres delete BATCH for one workspace and reports the
+	// rows it removed; Sweep loops it until a batch comes back short.
+	pgDel func(ctx context.Context, table, sql, workspaceID string, days int32) (int64, error)
 
 	close func() error
 }
@@ -196,11 +235,24 @@ func New(ctx context.Context, cfg Config) (*Sweeper, error) {
 		return nil, fmt.Errorf("ping clickhouse for retention: %w", err)
 	}
 
-	s := &Sweeper{close: conn.Close}
-	s.plans = func(ctx context.Context) ([]workspaceRetention, error) {
+	s := &Sweeper{close: conn.Close, plans: plansReader(cfg.Pool), pgDel: pgDeleter(cfg.Pool)}
+	s.del = func(ctx context.Context, table, sql, workspaceID string, days int32) error {
+		ctx, cancel := context.WithTimeout(ctx, statementTimeout)
+		defer cancel()
+		ctx = clickhouse.Context(ctx, clickhouse.WithSettings(clickhouse.Settings{
+			"max_execution_time": int(statementTimeout / time.Second),
+		}))
+		return conn.Exec(ctx, sql, workspaceID, days)
+	}
+	return s, nil
+}
+
+// plansReader resolves every workspace's tier through the pool (plansSQL).
+func plansReader(pool *pgxpool.Pool) func(ctx context.Context) ([]workspaceRetention, error) {
+	return func(ctx context.Context) ([]workspaceRetention, error) {
 		ctx, cancel := context.WithTimeout(ctx, planQueryTimeout)
 		defer cancel()
-		rows, err := cfg.Pool.Query(ctx, plansSQL)
+		rows, err := pool.Query(ctx, plansSQL)
 		if err != nil {
 			return nil, err
 		}
@@ -215,15 +267,19 @@ func New(ctx context.Context, cfg Config) (*Sweeper, error) {
 		}
 		return out, rows.Err()
 	}
-	s.del = func(ctx context.Context, table, sql, workspaceID string, days int32) error {
-		ctx, cancel := context.WithTimeout(ctx, statementTimeout)
+}
+
+// pgDeleter runs one Postgres delete batch through the pool.
+func pgDeleter(pool *pgxpool.Pool) func(ctx context.Context, table, sql, workspaceID string, days int32) (int64, error) {
+	return func(ctx context.Context, _ string, sql, workspaceID string, days int32) (int64, error) {
+		ctx, cancel := context.WithTimeout(ctx, pgStatementTimeout)
 		defer cancel()
-		ctx = clickhouse.Context(ctx, clickhouse.WithSettings(clickhouse.Settings{
-			"max_execution_time": int(statementTimeout / time.Second),
-		}))
-		return conn.Exec(ctx, sql, workspaceID, days)
+		tag, err := pool.Exec(ctx, sql, workspaceID, days)
+		if err != nil {
+			return 0, err
+		}
+		return tag.RowsAffected(), nil
 	}
-	return s, nil
 }
 
 // Close releases the sweeper's ClickHouse connection. The caller that stopped
@@ -298,11 +354,54 @@ func (s *Sweeper) Sweep(ctx context.Context) {
 					"retention_days", w.retentionDays, "error", err)
 			}
 		}
+		// The Postgres leg (D501), same pass, same window, same failure
+		// semantics: a failed table is counted and skipped, and retried whole
+		// next interval.
+		for _, d := range pgDeletes {
+			if ctx.Err() != nil {
+				return
+			}
+			if s.pgDel == nil {
+				// A sweeper built without the leg (tests of the ClickHouse
+				// side) sweeps nothing here rather than nil-dereferencing.
+				break
+			}
+			deleted, err := s.sweepPostgresTable(ctx, d.table, d.sql, w)
+			if err != nil {
+				failed++
+				sweepFailures.Inc()
+				slog.Error("retention postgres delete failed",
+					"workspace", w.workspaceID, "table", d.table,
+					"retention_days", w.retentionDays, "deleted_before_failure", deleted, "error", err)
+			}
+		}
 	}
 
 	sweeps.Inc()
 	// Lightweight DELETE reports no row count, so the honest log is the cutoff
-	// applied, not a number nothing measured.
+	// applied, not a number nothing measured. (The Postgres leg's counts are on
+	// its own counter, where they are real.)
 	slog.Info("retention sweep completed",
 		"workspaces", len(workspaces), "failed_statements", failed)
+}
+
+// sweepPostgresTable drains one table for one workspace in pgBatch-sized
+// statements until a batch comes back short. It returns what it deleted, with
+// the error that stopped it if one did — the partial count is still true.
+func (s *Sweeper) sweepPostgresTable(ctx context.Context, table, sql string, w workspaceRetention) (int64, error) {
+	var total int64
+	for {
+		if ctx.Err() != nil {
+			return total, ctx.Err()
+		}
+		n, err := s.pgDel(ctx, table, sql, w.workspaceID, w.retentionDays)
+		if err != nil {
+			return total, err
+		}
+		total += n
+		pgRowsDeleted.WithLabelValues(table).Add(float64(n))
+		if n < pgBatch {
+			return total, nil
+		}
+	}
 }

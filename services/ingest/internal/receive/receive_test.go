@@ -20,6 +20,7 @@ import (
 	"go.opentelemetry.io/collector/pdata/ptrace/ptraceotlp"
 
 	"github.com/Ziadabdelsalam/observer-stack/services/ingest/internal/auth"
+	"github.com/Ziadabdelsalam/observer-stack/services/ingest/internal/changes"
 	"github.com/Ziadabdelsalam/observer-stack/services/ingest/internal/metering"
 	"github.com/Ziadabdelsalam/observer-stack/services/ingest/internal/metrics"
 	"github.com/Ziadabdelsalam/observer-stack/services/ingest/internal/receive"
@@ -165,6 +166,7 @@ type fakeMeter struct {
 	mu             sync.Mutex
 	accepted       []acceptedCall
 	acceptedMetric []acceptedMetricsCall
+	acceptedChange []acceptedChangeCall
 	dropped        []droppedCall
 }
 
@@ -194,6 +196,22 @@ func (m *fakeMeter) RecordAcceptedMetrics(workspaceID, keyID string, points int6
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.acceptedMetric = append(m.acceptedMetric, acceptedMetricsCall{workspaceID, keyID, points})
+}
+
+type acceptedChangeCall struct {
+	workspaceID, keyID string
+}
+
+func (m *fakeMeter) RecordAcceptedChange(workspaceID, keyID string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.acceptedChange = append(m.acceptedChange, acceptedChangeCall{workspaceID, keyID})
+}
+
+func (m *fakeMeter) acceptedChangeCalls() []acceptedChangeCall {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]acceptedChangeCall(nil), m.acceptedChange...)
 }
 
 func (m *fakeMeter) RecordDropped(workspaceID, keyID string, reason metering.DropReason, records int64) {
@@ -275,6 +293,12 @@ type serverOptions struct {
 	// vercelDrainSecret turns on the drain route's signature check (D287);
 	// empty is the default posture, bearer-only.
 	vercelDrainSecret string
+	// changes registers POST /v1/changes against this store (S7.2); nil
+	// leaves the route off, as every pre-S7.2 test expects.
+	changes changes.Store
+	// extraKeys are additional token → workspace resolutions beside testKey,
+	// for tests that need a second workspace on the same listener.
+	extraKeys map[string]string
 }
 
 // startSigningDrain boots a receiver whose drain route verifies signatures
@@ -300,14 +324,19 @@ func startMetered(t *testing.T, overQuota bool, draw func() uint64) (*receive.Se
 func start(t *testing.T, opts serverOptions) *receive.Server {
 	t.Helper()
 
+	resolver := testResolver{testKey: workspaceID}
+	for token, ws := range opts.extraKeys {
+		resolver[token] = ws
+	}
 	srv := receive.New(receive.Config{
 		GRPCAddr:  "127.0.0.1:0",
 		HTTPAddr:  "127.0.0.1:0",
-		Auth:      auth.New(testResolver{testKey: workspaceID}),
+		Auth:      auth.New(resolver),
 		Consumer:  opts.consumer,
 		OverQuota: func(string) bool { return opts.overQuota },
 		Meter:     opts.meter,
 		Rand:      opts.rand,
+		Changes:   opts.changes,
 
 		VercelDrainSecret: opts.vercelDrainSecret,
 	})

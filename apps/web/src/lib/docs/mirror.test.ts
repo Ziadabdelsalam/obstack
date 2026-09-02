@@ -359,10 +359,12 @@ test("the connector counts and names are the catalog's", () => {
   for (const entry of entries) {
     assert.ok(flatPage.includes(entry.name), `/docs/connectors/overview never names ${entry.name}`);
   }
-  // The rest of the catalog, counted rather than restated: "the other fourteen"
-  // is a number the page states and this is where it comes from.
+  // The rest of the catalog, counted rather than restated: "the other
+  // thirteen" is a number the page states and this is where it comes from —
+  // the coming-soon cards minus the THREE that have a route on ingest today
+  // (Vercel drains, CloudWatch, and since S7.2 the GitHub Actions deploy hook).
   assert.ok(
-    flatPage.includes(`The other ${numberWord(soon.length - 2)} are names on cards`),
+    flatPage.includes(`The other ${numberWord(soon.length - 3)} are names on cards`),
     "the overview's count of untouched cards no longer follows from the catalog",
   );
 });
@@ -561,7 +563,7 @@ test("every page is registered, and every registered page is written", () => {
   // `docs.test.ts` owns the manifest↔tree mirror. This is the other half: a
   // page that is still the placeholder T1 left behind is registered, walked,
   // built and served, and says nothing.
-  assert.equal(corpus.length, 14, "the corpus changed size — update this count deliberately");
+  assert.equal(corpus.length, 15, "the corpus changed size — update this count deliberately");
   for (const p of corpus) {
     assert.equal(
       p.source.includes("This page is written in T2"),

@@ -1,4 +1,5 @@
 import Link from "next/link";
+import type { ServiceDeployRow } from "@/lib/change-types";
 import { fmtCost, fmtMs, fmtPerMin } from "@/lib/format";
 import {
   RECENT_ERROR_TRACE_CAP,
@@ -12,33 +13,22 @@ import {
   tracesSearchString,
 } from "@/lib/traces-filter";
 import { LayerChip } from "@/components/ui/LayerChip";
-import { SampleMark } from "@/components/ui/SampleMark";
 
 /**
  * One service, live (D367): a SERVER component (D392), fed by
  * `server/queries/services.ts` through `services/[id]/page.tsx`. No `@/mock/`
- * import anywhere in this file (A2/D401) — the deploys the panel below renders
- * arrive as a PROP from the page, which is the one place the fixture is still
- * named, and the panel wears `SampleMark` so nobody reads them as this
- * service's real deploys (D362/D401).
+ * import anywhere in this file (A2/D401). The deploys the panel below renders
+ * are this service's own `deploy` events from the changes feed (S7.2, D503) —
+ * the D362 fence is released and the mark that wore it is gone.
  *
- * Absent, because the spans cannot answer them (D13): the scorecard, the
- * grade, the team/tier/runtime line, and the declared dependency list — the
- * dependency answer is the service map's (D393), linked below.
+ * Absent, because nothing measured them (D13): the scorecard, the grade, the
+ * team/tier/runtime line, the declared dependency list — the dependency answer
+ * is the service map's (D393), linked below — and the fixture's `regression`
+ * column, which is evals' (M7) to derive.
  */
 
-/**
- * What the deploys panel renders. Structural on purpose: typing this against
- * `Deploy` from `@/mock/intelligence` would put a mock import in this file,
- * which is exactly what D401 forbids — and the panel only ever reads these
- * four fields.
- */
-interface DeploySample {
-  sha: string;
-  time: string;
-  author: string;
-  regression: boolean;
-}
+/** ISO UTC → `YYYY-MM-DD HH:MM UTC`, the feeds' idiom. */
+const clock = (iso: string): string => `${iso.slice(0, 16).replace("T", " ")} UTC`;
 
 function Stat({ label, value, color }: { label: string; value: string; color?: string }) {
   return (
@@ -58,7 +48,7 @@ export function ServiceDetailLive({
 }: {
   name: string;
   detail: ServiceDetail | null;
-  deploys: DeploySample[];
+  deploys: ServiceDeployRow[];
 }) {
   if (!detail) {
     return (
@@ -213,26 +203,40 @@ export function ServiceDetailLive({
           </Link>
         </section>
 
-        {/* recent deploys — D362/D401: rendered, and marked for what it is */}
+        {/* recent deploys — D503: this service's own deploy events from the changes feed */}
         <section className="rounded-lg border border-line bg-surface p-3.5">
-          <h2 className="mb-2.5 flex items-center gap-2 font-mono text-[11px] uppercase tracking-widest text-faint">
+          <h2 className="mb-2.5 font-mono text-[11px] uppercase tracking-widest text-faint">
             Recent deploys
-            <SampleMark title="sample data — deploy tracking arrives with the changes feed (M6)" />
           </h2>
-          <div className="space-y-1.5">
-            {deploys.map((d) => (
-              <div key={d.sha} className="flex items-center gap-3 font-mono text-[11.5px]">
-                <span className="text-ink">{d.sha}</span>
-                <span className="text-faint">{d.time}</span>
-                <span className="text-mid">{d.author}</span>
-                {d.regression && (
-                  <span className="ml-auto" style={{ color: "var(--color-err)" }}>
-                    regression
-                  </span>
-                )}
-              </div>
-            ))}
-          </div>
+          {deploys.length === 0 ? (
+            <p className="font-mono text-[11.5px] text-faint">
+              no deploys recorded for this service — wire the deploy hook (
+              <Link href="/app/docs/connectors/github-actions" className="hover:text-ink">
+                recipe
+              </Link>
+              ).
+            </p>
+          ) : (
+            <div className="space-y-1.5">
+              {deploys.map((d) => (
+                <div key={d.id} className="flex items-center gap-3 font-mono text-[11.5px]">
+                  <span className="text-ink">{d.ref ?? d.title}</span>
+                  <span className="text-faint">{clock(d.at)}</span>
+                  {d.who && <span className="text-mid">{d.who}</span>}
+                  {d.link && (
+                    <a
+                      href={d.link.href}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="ml-auto text-[10.5px] text-faint hover:text-ink"
+                    >
+                      {d.link.label} ↗
+                    </a>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
         </section>
       </div>
     </div>

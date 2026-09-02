@@ -73,26 +73,25 @@ test("D401: the detail page's ONE mock import is the deploys fixture, and the ca
     false,
     "the catalog page reads no fixture at all — ServicesMock owns that import",
   );
+  // S7.2 (D503, the D362 release): the deploys fixture LEFT this page — the
+  // live branch reads the workspace's own deploy events — so the detail page,
+  // like the catalog page, names no mock module at all. The catalog fixture is
+  // the mock branch's alone (ServiceDetailMock owns that import).
   const detailMockSpecs = resolvedImports(DETAIL_PAGE, DETAIL_PAGE_PATH).filter((spec) =>
     /(^|\/)mock\//.test(spec),
   );
   assert.equal(
     detailMockSpecs.length,
-    1,
-    `services/[id]/page.tsx must name exactly one mock module, found ${detailMockSpecs.length}`,
-  );
-  // The catalog fixture is the mock branch's alone (a live page reaching for
-  // it would be the fabricated service list this whole task exists to
-  // replace) — asserted by naming the ONE mock module allowed, not by
-  // excluding catalog's alias spelling.
-  assert.equal(
-    detailMockSpecs[0],
-    "@/mock/intelligence",
-    "the one mock import must be the deploys fixture D362/D401 keeps rendering",
+    0,
+    `services/[id]/page.tsx must name no mock module, found ${detailMockSpecs.join(", ")}`,
   );
   assert.ok(
-    DETAIL_PAGE.includes('import { deploys } from "@/mock/intelligence";'),
-    "the one mock import must be the deploys fixture D362/D401 keeps rendering",
+    !DETAIL_PAGE.includes('from "@/mock/intelligence"'),
+    "the deploys fixture must not be imported by the live page any more (D503)",
+  );
+  assert.ok(
+    DETAIL_PAGE.includes("listServiceDeploys("),
+    "the live branch reads this service's own deploys through server/changes.ts (D503)",
   );
   assert.ok(LIST_MOCK.includes('from "@/mock/catalog"'));
   assert.ok(DETAIL_MOCK.includes('from "@/mock/catalog"'));
@@ -114,13 +113,16 @@ test("A2/D392: neither Live component imports mock data or ships client JS", () 
       `${label} is a server component (D392) — selection here is a <Link>, so there is no interactivity to ship JS for`,
     );
   }
-  // The deploys panel renders in live mode (D362), which only stays honest
-  // while it is marked as sample content.
+  // S7.2 (D503): the deploys panel renders the workspace's own deploy events
+  // now, so the D362 SampleMark is GONE — the fence released, the mark
+  // dropped, nothing left to apologise for.
   assert.ok(
-    DETAIL_LIVE.includes(
-      '<SampleMark title="sample data — deploy tracking arrives with the changes feed (M6)" />',
-    ),
-    "the live deploys panel must carry its SampleMark verbatim",
+    !DETAIL_LIVE.includes("SampleMark"),
+    "the live deploys panel must no longer carry a SampleMark (D362 released by D503)",
+  );
+  assert.ok(
+    !DETAIL_LIVE.includes("regression"),
+    "the regression column is evals' (M7): absent, not staged",
   );
 });
 

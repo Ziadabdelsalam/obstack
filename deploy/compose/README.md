@@ -377,6 +377,25 @@ What it asserts, in order:
   with none of her rules, channels or words. Compose sets
   `OBSTACK_NOTIFIER_ALLOW_PRIVATE` for exactly this receiver (D492) — the
   production default stays strict, refusals dial-time-proven in Go tests;
+- **changes, posted by the documented step itself (S7.2, D493–D504)** — the
+  drive lifts the `run:` block out of the docs page
+  (`connectors/github-actions`, between its recipe markers), makes the ONE
+  edit the page tells a reader to make (`service` → the trace leg's own
+  service name, asserted to be exactly one substitution) and runs it under
+  `bash` with `OBSTACK_INGEST_URL`/`OBSTACK_API_KEY` (the quickstart's key,
+  in the child's environment and nowhere it prints) and the `GITHUB_*`
+  context — real on the Actions runner, stood in for locally. The step is
+  answered `201` with a row id; run again it is answered `200 deduplicated`
+  with the ORIGINAL id (the retry a re-attempted job makes, D496); a flag
+  event posted directly lands too, a `javascript:` href is refused naming
+  `link.href`, a keyless post is `401`. `/app/changes` then renders both
+  events newest-first with their `via` labels, the deploy's link as an
+  EXTERNAL anchor to the workflow run, no `SAMPLE DATA` badge and no `INC-42`
+  story; the service's own page names the deploy's ref and actor in the panel
+  that carried a sample mark until this sprint (D362 released by D503); and
+  the other stranger's `/app/changes` is the empty state with none of her
+  words. `RED_WITHHOLD_CHANGES=1` skips every post and must fail exactly the
+  answer and page checks, never the leg's own preconditions;
 - **token hygiene** — both keys the run issued through the UI are searched for,
   as literals, in everything the drive printed and everything it wrote: stdout,
   the transcript, the server log, the build log, every artifact beside them. The

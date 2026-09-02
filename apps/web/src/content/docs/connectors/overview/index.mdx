@@ -44,14 +44,16 @@ Vercel, AWS CloudWatch Logs, GCP Cloud Logging, Azure Monitor, Railway, Fly.io,
 Render, Supabase, PostgreSQL, MongoDB, OpenRouter, Vercel AI Gateway, Kafka,
 Redis, GitHub Actions and Cloudflare Workers.
 
-Two of those are a special case worth stating plainly. **Vercel log drains** and
-**AWS CloudWatch Logs** have receivers today: routes on ingest, built and
-exercised in CI against captured payloads. They are still marked coming soon
-because the hosted endpoint a drain or a subscription filter would be pointed at
-is not public yet — and a card's availability is a product claim. **A
-self-hoster can use both today**, against their own ingest:
+Three of those are a special case worth stating plainly. **Vercel log drains**,
+**AWS CloudWatch Logs** and **GitHub Actions** have routes on ingest today,
+built and exercised in CI — the first two against captured payloads, the third
+by running its documented step end to end. They are still marked coming soon
+because the hosted endpoint a drain, a subscription filter or a workflow would
+be pointed at is not public yet — and a card's availability is a product claim.
+**A self-hoster can use all three today**, against their own ingest:
 
 - [Vercel log drains](/docs/connectors/vercel-log-drains)
 - [AWS CloudWatch Logs](/docs/connectors/aws-cloudwatch)
+- [GitHub Actions deploys](/docs/connectors/github-actions)
 
-The other fourteen are names on cards. Nothing has been built behind them.
+The other thirteen are names on cards. Nothing has been built behind them.

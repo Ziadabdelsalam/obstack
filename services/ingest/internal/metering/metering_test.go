@@ -516,3 +516,38 @@ func TestRetainedWindowsRespectRetention(t *testing.T) {
 		t.Errorf("retained %d buckets past the retention, want 0", len(m.windows))
 	}
 }
+
+// The D497 proof: RecordAcceptedChange is one on the key's health accepted and
+// its last event, and nothing in the ledger — the RecordAcceptedMetrics posture
+// for the change-event route (S7.2).
+func TestRecordAcceptedChangeWritesZeroLedgerCells(t *testing.T) {
+	m, flush, clock := newTestMeter(t)
+
+	m.RecordAcceptedChange("ws_alice", "key_a")
+	m.RecordAcceptedChange("ws_alice", "key_a")
+	m.RecordAcceptedChange("ws_alice", "key_a")
+	// Keyless or workspace-less counts have no committable home (the
+	// RecordAcceptedMetrics rule): skipped, not accumulated.
+	m.RecordAcceptedChange("ws_alice", "")
+	m.RecordAcceptedChange("", "key_a")
+
+	mustFlush(t, m)
+	b := lastBatch(t, flush)
+
+	if len(b.ledger) != 0 {
+		t.Errorf("RecordAcceptedChange wrote %d ledger cells, want 0: %+v", len(b.ledger), b.ledger)
+	}
+	if len(b.health) != 1 {
+		t.Errorf("health cells = %d, want 1 (the keyless calls must not land): %+v", len(b.health), b.health)
+	}
+	got := b.health[healthKey{workspaceID: "ws_alice", keyID: "key_a"}]
+	if got.accepted != 3 {
+		t.Errorf("health accepted = %d, want 3", got.accepted)
+	}
+	if !got.lastEventAt.Equal(clock.t) {
+		t.Errorf("last event = %s, want %s", got.lastEventAt, clock.t)
+	}
+	if got.droppedDecode != 0 || got.droppedUnsupported != 0 || got.droppedQuota != 0 || got.droppedCardinality != 0 {
+		t.Errorf("RecordAcceptedChange touched a drop column: %+v", got)
+	}
+}

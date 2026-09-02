@@ -75,9 +75,17 @@ parsed out of message text to manufacture a correlation.
 
 {/* D264b */}
 
-**Ingest receives OTLP and those two integration routes, and nothing else:**
-there is no Pub/Sub or Event Hub receiver, no Heroku, Fly or Railway drain, no
-syslog listener, and no Loki or Elasticsearch compatibility endpoint.
+**Ingest receives OTLP, those two integration routes and the change-event
+route (`POST /v1/changes`), and nothing else:** there is no Pub/Sub or Event
+Hub receiver, no Heroku, Fly or Railway drain, no syslog listener, and no Loki
+or Elasticsearch compatibility endpoint.
+
+{/* S7.2 packet, scope fence */}
+
+**Change tracking is one generic route and one documented GitHub Actions
+step.** There is no connector catalog of deploy providers, no polling of a
+provider's API, no feature-flag SDK, and no manual entry — a change event is
+something a system reports, with an ingest key, or it is not recorded.
 
 {/* D264a */}
 
@@ -87,11 +95,11 @@ database underneath them.
 
 ## The product
 
-{/* D264c, rewritten by D465 — the sample-data list shrank to two panels */}
+{/* D264c, rewritten by D465, then by S7.2 (D503) — the sample-data list is one panel */}
 
-**The services page's recent-deploys panel and the overview's top-failing table
-render sample data** — every other surface reads the signed-in workspace;
-dashboards persist since S6.3.
+**The overview's top-failing table renders sample data** — every other surface
+reads the signed-in workspace; dashboards persist since S6.3, and the services
+page's recent-deploys panel reads the workspace's own deploy events since S7.2.
 
 {/* D461 */}
 
@@ -99,11 +107,13 @@ dashboards persist since S6.3.
 your workspace's `pricing_overrides` is counted as unpriced on the cost page,
 never as $0.
 
-{/* M6 */}
+{/* M6, as it stands after S7.2 */}
 
-**There are no alerts, no on-call rotations, no SLOs, no incident management, no
-issues and no change tracking** — those surfaces render sample data, and the
-public status page is deliberately not fed by SLOs.
+**There are no on-call rotations, no SLOs and no incident management** — those
+three surfaces render sample data, and the public status page is deliberately
+not fed by SLOs. Alerts evaluate the workspace's own telemetry (S7.1), change
+tracking records what its systems post (S7.2), and issues group its own error
+spans (S6.2).
 
 {/* M7 */}
 

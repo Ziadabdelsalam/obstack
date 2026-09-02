@@ -331,3 +331,97 @@ func survivingNames(ctx context.Context, t *testing.T, conn driver.Conn, table, 
 	}
 	return names
 }
+
+// The Postgres leg's fan-out (D501): every workspace hits both product tables
+// with its own tier, after its ClickHouse tables, and a full batch is followed
+// by another statement until one comes back short.
+func TestSweepDrainsThePostgresTablesPerWorkspace(t *testing.T) {
+	type call struct {
+		table       string
+		workspaceID string
+		days        int32
+	}
+	var calls []call
+	// alert_events for w_free has a backlog: two full batches, then a short one.
+	remaining := map[string]int64{"w_free/alert_events": 2*pgBatch + 120}
+
+	s := &Sweeper{
+		plans: func(context.Context) ([]workspaceRetention, error) {
+			return []workspaceRetention{
+				{workspaceID: "w_free", retentionDays: 7},
+				{workspaceID: "w_pro", retentionDays: 30},
+			}, nil
+		},
+		del: func(context.Context, string, string, string, int32) error { return nil },
+		pgDel: func(_ context.Context, table, sql, workspaceID string, days int32) (int64, error) {
+			if !strings.Contains(sql, "workspace_id = $1") || !strings.Contains(sql, "LIMIT 5000") {
+				t.Errorf("%s: statement lost its workspace scope or its batch bound: %s", table, sql)
+			}
+			calls = append(calls, call{table, workspaceID, days})
+			key := workspaceID + "/" + table
+			n := min(remaining[key], pgBatch)
+			remaining[key] -= n
+			return n, nil
+		},
+	}
+	s.Sweep(context.Background())
+
+	want := []call{
+		{"alert_events", "w_free", 7}, {"alert_events", "w_free", 7}, {"alert_events", "w_free", 7},
+		{"change_events", "w_free", 7},
+		{"alert_events", "w_pro", 30}, {"change_events", "w_pro", 30},
+	}
+	if len(calls) != len(want) {
+		t.Fatalf("got %d postgres deletes %v, want %d %v", len(calls), calls, len(want), want)
+	}
+	for i := range want {
+		if calls[i] != want[i] {
+			t.Errorf("postgres delete %d = %v, want %v", i, calls[i], want[i])
+		}
+	}
+}
+
+// A failed Postgres table is counted and skipped; the other table and the
+// other workspace still get their sweep.
+func TestSweepContinuesPastAFailedPostgresTable(t *testing.T) {
+	var swept []string
+	s := &Sweeper{
+		plans: func(context.Context) ([]workspaceRetention, error) {
+			return []workspaceRetention{
+				{workspaceID: "w_a", retentionDays: 7},
+				{workspaceID: "w_b", retentionDays: 30},
+			}, nil
+		},
+		del: func(context.Context, string, string, string, int32) error { return nil },
+		pgDel: func(_ context.Context, table, _, workspaceID string, _ int32) (int64, error) {
+			if workspaceID == "w_a" && table == "alert_events" {
+				return 0, errors.New("lock timeout")
+			}
+			swept = append(swept, workspaceID+"/"+table)
+			return 0, nil
+		},
+	}
+	s.Sweep(context.Background())
+
+	want := []string{"w_a/change_events", "w_b/alert_events", "w_b/change_events"}
+	if fmt.Sprint(swept) != fmt.Sprint(want) {
+		t.Errorf("swept %v, want %v", swept, want)
+	}
+}
+
+// The statements carry the rules the packet froze: alert_events by created_at,
+// change_events by the event's own time.
+func TestPostgresStatementsCarryTheirRules(t *testing.T) {
+	if len(pgDeletes) != 2 {
+		t.Fatalf("pgDeletes has %d tables, want alert_events and change_events", len(pgDeletes))
+	}
+	for _, d := range pgDeletes {
+		col := map[string]string{"alert_events": "created_at <", "change_events": "at <"}[d.table]
+		if col == "" || !strings.Contains(d.sql, col) {
+			t.Errorf("%s does not cut on its ruled column: %s", d.table, d.sql)
+		}
+		if !strings.Contains(d.sql, "make_interval(days => $2)") {
+			t.Errorf("%s does not bind the plan window in days: %s", d.table, d.sql)
+		}
+	}
+}

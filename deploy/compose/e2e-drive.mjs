@@ -2850,9 +2850,11 @@ try {
     `HTTP ${detail.status} · ${labelHits(detail.html, aliceLabel)}× ${aliceLabel}`,
   );
   check(
-    "and the one panel it cannot derive from traces is MARKED rather than hidden (D362/D401)",
-    detail.html.includes("deploy tracking arrives with the changes feed"),
-    "the deploys panel renders unmarked, or not at all",
+    "and the deploys panel is no longer marked: before any deploy is posted it states its honest empty sentence, not a sample (D362 released by D503)",
+    !detail.html.includes("deploy tracking arrives") &&
+      detail.html.includes("no deploys recorded for this service"),
+    `marked ${detail.html.includes("deploy tracking arrives")} · ` +
+      `empty ${detail.html.includes("no deploys recorded for this service")}`,
   );
 
   const users = await pageFor(alice, "/app/users");
@@ -3275,6 +3277,168 @@ try {
       bobAlerts.html.includes("no alert events yet"),
     `HTTP ${bobAlerts.status} · rule ${bobAlerts.html.includes(ALERT_LIVE_RULE)} · ` +
       `${labelHits(bobAlerts.html, aliceLabel)}× ${aliceLabel} · empty ${bobAlerts.html.includes("no alert events yet")}`,
+  );
+
+  // ---------------------------------------------------- changes (S7.2)
+  /* The deploy hook's proof is the documented step ITSELF (D504): the drive
+   * lifts the `run:` block out of the docs page between its recipe markers,
+   * makes the ONE edit the page tells a reader to make — `service` to the name
+   * their spans report — and runs it under bash with the two variables the
+   * page names and the GITHUB_* context every Actions runner provides (real on
+   * CI; stood in for locally). What is NOT faked is the point: the POST goes
+   * through the real front door with the key the quickstart issued, the row
+   * lands in Postgres synchronously (D495), a second run of the same step is
+   * answered with the ORIGINAL row (D496), and the feed and the service page
+   * read it back (D502/D503) — the D362 fence released by a deploy that
+   * actually happened. */
+  step("the changes leg: the documented GitHub Actions step posts a real deploy through the front door; the feed and the service page state it (D493–D504)");
+  const recipePage = readFileSync(
+    join(repoRoot, "apps/web/src/content/docs/connectors/github-actions/index.mdx"),
+    "utf8",
+  );
+  const recipeStart = recipePage.indexOf("{/* recipe:start");
+  const recipeEnd = recipePage.indexOf("{/* recipe:end */}");
+  must(recipeStart >= 0 && recipeEnd > recipeStart, "the docs page lost its recipe markers");
+  const recipeFence = recipePage.slice(recipeStart, recipeEnd).match(/```yaml\n([\s\S]*?)\n```/);
+  must(recipeFence !== null, "no yaml fence between the recipe markers");
+  const recipeLines = recipeFence[1].split("\n");
+  const runAt = recipeLines.findIndex((line) => /^\s*run: \|$/.test(line));
+  must(runAt >= 0, "the recipe step has no `run: |` block");
+  const runIndent = recipeLines[runAt + 1].match(/^\s*/)[0].length;
+  const documentedScript = recipeLines.slice(runAt + 1).map((line) => line.slice(runIndent)).join("\n");
+  // The one edit the page asks for, made exactly once — and asserted to be one.
+  const recipeHalves = documentedScript.split('--arg service "checkout"');
+  must(recipeHalves.length === 2, "the recipe no longer carries the one `service` a reader edits");
+  const recipeScript = recipeHalves.join(`--arg service ${JSON.stringify(CHAIN_AGENT)}`);
+  const githubSha = process.env.GITHUB_SHA ?? createHash("sha1").update(`drive-${RUN}`).digest("hex");
+  const deployRef = githubSha.slice(0, 7);
+  const githubEnv = {
+    GITHUB_SHA: githubSha,
+    GITHUB_ACTOR: process.env.GITHUB_ACTOR ?? `alice-ci-${RUN}`,
+    GITHUB_REPOSITORY: process.env.GITHUB_REPOSITORY ?? "obstack/e2e-drive",
+    GITHUB_RUN_ID: process.env.GITHUB_RUN_ID ?? `${Date.now()}`,
+    GITHUB_RUN_ATTEMPT: process.env.GITHUB_RUN_ATTEMPT ?? "1",
+    GITHUB_SERVER_URL: process.env.GITHUB_SERVER_URL ?? "https://github.com",
+  };
+  const runLink = `${githubEnv.GITHUB_SERVER_URL}/${githubEnv.GITHUB_REPOSITORY}/actions/runs/${githubEnv.GITHUB_RUN_ID}`;
+  // The key rides in the child's ENVIRONMENT, into an Authorization header,
+  // and into nothing the child prints: curl -fsS writes the answer alone.
+  const runRecipe = () =>
+    spawnSync("bash", ["-euo", "pipefail", "-c", recipeScript], {
+      cwd: repoRoot,
+      env: { ...process.env, ...githubEnv, OBSTACK_INGEST_URL: INGEST_OTLP, OBSTACK_API_KEY: firstToken },
+      encoding: "utf8",
+    });
+  const postChange = async (token, body) => {
+    const res = await fetch(`${INGEST_OTLP}/v1/changes`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+      body: JSON.stringify(body),
+    });
+    return { status: res.status, body: await res.text() };
+  };
+  const flagTitle = `flag ${aliceLabel} rollout widened`;
+  let firstRun = { status: -1, stdout: "", stderr: "withheld" };
+  let secondRun = firstRun;
+  let flagPost = { status: 0, body: "" };
+  let badHref = { status: 0, body: "" };
+  let keyless = { status: 0, body: "" };
+  /* The RED half of this leg's proof (S2.0 L1): withholding the POSTS — the
+   * step never runs, nothing is posted — must fail the page and answer checks
+   * below and never this leg's own preconditions. */
+  if (!process.env.RED_WITHHOLD_CHANGES) {
+    firstRun = runRecipe();
+    secondRun = runRecipe();
+    flagPost = await postChange(firstToken, {
+      kind: "flag",
+      title: flagTitle,
+      detail: `rolled out to 25% by ${aliceLabel}`,
+      who: `${aliceLabel}-ops`,
+      source: "drive",
+      link: { label: "the change", href: "https://flags.example.invalid/changes/1" },
+    });
+    badHref = await postChange(firstToken, {
+      kind: "config",
+      title: "x",
+      link: { label: "x", href: "javascript:alert(1)" },
+    });
+    keyless = await postChange("", { kind: "config", title: "x" });
+  }
+  writeFileSync(
+    join(OUT, "changes-leg.json"),
+    JSON.stringify({ firstRun, secondRun, flagPost, badHref, keyless, deployRef }, null, 2),
+  );
+  const recipeAnswer = (run) => {
+    try {
+      return JSON.parse(run.stdout.trim());
+    } catch {
+      return null;
+    }
+  };
+  const firstAnswer = recipeAnswer(firstRun);
+  const secondAnswer = recipeAnswer(secondRun);
+  check(
+    "the documented step, lifted from the docs page and run verbatim under bash with its one `service` edit, is answered 201 with a new row's id (D504/D495)",
+    firstRun.status === 0 &&
+      firstAnswer !== null &&
+      /^chg_[0-9a-f]{16}$/.test(firstAnswer.id) &&
+      firstAnswer.deduplicated === false,
+    `exit ${firstRun.status} · stdout ${firstRun.stdout.trim().slice(0, 120)} · stderr ${firstRun.stderr.trim().slice(0, 200)}`,
+  );
+  check(
+    "the same step run again — the retry a re-attempted job makes — is answered 200 deduplicated with the ORIGINAL id, and writes nothing (D496)",
+    secondRun.status === 0 &&
+      secondAnswer !== null &&
+      secondAnswer.deduplicated === true &&
+      secondAnswer.id === firstAnswer?.id,
+    `exit ${secondRun.status} · stdout ${secondRun.stdout.trim().slice(0, 120)}`,
+  );
+  check(
+    "a flag event posted directly is written too; a `javascript:` href is refused naming `link.href`; a keyless post is refused outright (D499/D6)",
+    flagPost.status === 201 && badHref.status === 400 && badHref.body.includes("link.href") && keyless.status === 401,
+    `flag ${flagPost.status} · href ${badHref.status} ${badHref.body.slice(0, 80)} · keyless ${keyless.status}`,
+  );
+  const changesPage = await pageFor(alice, "/app/changes");
+  check(
+    "/app/changes renders the deploy the step posted and the flag posted directly, newest first, each labelled by its source, with no SAMPLE badge and no incident story (D502/D13)",
+    changesPage.status === 200 &&
+      changesPage.html.includes(`deploy ${deployRef}`) &&
+      changesPage.html.includes(flagTitle) &&
+      changesPage.html.includes("via github-actions") &&
+      changesPage.html.includes("via drive") &&
+      changesPage.html.indexOf(flagTitle) < changesPage.html.indexOf(`deploy ${deployRef}`) &&
+      !changesPage.html.includes("SAMPLE DATA") &&
+      !changesPage.html.includes("INC-42"),
+    `HTTP ${changesPage.status} · deploy ${changesPage.html.includes(`deploy ${deployRef}`)} · ` +
+      `flag ${changesPage.html.includes(flagTitle)} · sources ${changesPage.html.includes("via github-actions")}/${changesPage.html.includes("via drive")} · ` +
+      `badge ${changesPage.html.includes("SAMPLE DATA")} · INC-42 ${changesPage.html.includes("INC-42")}`,
+  );
+  check(
+    "the deploy's link renders as an EXTERNAL anchor to the workflow run the step named, never a product route (D499)",
+    changesPage.html.includes(`href="${runLink}"`) && changesPage.html.includes('rel="noopener noreferrer"'),
+    `run link ${changesPage.html.includes(`href="${runLink}"`)} · rel ${changesPage.html.includes('rel="noopener noreferrer"')}`,
+  );
+  const agentAfterDeploy = await pageFor(alice, `/app/services/${CHAIN_AGENT}`);
+  check(
+    `/app/services/${CHAIN_AGENT}'s deploys panel now names the deploy the step posted — its ref and its actor — with no mark and no empty sentence: the D362 fence released (D503)`,
+    agentAfterDeploy.status === 200 &&
+      agentAfterDeploy.html.includes(deployRef) &&
+      agentAfterDeploy.html.includes(githubEnv.GITHUB_ACTOR) &&
+      !agentAfterDeploy.html.includes("deploy tracking arrives") &&
+      !agentAfterDeploy.html.includes("no deploys recorded"),
+    `HTTP ${agentAfterDeploy.status} · ref ${agentAfterDeploy.html.includes(deployRef)} · ` +
+      `actor ${agentAfterDeploy.html.includes(githubEnv.GITHUB_ACTOR)} · empty ${agentAfterDeploy.html.includes("no deploys recorded")}`,
+  );
+  const bobChanges = await pageFor(bob, "/app/changes");
+  check(
+    "bob's /app/changes is the empty state: none of her events, her deploy's ref or her label reach his workspace (D7/D11)",
+    bobChanges.status === 200 &&
+      bobChanges.html.includes("no changes recorded yet") &&
+      !bobChanges.html.includes(deployRef) &&
+      !bobChanges.html.includes(flagTitle) &&
+      labelHits(bobChanges.html, aliceLabel) === 0,
+    `HTTP ${bobChanges.status} · empty ${bobChanges.html.includes("no changes recorded yet")} · ` +
+      `ref ${bobChanges.html.includes(deployRef)} · ${labelHits(bobChanges.html, aliceLabel)}× ${aliceLabel}`,
   );
 
   step("a plan change round-trips: checkout → return → reconcile → redirect → ONE paint says Pro (D168/D189)");

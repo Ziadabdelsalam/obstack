@@ -18,6 +18,13 @@ test("/app/alerts is live-wired, exactly and not as a subtree", () => {
   assert.equal(isLiveWiredRoute("/app/alerts/anything"), false);
 });
 
+// S7.2 (D21/D502): changes reads the workspace's own change events in live
+// mode — wired exactly, not as a subtree.
+test("/app/changes is live-wired, exactly and not as a subtree", () => {
+  assert.equal(isLiveWiredRoute("/app/changes"), true);
+  assert.equal(isLiveWiredRoute("/app/changes/anything"), false);
+});
+
 // S6.2 (D21/D367): the five trace-derived surfaces read the signed-in
 // workspace's own spans in live mode, so the SAMPLE badge must be gone from all
 // of them — registration, not the pages (S2.0 L1). `/app/services` is wired

@@ -121,7 +121,7 @@ test("every /docs/... link in the corpus names a page the manifest carries", () 
   // 404 identically on both mounts — this is the assertion that says so at test
   // time instead.
   const all = pages.flatMap((p) => p.links);
-  assert.equal(all.length, 20, "the corpus's link count changed — update this deliberately");
+  assert.equal(all.length, 21, "the corpus's link count changed — update this deliberately");
   for (const href of all) {
     const [pathname] = href.split("#");
     const segments = pathname.slice(PUBLIC_DOCS_BASE.length).split("/").filter(Boolean);
@@ -178,7 +178,7 @@ test("the rendered body links stay on the mount the reader is on", (t) => {
     t.skip(`${why} — skipped locally, fails on CI`);
     return;
   }
-  assert.equal(docsManifest.length, 14);
+  assert.equal(docsManifest.length, 15);
   let checkedBodyLinks = 0;
   for (const p of pages) {
     const at = `/${p.slug.join("/")}`;
@@ -214,7 +214,7 @@ test("the rendered body links stay on the mount the reader is on", (t) => {
       checkedBodyLinks++;
     }
   }
-  assert.equal(checkedBodyLinks, 20, "the corpus's link count changed — update this deliberately");
+  assert.equal(checkedBodyLinks, 21, "the corpus's link count changed — update this deliberately");
 });
 
 // ───────────────────────────────────────────────── the fragment half (R1 B)

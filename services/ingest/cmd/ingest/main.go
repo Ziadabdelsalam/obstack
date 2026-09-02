@@ -25,6 +25,7 @@ import (
 
 	"github.com/Ziadabdelsalam/observer-stack/services/ingest/internal/alerting"
 	"github.com/Ziadabdelsalam/observer-stack/services/ingest/internal/auth"
+	"github.com/Ziadabdelsalam/observer-stack/services/ingest/internal/changes"
 	"github.com/Ziadabdelsalam/observer-stack/services/ingest/internal/config"
 	"github.com/Ziadabdelsalam/observer-stack/services/ingest/internal/keystore"
 	"github.com/Ziadabdelsalam/observer-stack/services/ingest/internal/metering"
@@ -356,6 +357,9 @@ func run() error {
 		// hot path. Ingest reads our own ledger and never calls Polar (D110).
 		OverQuota: func(workspaceID string) bool { return keys.State(workspaceID).OverQuota },
 		Meter:     meter,
+		// S7.2 (D493/D495): the change-event route writes straight to Postgres
+		// through the process's one pool; a 2xx is the committed row.
+		Changes: changes.NewPGStore(pool),
 		// D287: empty leaves the bearer key as the drain route's only
 		// credential. Which posture we booted in is logged below rather than
 		// left for an operator to infer from a request that did or did not get
