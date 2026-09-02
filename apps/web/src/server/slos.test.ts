@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
 import type { QueryResultRow } from "pg";
 import type { SloIndicator } from "@/lib/slo-types";
@@ -308,4 +311,22 @@ test("listSlos maps Postgres strings to numbers and dates to ISO, and null measu
   assert.equal(f.channelId, null);
   assert.equal(f.channelName, null);
   assert.equal(f.target, 99.95);
+});
+
+// ---- D441: the action surface is mutations, and nothing but mutations ----------
+
+// Source text, not an import (the alerts.test.ts idiom): `actions.ts` is a
+// `"use server"` module and importing it here would pull `server/session.ts`
+// and `next/headers` into a runner that has no request.
+const ACTIONS = readFileSync(
+  path.join(path.dirname(fileURLToPath(import.meta.url)), "../components/slos/actions.ts"),
+  "utf8",
+);
+
+test("the slos action surface exposes exactly the four mutations and no read (D441)", () => {
+  const exported = [...ACTIONS.matchAll(/export async function (\w+)/g)].map((m) => m[1]);
+  assert.deepEqual(exported, ["createSlo", "updateSlo", "setSloEnabled", "deleteSlo"]);
+  for (const banned of ["store.listSlos", "queryRows", "listNotificationChannels", "getUsage"]) {
+    assert.equal(ACTIONS.includes(banned), false, `actions.ts reaches for ${banned} — reads belong to the page (D441)`);
+  }
 });

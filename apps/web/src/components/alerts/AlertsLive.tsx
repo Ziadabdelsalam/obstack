@@ -97,6 +97,9 @@ export function AlertsLive({
                     {e.ruleName && (
                       <span className="font-mono text-[10.5px] text-faint">rule: {e.ruleName}</span>
                     )}
+                    {e.sloName && (
+                      <span className="font-mono text-[10.5px] text-faint">slo: {e.sloName}</span>
+                    )}
                     {e.link && (
                       <Link
                         href={e.link}

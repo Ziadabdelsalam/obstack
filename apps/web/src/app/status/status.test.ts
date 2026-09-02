@@ -322,20 +322,23 @@ test("D324: with nothing published, the incidents section is one sentence", () =
 });
 
 test("D324: the SLO surface no longer links here", () => {
-  // `app/app/slos/page.tsx` is an M6 mock surface. Its link read "public
+  // `app/app/slos/page.tsx` was an M6 mock surface whose link read "public
   // status page", which implied this page is fed by those SLOs — the exact
   // claim D256 deleted. The link is removed rather than repointed, because
-  // the implication travelled with the link and not with its href.
-  const slos = read("app/app/slos/page.tsx");
-  assert.equal(slos.includes('"/status"'), false, "the SLO page links at /status again");
-  // The offer is banned where a reader would see it — a rendered text node —
-  // not everywhere the two words appear in the file. The substring ban caught
-  // the removal comment as well, so the comment explaining why the link went
-  // could not name the thing it was about, and the next person to read it
-  // learned less than the deletion was worth. A JSX comment is `{/* … */}`, so
-  // excluding braces from the text is what separates the two cases.
-  const offered = [...slos.matchAll(/>([^<>{}]*status page[^<>{}]*)</gi)].map((m) => m[1].trim());
-  assert.deepEqual(offered, [], "the SLO page renders text offering a status page");
+  // the implication travelled with the link and not with its href. Since
+  // S7.3 the surface is three files (the D431 shape): the page, the frozen
+  // mock body and the live body — and the live one computes real SLOs, so
+  // the claim would be MORE tempting there, not less. All three are swept.
+  for (const file of ["app/app/slos/page.tsx", "components/slos/SlosMock.tsx", "components/slos/SlosLive.tsx"]) {
+    const slos = read(file);
+    assert.equal(slos.includes('"/status"'), false, `${file} links at /status again`);
+    // The offer is banned where a reader would see it — a rendered text node —
+    // not everywhere the two words appear in the file. A JSX comment is
+    // `{/* … */}`, so excluding braces from the text is what separates the
+    // two cases.
+    const offered = [...slos.matchAll(/>([^<>{}]*status page[^<>{}]*)</gi)].map((m) => m[1].trim());
+    assert.deepEqual(offered, [], `${file} renders text offering a status page`);
+  }
   // The palette entry is the one inbound link that stays (D324): it is a
   // navigation list, and the destination is a real public page.
   const palette = read("components/shell/CommandPalette.tsx");
