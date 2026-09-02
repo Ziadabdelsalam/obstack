@@ -120,6 +120,10 @@ type Evaluator struct {
 	// implementation is in eval_metric.go / eval_trace.go.
 	eval func(ctx context.Context, workspaceID string, c Condition) (observation, error)
 
+	// evalSLO is the SLO read's seam (S7.3, D510), the same reasoning: the
+	// SLO state machine's proof stubs it; eval_slo.go is the real one.
+	evalSLO func(ctx context.Context, workspaceID string, ind Indicator, days int) (sloCounts, error)
+
 	conn  driver.Conn
 	close func() error
 }
@@ -143,6 +147,7 @@ func New(ctx context.Context, cfg Config) (*Evaluator, error) {
 
 	e := &Evaluator{pool: cfg.Pool, conn: conn, close: conn.Close}
 	e.eval = e.evaluateCondition
+	e.evalSLO = e.evaluateSLOCounts
 	return e, nil
 }
 
@@ -155,7 +160,7 @@ func (e *Evaluator) Close() {
 }
 
 // Run evaluates once immediately and then every EvalInterval until the context
-// is cancelled.
+// is cancelled — rules and SLOs both (D510).
 //
 // The immediate pass is deliberate: a restart would otherwise be a full cadence
 // of blindness, and the claim makes a boot-time thundering herd of replicas a
@@ -178,9 +183,14 @@ func (e *Evaluator) Run(ctx context.Context) {
 	}
 }
 
+// evaluateOnce runs both claims in turn (D510): rules, then SLOs. Two
+// transactions, one tick — a failed rule tick does not stop the SLO tick.
 func (e *Evaluator) evaluateOnce(ctx context.Context) {
 	if err := e.EvaluateDue(ctx); err != nil && ctx.Err() == nil {
 		slog.Error("alert evaluation tick failed", "error", err)
+	}
+	if err := e.EvaluateDueSLOs(ctx); err != nil && ctx.Err() == nil {
+		slog.Error("slo evaluation tick failed", "error", err)
 	}
 }
 

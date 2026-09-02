@@ -16,7 +16,7 @@ func TestWebhookPayloadGolden(t *testing.T) {
 		t.Fatalf("encodeBody: %v", err)
 	}
 	const want = `{"version":1,"rule":{"name":"Checkout error rate","severity":"critical",` +
-		`"condition":"error rate over 5m is above 5%"},` +
+		`"condition":"error rate over 5m is above 5%"},"slo":null,` +
 		`"event":{"title":"Checkout error rate is firing",` +
 		`"detail":"error rate over 5m is 12.4%, above 5%",` +
 		`"link":"https://obstack.example/app/alerts","at":"2026-09-02T14:30:00Z"},` +
@@ -55,7 +55,7 @@ func TestRuleLessPayloadEmitsNullRule(t *testing.T) {
 	if err != nil {
 		t.Fatalf("encodeBody: %v", err)
 	}
-	const want = `{"version":1,"rule":null,` +
+	const want = `{"version":1,"rule":null,"slo":null,` +
 		`"event":{"title":"Test notification","detail":"Sent from obstack to prove this channel works.",` +
 		`"link":"","at":"2026-09-02T14:30:00Z"},"workspace":"ws_acme"}`
 	if string(got) != want {
@@ -69,6 +69,31 @@ func TestRuleLessPayloadEmitsNullRule(t *testing.T) {
 	const wantSlack = `{"text":"*Test notification*\nSent from obstack to prove this channel works."}`
 	if string(slack) != wantSlack {
 		t.Errorf("rule-less slack body:\n got %s\nwant %s", slack, wantSlack)
+	}
+}
+
+// S7.3 (D512): an SLO's transition names the SLO and leaves `rule` null — the
+// key was ADDED at version 1 (additive evolution, the package's promise), so
+// the golden moves once, here, deliberately.
+func TestSloPayloadGolden(t *testing.T) {
+	p := samplePayload()
+	p.Rule = nil
+	p.Slo = &SloPayload{Name: "API availability", Objective: "99.9% of traces without an error span over 30d · all services", Status: "breached"}
+	p.Event.Title = "API availability: breached — 99.8% against a 99.9% target"
+	p.Event.Detail = "99.9% of traces without an error span over 30d · all services: 99.8% over the last 30d (998 of 1,000 traces good); 200% of the error budget consumed."
+	p.Event.Link = ""
+
+	got, err := encodeBody(KindWebhook, p)
+	if err != nil {
+		t.Fatalf("encodeBody: %v", err)
+	}
+	const want = `{"version":1,"rule":null,` +
+		`"slo":{"name":"API availability","objective":"99.9% of traces without an error span over 30d · all services","status":"breached"},` +
+		`"event":{"title":"API availability: breached — 99.8% against a 99.9% target",` +
+		`"detail":"99.9% of traces without an error span over 30d · all services: 99.8% over the last 30d (998 of 1,000 traces good); 200% of the error budget consumed.",` +
+		`"link":"","at":"2026-09-02T14:30:00Z"},"workspace":"ws_acme"}`
+	if string(got) != want {
+		t.Errorf("slo body:\n got %s\nwant %s", got, want)
 	}
 }
 
