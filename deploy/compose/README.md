@@ -396,6 +396,31 @@ What it asserts, in order:
   the other stranger's `/app/changes` is the empty state with none of her
   words. `RED_WITHHOLD_CHANGES=1` skips every post and must fail exactly the
   answer and page checks, never the leg's own preconditions;
+- **slos, measured by the evaluator over alice's own traces (S7.3, D505–D518)** —
+  objectives are UI rows like rules, so `--leg slos` seeds them straight into
+  the disposable Postgres: for alice a channel targeting the drive's own
+  receiver plus two objectives — availability at 99.99% over 7d on that
+  channel (the seeded dataset fails one trace in twenty, so BREACHED by
+  construction) and latency at 50% under ten minutes over 30d with NO channel
+  (HEALTHY, silent); for the other stranger one objective scoped to a service
+  his traces never name (NO DATA on a workspace that has traces — an empty
+  window is a state, never a measured 100%). What is NOT seeded is the point: the ingest binary's evaluator
+  claims them on its 60s tick, merges `trace_summaries` for the window
+  (traces good = no error span, the D505 definition), writes attainment,
+  budget and status, and the S7.1 deliverer POSTs the breach. The drive
+  recomputes good/total over `trace_summaries` with its OWN SQL and asserts
+  the card's percentage and its "N of M traces good" against that (D71(b));
+  the budget number is stated unclamped while the bar is clamped at 100%; the
+  objective sentence is the formatter's exact output; the feed carries the
+  breach by the evaluator's title, `delivered`, attributed `slo:`; the
+  receiver holds `version: 1`, `rule: null`, `slo.{name,objective,status}`;
+  the latency card says *no channel — computed only* and states the D507 clip
+  (*30d · 7d retained on Free*) with no event in the feed; the inspect links
+  are the real traces list filtered the way the objective is defined; and the
+  other stranger's `/app/slos` lists only his NO DATA card with a dash for the
+  number and none of her words. `RED_WITHHOLD_SLOS=1` seeds the channel and
+  withholds every objective and must fail exactly the slos-arm checks, never
+  the seeder's status;
 - **token hygiene** — both keys the run issued through the UI are searched for,
   as literals, in everything the drive printed and everything it wrote: stdout,
   the transcript, the server log, the build log, every artifact beside them. The

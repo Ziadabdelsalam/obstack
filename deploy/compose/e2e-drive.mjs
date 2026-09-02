@@ -197,6 +197,15 @@ import {
   LOG_TRACE,
   metricNames,
   PROMPT_TRACE,
+  SLO_AVAILABILITY,
+  SLO_AVAILABILITY_TARGET,
+  SLO_AVAILABILITY_WINDOW,
+  SLO_EMPTY,
+  SLO_EMPTY_SERVICE,
+  SLO_LATENCY,
+  SLO_LATENCY_TARGET,
+  SLO_LATENCY_THRESHOLD_MS,
+  SLO_LATENCY_WINDOW,
   SPAN_PROMPT_TOKEN,
 } from "./exit-seed.mjs";
 
@@ -3439,6 +3448,190 @@ try {
       labelHits(bobChanges.html, aliceLabel) === 0,
     `HTTP ${bobChanges.status} · empty ${bobChanges.html.includes("no changes recorded yet")} · ` +
       `ref ${bobChanges.html.includes(deployRef)} · ${labelHits(bobChanges.html, aliceLabel)}× ${aliceLabel}`,
+  );
+
+  // ---------------------------------------------------- slos (S7.3)
+  /* Objectives are UI rows like rules, so `--leg slos` seeds them straight
+   * into the disposable Postgres — and everything the sprint exists to prove
+   * stays real: the ingest binary's evaluator claims them on the S7.1 tick,
+   * merges alice's own traces in ClickHouse (the ones the clickhouse leg
+   * seeded and the quickstart carried), computes attainment and the error
+   * budget, writes the status, and emits the breach through the S7.1
+   * deliverer to this drive's own receiver. The number on the card is then
+   * checked against the drive's OWN recomputation over trace_summaries — a
+   * second reader of the same store, so "N of M traces good" is never
+   * checked against a number the app produced (D71(b)). */
+  step("the slos leg: objectives over alice's own traces are measured by the evaluator — the breach delivered, the healthy one silent, the empty workspace honest (D505–D518)");
+  const sloHooks = [];
+  const sloReceiver = createServer((req, res) => {
+    let body = "";
+    req.on("data", (chunk) => (body += chunk));
+    req.on("end", () => {
+      sloHooks.push({ path: req.url, body });
+      res.writeHead(200);
+      res.end("ok");
+    });
+  });
+  await new Promise((ready) => sloReceiver.listen(0, "0.0.0.0", ready));
+  const sloHookTarget = `http://host.docker.internal:${sloReceiver.address().port}/slo`;
+
+  const sloSeed = spawnSync(
+    "node",
+    [join(composeDir, "exit-seed.mjs"), "--leg", "slos", "--workspace", alice.workspaceId, "--label", ACTORS.alice.label, "--target", sloHookTarget],
+    { cwd: repoRoot, env: { ...process.env, OBSTACK_POSTGRES_DSN: PG_DSN }, encoding: "utf8" },
+  );
+  writeFileSync(join(OUT, "seed-slos-alice.json"), `${sloSeed.stdout ?? ""}${sloSeed.stderr ?? ""}`);
+  must(sloSeed.status === 0, `exit-seed.mjs --leg slos (alice) failed: ${sloSeed.stderr}`);
+  const bobSloSeed = spawnSync(
+    "node",
+    [join(composeDir, "exit-seed.mjs"), "--leg", "slos", "--workspace", bob.workspaceId, "--label", ACTORS.bob.label],
+    { cwd: repoRoot, env: { ...process.env, OBSTACK_POSTGRES_DSN: PG_DSN }, encoding: "utf8" },
+  );
+  writeFileSync(join(OUT, "seed-slos-bob.json"), `${bobSloSeed.stdout ?? ""}${bobSloSeed.stderr ?? ""}`);
+  must(bobSloSeed.status === 0, `exit-seed.mjs --leg slos (bob) failed: ${bobSloSeed.stderr}`);
+  console.log(`   ${sloSeed.stdout.trim().split("\n").join("\n   ")}`);
+
+  /* The independent recomputation, the D505 definition verbatim: traces merged
+   * per trace_id, good = no error span, over the objective's window. Read AFTER
+   * the seed and BEFORE the settle, and nothing writes alice's traces between
+   * here and the checks — the number is stable by construction. */
+  const sloWindowSql = (extra) =>
+    `SELECT count() FROM (SELECT trace_id, sum(error_count) AS e FROM obstack.trace_summaries ` +
+    `WHERE workspace_id='${alice.workspaceId}' GROUP BY workspace_id, trace_id ` +
+    `HAVING min(min_start) >= now() - toIntervalDay(7)${extra})`;
+  const sloTotal = await chCount(sloWindowSql(""));
+  const sloGood = await chCount(sloWindowSql(" AND e = 0"));
+  const sloBad = sloTotal - sloGood;
+  const expectedPct = Number(((sloGood * 100) / sloTotal).toFixed(2));
+  // D509's integer arithmetic, restated here as a third reader.
+  const allowedMilli = sloTotal * (100000 - Math.round(SLO_AVAILABILITY_TARGET * 1000));
+  const expectedBurned = Number(((sloBad * 100000 * 100) / allowedMilli).toFixed(2));
+  console.log(`   recomputed over trace_summaries: ${sloGood} of ${sloTotal} traces good = ${expectedPct}% · ${expectedBurned}% of the budget consumed`);
+
+  /* Settle against OBSERVED state (the S6.4 lesson): the evaluator's next
+   * tick is ≤60s out, the deliverer ≤5s behind it. The loop leaves when the
+   * page states both measured truths, the feed names the SLO's event and the
+   * receiver holds the POST — or on the deadline, and the checks then say
+   * which claim died. */
+  const breachTitle = `${SLO_AVAILABILITY}: breached — ${expectedPct}% against a ${SLO_AVAILABILITY_TARGET}% target`;
+  /* The feed's card: from the evaluator's title to the next card's opening
+   * (the alerts leg's rule events sit right after it in the same feed, so a
+   * fixed-length slice would read their `rule:` label as this card's). */
+  const feedCardOf = (html) => {
+    const at = html.indexOf(breachTitle);
+    if (at === -1) return "";
+    const next = html.indexOf("rounded-lg border border-line bg-surface p-3.5", at);
+    return html.slice(at, next === -1 ? undefined : next);
+  };
+  /* The settle condition IS the assertion (the S6.4 lesson, met once here in
+   * the first green run): the receiver holds the POST a beat before the
+   * deliverer's transaction commits the `delivered` mark, so the loop waits
+   * for the feed card to SAY delivered, not for the receiver to have been
+   * called. */
+  const slosDeadline = Date.now() + 120_000;
+  let slosPage = { status: 0, html: "" };
+  let sloFeed = { status: 0, html: "" };
+  for (;;) {
+    slosPage = await pageFor(alice, "/app/slos");
+    sloFeed = await pageFor(alice, "/app/alerts");
+    const settled =
+      slosPage.html.includes(">BREACHED<") &&
+      slosPage.html.includes(">HEALTHY<") &&
+      feedCardOf(sloFeed.html).includes(">delivered<") &&
+      sloHooks.length > 0;
+    if (settled || Date.now() > slosDeadline) break;
+    await sleep(2_000);
+  }
+  sloReceiver.close();
+
+  /** One card's HTML: from its name to the next card (or the end). */
+  const sloCardOf = (html, name) => {
+    const at = html.indexOf(name);
+    if (at === -1) return "";
+    const next = html.indexOf("<section", at);
+    return html.slice(at, next === -1 ? undefined : next);
+  };
+  const availCard = sloCardOf(slosPage.html, SLO_AVAILABILITY);
+  const latencyCard = sloCardOf(slosPage.html, SLO_LATENCY);
+  check(
+    "/app/slos renders both objectives with the status the evaluator measured — BREACHED on the availability card, HEALTHY on the latency card — with no SAMPLE badge and none of the fixture's story (D508/D514)",
+    slosPage.status === 200 &&
+      availCard.includes(">BREACHED<") &&
+      latencyCard.includes(">HEALTHY<") &&
+      !slosPage.html.includes(">NO DATA<") &&
+      !slosPage.html.includes("SAMPLE DATA") &&
+      !slosPage.html.includes("31%") &&
+      !slosPage.html.includes("afternoon"),
+    `HTTP ${slosPage.status} · breached ${availCard.includes(">BREACHED<")} · healthy ${latencyCard.includes(">HEALTHY<")} · ` +
+      `no-data ${slosPage.html.includes(">NO DATA<")} · badge ${slosPage.html.includes("SAMPLE DATA")}`,
+  );
+  const availObjective = `${SLO_AVAILABILITY_TARGET}% of traces without an error span over ${SLO_AVAILABILITY_WINDOW} · all services`;
+  check(
+    `the availability card's attainment IS the drive's own recomputation over trace_summaries — ${expectedPct}%, ${sloGood} of ${sloTotal} traces good — under the formatter's exact objective sentence (D505/D509)`,
+    availCard.includes(`>${expectedPct}%</span>`) &&
+      availCard.includes(`${sloGood.toLocaleString("en-US")} of ${sloTotal.toLocaleString("en-US")} traces good`) &&
+      availCard.includes(availObjective),
+    `pct ${availCard.includes(`>${expectedPct}%</span>`)} · counts ${availCard.includes(`${sloGood.toLocaleString("en-US")} of ${sloTotal.toLocaleString("en-US")} traces good`)} · objective ${availCard.includes(availObjective)}`,
+  );
+  check(
+    `the error budget is stated UNclamped (${expectedBurned}%) while the bar is clamped at 100% (D509)`,
+    availCard.includes(`>${expectedBurned}%</span>`) && availCard.includes("width:100%") && expectedBurned > 100,
+    `number ${availCard.includes(`>${expectedBurned}%</span>`)} · bar ${availCard.includes("width:100%")} · burned ${expectedBurned}`,
+  );
+  const feedCard = feedCardOf(sloFeed.html);
+  check(
+    "the breach rode the S7.1 pipeline: /app/alerts carries the SLO's event by the evaluator's title, marked delivered, attributed `slo:` and not `rule:` (D511/D512)",
+    feedCard.includes(">delivered<") && feedCard.includes(`slo: ${SLO_AVAILABILITY}`) && !feedCard.includes("rule: "),
+    `title ${feedCard !== ""} · delivered ${feedCard.includes(">delivered<")} · slo ${feedCard.includes(`slo: ${SLO_AVAILABILITY}`)} · rule-label ${feedCard.includes("rule: ")}`,
+  );
+  const sloHook = sloHooks.length > 0 ? JSON.parse(sloHooks[0].body) : null;
+  check(
+    "the receiver holds the deliverer's actual POST: version 1, `rule` null, the SLO by name at `breached` with its objective, alice's workspace (D512)",
+    sloHook !== null &&
+      sloHook.version === 1 &&
+      sloHook.rule === null &&
+      sloHook.slo?.name === SLO_AVAILABILITY &&
+      sloHook.slo?.status === "breached" &&
+      sloHook.slo?.objective === availObjective &&
+      sloHook.workspace === alice.workspaceId &&
+      sloHook.event?.title === breachTitle,
+    sloHooks.length === 0 ? "the receiver was never called" : `got ${sloHooks[0].body.slice(0, 240)}`,
+  );
+  const latencyObjective = `${SLO_LATENCY_TARGET}% of traces under ${SLO_LATENCY_THRESHOLD_MS} ms over ${SLO_LATENCY_WINDOW} · all services`;
+  check(
+    "the latency objective is healthy with no channel — computed only, no event in the feed — and its 30d window on a free workspace states the retention clip (D507/D511)",
+    latencyCard.includes("no channel — computed only") &&
+      latencyCard.includes(latencyObjective) &&
+      latencyCard.includes(`${SLO_LATENCY_WINDOW} · 7d retained on Free`) &&
+      !sloFeed.html.includes(`slo: ${SLO_LATENCY}`),
+    `no-channel ${latencyCard.includes("no channel — computed only")} · objective ${latencyCard.includes(latencyObjective)} · ` +
+      `clip ${latencyCard.includes(`${SLO_LATENCY_WINDOW} · 7d retained on Free`)} · feed ${sloFeed.html.includes(`slo: ${SLO_LATENCY}`)}`,
+  );
+  check(
+    "the inspect link is the real traces list, filtered the way the objective is defined (D514)",
+    availCard.includes('href="/app/traces?status=error"') && latencyCard.includes(`href="/app/traces?minMs=${SLO_LATENCY_THRESHOLD_MS}"`),
+    `availability ${availCard.includes('href="/app/traces?status=error"')} · latency ${latencyCard.includes(`href="/app/traces?minMs=${SLO_LATENCY_THRESHOLD_MS}"`)}`,
+  );
+  /* Bob's workspace HOLDS traces (the same shape as hers, in his words), so
+   * his objective is scoped to a service none of them name: the window is
+   * empty and the card must say NO DATA with a dash — never a measured
+   * 100%, and never her number (D508). */
+  const bobSlos = await pageFor(bob, "/app/slos");
+  const bobCard = sloCardOf(bobSlos.html, SLO_EMPTY);
+  check(
+    `bob's /app/slos lists ONLY his objective — scoped to \`${SLO_EMPTY_SERVICE}\`, a service his traces never name — in the no-data state with a dash where the number would be, evaluated: none of alice's objectives, numbers or words (D508/D7/D11)`,
+    bobSlos.status === 200 &&
+      bobCard.includes(">NO DATA<") &&
+      bobCard.includes(">—</span>") &&
+      bobCard.includes(`service ${SLO_EMPTY_SERVICE}`) &&
+      bobCard.includes("not yet evaluated") === false &&
+      !bobSlos.html.includes(SLO_AVAILABILITY) &&
+      !bobSlos.html.includes(SLO_LATENCY) &&
+      !bobSlos.html.includes(`${expectedPct}%`) &&
+      labelHits(bobSlos.html, aliceLabel) === 0 &&
+      !bobSlos.html.includes("SAMPLE DATA"),
+    `HTTP ${bobSlos.status} · no-data ${bobCard.includes(">NO DATA<")} · dash ${bobCard.includes(">—</span>")} · ` +
+      `evaluated ${!bobCard.includes("not yet evaluated")} · alice's ${bobSlos.html.includes(SLO_AVAILABILITY)} · ${labelHits(bobSlos.html, aliceLabel)}× ${aliceLabel}`,
   );
 
   step("a plan change round-trips: checkout → return → reconcile → redirect → ONE paint says Pro (D168/D189)");
