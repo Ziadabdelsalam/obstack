@@ -4,7 +4,12 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import type { QueryResultRow } from "pg";
-import { listChangeEvents, listServiceDeploys } from "./changes";
+import {
+  listChangeEvents,
+  listChangeEventsInLeadIn,
+  listChangeEventsInWindow,
+  listServiceDeploys,
+} from "./changes";
 import type { QueryRows } from "./postgres";
 
 // run with: cd apps/web && npx tsx --conditions react-server --test src/server/changes.test.ts
@@ -32,13 +37,25 @@ function recordingQuery(reply: (sql: string) => unknown[] = () => []) {
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 
+/** One incident's window and the lead-in hour before it (D535). */
+const LEAD_IN_START = "2026-09-04T12:00:00.000Z";
+const WINDOW_START = "2026-09-04T13:00:00.000Z";
+const WINDOW_END = "2026-09-04T13:30:00.000Z";
+
+// The count was 2 through S7.2 and is 4 from S7.4: the module gained BOTH of
+// D535's timeline reads, not one. (The packet's D530 says this pin "moves to 3"
+// — that sentence was written before D535 split the changes leg into an
+// in-window read and a separately-capped lead-in read, and D535 is the later,
+// governing ruling. Recorded as a plan correction: 2 → 4, not 2 → 3.)
 test("every read statement is bound to the workspace it was handed", async () => {
   const { query, seen } = recordingQuery();
 
   await listChangeEvents("ws_a", 50, query);
   await listServiceDeploys("ws_a", "checkout", 3, query);
+  await listChangeEventsInWindow("ws_a", WINDOW_START, WINDOW_END, 51, query);
+  await listChangeEventsInLeadIn("ws_a", LEAD_IN_START, WINDOW_START, 21, query);
 
-  assert.equal(seen.length, 2);
+  assert.equal(seen.length, 4, "this module's read count changed — every one of them must still scope by workspace");
   for (const { sql, params } of seen) {
     assert.match(sql, /WHERE workspace_id = \$1/, `a read does not scope by workspace: ${sql}`);
     assert.equal(params?.[0], "ws_a", `a read bound ${String(params?.[0])} as its workspace`);
@@ -145,6 +162,130 @@ test("rows map to the §0 contract: ISO UTC times, a folded link or null", async
     title: "deploy 8963ae2",
     link: { label: "workflow run", href: "https://github.com/o/r/actions/runs/1" },
   });
+});
+
+// ---- S7.4: the incident timeline's changes legs (D530/D534/D535) -------------
+
+/** A row as Postgres hands it back, so a leg's mapping is proven against the
+ *  same shape the feed's own test uses. */
+const eventRow = (over: Record<string, unknown> = {}) => ({
+  id: "chg_1",
+  kind: "deploy",
+  at: new Date("2026-09-04T13:04:00Z"),
+  title: "deploy 8963ae2",
+  detail: "",
+  who: "ziad",
+  service: null,
+  ref: null,
+  source: null,
+  link_label: null,
+  link_href: null,
+  ...over,
+});
+
+const orderBy = (sql: string): string => sql.split("\n").filter((line) => line.includes("ORDER BY")).join("");
+
+test("no read in this module names created_at — every statement is on the event's own time", async () => {
+  const { query, seen } = recordingQuery();
+
+  await listChangeEvents("ws_a", 50, query);
+  await listServiceDeploys("ws_a", "checkout", 3, query);
+  await listChangeEventsInWindow("ws_a", WINDOW_START, WINDOW_END, 51, query);
+  await listChangeEventsInLeadIn("ws_a", LEAD_IN_START, WINDOW_START, 21, query);
+
+  assert.equal(seen.length, 4);
+  for (const { sql } of seen) {
+    assert.doesNotMatch(sql, /created_at/, `a statement orders or filters by receipt: ${sql}`);
+    assert.match(sql, /\bat\b/, `a statement does not name the event's own time: ${sql}`);
+  }
+});
+
+test("the in-window leg is half-open [from, until) and reads FORWARD", async () => {
+  const { query, seen } = recordingQuery();
+  await listChangeEventsInWindow("ws_a", WINDOW_START, WINDOW_END, 51, query);
+  const [{ sql, params }] = seen;
+
+  assert.match(sql, /at >= \$2 AND at < \$3/, "the window must be half-open on `at`");
+  assert.doesNotMatch(sql, /BETWEEN/, "BETWEEN is closed on both ends: two adjacent incidents would both claim the boundary row");
+  assert.doesNotMatch(sql, /at <= \$3/, "an inclusive upper bound is D534's exact defect");
+  assert.equal(orderBy(sql), "   ORDER BY at, id", "a timeline reads forward, ties broken by id");
+  assert.match(sql, /LIMIT \$4/);
+  assert.deepEqual(params, ["ws_a", WINDOW_START, WINDOW_END, 51]);
+  assert.doesNotMatch(sql, /now\(\)/, "the clock is sampled once in TS and bound (D534) — never a second one in SQL");
+});
+
+test("the lead-in is its OWN statement with its OWN cap, and differs from the in-window read ONLY in its order", async () => {
+  const { query, seen } = recordingQuery();
+  await listChangeEventsInWindow("ws_a", WINDOW_START, WINDOW_END, 51, query);
+  await listChangeEventsInLeadIn("ws_a", LEAD_IN_START, WINDOW_START, 21, query);
+  const [window, leadIn] = seen;
+
+  // D535: one ASC leg with one cap lets the lead-in band eat the whole budget,
+  // so the lead-in is a SECOND read with a SECOND limit — proven here by the
+  // two statements being distinct and each binding its own number.
+  assert.notEqual(window.sql, leadIn.sql);
+  assert.equal(window.params?.[3], 51);
+  assert.equal(leadIn.params?.[3], 21);
+  assert.deepEqual(leadIn.params, ["ws_a", LEAD_IN_START, WINDOW_START, 21]);
+
+  // Same predicate, opposite order: everything but the ORDER BY is identical,
+  // so the lead-in can never drift into a different window shape.
+  assert.equal(
+    window.sql.replace(orderBy(window.sql), ""),
+    leadIn.sql.replace(orderBy(leadIn.sql), ""),
+    "the two legs must read the same half-open window on the same projection",
+  );
+  assert.equal(orderBy(leadIn.sql), "   ORDER BY at DESC, id DESC", "DESC is what makes the cap keep the changes NEAREST the incident");
+  assert.match(leadIn.sql, /at >= \$2 AND at < \$3/);
+});
+
+test("the lead-in returns its rows NEWEST-first — the caller reverses, not the store", async () => {
+  const nearest = eventRow({ id: "chg_near", at: new Date("2026-09-04T12:59:00Z"), title: "nearest" });
+  const farthest = eventRow({ id: "chg_far", at: new Date("2026-09-04T12:01:00Z"), title: "farthest" });
+  const { query } = recordingQuery(() => [nearest, farthest]);
+
+  const rows = await listChangeEventsInLeadIn("ws_a", LEAD_IN_START, WINDOW_START, 21, query);
+  assert.deepEqual(rows.map((e) => e.title), ["nearest", "farthest"]);
+  // D536's probe row is the LAST element in this order, which is where a
+  // caller's slice(0, cap) drops it; reversed here it would be the first, and
+  // that slice would throw away the change nearest the incident instead.
+  assert.equal(rows.at(-1)?.title, "farthest");
+});
+
+test("both timeline legs clamp their limit by the same rule as the feed", async () => {
+  for (const [given, want] of [
+    [0, 1],
+    [-5, 1],
+    [2.7, 2],
+    [Number.NaN, 1],
+    [51, 51],
+  ] as const) {
+    const { query, seen } = recordingQuery();
+    await listChangeEventsInWindow("ws_a", WINDOW_START, WINDOW_END, given, query);
+    await listChangeEventsInLeadIn("ws_a", LEAD_IN_START, WINDOW_START, given, query);
+    assert.equal(seen[0]?.params?.[3], want, `in-window limit ${given} bound as ${String(seen[0]?.params?.[3])}`);
+    assert.equal(seen[1]?.params?.[3], want, `lead-in limit ${given} bound as ${String(seen[1]?.params?.[3])}`);
+  }
+});
+
+test("both timeline legs map rows through the same one point as the feed", async () => {
+  const row = eventRow({ id: "chg_1", at: new Date("2026-09-04T13:04:00Z"), title: "deploy 8963ae2", service: "checkout" });
+  const { query } = recordingQuery(() => [row]);
+
+  const want = {
+    id: "chg_1",
+    kind: "deploy",
+    at: "2026-09-04T13:04:00.000Z",
+    title: "deploy 8963ae2",
+    detail: "",
+    who: "ziad",
+    service: "checkout",
+    ref: null,
+    source: null,
+    link: null,
+  };
+  assert.deepEqual(await listChangeEventsInWindow("ws_a", WINDOW_START, WINDOW_END, 51, query), [want]);
+  assert.deepEqual(await listChangeEventsInLeadIn("ws_a", LEAD_IN_START, WINDOW_START, 21, query), [want]);
 });
 
 test("the module is reads only: no write statement, no lock, no actions file (packet §0)", () => {

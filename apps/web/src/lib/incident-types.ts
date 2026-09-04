@@ -198,9 +198,39 @@ export interface IncidentTimelineEntry {
  * deletion, which is a past state the product never observed. The field is
  * named `outsideRetention` and not `fullySwept` for exactly that reason.
  */
+/**
+ * One leg's truncation, located rather than flagged.
+ *
+ * Two shapes, because the two directions of capping mean opposite things. A leg
+ * capped ASCENDING drops its LATEST rows, so the instant to state is the last
+ * one KEPT (`omittedAfterIso`). The changes lead-in band caps DESCENDING — that
+ * is what makes it keep the changes nearest the incident — so it drops its
+ * EARLIEST rows, and an `omittedAfterIso` on it would state the exact opposite
+ * of the truth.
+ *
+ * ⟨S7.4 T4 plan correction, D573: the band shape did not exist, so the band's
+ * probe row was read and then DISCARDED and its truncation was recorded
+ * nowhere. Measured: a workspace with 40 changes in the hour before its
+ * incident and one with 20 returned byte-identical objects, so the surface
+ * could only render "20 changes in the hour before" — a count of the READ
+ * presented as a count of the hour. That is D536's own stated failure ("a hole
+ * renders as absence of activity") reappearing in the one leg the mechanism did
+ * not cover.⟩
+ */
+export interface IncidentTimelineOmission {
+  leg: IncidentTimelineLeg;
+  /** The `at` of the last row an ASCENDING cap KEPT. */
+  omittedAfterIso?: string;
+  /** The `at` of the earliest row the DESCENDING lead-in cap kept. */
+  omittedBeforeIso?: string;
+  /** True only for the changes lead-in band, whose omission is about the hour
+   *  BEFORE the window and must not be read as a gap inside it. */
+  band?: boolean;
+}
+
 export interface IncidentTimeline {
   entries: IncidentTimelineEntry[];
-  omissions: { leg: IncidentTimelineLeg; omittedAfterIso: string }[];
+  omissions: IncidentTimelineOmission[];
   retentionDays: number;
   planName: string;
   outsideRetention: boolean;

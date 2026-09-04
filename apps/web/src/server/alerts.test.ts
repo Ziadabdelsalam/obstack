@@ -13,6 +13,7 @@ import {
   deleteAlertRule,
   deleteNotificationChannel,
   listAlertEvents,
+  listAlertEventsInWindow,
   listAlertRules,
   listNotificationChannels,
   maskTarget,
@@ -35,6 +36,8 @@ import type { QueryRows } from "./postgres";
 // Whether the rows are actually disjoint across two workspaces is
 // `alerts.integration.test.ts`; this file proves what the statements SAY and
 // in what ORDER, with no Postgres present.
+
+const HERE = path.dirname(fileURLToPath(import.meta.url));
 
 type Statement = { sql: string; params?: unknown[] };
 
@@ -118,6 +121,10 @@ const eventRow = (over: Record<string, unknown> = {}) => ({
   created_at: new Date("2026-09-02T10:00:00Z"),
   ...over,
 });
+
+/** One incident's window, half-open (D534). */
+const WINDOW_START = "2026-09-04T13:00:00.000Z";
+const WINDOW_END = "2026-09-04T13:30:00.000Z";
 
 const ruleInput = (over: Partial<AlertRuleInput> = {}): AlertRuleInput => ({
   name: "High latency",
@@ -216,13 +223,85 @@ test("every read statement is bound to the workspace it was handed", async () =>
 
   await listAlertRules("ws_a", query);
   await listAlertEvents("ws_a", 50, query);
+  await listAlertEventsInWindow("ws_a", WINDOW_START, WINDOW_END, 51, query);
   await listNotificationChannels("ws_a", query);
 
-  assert.ok(seen.length >= 3);
+  assert.ok(seen.length >= 4);
   for (const { sql, params } of seen) {
     assert.match(sql, /workspace_id/, `a read does not scope by workspace: ${sql}`);
     assert.equal(params?.[0], "ws_a", `a read bound ${String(params?.[0])} as its workspace`);
   }
+});
+
+// ---- S7.4: the incident timeline's alerts leg (D530/D534/D536) ---------------
+
+/** Everything a statement says before its WHERE — the projection and the joins.
+ *  The window read is required to carry the FEED's, so one table's rows have
+ *  exactly one shape and one mapping point. */
+const projection = (sql: string): string => sql.slice(0, sql.indexOf("WHERE"));
+
+const orderBy = (sql: string): string => sql.split("\n").filter((line) => line.includes("ORDER BY")).join("");
+
+test("the timeline's alerts leg carries the feed's projection, not a second shape", async () => {
+  const { query, seen } = recordingQuery(engine());
+  await listAlertEvents("ws_a", 50, query);
+  await listAlertEventsInWindow("ws_a", WINDOW_START, WINDOW_END, 51, query);
+  const [feed, window] = seen;
+
+  assert.equal(
+    projection(window.sql),
+    projection(feed.sql),
+    "the window read must select and join exactly what the feed does (D530: one owner, one shape)",
+  );
+  assert.match(window.sql, /LEFT JOIN alert_rules r ON r.id = e.rule_id/);
+  assert.match(window.sql, /LEFT JOIN slos s ON s.id = e.slo_id/);
+});
+
+test("the alerts leg is half-open [from, until), reads FORWARD, and holds no clock of its own", async () => {
+  const { query, seen } = recordingQuery(engine());
+  await listAlertEventsInWindow("ws_a", WINDOW_START, WINDOW_END, 51, query);
+  const [{ sql, params }] = seen;
+
+  assert.match(sql, /e.created_at >= \$2 AND e.created_at < \$3/, "the window must be half-open");
+  assert.doesNotMatch(sql, /BETWEEN/, "BETWEEN is closed on both ends: two adjacent incidents would both claim the boundary row");
+  assert.doesNotMatch(sql, /created_at <= \$3/, "an inclusive upper bound is D534's exact defect");
+  assert.equal(orderBy(sql), "   ORDER BY e.created_at, e.id", "a timeline reads forward, ties broken by id");
+  assert.match(sql, /LIMIT \$4/);
+  assert.deepEqual(params, ["ws_a", WINDOW_START, WINDOW_END, 51]);
+  assert.doesNotMatch(sql, /now\(\)/, "the clock is sampled once in TS and bound to all three legs (D534)");
+});
+
+test("the alerts leg clamps its limit by the same rule as the feed, through one definition", async () => {
+  for (const [given, want] of [
+    [0, 1],
+    [-5, 1],
+    [2.7, 2],
+    [Number.NaN, 1],
+    [51, 51],
+  ] as const) {
+    const { query, seen } = recordingQuery(engine());
+    await listAlertEvents("ws_a", given, query);
+    await listAlertEventsInWindow("ws_a", WINDOW_START, WINDOW_END, given, query);
+    assert.equal(seen[0]?.params?.[1], want, `feed limit ${given} bound as ${String(seen[0]?.params?.[1])}`);
+    assert.equal(seen[1]?.params?.[3], want, `window limit ${given} bound as ${String(seen[1]?.params?.[3])}`);
+  }
+  const source = readFileSync(path.join(HERE, "alerts.ts"), "utf8");
+  assert.equal(
+    source.match(/Math\.max\(1, Math\.floor\(limit\) \|\| 1\)/g)?.length,
+    1,
+    "the clamp has ONE definition in this module (clampLimit), never a copy per read",
+  );
+});
+
+test("the alerts leg maps its rows through the same one point as the feed", async () => {
+  const row = eventRow({ slo_id: "slo_00112233445566aa", slo_name: "API availability", created_at: new Date("2026-09-04T13:04:00Z") });
+  const { query } = recordingQuery(engine({ event: row }));
+
+  const [feedRow] = await listAlertEvents("ws_a", 50, query);
+  const [windowRow] = await listAlertEventsInWindow("ws_a", WINDOW_START, WINDOW_END, 51, query);
+  assert.deepEqual(windowRow, feedRow);
+  assert.equal(windowRow.at, "2026-09-04T13:04:00.000Z");
+  assert.equal(windowRow.sloName, "API availability");
 });
 
 test("every mutation's statements are bound to the workspace it was handed", async () => {
@@ -579,10 +658,7 @@ test("createNotificationChannel's and setNotificationChannelEnabled's return val
 // Source text, not an import (the `dashboards.test.ts` idiom): `actions.ts` is
 // a `"use server"` module and importing it here would pull `server/session.ts`
 // and `next/headers` into a runner that has no request.
-const ACTIONS = readFileSync(
-  path.join(path.dirname(fileURLToPath(import.meta.url)), "../components/alerts/actions.ts"),
-  "utf8",
-);
+const ACTIONS = readFileSync(path.join(HERE, "../components/alerts/actions.ts"), "utf8");
 
 test("the alerts action surface exposes exactly the eight mutations and no read (D441)", () => {
   const exported = [...ACTIONS.matchAll(/export async function (\w+)/g)].map((m) => m[1]);

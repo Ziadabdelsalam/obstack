@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { after, test } from "node:test";
-import { listChangeEvents, listServiceDeploys } from "./changes";
+import {
+  listChangeEvents,
+  listChangeEventsInLeadIn,
+  listChangeEventsInWindow,
+  listServiceDeploys,
+} from "./changes";
 import { getPool, queryRows } from "./postgres";
 
 // run with: docker compose -f deploy/compose/docker-compose.yml up -d --wait postgres ingest
@@ -50,10 +55,13 @@ type Seed = {
   service?: string;
   ref?: string;
   link?: { label: string; href: string };
+  /** Only the S7.4 tie-break test sets this: an id is otherwise random, and a
+   *  claim about `ORDER BY at, id` needs two ids whose order is known. */
+  id?: string;
 };
 
 async function seed(workspaceId: string, s: Seed): Promise<string> {
-  const id = `chg_${randomBytes(8).toString("hex")}`;
+  const id = s.id ?? `chg_${randomBytes(8).toString("hex")}`;
   await queryRows(
     `INSERT INTO change_events (id, workspace_id, kind, title, who, service, ref, source, link_label, link_href, at)
      VALUES ($1, $2, $3, $4, 'seed', $5, $6, 'test', $7, $8, $9)`,
@@ -123,4 +131,120 @@ test("the deploys read excludes other kinds, other services and other workspaces
   assert.deepEqual(deploys[0]?.link, { label: "run", href: "https://ci.example/2" });
   assert.equal(deploys[1]?.link, null);
   assert.deepEqual((await listServiceDeploys(ws, "checkout", 1, queryRows)).map((d) => d.ref), ["new0001"]);
+});
+
+// ---- S7.4 D534/D535: the two timeline legs, proven at the boundary ----------
+
+// `changes.test.ts` can only assert that the statements SAY `at >= $2 AND at <
+// $3`. Whether Postgres agrees at the boundary row is a question only a real
+// database answers — and the boundary here carries a second claim the alerts
+// leg does not have: the incident's `started_at` is the shared edge between the
+// lead-in band and the window, so the change AT that instant must land in
+// exactly ONE of the two legs (D535). Not both, which would render one deploy
+// twice, and not neither, which would drop it out of the timeline entirely.
+
+const LEAD_IN_START = "2026-09-04T12:00:00.000Z";
+const WINDOW_START = "2026-09-04T13:00:00.000Z";
+const WINDOW_END = "2026-09-04T13:30:00.000Z";
+
+const at = (base: string, deltaMs = 0): Date => new Date(Date.parse(base) + deltaMs);
+
+test("the in-window leg includes the change AT the start and excludes the one AT the end", { skip }, async () => {
+  const ws = await workspace();
+  const other = await workspace();
+
+  await seed(ws, { kind: "deploy", title: "one ms before the start", at: at(WINDOW_START, -1) });
+  await seed(ws, { kind: "deploy", title: "exactly at the start", at: at(WINDOW_START) });
+  await seed(ws, { kind: "config", title: "inside", at: at(WINDOW_START, 15 * 60 * 1000) });
+  await seed(ws, { kind: "deploy", title: "exactly at the end", at: at(WINDOW_END) });
+  await seed(ws, { kind: "deploy", title: "one ms after the end", at: at(WINDOW_END, 1) });
+  await seed(other, { kind: "deploy", title: "the other tenant's", at: at(WINDOW_START) });
+
+  const inWindow = await listChangeEventsInWindow(ws, WINDOW_START, WINDOW_END, 51, queryRows);
+  assert.deepEqual(
+    inWindow.map((e) => e.title),
+    ["exactly at the start", "inside"],
+    "the half-open window must take the row at `start` and leave the row at `end` to the next incident",
+  );
+  assert.deepEqual(inWindow.map((e) => e.at), [WINDOW_START, at(WINDOW_START, 15 * 60 * 1000).toISOString()]);
+
+  // Neither exclusion is vacuous: both rows are really there, and it is the
+  // BOUND that leaves them out.
+  assert.deepEqual(
+    (await listChangeEventsInWindow(ws, WINDOW_START, new Date(Date.parse(WINDOW_END) + 1).toISOString(), 51, queryRows)).map((e) => e.title),
+    ["exactly at the start", "inside", "exactly at the end"],
+  );
+  assert.deepEqual(
+    (await listChangeEventsInWindow(ws, new Date(Date.parse(WINDOW_START) - 1).toISOString(), WINDOW_END, 51, queryRows)).map((e) => e.title),
+    ["one ms before the start", "exactly at the start", "inside"],
+  );
+
+  assert.deepEqual(
+    (await listChangeEventsInWindow(other, WINDOW_START, WINDOW_END, 51, queryRows)).map((e) => e.title),
+    ["the other tenant's"],
+    "the window read leaked across workspaces",
+  );
+});
+
+test("the change AT the incident's start belongs to the window leg and NOT the lead-in", { skip }, async () => {
+  const ws = await workspace();
+  await seed(ws, { kind: "deploy", title: "at the lead-in's own start", at: at(LEAD_IN_START) });
+  await seed(ws, { kind: "deploy", title: "one ms before the lead-in", at: at(LEAD_IN_START, -1) });
+  await seed(ws, { kind: "deploy", title: "the shared edge", at: at(WINDOW_START) });
+
+  const leadIn = await listChangeEventsInLeadIn(ws, LEAD_IN_START, WINDOW_START, 21, queryRows);
+  const window = await listChangeEventsInWindow(ws, WINDOW_START, WINDOW_END, 51, queryRows);
+
+  assert.deepEqual(leadIn.map((e) => e.title), ["at the lead-in's own start"]);
+  assert.deepEqual(window.map((e) => e.title), ["the shared edge"]);
+  const both = [...leadIn, ...window].map((e) => e.title);
+  assert.equal(new Set(both).size, both.length, "a change rendered twice: the two legs overlap at the shared edge");
+});
+
+test("the lead-in's cap keeps the changes NEAREST the incident, newest-first", { skip }, async () => {
+  const ws = await workspace();
+  const minute = 60 * 1000;
+  for (const m of [55, 40, 25, 10, 5]) {
+    await seed(ws, { kind: "deploy", title: `${m} minutes before`, at: at(WINDOW_START, -m * minute) });
+  }
+  // Three changes inside the window, and a lead-in read whose budget is
+  // already spent: D535's defect is one ASC leg with ONE cap, where the five
+  // rows above would eat the whole budget and render ZERO in-window changes.
+  // Two reads, two caps — so the small lead-in cap cannot touch these three.
+  await seed(ws, { kind: "deploy", title: "in-window 1", at: at(WINDOW_START, minute) });
+  await seed(ws, { kind: "config", title: "in-window 2", at: at(WINDOW_START, 2 * minute) });
+  await seed(ws, { kind: "flag", title: "in-window 3", at: at(WINDOW_START, 3 * minute) });
+
+  const leadIn = await listChangeEventsInLeadIn(ws, LEAD_IN_START, WINDOW_START, 2, queryRows);
+  assert.deepEqual(leadIn.map((e) => e.title), ["5 minutes before", "10 minutes before"]);
+
+  const window = await listChangeEventsInWindow(ws, WINDOW_START, WINDOW_END, 51, queryRows);
+  assert.deepEqual(window.map((e) => e.title), ["in-window 1", "in-window 2", "in-window 3"]);
+});
+
+test("both legs break ties on id, in each one's own direction", { skip }, async () => {
+  const ws = await workspace();
+  const tag = randomBytes(4).toString("hex");
+  const tie = at(WINDOW_START, 10 * 60 * 1000);
+  await seed(ws, { kind: "deploy", title: "higher id", at: tie, id: `chg_${tag}bbbb` });
+  await seed(ws, { kind: "deploy", title: "lower id", at: tie, id: `chg_${tag}aaaa` });
+  const leadInTie = at(WINDOW_START, -10 * 60 * 1000);
+  await seed(ws, { kind: "deploy", title: "lead-in higher id", at: leadInTie, id: `chg_${tag}dddd` });
+  await seed(ws, { kind: "deploy", title: "lead-in lower id", at: leadInTie, id: `chg_${tag}cccc` });
+
+  assert.deepEqual(
+    (await listChangeEventsInWindow(ws, WINDOW_START, WINDOW_END, 51, queryRows)).map((e) => e.title),
+    ["lower id", "higher id"],
+  );
+  // The mirrored tie-break: without `id DESC` the lead-in's cap boundary would
+  // be the planner's choice between two changes at one instant, so "the N
+  // nearest" would not be a reproducible set.
+  assert.deepEqual(
+    (await listChangeEventsInLeadIn(ws, LEAD_IN_START, WINDOW_START, 21, queryRows)).map((e) => e.title),
+    ["lead-in higher id", "lead-in lower id"],
+  );
+  assert.deepEqual(
+    (await listChangeEventsInLeadIn(ws, LEAD_IN_START, WINDOW_START, 1, queryRows)).map((e) => e.title),
+    ["lead-in higher id"],
+  );
 });
