@@ -1,6 +1,6 @@
 export const frontmatter = {
   title: "Explain",
-  description: "What Explain reads, what it never sends, and the two ways it refuses.",
+  description: "What Explain reads, what it never sends, and the three ways it refuses.",
 };
 
 # Explain
@@ -10,9 +10,22 @@ answer comes back as labelled lines — what failed, where, what went wrong, the
 evidence, and what to do next — with every citation resolving to a span or log
 id that is actually on that trace.
 
+**Generate root-cause analysis** on an incident hands that incident's timeline
+— the alerts, changes and error traces that share its window — to the same
+model through the same path, and answers in the same labelled lines, with every
+citation resolving to an alert, change or trace id that is actually on that
+timeline.
+
 ## What it reads
 
-That trace's spans and its correlated logs, and nothing else.
+For a trace: that trace's spans and its correlated logs, and nothing else.
+
+For an incident: the incident's own title and summary, its window, and each
+timeline row's time, kind, id, title and detail. A trace enters an incident's
+analysis as **one summary line** — how many spans failed, grouped by service and
+span name, with an example trace id — and none of the trace's own content: no
+span, no log line and no log body reaches it at all. Explaining a trace is the
+other button's job and is separately metered.
 
 Two things are deliberately withheld from the provider:
 
@@ -43,9 +56,14 @@ place the panel's counter, the settings meter and the enforcement all read from
 Enforcement and the increment are one database statement, so two runs that both
 start at 19 used cannot both spend the 20th.
 
-## The two refusals
+An incident's root-cause analysis is an Explain run too, counted against the
+same monthly allowance. There is no separate RCA allowance: a workspace that
+runs twenty analyses on free has no Explain runs left for traces that month, and
+the counter under either panel is the same number.
 
-Both are honest product outcomes, not faults. A refusal arrives as a normal
+## The three refusals
+
+All three are honest product outcomes, not faults. A refusal arrives as a normal
 answer on the stream with a sentence you can act on, and nothing is spent.
 
 **No model configured.** The deployment has no model behind Explain:
@@ -59,6 +77,14 @@ answer on the stream with a sentence you can act on, and nothing is spent.
 > This workspace has used all 20 Explain runs its plan includes this month, so
 > no run was made. The allowance resets at the start of next month; a larger
 > plan raises it.
+
+**No evidence.** An incident whose window holds nothing to read. The incident
+page hides the button in that case; this is what a direct request gets, and it
+is refused before anything is counted, because analysing an empty timeline
+would mean inventing a cause and billing for it:
+
+> This incident's window contains no alerts, changes or traces to read, so there
+> was nothing to analyse and no run was made.
 
 ## Configuring it on a self-hosted deployment
 

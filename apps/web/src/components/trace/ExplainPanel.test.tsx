@@ -154,10 +154,14 @@ test("every prepared citation resolves inside its own trace (D223)", () => {
         assert.ok(logIds.has(item.logRef), `${item.logRef} is not a log of ${trace.id}`);
         linked++;
       }
-      assert.equal(
-        Boolean(item.spanId && item.logRef),
-        false,
-        "an evidence item cites one thing, not two",
+      // Exactly ONE of the four reference keys (D553 widened two to four): a
+      // prepared trace citation is a span or a log, never both, and never an
+      // incident's `eventRef`/`traceRef` — those are the other subject's.
+      const keys = (["spanId", "logRef", "eventRef", "traceRef"] as const).filter((key) => item[key]);
+      assert.deepEqual(
+        keys.length,
+        1,
+        `an evidence item cites exactly one thing, not ${keys.length} (${keys.join(", ")})`,
       );
     }
     // The backfill is the point: a demo whose citations were prose would still
@@ -199,7 +203,9 @@ async function drive(frame: string, init?: { status?: number }) {
   globalThis.fetch = served.fetch;
   const seen: unknown[] = [];
   try {
-    const final = await runExplain("a3f8c1d92b6e407f", new AbortController().signal, (run) =>
+    // The url is the caller's since S7.4 (D552): this is the one the panel
+    // builds for a trace, asserted below against what was actually fetched.
+    const final = await runExplain("/app/traces/a3f8c1d92b6e407f/explain", new AbortController().signal, (run) =>
       seen.push(run),
     );
     return { final, seen, calls: served.calls };
@@ -218,6 +224,19 @@ test("a served run POSTs the trace's own route and ends in the summary (D227)", 
   assert.deepEqual(calls, [
     { url: "/app/traces/a3f8c1d92b6e407f/explain", method: "POST" },
   ]);
+  // ⟨S7.4 T5 review, D579⟩ Since `runExplain` takes a url (D552), the line
+  // above pins only that the url handed in is the url fetched, with POST. The
+  // trace's path is now built at the component's call site, so that site is
+  // pinned here too — otherwise the encoded id and the exact `/explain` path
+  // are asserted nowhere but the e2e drive, while the incident panel pins its
+  // `rcaUrl` in its own unit test.
+  assert.match(
+    panelCode,
+    /runExplain\(`\/app\/traces\/\$\{encodeURIComponent\(traceId\)\}\/explain`, abort\.signal, setRun\)/,
+    "the trace panel no longer posts to /app/traces/<id>/explain with the id encoded",
+  );
+  // Call sites only — the declaration `function runExplain(` is not one.
+  assert.equal((panelCode.match(/(?<!function )runExplain\(/g) ?? []).length, 1, "a second call site started a run");
   assert.deepEqual(final, { phase: "answered", explanation });
   // The deltas were shown as they arrived — that is the whole of D230's "real
   // chunks": three states, not one jump from empty to answered.

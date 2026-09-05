@@ -271,6 +271,35 @@ test("the Explain route 404s rather than running in mock mode (D152)", async () 
   assert.match(logged[0] ?? "", /\[explain\] run posted in mock mode/);
 });
 
+test("the incident RCA route 404s rather than running in mock mode (D152/D556)", async () => {
+  // The seventh surface and the second route (S7.4): the Explain rail's second
+  // subject, on the same counter, so it owes the same refusal for the same
+  // reasons — no workspace to meter, no Postgres to meter in, and RCA-shaped
+  // content in this deployment exists only inside the sha-pinned `/app/incidents`
+  // body, where `IncidentRca` types out a fixture. Take the mode check out and
+  // the request reaches `getSessionContext`, which builds the auth instance on
+  // the missing secret and throws; a clean 404 is the evidence that neither the
+  // auth stack nor the pool nor the stitch was touched. `params` is a promise
+  // that is never awaited, because the guard returns above it.
+  const route = await import("@/app/app/incidents/[id]/rca/route");
+
+  const logged: string[] = [];
+  const real = console.error;
+  console.error = (...args: unknown[]) => void logged.push(args.map(String).join(" "));
+  let response: Response;
+  try {
+    response = await route.POST(new Request("https://obstack.dev/app/incidents/inc_1/rca", { method: "POST" }), {
+      params: Promise.resolve({ id: "inc_1" }),
+    });
+  } finally {
+    console.error = real;
+  }
+
+  assert.equal(response.status, 404, "this route does not exist in this deployment");
+  assert.equal(await response.text(), "", "and nothing to read from the refusal");
+  assert.match(logged[0] ?? "", /\[rca\] run posted in mock mode/);
+});
+
 test("every settings action trips the same way in mock mode (D152)", async () => {
   // The fourth surface, and the widest: six functions sharing ONE gate
   // (`settingsSession`), so the property is asserted per action rather than on

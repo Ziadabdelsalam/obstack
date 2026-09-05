@@ -6,6 +6,7 @@ import {
   type IncidentTimelineKind,
   type IncidentTimelineLeg,
   type IncidentTimelineOmission,
+  type IncidentTimelineRow,
 } from "@/lib/incident-types";
 import { listAlertEventsInWindow } from "@/server/alerts";
 import { listChangeEventsInLeadIn, listChangeEventsInWindow } from "@/server/changes";
@@ -174,6 +175,22 @@ export interface StitchedIncidentTimeline extends IncidentTimeline {
    *  floor that lands inside the band, and never recomputes the floor itself,
    *  which would need a second clock (D534). */
   inputClipped: boolean;
+  /**
+   * The RCA's rows (D554's seven fields), projected from the SAME capped legs
+   * the entries came from — so the prompt and the page read one set.
+   *
+   * ⟨S7.4 D577, closed here: `IncidentTimelineEntry` carries neither
+   * `severity` nor `service`, and the RCA route was rebuilding rows FROM the
+   * entries, so every alert reached the model with `severity: null` and every
+   * change with `service: null` — the model could not tell a critical alert
+   * from a warning. The reads that HAD those columns (`AlertEventRow.severity`,
+   * `ChangeEventRow.service`) are these legs; projecting here is the only place
+   * that needs no second read and no second clock (D534).⟩
+   *
+   * The band's rows are included (they are context the prompt names as such),
+   * and the synthesized `resolved` row is not — it is a column, not evidence.
+   */
+  rows: IncidentTimelineRow[];
 }
 
 // ---- the merge ----------------------------------------------------------------
@@ -390,6 +407,7 @@ export async function readIncidentTimeline(
       windowStartIso: outsideRetention ? windowStartIso : new Date(startedAtMs).toISOString(),
       windowEndIso: outsideRetention ? windowEndIso : new Date(Math.max(startedAtMs, windowEndMs)).toISOString(),
       entries: resolved,
+      rows: [],
       omissions: [],
       outsideRetention,
       inputClipped: outsideRetention,
@@ -498,9 +516,49 @@ export async function readIncidentTimeline(
     ...resolved,
   ]);
 
+  // D577: the RCA rows, from the same capped legs, with the two fields the
+  // entries deliberately do not carry. Ordered like the entries so the prompt's
+  // lanes read in the same order the page does.
+  const rows: IncidentTimelineRow[] = [
+    ...[...leadIn, ...changes].map(
+      (row): IncidentTimelineRow => ({
+        kind: "change",
+        id: row.id,
+        at: row.at,
+        title: row.title,
+        detail: row.detail,
+        service: row.service,
+        severity: null,
+      }),
+    ),
+    ...alerts.map(
+      (row): IncidentTimelineRow => ({
+        kind: "alert",
+        id: row.id,
+        at: row.at,
+        title: row.title,
+        detail: row.detail,
+        service: null,
+        severity: row.severity,
+      }),
+    ),
+    ...errors.map(
+      (row): IncidentTimelineRow => ({
+        kind: "trace",
+        id: row.example_trace_id === "" ? null : row.example_trace_id,
+        at: new Date(row.first_seen_epoch_s * 1000).toISOString(),
+        title: `${row.span_name} on ${row.service}`,
+        detail: `${row.errors} error${row.errors === 1 ? "" : "s"} · grouped by service and span`,
+        service: row.service,
+        severity: null,
+      }),
+    ),
+  ].sort((x, y) => (x.at < y.at ? -1 : x.at > y.at ? 1 : 0));
+
   return {
     ...base,
     entries,
+    rows,
     omissions,
     outsideRetention: false,
     // TRUE when the floor raised EITHER the window's start or the band's — the

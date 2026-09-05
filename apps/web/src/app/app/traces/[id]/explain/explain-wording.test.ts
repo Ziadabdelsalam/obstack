@@ -2,14 +2,13 @@ import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import test from "node:test";
-import { NOT_CONFIGURED_DETAIL } from "@/server/explain";
-import { overQuotaDetail } from "./route";
+import { NOT_CONFIGURED_DETAIL, NO_EVIDENCE_DETAIL, overQuotaDetail } from "@/server/explain";
 
 // run with: npm test --workspace apps/web
 //
 // THE MIRRORED PREDICATE (D206), extended to Explain — the same coupling
 // `server/billing/reconcile-wording.test.ts` pins for reconciliation, restated
-// for the two refusals this route can answer with.
+// for the three refusals the two Explain routes can answer with.
 //
 // The e2e drive splits the server log at sign-out and asserts that NO error
 // line appears across every authenticated step; what counts as an error line is
@@ -34,11 +33,14 @@ const repoRoot = path.resolve(import.meta.dirname, "../../../../../../../..");
 const drivePath = path.join(repoRoot, "deploy/compose/e2e-drive.mjs");
 const explainServerDir = path.resolve(import.meta.dirname, "../../../../../server/explain");
 
-// The route plus every non-test source file of the engine it calls. Read from
-// the directory rather than listed, so a file added to the engine later is
-// swept without anybody remembering this test exists.
+// Both routes plus every non-test source file of the engine they call. The
+// engine is read from the directory rather than listed, so a file added to it
+// later is swept without anybody remembering this test exists; the routes are
+// listed because they live outside it (D557: the RCA route was the first Explain
+// refusal in the repo that no D206 mirror read, until this line).
 const sweptPaths = [
   path.join(import.meta.dirname, "route.ts"),
+  path.resolve(import.meta.dirname, "../../../incidents/[id]/rca/route.ts"),
   ...readdirSync(explainServerDir)
     .filter((name) => name.endsWith(".ts") && !name.includes(".test."))
     .map((name) => path.join(explainServerDir, name)),
@@ -53,10 +55,10 @@ test("the regex is the drive's own, character for character", () => {
   );
 });
 
-test("neither refusal the user reads looks like an error line (D206)", () => {
+test("no refusal the user reads looks like an error line (D206)", () => {
   // The strings as EMITTED, not as written: the over-quota detail interpolates
   // the plan's quota, so it is asserted with a number in it.
-  for (const detail of [NOT_CONFIGURED_DETAIL, overQuotaDetail(20), overQuotaDetail(200)]) {
+  for (const detail of [NOT_CONFIGURED_DETAIL, NO_EVIDENCE_DETAIL, overQuotaDetail(20), overQuotaDetail(200)]) {
     assert.equal(
       DRIVE_IS_ERROR.test(detail),
       false,
@@ -83,9 +85,9 @@ test("nothing the Explain path LOGS below error level reads as an error line (D2
     }
   }
   assert.ok(
-    logged.length >= 2,
-    "fewer than the two known non-error lines (the route's refusal, validate.ts's dropped " +
-      "reference) were found — the scan stopped matching",
+    logged.length >= 4,
+    "fewer than the four known non-error lines (the traces route's over-quota refusal, the RCA route's " +
+      "over-quota and no-evidence refusals, validate.ts's dropped reference) were found — the scan stopped matching",
   );
 
   for (const { file, template } of logged) {

@@ -1,17 +1,21 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { explainResponse, overQuotaDetail } from "@/server/explain";
 import { EXPLAIN_CONTENT_TYPE, readExplainStream, type ExplainEvent } from "@/server/explain/contract";
-import { explainResponse, overQuotaDetail } from "./route";
 
 // run with: npm test --workspace apps/web
 //
 // The route's WIRE, which is the half of it that needs neither a session nor a
 // Postgres: the frame the panel parses (D227), the headers that frame arrives
 // under, and what a run that dies mid-stream looks like on the other end. The
-// steps above it — mock guard, session, trace, config check, spend — are
-// asserted where they can be: the mock-mode refusal in
-// `src/app/signup/mock-mode.test.ts` (D152's standing list), the atomic spend
-// in `server/explain/quota.integration.test.ts` against a real Postgres.
+// writer lives behind the barrel since S7.4 (`server/explain/response.ts`,
+// D551) because the incident RCA route serves the same frame; it is still
+// asserted here, beside the route that first wrote it. The steps above it —
+// mock guard, session, trace, config check, spend — are asserted where they
+// can be: the mock-mode refusal in `src/app/signup/mock-mode.test.ts` (D152's
+// standing list), the atomic spend in `server/explain/quota.integration.test.ts`
+// against a real Postgres, and the order itself as counter readings in
+// `server/explain/rca.integration.test.ts`.
 
 const REFUSAL: ExplainEvent = {
   type: "refusal",
