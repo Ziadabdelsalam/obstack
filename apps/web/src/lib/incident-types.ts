@@ -53,8 +53,12 @@ export const INCIDENT_SEVERITIES: readonly IncidentSeverity[] = ["critical", "wa
 /** How the incident came to exist. Set at create time and NEVER rewritten: the
  *  "from an alert" mark renders off THIS, never off the nullable
  *  `openedFromEventId`, which the retention sweep nulls on a 7-day clock
- *  (D526). A nulled pointer reads as "promoted from an alert that has since
- *  aged out" — never as manual. */
+ *  (D526). A nulled pointer reads as `from an alert · the event is no longer
+ *  held` — never as manual, and never with a CAUSE ⟨S7.4 T6, D587: D526's
+ *  "has since aged out" named one; the pointer is also nulled when an SLO
+ *  delete cascades through its events (`0012_slos.sql` `ON DELETE CASCADE` →
+ *  `0013_incidents.sql` `ON DELETE SET NULL`), so the surface states what it
+ *  observed — the event is gone — and not why⟩. */
 export type IncidentOrigin = "manual" | "alert";
 
 /** The origin vocabulary as a runtime list. */

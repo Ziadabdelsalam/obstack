@@ -148,8 +148,9 @@ test("every row sends the reader somewhere the product actually wired", () => {
   }
   // Not vacuous: an unwired route is exactly what the predicate refuses,
   // which is the reason the rows changed. (/app/alerts left this pair at
-  // S7.1 and /app/slos at S7.3 when they wired; /app/incidents and
-  // /app/oncall are the two controls now.)
-  assert.equal(isLiveWiredRoute("/app/incidents"), false);
+  // S7.1, /app/slos at S7.3 and /app/incidents at S7.4 when they wired;
+  // /app/oncall and /app/pipelines are the two controls now. S7.5 wires
+  // oncall and will move that one; pipelines is M7's opener and outlives it.)
   assert.equal(isLiveWiredRoute("/app/oncall"), false);
+  assert.equal(isLiveWiredRoute("/app/pipelines"), false);
 });

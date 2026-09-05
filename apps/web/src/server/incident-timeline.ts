@@ -284,9 +284,28 @@ const changeEntry = (row: ChangeEventRow): IncidentTimelineEntry => ({
  * is the traces LIST — a reader clicking "example trace" mid-incident would
  * land on every trace in the workspace, none of which errored.
  */
-function traceEntry(row: IncidentErrorRow): IncidentTimelineEntry {
-  const at = new Date(row.first_seen_epoch_s * 1000).toISOString();
-  const until = new Date(row.last_seen_epoch_s * 1000).toISOString();
+/**
+ * The instant a trace group is DRAWN at (D585, the other half of D572).
+ * D531's projection floors `first_seen` to the second, while D572 binds the
+ * read's LOWER bound to the millisecond — so a group whose first error span
+ * fell inside the window's opening second floored to an instant up to 999 ms
+ * BEFORE the window it was read from, and every consumer that asks "is this
+ * row inside the window" (the surface's shown-count and its RCA control, the
+ * RCA route's evidence filter, D558) then answered no to a row the stitcher
+ * had read from inside it. The read's own predicate proves the first span is
+ * at or after the window's start, so the drawn instant is clamped to it: a
+ * bound the store already guaranteed, inside the same second
+ * `formatIncidentClock` prints. `last_seen` floors the same way and the
+ * group's last span is at or after its first, so `until` is clamped to `at`.
+ */
+function traceInstant(epochS: number, notBeforeIso: string): string {
+  const floored = new Date(epochS * 1000).toISOString();
+  return floored < notBeforeIso ? notBeforeIso : floored;
+}
+
+function traceEntry(row: IncidentErrorRow, windowStartIso: string): IncidentTimelineEntry {
+  const at = traceInstant(row.first_seen_epoch_s, windowStartIso);
+  const until = traceInstant(row.last_seen_epoch_s, at);
   const span = at === until ? formatIncidentClock(at) : `${formatIncidentClock(at)} → ${formatIncidentClock(until)}`;
   return {
     kind: "trace",
@@ -404,7 +423,11 @@ export async function readIncidentTimeline(
       // the start. Both bounds become the incident's OWN start, so the window
       // reads as zero-width — which is the truth, nothing has elapsed in it —
       // rather than as an interval running from later to earlier.
-      windowStartIso: outsideRetention ? windowStartIso : new Date(startedAtMs).toISOString(),
+      // ⟨S7.4 T6 review, D589: the outsideRetention pair ran backwards the same
+      // way — its start was the floor, which by this branch's own guard is at
+      // or after the end. The read covered nothing, so the pair is zero-width
+      // at the incident's end: the one instant the state still knows.⟩
+      windowStartIso: outsideRetention ? windowEndIso : new Date(startedAtMs).toISOString(),
       windowEndIso: outsideRetention ? windowEndIso : new Date(Math.max(startedAtMs, windowEndMs)).toISOString(),
       entries: resolved,
       rows: [],
@@ -483,7 +506,7 @@ export async function readIncidentTimeline(
 
   const alerts = capLeg(alertRows, "alert", (row) => row.at);
   const changes = capLeg(changeRows, "change", (row) => row.at);
-  const errors = capLeg(errorRows, "trace", (row) => new Date(row.first_seen_epoch_s * 1000).toISOString());
+  const errors = capLeg(errorRows, "trace", (row) => traceInstant(row.first_seen_epoch_s, windowStartIso));
 
   // The band arrives NEWEST first (the SQL's `at DESC` is what makes its cap
   // keep the changes nearest the incident), so the probe row is the LAST
@@ -512,7 +535,7 @@ export async function readIncidentTimeline(
     ...leadIn.map(changeEntry),
     ...changes.map(changeEntry),
     ...alerts.map(alertEntry),
-    ...errors.map(traceEntry),
+    ...errors.map((row) => traceEntry(row, windowStartIso)),
     ...resolved,
   ]);
 
@@ -546,7 +569,7 @@ export async function readIncidentTimeline(
       (row): IncidentTimelineRow => ({
         kind: "trace",
         id: row.example_trace_id === "" ? null : row.example_trace_id,
-        at: new Date(row.first_seen_epoch_s * 1000).toISOString(),
+        at: traceInstant(row.first_seen_epoch_s, windowStartIso),
         title: `${row.span_name} on ${row.service}`,
         detail: `${row.errors} error${row.errors === 1 ? "" : "s"} · grouped by service and span`,
         service: row.service,

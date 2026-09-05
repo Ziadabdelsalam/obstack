@@ -1,7 +1,6 @@
 import type {
   IncidentRow,
   IncidentSubject,
-  IncidentTimelineEntry,
   IncidentTimelineRow,
 } from "@/lib/incident-types";
 import { forWorkspace } from "@/server/clickhouse";
@@ -81,82 +80,12 @@ import { getUsage } from "@/server/usage";
  * refusal.
  */
 
-/** The product-internal route a trace entry's link points at (`incident-timeline.ts`). */
-const TRACE_ROUTE = "/app/traces/";
-
-/** `decodeURIComponent` that answers null instead of throwing on a segment this route did not author. */
-function decoded(segment: string): string | null {
-  try {
-    const value = decodeURIComponent(segment);
-    return value === "" ? null : value;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * One stitched entry as the prompt reads it (`IncidentTimelineRow`, D554), or
- * null for the `resolved` entry, which is not a read row.
- *
- * `id` is DERIVED from what the entry exposes, and exactly how is stated here
- * because it is what makes a citation a working link (D553):
- *   - alert and change entries: `key` IS the source row's id (`evt_…`/`chg_…`)
- *     — `incident-timeline.ts` sets `key: row.id` for both — and the detail
- *     page anchors each row on its key, so `eventRef` → `#<id>` lands on it.
- *   - trace entries: the entry's `key` is a synthesized group key
- *     (`trace:<service>:<span>`), not a trace id, so the citable id is the
- *     example trace id the entry's link carries (`/app/traces/<id>`), or null
- *     when the stitch found no example (an empty `trace_id`, which it refuses
- *     to link). `service` is the key's first segment, URL-decoded.
- *
- * ⟨S7.4 T5 PLAN CORRECTION, D577 — D551 says to build the subject "from the
- * stitched timeline's entries", and D554 says `severity` and `service` are
- * SENT; both cannot hold, because `IncidentTimelineEntry` carries neither.
- * `incident-timeline.ts`'s own `alertEntry` comment records the choice: the
- * alert's severity is "deliberately NOT composed into the detail" because the
- * RCA row "has both as separate fields" — but the stitch returns only entries,
- * so the RCA row's two fields are never populated from the read that had them
- * (`AlertEventRow.severity`, `ChangeEventRow.service`). This route cannot
- * re-read them: a second window read is a second clock (D534), and a read of
- * the same statement twice is the D171 divergence. So `severity` is null on
- * every row and `service` is set only where the entry exposes it (the trace
- * group key) — an honest absence (the row type allows both nulls and the
- * prompt omits an absent field), never a guess. The fix belongs to the
- * stitcher: `StitchedIncidentTimeline` should carry `rows: IncidentTimelineRow[]`
- * projected from the SAME capped legs, so the prompt and the page read one
- * set. Recorded, not smoothed; this function is the one place to delete when
- * that lands.⟩
- */
-export function timelineRowOf(entry: IncidentTimelineEntry): IncidentTimelineRow | null {
-  switch (entry.kind) {
-    case "alert":
-    case "change":
-      return {
-        kind: entry.kind,
-        id: entry.key,
-        at: entry.at,
-        title: entry.title,
-        detail: entry.detail,
-        service: null,
-        severity: null,
-      };
-    case "trace": {
-      const href = entry.link?.href ?? "";
-      const [, service = ""] = entry.key.split(":");
-      return {
-        kind: "trace",
-        id: href.startsWith(TRACE_ROUTE) ? decoded(href.slice(TRACE_ROUTE.length)) : null,
-        at: entry.at,
-        title: entry.title,
-        detail: entry.detail,
-        service: decoded(service),
-        severity: null,
-      };
-    }
-    case "resolved":
-      return null;
-  }
-}
+// ⟨S7.4 T5, D577 — closed: the stitcher projects `rows` from the SAME capped
+// legs the entries come from, so the subject is built from `timeline.rows`
+// below and nothing here re-derives a row from an entry. `timelineRowOf`, the
+// projection this route carried while D577 was open, was recorded as deleted
+// at T5 and found still exported with no caller by the T6 tenancy review; it
+// is gone now, and the plan's record is true of the tree.⟩
 
 /**
  * The incident as the rail's subject (D550), built from the row the route read

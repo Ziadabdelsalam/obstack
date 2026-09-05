@@ -533,7 +533,7 @@ test("(v) a trace Explain and an incident RCA are one counter: { used: 2, quota:
 // the other half, the one that proof states it cannot: that nothing upstream of
 // the builder puts a withheld thing INTO one of those seven fields. The data path
 // is alert_events / change_events / obstack.spans → the three legs' SELECTs →
-// `IncidentTimelineEntry` → `timelineRowOf` → `IncidentSubject` → the prompt,
+// the stitcher's `rows` projection (D577) → `IncidentSubject` → the prompt,
 // and every hop is real here. Each sentinel sits in the exact column D554 names
 // (or the one a reviewer would reach for next), so an absence is a statement
 // about a column and not about luck.

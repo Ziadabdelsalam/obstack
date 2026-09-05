@@ -458,6 +458,11 @@ test("a window entirely below the retention floor issues ZERO reads and claims n
   assert.deepEqual(result.omissions, [], "nothing was read, so nothing was truncated");
   assert.equal(result.retentionDays, RETENTION_DAYS);
   assert.equal(result.planName, PLAN);
+  // D589: the pair never runs backwards in THIS state either — the read
+  // covered nothing, so it is zero-width at the incident's end, not an
+  // interval from the floor back to an end that precedes it.
+  assert.ok(result.windowStartIso <= result.windowEndIso, `the window runs backwards: ${result.windowStartIso} > ${result.windowEndIso}`);
+  assert.equal(result.windowStartIso, WINDOW_END, "an unread window is zero-width at the incident's own end");
 });
 
 // ---- (6) the clip note SURVIVES rows ------------------------------------------
@@ -772,4 +777,48 @@ test("D574: a band clipped by the floor sets inputClipped even when the window's
   );
   assert.equal(result.windowStartIso, startedAt, "pick a start INSIDE the floor: the window's own start must be unclipped");
   assert.equal(result.inputClipped, true, "ten minutes of a sixty-minute band were read and the clip register would not have rendered");
+});
+
+test("D585: a trace group first seen inside the window's opening second is DRAWN at the window's start, never before it", async () => {
+  // D531's projection floors `first_seen` to the second while D572 binds the
+  // read's LOWER bound to the millisecond. A window opening at .500 with a
+  // group whose first error span fell at .700 came back drawn at the floored
+  // second — 500 ms BEFORE the window it was read from — and every consumer
+  // that asks "is this row inside the window" (the surface's shown-count and
+  // its RCA control, the RCA route's evidence filter) then said no to a row
+  // the stitcher had read from inside it (the rendered-words review's case:
+  // fifty groups on the page and a sentence reading `showing the first 0`).
+  // The read's own predicate proves the first span is at or after the window's
+  // start, so the drawn instant is clamped to it — a bound the store already
+  // guaranteed, inside the same second `formatIncidentClock` prints.
+  const startedAt = "2026-09-04T13:04:52.500Z";
+  const group = errorRow({
+    errors: 1,
+    first_seen_epoch_s: epochS(startedAt), // 13:04:52 — the floored second, before .500
+    last_seen_epoch_s: epochS(startedAt),
+  });
+  const { query, ch, chSeen } = harness({ errors: [group] });
+
+  const { result } = await withClock(NOW_INSIDE_RETENTION, () =>
+    readIncidentTimeline(WS, { startedAt, endedAt: WINDOW_END }, RETENTION_DAYS, PLAN, ch, query),
+  );
+
+  assert.equal(result.windowStartIso, startedAt, "nothing is clipped: the read starts at the incident's own .500");
+  assert.equal(chSeen[0].params.since_ms, Date.parse(startedAt), "the read's lower bound is the millisecond (D572)");
+  const trace = result.entries.find((e) => e.kind === "trace");
+  assert.ok(trace, "the group is on the timeline");
+  assert.equal(trace.at, startedAt, "the drawn instant is the window's start, not the floored second before it");
+  assert.equal(trace.until, startedAt, "a single-second group's until follows its at, never preceding it");
+  assert.ok(trace.at >= result.windowStartIso, "a row the stitcher read from inside the window is inside the window");
+  const row = result.rows.find((r) => r.kind === "trace");
+  assert.equal(row?.at, startedAt, "the RCA row is drawn at the same instant as the entry");
+  // Rendered, nothing moves: the clamp stays inside the second the clock prints.
+  assert.equal(trace.detail, "1 error, 2026-09-04 13:04:52 UTC · grouped by service and span");
+  // A group whose floored second is already inside the window is untouched.
+  const later = errorRow({ first_seen_epoch_s: epochS(startedAt) + 1, last_seen_epoch_s: epochS(startedAt) + 1 });
+  const again = harness({ errors: [later] });
+  const { result: r2 } = await withClock(NOW_INSIDE_RETENTION, () =>
+    readIncidentTimeline(WS, { startedAt, endedAt: WINDOW_END }, RETENTION_DAYS, PLAN, again.ch, again.query),
+  );
+  assert.equal(r2.entries.find((e) => e.kind === "trace")?.at, "2026-09-04T13:04:53.000Z", "a floored second at or after the start is drawn as is");
 });
