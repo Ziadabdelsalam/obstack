@@ -394,6 +394,16 @@ const startedAt = Date.now();
 let failures = 0;
 const transcript = [];
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+/**
+ * The free plan's catalog row as this run FOUND it (D566). Both writes below
+ * lower it for the run's own proofs, and until S7.4 nothing put it back: a
+ * driven stack carried `event_quota = 300, explain_quota = 2` into
+ * `usage.integration.test.ts` and `explain/quota.integration.test.ts`, which
+ * both read the catalog and went red. Read here by the drive's own pool before
+ * the first write, restored in `finally` before the pool ends — never from a
+ * number spelled in this file, which would be a second copy of the migration's.
+ */
+let catalogBefore = null;
 
 /**
  * Everything this run prints, kept as it is printed.
@@ -662,7 +672,10 @@ function fnv1a64(hex) {
  *
  * There is no read-only Postgres role to borrow (the compose stack defines one
  * user, and the app already holds it), so the discipline is the scope instead:
- * every statement below is a SELECT.
+ * every statement below is a SELECT, with exactly two exceptions on one row —
+ * the Explain step lowers `plans.explain_quota` for the free plan (the D172
+ * class), and `finally` puts both lowered columns back from the values this run
+ * read before it wrote (D566).
  */
 const pgPool = new pg.Pool({ connectionString: PG_DSN, max: 2 });
 const pgRows = async (sql, params = []) => (await pgPool.query(sql, params)).rows;
@@ -834,6 +847,36 @@ const clickLabel = (label) => `(() => {
   return true;
 })()`;
 
+/** The severity picker and the promote picker are `<select>`s behind real
+ * <label>s (`IncidentEditor.tsx`), so a select is addressed by the label it sits
+ * under. React's onChange on a select is the native `change` event, which is
+ * why that — and not `input` — is what gets dispatched. */
+const choose = (label, value) => `(() => {
+  const el = [...document.querySelectorAll("label")]
+    .find((l) => (l.textContent || "").trim().startsWith(${JSON.stringify(label)}))?.querySelector("select");
+  if (!el) return null;
+  const setter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, "value").set;
+  setter.call(el, ${JSON.stringify(value)});
+  el.dispatchEvent(new Event("change", { bubbles: true }));
+  return el.value;
+})()`;
+
+/** A button found by a SUBSTRING of its text: the RCA control renders its label
+ *  and a `one Explain run` caption as sibling nodes, so its whole text is not a
+ *  sentence anyone would type and `clickText`'s exact match cannot name it. */
+const clickIncluding = (text) => `(() => {
+  const el = [...document.querySelectorAll("button")].find((b) => (b.textContent || "").includes(${JSON.stringify(text)}));
+  if (!el) return false;
+  el.click();
+  return true;
+})()`;
+
+/** A store-held string as React serialises it into server HTML: the evaluator's
+ *  event titles carry `>` (`Exit gauge threshold: 42 > 40`), and a claim that
+ *  reads the raw title off the rendered page would miss every one of them. */
+const htmlText = (text) =>
+  text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#x27;");
+
 /** The saved-views menu's contents, once it has answered. */
 const MENU = `(() => {
   const panel = [...document.querySelectorAll("div")]
@@ -939,6 +982,40 @@ const EXPLAIN = `(() => {
 /** A run is over when the counter line is on screen: the panel renders it only
  *  once the stream has reached a terminal state (answer or refusal). */
 const EXPLAIN_SETTLED = `/\\d+ of \\d+ Explain runs used this month/.test(document.body.textContent ?? "")`;
+
+/**
+ * The RCA panel as its reader sees it, and ONLY the panel — the EXPLAIN reader's
+ * reason, one surface over: the incident page around it renders the same row
+ * titles in its timeline, so a claim read off the whole body could be satisfied
+ * by the rail rather than by the answer. The panel's live region is the anchor:
+ * it exists only once the reader has PRESSED the control (`IncidentRcaPanel.tsx`
+ * — a page view never runs, D552), and its parent is the panel. `aria-busy` goes
+ * false when the stream reaches a terminal state, so that is the settle
+ * condition — the counter line alone would not do, because the panel prints it
+ * under the control BEFORE any run.
+ */
+const RCA_SETTLED = `(() => {
+  const live = document.querySelector('[aria-live="polite"][aria-busy="false"]');
+  return Boolean(live) && /\\d+ of \\d+ Explain runs used this month/.test(live.parentElement?.textContent ?? "");
+})()`;
+const RCA = `(() => {
+  const strip = (s) => (s || "").replace(/\\s+/g, " ").trim();
+  const live = document.querySelector('[aria-live="polite"]');
+  const panel = live?.parentElement ?? null;
+  const text = strip(panel?.textContent || "");
+  const counter = /(\\d+) of (\\d+) Explain runs used this month/.exec(text);
+  return {
+    open: Boolean(panel),
+    text,
+    used: counter ? Number(counter[1]) : null,
+    quota: counter ? Number(counter[2]) : null,
+    // The two link shapes an incident's evidence renders (D553): an in-page
+    // anchor onto a timeline row, and a Link to an example trace.
+    rowRefs: [...(panel?.querySelectorAll('a[href^="#"]') ?? [])].map((a) => a.getAttribute("href").slice(1)),
+    traceRefs: [...(panel?.querySelectorAll('a[href^="/app/traces/"]') ?? [])]
+      .map((a) => a.getAttribute("href").slice("/app/traces/".length)),
+  };
+})()`;
 
 /** The revoke control of ONE named key. The list holds two by the time it is
  *  used — the quickstart's and the metering step's — so "the first revoke
@@ -2057,6 +2134,11 @@ try {
 
   // -------------------------------------------- metering (the S3.3 step)
   step(`the free plan's quota comes down to ${EVIDENCE_FREE_QUOTA} in this disposable Postgres (D172)`);
+  // D566: the previous values, captured by this run's own read before anything
+  // it does moves them — the seeder keeps holding no previous value (its own
+  // doc comment stays true), the drive does.
+  catalogBefore = await pgOne(`SELECT event_quota, explain_quota FROM plans WHERE id = 'free'`);
+  must(catalogBefore, "the plans catalog holds no free row to lower — the migrations did not run");
   const quotaSeed = spawnSync("node", [join(composeDir, "exit-seed.mjs"), "--lower-free-quota"], {
     cwd: repoRoot,
     env: { ...process.env, OBSTACK_POSTGRES_DSN: PG_DSN },
@@ -2132,10 +2214,12 @@ try {
   // Written from here rather than from `exit-seed.mjs`: that seeder's subject is
   // the fixture two workspaces are seeded FROM, and this is one row of this
   // step's own setup. Same store, same posture as the quota it lowers beside —
-  // an UPDATE with no undo in a disposable Postgres, so a stack that has run the
-  // drive carries a two-run free plan until `docker compose … down -v`. The
-  // number is stated once, above, and every claim below reads it back out of the
-  // catalog rather than restating it (D163: no quota is spelled in a surface).
+  // an UPDATE this run puts back itself: both columns were captured into
+  // `catalogBefore` before the first write and are restored in `finally` from
+  // that capture (D566), so a driven stack no longer carries a two-run free plan
+  // until `docker compose … down -v`. The number is stated once, above, and
+  // every claim below reads it back out of the catalog rather than restating it
+  // (D163: no quota is spelled in a surface).
   const explainPlan = await pgOne(
     `UPDATE plans SET explain_quota = $1 WHERE id = 'free' RETURNING id, explain_quota`,
     [EVIDENCE_EXPLAIN_QUOTA],
@@ -3634,6 +3718,514 @@ try {
       `evaluated ${!bobCard.includes("not yet evaluated")} · alice's ${bobSlos.html.includes(SLO_AVAILABILITY)} · ${labelHits(bobSlos.html, aliceLabel)}× ${aliceLabel}`,
   );
 
+  // ---------------------------------------------------- incidents (S7.4)
+  /* No seeder leg (D559): alice's two incidents and bob's one go in through
+   * the real UI — the create form, the promote picker, the resolve form — and
+   * the two RCA presses through the real panel, because CRUD and promotion ARE
+   * this sprint's deliverable and the one harness that runs the real build is
+   * the one that has to exercise them. Placed after the slos arm on purpose
+   * (D560): alice is still Free with both Explain runs spent, and every row
+   * the timeline joins — both rules' events, the SLO breach, the deploy and
+   * the flag — already exists. No settle loop: nothing ticks and the timeline
+   * is a read-time join, so every fact is on the first page load after the
+   * action returns.
+   *
+   * TWO INCIDENTS FOR ALICE (D561), because one window cannot carry both
+   * claims. A HISTORICAL one over the seeded fixture's own failing roots —
+   * created with an explicit start and RESOLVED with an explicit end, so the
+   * store holds a closed window two readers can be compared over — carries the
+   * trace-leg recomputation: the page's rows against the drive's OWN SQL over
+   * `obstack.spans`, §3's definition restated with its `argMin` (D71(b)/D562,
+   * the slos arm's shape). An ONGOING one is PROMOTED from the oldest alert
+   * event the evaluator wrote, so its window holds every alert event, the
+   * deploy and the flag — one page, both stores, one ordered list — and no
+   * error span, a premise MEASURED here rather than assumed from the order the
+   * arms ran in. Bob's incident is his own fixture for the answered RCA path
+   * (D563): alice spent both runs on TRACES, so her RCA is refused with the
+   * IDENTICAL sentence and an unmoved counter — one allowance, two subjects —
+   * while bob's answered run moves HIS row and nobody else's. */
+  step(
+    "the incidents leg: two incidents through the front door — a historical one recomputed over spans, an ongoing one promoted from an alert event and stitched across both stores — and the RCA on the one Explain counter (D559–D564)",
+  );
+  const armStartedAt = Date.now();
+
+  /* The historical window is DERIVED from the store, never typed: the seeded
+   * fixture's error spans are the only ones either workspace holds (every span
+   * this drive sent itself carries status OK), they are read in order, and the
+   * window is cut to hold all but the oldest and the newest — so BOTH bounds
+   * are proven to bite. Whole seconds, so the instants round-trip through the
+   * form's `YYYY-MM-DD HH:MM:SS` field and back out of Postgres exactly. */
+  const errorInstantsOf = async (workspaceId) =>
+    (
+      await chRows(
+        `SELECT toUnixTimestamp(start_time) AS s FROM obstack.spans ` +
+          `WHERE workspace_id='${workspaceId}' AND status_code='error' AND trace_id != '' ORDER BY start_time`,
+      )
+    ).map((row) => Number(row.s));
+  const historicalWindowOf = (instants) => ({
+    sinceMs: (instants[1] - 60) * 1000,
+    untilMs: (instants[instants.length - 2] + 60) * 1000,
+  });
+  const inside = (instants, { sinceMs, untilMs }) =>
+    instants.filter((s) => s * 1000 >= sinceMs && s * 1000 < untilMs).length;
+  /** §3's trace leg, restated as the drive's own reader (D562): the same
+   *  grouping, the same half-open millisecond bounds, the same `argMin` — so the
+   *  example-trace half of the claim compares two readers of one definition. */
+  const errorGroupsOf = (workspaceId, { sinceMs, untilMs }) =>
+    chRows(
+      `SELECT service, name AS span_name, toUInt32(count()) AS errors, ` +
+        `toUInt32(min(toUnixTimestamp(start_time))) AS first_seen_epoch_s, ` +
+        `toUInt32(max(toUnixTimestamp(start_time))) AS last_seen_epoch_s, ` +
+        `argMin(trace_id, start_time) AS example_trace_id ` +
+        `FROM obstack.spans WHERE workspace_id='${workspaceId}' AND status_code='error' AND trace_id != '' ` +
+        `AND start_time >= fromUnixTimestamp64Milli(toInt64(${sinceMs})) AND start_time < fromUnixTimestamp64Milli(toInt64(${untilMs})) ` +
+        `GROUP BY service, span_name ORDER BY first_seen_epoch_s, service, span_name`,
+    );
+  /** The form's text for an instant — `YYYY-MM-DD HH:MM:SS`, read as UTC by the
+   *  editor's one parser — and the two shapes the surface prints it back in. */
+  const fieldText = (ms) => new Date(ms).toISOString().slice(0, 19).replace("T", " ");
+  const clockOf = (epochS) => `${fieldText(epochS * 1000)} UTC`;
+  const windowLabelOf = (sinceMs, untilMs) => {
+    const day = (ms) => new Date(ms).toISOString().slice(0, 10);
+    const hm = (ms) => new Date(ms).toISOString().slice(11, 16);
+    const endDay = day(untilMs) === day(sinceMs) ? "" : `${day(untilMs)} `;
+    return `${day(sinceMs)} ${hm(sinceMs)} → ${endDay}${hm(untilMs)} UTC`;
+  };
+
+  const aliceErrors = await errorInstantsOf(alice.workspaceId);
+  const bobErrors = await errorInstantsOf(bob.workspaceId);
+  must(
+    aliceErrors.length >= 4 && bobErrors.length >= 4,
+    `too few error spans to cut a window from — alice ${aliceErrors.length}, bob ${bobErrors.length}`,
+  );
+  const aliceWindow = historicalWindowOf(aliceErrors);
+  const bobWindow = historicalWindowOf(bobErrors);
+  must(
+    inside(aliceErrors, aliceWindow) === aliceErrors.length - 2 && inside(bobErrors, bobWindow) === bobErrors.length - 2,
+    "the historical window does not exclude exactly the oldest and the newest error span",
+  );
+  // The origin of the promoted incident: the OLDEST event this workspace holds,
+  // by the id Postgres holds for it — so the promoted window opens where this
+  // run's evaluated history begins, and everything the later arms wrote is
+  // inside it by construction rather than by luck.
+  const originEvent = await pgOne(
+    `SELECT id, title, severity, created_at FROM alert_events WHERE workspace_id = $1 ORDER BY created_at, id LIMIT 1`,
+    [alice.workspaceId],
+  );
+  must(originEvent, `${alice.workspaceId} holds no alert event — there is nothing to promote`);
+  const historicalTitle = `${aliceLabel} checkout errors, reconstructed`;
+  const bobTitle = `${bobLabel} timeouts, reconstructed`;
+
+  let historicalId = null;
+  let promotedId = null;
+  let bobIncidentId = null;
+  const withheldRca = { open: false, text: "", used: null, quota: null, rowRefs: [], traceRefs: [] };
+  let aliceRca = withheldRca;
+  let bobRca = withheldRca;
+  /* The RED half of this leg's proof (D564, the changes precedent): withholding
+   * the WHOLE interaction block — both create submits, the promote click and
+   * both RCA presses — must fail every claim below and none of the
+   * preconditions above. Nothing after this block is a `must()`, so a red run's
+   * failure count is this arm's check count exactly; the presses are INSIDE it
+   * so that a red run fails on a refusal that was never rendered rather than
+   * on an empty string after two 20-second waits. */
+  if (!process.env.RED_WITHHOLD_INCIDENTS) {
+    const TITLE_FIELD = `input[placeholder="what is broken, in one line"]`;
+    const declare = async (browser, title, severity, sinceMs) => {
+      must(
+        await browser.goto("/app/incidents", `document.body.textContent.includes("New incident")`),
+        `${browser.label}: /app/incidents never rendered its control`,
+      );
+      must(await browser.evaluate(clickText("New incident")), `${browser.label}: the New incident control did not click`);
+      must(await browser.waitFor(`!!document.querySelector('${TITLE_FIELD}')`), `${browser.label}: the new-incident form never opened`);
+      must((await browser.evaluate(type("what is broken", title))) === title, `${browser.label}: the form has no title field`);
+      must((await browser.evaluate(choose("severity", severity))) === severity, `${browser.label}: the severity picker did not take ${severity}`);
+      must(
+        (await browser.evaluate(type("YYYY-MM-DD HH:MM", fieldText(sinceMs)))) === fieldText(sinceMs),
+        `${browser.label}: the form has no start field`,
+      );
+      must(await browser.evaluate(clickText("declare incident")), `${browser.label}: the declare control did not click`);
+      // The title lives in the input's VALUE until the store answers; it is in
+      // the page's text only once the refreshed list renders the card.
+      must(
+        await browser.waitFor(`document.body.textContent.includes(${JSON.stringify(title)}) && !document.querySelector('${TITLE_FIELD}')`),
+        `${browser.label}: the declared incident never appeared in the list`,
+      );
+      const row = await pgOne(`SELECT id FROM incidents WHERE workspace_id = $1 AND title = $2`, [browser.workspaceId, title]);
+      must(row, `${browser.label}: the declared incident is not in Postgres`);
+      return row.id;
+    };
+    const resolveAt = async (browser, id, untilMs) => {
+      must(
+        await browser.goto(`/app/incidents/${id}`, `document.body.textContent.includes("resolve")`),
+        `${browser.label}: /app/incidents/${id} never rendered its controls`,
+      );
+      must(await browser.evaluate(clickText("resolve")), `${browser.label}: the resolve control did not click`);
+      must(
+        await browser.waitFor(`!!document.querySelector('input[placeholder="YYYY-MM-DD HH:MM"]')`),
+        `${browser.label}: the resolve form never opened`,
+      );
+      must(
+        (await browser.evaluate(type("YYYY-MM-DD HH:MM", fieldText(untilMs)))) === fieldText(untilMs),
+        `${browser.label}: the resolve form has no end field`,
+      );
+      must(await browser.evaluate(clickText("mark resolved")), `${browser.label}: the mark-resolved control did not click`);
+      must(await browser.waitFor(`document.body.textContent.includes("RESOLVED")`), `${browser.label}: the incident never read RESOLVED`);
+    };
+    const pressRca = async (browser) => {
+      must(await browser.evaluate(clickIncluding("Generate root-cause analysis")), `${browser.label}: the RCA control did not click`);
+      must(await browser.waitFor(RCA_SETTLED, 20_000), `${browser.label}: the RCA panel never reached a terminal state`);
+      // One more beat, `goto`'s own posture: the `result` frame's render — the
+      // terminal state, the counter — lands one stream read BEFORE the promise
+      // resolves and `onFinished` lifts the page's `spent` (ExplainPanel.tsx
+      // `runExplain`: `onState` per event, the return after the loop), so a
+      // read in that gap would find the answer with its counter one behind it.
+      await sleep(350);
+      return browser.evaluate(RCA);
+    };
+
+    historicalId = await declare(alice, historicalTitle, "critical", aliceWindow.sinceMs);
+    await resolveAt(alice, historicalId, aliceWindow.untilMs);
+    aliceRca = await pressRca(alice);
+
+    must(
+      await alice.goto("/app/incidents", `document.body.textContent.includes("New incident")`),
+      "/app/incidents never rendered a second time",
+    );
+    must(await alice.evaluate(clickText("New incident")), "the New incident control did not click");
+    must(await alice.waitFor(`!!document.querySelector("[aria-pressed]")`), "the new-incident form never opened");
+    must(await alice.evaluate(clickText("from an alert")), "the form offers no `from an alert` mode");
+    must(
+      (await alice.evaluate(choose("alert event", originEvent.id))) === originEvent.id,
+      `the promote picker does not offer ${originEvent.id}`,
+    );
+    must(await alice.evaluate(clickText("promote to incident")), "the promote control did not click");
+    must(
+      await alice.waitFor(`document.querySelectorAll('a[href^="/app/incidents/inc_"]').length >= 2`),
+      "the promoted incident never appeared in the list",
+    );
+    const promotedRow = await pgOne(`SELECT id FROM incidents WHERE workspace_id = $1 AND opened_from_event_id = $2`, [
+      alice.workspaceId,
+      originEvent.id,
+    ]);
+    must(promotedRow, "the promoted incident is not in Postgres");
+    promotedId = promotedRow.id;
+
+    bobIncidentId = await declare(bob, bobTitle, "warning", bobWindow.sinceMs);
+    await resolveAt(bob, bobIncidentId, bobWindow.untilMs);
+    bobRca = await pressRca(bob);
+  }
+  writeFileSync(
+    join(OUT, "incidents-leg.json"),
+    JSON.stringify({ historicalId, promotedId, bobIncidentId, aliceWindow, bobWindow, originEvent, aliceRca, bobRca }, null, 2),
+  );
+
+  /* D562: the instants are bound in SQL — `extract(epoch …)` — and never parsed
+   * from a column type in JS (node-postgres reads a naked `timestamp` in the
+   * runner's zone, the D179 trap). Whole seconds went in through the forms, so
+   * floor/ceil to milliseconds are exact here, and the first check says so: the
+   * recomputation's window IS the row's, or nothing below is about the row. */
+  const storedWindowOf = async (workspaceId, id) => {
+    const row =
+      id === null
+        ? null
+        : await pgOne(
+            `SELECT extract(epoch from started_at) AS started_s, extract(epoch from ended_at) AS ended_s, status ` +
+              `FROM incidents WHERE workspace_id = $1 AND id = $2`,
+            [workspaceId, id],
+          );
+    return row === null || row.ended_s === null
+      ? null
+      : { sinceMs: Math.floor(Number(row.started_s) * 1000), untilMs: Math.ceil(Number(row.ended_s) * 1000), status: row.status };
+  };
+  const count = (html, needle) => html.split(needle).length - 1;
+  const traceRowsOn = (html) => count(html, `id="trace:`);
+  /** How many rail rows of one kind the page holds, by the kind label the rail renders. */
+  const kindRows = (html, label) => count(html, `>${label}</span>`);
+  const usedFor = (workspaceId) => pgOne(`SELECT used FROM explain_runs WHERE workspace_id = $1`, [workspaceId]);
+
+  const aliceStored = await storedWindowOf(alice.workspaceId, historicalId);
+  check(
+    "the historical incident is a RESOLVED row whose window, read back through `extract(epoch …)`, is exactly the one the two forms sent — whole seconds in, the same milliseconds out (D562/D527)",
+    aliceStored !== null &&
+      aliceStored.status === "resolved" &&
+      aliceStored.sinceMs === aliceWindow.sinceMs &&
+      aliceStored.untilMs === aliceWindow.untilMs,
+    aliceStored === null ? `no resolved row for ${historicalId ?? "a withheld id"}` : `${JSON.stringify(aliceStored)} vs ${JSON.stringify(aliceWindow)}`,
+  );
+  const aliceGroups = aliceStored === null ? [] : await errorGroupsOf(alice.workspaceId, aliceStored);
+  const aliceErrorsInside = aliceGroups.reduce((n, group) => n + group.errors, 0);
+  const historical = await pageFor(alice, `/app/incidents/${historicalId}`);
+  const historicalLabel = windowLabelOf(aliceWindow.sinceMs, aliceWindow.untilMs);
+  check(
+    `the historical detail renders the row the store holds — the title, RESOLVED, CRITICAL, \`${historicalLabel}\` — with no SAMPLE badge, no clip register and none of the mock's story (D539/D540/D521)`,
+    historical.status === 200 &&
+      historical.html.includes(historicalTitle) &&
+      historical.html.includes(">RESOLVED<") &&
+      historical.html.includes(">CRITICAL<") &&
+      historical.html.includes(historicalLabel) &&
+      !historical.html.includes("SAMPLE DATA") &&
+      !historical.html.includes("d retained on") &&
+      !historical.html.includes("INC-42"),
+    `HTTP ${historical.status} · title ${historical.html.includes(historicalTitle)} · resolved ${historical.html.includes(">RESOLVED<")} · ` +
+      `window ${historical.html.includes(historicalLabel)} · badge ${historical.html.includes("SAMPLE DATA")} · clip ${historical.html.includes("d retained on")}`,
+  );
+  /** One group's rail row, in the words `traceEntry` composes: drawn at its
+   *  first_seen, spanning to its last, counting its errors, linking its argMin. */
+  const groupRendered = (html, group) => {
+    const span =
+      group.first_seen_epoch_s === group.last_seen_epoch_s
+        ? clockOf(group.first_seen_epoch_s)
+        : `${clockOf(group.first_seen_epoch_s)} → ${clockOf(group.last_seen_epoch_s)}`;
+    return (
+      html.includes(htmlText(`${group.span_name} on ${group.service}`)) &&
+      html.includes(`${group.errors} error${group.errors === 1 ? "" : "s"}, ${span} · grouped by service and span`) &&
+      html.includes(`href="/app/traces/${group.example_trace_id}"`)
+    );
+  };
+  check(
+    `the timeline's trace leg IS the drive's own recomputation over obstack.spans — ${aliceGroups.length} (service, span) group(s) holding ${aliceErrorsInside} error span(s), each drawn at its first_seen with its count, its span and its argMin example trace — and nothing else was read: zero alert rows, zero change rows, one resolved row (D71(b)/D531/D532/D562)`,
+    aliceGroups.length > 0 &&
+      aliceErrorsInside === inside(aliceErrors, aliceWindow) &&
+      traceRowsOn(historical.html) === aliceGroups.length &&
+      kindRows(historical.html, "traces") === aliceGroups.length &&
+      aliceGroups.every((group) => groupRendered(historical.html, group)) &&
+      kindRows(historical.html, "alert") === 0 &&
+      kindRows(historical.html, "change") === 0 &&
+      kindRows(historical.html, "resolved") === 1,
+    `${aliceGroups.length} group(s) over ${inside(aliceErrors, aliceWindow)} error span(s) · ${traceRowsOn(historical.html)} trace row(s) · ` +
+      `rendered ${aliceGroups.map((group) => groupRendered(historical.html, group)).join("/") || "none"} · ` +
+      `alert ${kindRows(historical.html, "alert")} · change ${kindRows(historical.html, "change")} · resolved ${kindRows(historical.html, "resolved")}`,
+  );
+  check(
+    "the historical page states what was NOT read rather than showing a quiet hour: the changes leg's empty sentence with its recipe link, no omission sentence, no clip, no empty-window sentence — each honesty state in its honest position (D537/D540/D583)",
+    historical.status === 200 &&
+      historical.html.includes(historicalTitle) &&
+      historical.html.includes("no change events were read for this window or its lead-in") &&
+      historical.html.includes('href="/app/docs/connectors/github-actions"') &&
+      !historical.html.includes("the rest are not shown") &&
+      !historical.html.includes("no evidence was read for it") &&
+      !historical.html.includes("rows were read inside this window"),
+    `changes-empty ${historical.html.includes("no change events were read for this window or its lead-in")} · recipe ${historical.html.includes('href="/app/docs/connectors/github-actions"')} · ` +
+      `omission ${historical.html.includes("the rest are not shown")} · outside ${historical.html.includes("no evidence was read for it")} · empty ${historical.html.includes("rows were read inside this window")}`,
+  );
+  const aliceCounter = `${Number(afterRefusal?.used)} of ${EVIDENCE_EXPLAIN_QUOTA} Explain runs used this month`;
+  check(
+    `the RCA control is offered on the historical page — its window holds evidence — under the counter line the plan row states, \`${aliceCounter}\` (D558/D226)`,
+    historical.status === 200 && historical.html.includes("Generate root-cause analysis") && historical.html.includes(aliceCounter),
+    `control ${historical.html.includes("Generate root-cause analysis")} · counter ${historical.html.includes(aliceCounter)}`,
+  );
+
+  const promoted = await pageFor(alice, `/app/incidents/${promotedId}`);
+  const originStartMs = originEvent.created_at.getTime();
+  const originIso = new Date(originStartMs).toISOString();
+  const originTitle = htmlText(originEvent.title);
+  check(
+    "the promoted incident is ONGOING, marked `from an alert` with the event still held, carrying the event's own title and severity, its window opening at the event's own instant (D526/D544)",
+    promoted.status === 200 &&
+      promoted.html.includes(">ONGOING<") &&
+      promoted.html.includes("from an alert") &&
+      !promoted.html.includes("the event is no longer held") &&
+      promoted.html.includes(originTitle) &&
+      promoted.html.includes(`>${originEvent.severity.toUpperCase()}<`) &&
+      promoted.html.includes(`${originIso.slice(0, 10)} ${originIso.slice(11, 16)} UTC → ongoing ·`) &&
+      promoted.html.includes("so far"),
+    `HTTP ${promoted.status} · ongoing ${promoted.html.includes(">ONGOING<")} · mark ${promoted.html.includes("from an alert")} · ` +
+      `held ${!promoted.html.includes("the event is no longer held")} · title ${promoted.html.includes(originTitle)} · severity ${promoted.html.includes(`>${originEvent.severity.toUpperCase()}<`)}`,
+  );
+  // The two Postgres legs as the drive reads them: every event at or after the
+  // origin's instant, in both tables — the same predicate the stitcher binds.
+  const alertRows = await pgRows(
+    `SELECT id, title, created_at AS at FROM alert_events WHERE workspace_id = $1 AND created_at >= $2 ORDER BY created_at, id`,
+    [alice.workspaceId, originEvent.created_at],
+  );
+  const changeRows = await pgRows(
+    `SELECT id, title, at FROM change_events WHERE workspace_id = $1 AND at >= $2 ORDER BY at, id`,
+    [alice.workspaceId, originEvent.created_at],
+  );
+  // D538's total order, restated: the instant at the millisecond the stitcher
+  // compares (its legs emit `toISOString()`), then the source rank — a change
+  // that shares an instant with an alert is the thing the alert is about — then
+  // the key, which for both legs is the event's id. ⟨T8 review: a first cut
+  // sorted on the instant alone and let a stable sort settle the ties, which
+  // agrees with the stitcher only while no alert and no change share a
+  // millisecond — the two evaluator events of one tick can.⟩
+  const SOURCE_RANK = { change: 0, alert: 1 };
+  const expectedOrder = [
+    ...alertRows.map((row) => ({ id: row.id, at: row.at.getTime(), kind: "alert" })),
+    ...changeRows.map((row) => ({ id: row.id, at: row.at.getTime(), kind: "change" })),
+  ]
+    .sort((x, y) => x.at - y.at || SOURCE_RANK[x.kind] - SOURCE_RANK[y.kind] || (x.id < y.id ? -1 : x.id > y.id ? 1 : 0))
+    .map((row) => row.id);
+  const anchorAt = (id) => promoted.html.indexOf(`id="${id}"`);
+  const renderedOrder = [...expectedOrder].sort((a, b) => anchorAt(a) - anchorAt(b));
+  check(
+    `one page, both stores, one ordered list (D561/D538): ${alertRows.length} alert event(s) and ${changeRows.length} change event(s) from two Postgres tables, every one anchored on the rail by its own id, in D538's order — instant, then source rank, then id — across both tables, and each rail row of those two kinds is one of them`,
+    promoted.status === 200 &&
+      promoted.html.includes(originTitle) &&
+      alertRows.length > 0 &&
+      changeRows.length > 0 &&
+      expectedOrder.every((id) => anchorAt(id) >= 0) &&
+      renderedOrder.join(",") === expectedOrder.join(",") &&
+      alertRows.every((row) => promoted.html.includes(htmlText(row.title))) &&
+      kindRows(promoted.html, "alert") === alertRows.length &&
+      kindRows(promoted.html, "change") === changeRows.length,
+    `anchored ${expectedOrder.filter((id) => anchorAt(id) >= 0).length}/${expectedOrder.length} · order ${renderedOrder.join(",") === expectedOrder.join(",")} · ` +
+      `alert rows ${kindRows(promoted.html, "alert")} vs ${alertRows.length} · change rows ${kindRows(promoted.html, "change")} vs ${changeRows.length}`,
+  );
+  const externalAnchor = `href="${runLink}" target="_blank" rel="noopener noreferrer"`;
+  check(
+    "the change events on that rail are the deploy the documented step posted and the flag posted directly, and the deploy's link renders as an EXTERNAL anchor to the workflow run — the customer's own system, never a product route (D538/D499)",
+    promoted.status === 200 &&
+      promoted.html.includes(originTitle) &&
+      changeRows.some((row) => row.id === firstAnswer?.id) &&
+      promoted.html.includes(`deploy ${deployRef}`) &&
+      promoted.html.includes(flagTitle) &&
+      promoted.html.includes(externalAnchor),
+    `deploy row ${changeRows.some((row) => row.id === firstAnswer?.id)} · ref ${promoted.html.includes(`deploy ${deployRef}`)} · flag ${promoted.html.includes(flagTitle)} · anchor ${promoted.html.includes(externalAnchor)}`,
+  );
+  // The premise, measured (D561): no error span of hers starts inside this
+  // window. Every span this drive sent is OK, and the fixture's failing roots
+  // all predate the evaluator's first tick — but that is the store's to say.
+  const premise = await chCount(
+    `SELECT count() FROM obstack.spans WHERE workspace_id='${alice.workspaceId}' AND status_code='error' ` +
+      `AND start_time >= fromUnixTimestamp64Milli(toInt64(${originStartMs}))`,
+  );
+  check(
+    `and its trace leg is EMPTY with the store agreeing why — ${premise} error span(s) of hers start inside this window — so the rail carries no trace row and no sentence claims the window itself was empty`,
+    promoted.status === 200 &&
+      promoted.html.includes(originTitle) &&
+      premise === 0 &&
+      traceRowsOn(promoted.html) === 0 &&
+      kindRows(promoted.html, "traces") === 0 &&
+      !promoted.html.includes("rows were read inside this window") &&
+      !promoted.html.includes("no change events were read"),
+    `premise ${premise} · trace rows ${traceRowsOn(promoted.html)} · empty-window ${promoted.html.includes("rows were read inside this window")} · changes-empty ${promoted.html.includes("no change events were read")}`,
+  );
+
+  const aliceList = await pageFor(alice, "/app/incidents");
+  const countsOf = (workspaceId) =>
+    pgOne(
+      `SELECT count(*)::int AS total, count(*) FILTER (WHERE status = 'ongoing')::int AS ongoing FROM incidents WHERE workspace_id = $1`,
+      [workspaceId],
+    );
+  const aliceCounts = await countsOf(alice.workspaceId);
+  const aliceOpened = [historicalId, promotedId].filter((id) => id !== null);
+  check(
+    "/app/incidents lists both incidents this arm opened under a header DERIVED from the read, `{ongoing} ongoing · {total} total` — the promoted one ONGOING and marked, the historical one RESOLVED, newest start first — with no SAMPLE badge and no INC-42 (D545/D519/D521)",
+    aliceList.status === 200 &&
+      aliceOpened.length === 2 &&
+      aliceCounts.total === aliceOpened.length &&
+      aliceCounts.ongoing === (promotedId === null ? 0 : 1) &&
+      aliceList.html.includes(`${aliceCounts.ongoing} ongoing · ${aliceCounts.total} total`) &&
+      aliceOpened.every((id) => aliceList.html.includes(`href="/app/incidents/${id}"`)) &&
+      aliceList.html.includes(">ONGOING<") &&
+      aliceList.html.includes(">RESOLVED<") &&
+      aliceList.html.includes("from an alert") &&
+      aliceList.html.indexOf(`href="/app/incidents/${promotedId}"`) < aliceList.html.indexOf(`href="/app/incidents/${historicalId}"`) &&
+      !aliceList.html.includes("SAMPLE DATA") &&
+      !aliceList.html.includes("INC-42"),
+    `HTTP ${aliceList.status} · rows ${JSON.stringify(aliceCounts)} · header ${aliceList.html.includes(`${aliceCounts.ongoing} ongoing · ${aliceCounts.total} total`)} · ` +
+      `cards ${aliceOpened.filter((id) => aliceList.html.includes(`href="/app/incidents/${id}"`)).length}/${aliceOpened.length} · badge ${aliceList.html.includes("SAMPLE DATA")}`,
+  );
+  const bobIncidents = await pageFor(bob, "/app/incidents");
+  const bobCounts = await countsOf(bob.workspaceId);
+  check(
+    "bob's /app/incidents lists ONLY his incident — his title, his id, his own derived header — and none of hers: neither id, neither title, zero of her label (D7/D11/D142)",
+    bobIncidents.status === 200 &&
+      bobIncidentId !== null &&
+      historicalId !== null &&
+      promotedId !== null &&
+      bobCounts.total === 1 &&
+      bobIncidents.html.includes(`${bobCounts.ongoing} ongoing · ${bobCounts.total} total`) &&
+      bobIncidents.html.includes(`href="/app/incidents/${bobIncidentId}"`) &&
+      bobIncidents.html.includes(bobTitle) &&
+      !bobIncidents.html.includes(historicalId) &&
+      !bobIncidents.html.includes(promotedId) &&
+      !bobIncidents.html.includes(historicalTitle) &&
+      !bobIncidents.html.includes(originTitle) &&
+      labelHits(bobIncidents.html, aliceLabel) === 0,
+    `HTTP ${bobIncidents.status} · rows ${JSON.stringify(bobCounts)} · his card ${bobIncidentId !== null && bobIncidents.html.includes(`href="/app/incidents/${bobIncidentId}"`)} · ` +
+      `${labelHits(bobIncidents.html, aliceLabel)}× ${aliceLabel}`,
+  );
+  const bobView = await pageFor(bob, `/app/incidents/${historicalId}`);
+  check(
+    "bob asking for HER incident by its id gets the one not-found sentence and none of her words — the tenancy boundary, read from the outside (D440/D539)",
+    historicalId !== null &&
+      bobView.html.includes("no incident with this id in your workspace") &&
+      !bobView.html.includes(historicalTitle) &&
+      labelHits(bobView.html, aliceLabel) === 0,
+    `HTTP ${bobView.status} · sentence ${bobView.html.includes("no incident with this id in your workspace")} · ${labelHits(bobView.html, aliceLabel)}× ${aliceLabel}`,
+  );
+  const bobPost = await fetch(`${BASE}/app/incidents/${historicalId}/rca`, { method: "POST", headers: { cookie: bob.cookieHeader } });
+  await bobPost.text();
+  check(
+    "and his POST to her incident's RCA route is the 404 an invented id gets — before any stitch, any config check or any spend (D558, step 3)",
+    historicalId !== null && bobPost.status === 404,
+    `HTTP ${bobPost.status}`,
+  );
+
+  // The Explain collision, made the sharpest available proof (D563): the
+  // sentence is EXTRACTED from what the trace panel rendered ~1400 lines above,
+  // never retyped, so "identical" is a comparison and not a quotation.
+  const refusalSentence = /This workspace has used all .*? a larger plan raises it\./.exec(refusedRun.text)?.[0] ?? null;
+  const aliceUsed = await usedFor(alice.workspaceId);
+  check(
+    "alice's RCA on the historical incident is REFUSED with the sentence the trace panel rendered — byte-identical, extracted from that panel's text — one allowance for two subjects (D563/D555)",
+    refusalSentence !== null && aliceRca.open && aliceRca.text.includes(refusalSentence),
+    aliceRca.open ? aliceRca.text.slice(0, 240) : "no panel was rendered",
+  );
+  check(
+    `and it spent nothing: her panel's counter and her \`explain_runs\` row both still read ${afterRefusal?.used} of ${EVIDENCE_EXPLAIN_QUOTA} (D225)`,
+    aliceRca.open &&
+      aliceRca.used === Number(afterRefusal?.used) &&
+      aliceRca.quota === EVIDENCE_EXPLAIN_QUOTA &&
+      Number(aliceUsed?.used) === Number(afterRefusal?.used),
+    `panel ${aliceRca.used} of ${aliceRca.quota} · row ${JSON.stringify(aliceUsed)}`,
+  );
+  const bobStored = await storedWindowOf(bob.workspaceId, bobIncidentId);
+  const bobGroups = bobStored === null ? [] : await errorGroupsOf(bob.workspaceId, bobStored);
+  const bobExamples = new Set(bobGroups.map((group) => group.example_trace_id));
+  const bobHeadline =
+    bobGroups.length > 0
+      ? `No alert fired in this incident's window; ${bobGroups[0].span_name} on ${bobGroups[0].service} is its first failing trace`
+      : null;
+  const bobTally =
+    bobStored === null
+      ? null
+      : `0 alerts, 0 changes and ${bobGroups.length} failing trace${bobGroups.length === 1 ? "" : "s"} share the window ` +
+        `${new Date(bobStored.sinceMs).toISOString()} to ${new Date(bobStored.untilMs).toISOString()}.`;
+  const bobUsed = await usedFor(bob.workspaceId);
+  check(
+    "bob's RCA on his own incident is ANSWERED about ITS timeline: the headline names the failing group the drive's recomputation puts first, the tally counts exactly those groups over exactly the stored window, every cited example trace is one the recomputation named, and the answer says no model read it (D550/D553/D102)",
+    bobRca.open &&
+      bobHeadline !== null &&
+      bobRca.text.includes(bobHeadline) &&
+      bobRca.text.includes(bobTally) &&
+      bobRca.text.includes("WHERE") &&
+      bobRca.text.includes("ROOT CAUSE") &&
+      bobRca.text.includes("WHAT TO DO NEXT") &&
+      bobRca.traceRefs.length >= 1 &&
+      bobRca.traceRefs.every((id) => bobExamples.has(id)) &&
+      bobRca.text.includes("This deployment runs Explain in fake mode"),
+    bobRca.open
+      ? `headline ${bobRca.text.includes(bobHeadline ?? " ")} · tally ${bobRca.text.includes(bobTally ?? " ")} · ` +
+        `cited ${bobRca.traceRefs.join(",") || "nothing"} of ${[...bobExamples].join(",")} · ${bobRca.text.slice(0, 200)}`
+      : "no panel was rendered",
+  );
+  check(
+    `and the spend is his alone: his panel reads 1 of ${EVIDENCE_EXPLAIN_QUOTA}, his \`explain_runs\` row holds 1, and hers still holds ${afterRefusal?.used} (D225/D226)`,
+    bobRca.open &&
+      bobRca.used === 1 &&
+      bobRca.quota === EVIDENCE_EXPLAIN_QUOTA &&
+      Number(bobUsed?.used) === 1 &&
+      Number(aliceUsed?.used) === Number(afterRefusal?.used),
+    `panel ${bobRca.used} of ${bobRca.quota} · bob ${JSON.stringify(bobUsed)} · alice ${JSON.stringify(aliceUsed)}`,
+  );
+  // Measured, not budgeted (D560): the ~6-minute line is held, and a number
+  // over it re-cuts THIS arm, never the line.
+  console.log(`   incidents arm: ${Math.round((Date.now() - armStartedAt) / 1000)}s of wall time`);
+
   step("a plan change round-trips: checkout → return → reconcile → redirect → ONE paint says Pro (D168/D189)");
   await openTab(alice, "Billing & usage", `document.querySelector("main")?.textContent.includes("change plan")`);
   must(await alice.evaluate(clickText("Upgrade to Pro")), "the Billing & usage tab offers no Pro upgrade");
@@ -3876,7 +4468,14 @@ try {
   // below must be error-free TOO, and a NoSessionError appearing there is a
   // regression of the refit, not an allowlisted tripwire.
   const logSplit = statSync(appLog).size;
-  for (const path of [
+  // The list is `liveWiredRoutes` itself (apps/web/src/lib/live-routes.ts): a
+  // route that reads the workspace's real data is a route an anonymous browser
+  // must not reach, so wiring one here is the other half of wiring it there.
+  // For four sprints that sentence was a CLAIM this list did not keep — S6.2's
+  // /app/costs and /app/infra, S7.2's /app/changes and S7.3's /app/slos were
+  // wired there and never probed here — so S7.4 pays the backlog and ends the
+  // class: the registry is read below and every entry must be covered (D565).
+  const probed = [
     "/app",
     "/app/traces",
     `/app/traces/${PROMPT_TRACE}`,
@@ -3884,12 +4483,9 @@ try {
     "/app/settings",
     "/app/onboarding",
     "/app/connections",
-    // The list is `liveWiredRoutes` itself (apps/web/src/lib/live-routes.ts):
-    // a route that reads the workspace's real data is a route an anonymous
-    // browser must not reach, so wiring one here is the other half of wiring
-    // it there — /app/explore joined that list in S6.1, and the five below in
-    // S6.2 (D21/D367), the diff among them now that nothing is carved out of
-    // the wired `/app/traces/` subtree (D400).
+    // /app/explore joined the registry in S6.1, and the five below in S6.2
+    // (D21/D367), the diff among them now that nothing is carved out of the
+    // wired `/app/traces/` subtree (D400).
     "/app/explore",
     "/app/map",
     "/app/services",
@@ -3897,6 +4493,10 @@ try {
     "/app/users",
     "/app/issues",
     `/app/traces/diff?a=${PROMPT_TRACE}`,
+    // S6.2 too, reclaimed in S7.4: the two surfaces the S6.2 arm asserted
+    // live-wired and this list never named (D565).
+    "/app/costs",
+    "/app/infra",
     // S6.3 (D21/D367): the dashboards list and one dashboard's own page joined
     // that list this sprint, and the id below is the row alice actually holds —
     // an anonymous browser must not reach it either.
@@ -3906,7 +4506,15 @@ try {
     // evaluated events and channel names are workspace data an anonymous
     // browser must not reach.
     "/app/alerts",
-  ]) {
+    // S7.2 and S7.3, reclaimed in S7.4 (D565).
+    "/app/changes",
+    "/app/slos",
+    // S7.4 (D21/D519): the incidents list and one incident's own page — the id
+    // is the historical incident alice declared above, a row she holds.
+    "/app/incidents",
+    `/app/incidents/${historicalId}`,
+  ];
+  for (const path of probed) {
     await alice.goto(path, `document.body.textContent.length > 0`);
     const state = await alice.evaluate(STATE);
     check(
@@ -3915,6 +4523,25 @@ try {
       state.url,
     );
   }
+  // D565: the registry is read as TEXT, the recipe lift's idiom — not a
+  // hand-copied literal like FLUSH_MS, which is the opposite idiom — with
+  // `//`-to-end-of-line stripped BEFORE the quoted entries are extracted: the
+  // array literal already carries a five-line comment, and the drift class this
+  // check ends would otherwise return the first time a comment quoted a path.
+  // An exact entry is covered by equality; a trailing-slash entry by a probed
+  // path under it that is longer than the prefix.
+  const registrySource = readFileSync(join(repoRoot, "apps/web/src/lib/live-routes.ts"), "utf8");
+  const registryStart = registrySource.indexOf("export const liveWiredRoutes");
+  const registryLiteral = registrySource.slice(registryStart, registrySource.indexOf("];", registryStart));
+  const registryEntries = [...registryLiteral.replace(/\/\/.*$/gm, "").matchAll(/"([^"]+)"/g)].map((m) => m[1]);
+  const uncovered = registryEntries.filter((entry) =>
+    entry.endsWith("/") ? !probed.some((path) => path.startsWith(entry) && path.length > entry.length) : !probed.includes(entry),
+  );
+  check(
+    `the probe list covers every one of liveWiredRoutes' ${registryEntries.length} entries — exact ones by equality, subtree ones by a longer probed path — so a route wired there and not probed here is a red line, not a comment (D565)`,
+    registryStart >= 0 && registryEntries.length > 0 && uncovered.length === 0,
+    uncovered.length > 0 ? `uncovered: ${uncovered.join(", ")}` : `${registryEntries.length} entries, ${probed.length} probes`,
+  );
   // The quickstart's poll is not a navigation, so it does not get one: a signed-
   // out client asking for status gets the status code and an empty body, not a
   // login page rendered inside what the caller will parse as JSON (D216). Fetched
@@ -4038,6 +4665,28 @@ try {
   console.log(`  FAIL the drive aborted — ${error?.stack ?? error}`);
 } finally {
   step("result");
+  // D566: the catalog goes back to what THIS RUN read before it wrote, at the
+  // top of finally and before the pool ends — and a failed restore is a red
+  // check, never an exception out of a finally block. Restoring from a number
+  // spelled here (50000/20) is refused: that is a second copy of the
+  // migration's values, the divergence class this repo does not keep.
+  if (catalogBefore !== null) {
+    try {
+      const restored = await pgOne(
+        `UPDATE plans SET event_quota = $1, explain_quota = $2 WHERE id = 'free' RETURNING event_quota, explain_quota`,
+        [catalogBefore.event_quota, catalogBefore.explain_quota],
+      );
+      check(
+        "the free plan's catalog row is back at the values this run read before it lowered them — captured, not spelled — so a driven stack runs the two catalog-reading integration suites green (D566)",
+        restored !== null &&
+          Number(restored.event_quota) === Number(catalogBefore.event_quota) &&
+          Number(restored.explain_quota) === Number(catalogBefore.explain_quota),
+        `restored ${JSON.stringify(restored)} vs captured ${JSON.stringify(catalogBefore)}`,
+      );
+    } catch (error) {
+      check("the free plan's catalog row is back at the values this run read before it lowered them (D566)", false, `${error?.message ?? error}`);
+    }
+  }
   stopAll();
   writeFileSync(join(OUT, "transcript.json"), JSON.stringify(transcript, null, 2));
   const seconds = Math.round((Date.now() - startedAt) / 1000);
