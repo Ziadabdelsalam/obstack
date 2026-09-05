@@ -7,11 +7,15 @@ export const frontmatter = {
 
 Your plan's `retention_days` is what obstack keeps. A sweep runs **every 24
 hours**, reads each workspace's current plan from Postgres, and deletes that
-workspace's rows past the cutoff from spans, logs and trace summaries.
+workspace's rows past the cutoff from spans, logs, trace summaries, the
+metrics rollups and the series catalog, and from the alert events obstack
+raised for it and the change events its systems posted.
 
-Behind it, the tables carry a **90-day TTL** as an outer bound. That ordering
-matters: a sweep that stops running degrades to keeping data *longer* than the
-plan says — the benign direction — never to unbounded growth.
+Behind it, the ClickHouse tables carry a **90-day TTL** as an outer bound. That
+ordering matters: a sweep that stops running degrades to keeping telemetry
+*longer* than the plan says — the benign direction — never to unbounded growth.
+The two Postgres tables — alert events and change events — have no outer bound
+of their own: for them, a stopped sweep keeps rows until it runs again.
 
 ## "Deleted" means two different things at two different times
 
@@ -40,19 +44,31 @@ the spans that remain.
 
 ## The bound, stated rather than engineered around
 
-One workspace-table delete gets a bounded statement timeout. At the measured
-rate — about 8.4 seconds per million rows on the widest table — that is on the
-order of a hundred million past-cutoff rows in a single workspace before a
-statement cannot finish.
+One workspace-table delete in ClickHouse gets a bounded statement timeout. At
+the measured rate — about 8.4 seconds per million rows on the widest table —
+that is on the order of a hundred million past-cutoff rows in a single
+workspace before a statement cannot finish. The Postgres tables are swept in
+batches of 5,000 rows under a 30-second timeout, repeated until a batch comes
+back short.
 
-Past that point the sweep does **not** chunk and does **not** fall back to a
-heavyweight mutation. It fails that statement **loudly, counts it, moves on to
+Past that point the ClickHouse sweep does **not** chunk and does **not** fall
+back to a heavyweight mutation. It fails that statement **loudly, counts it, moves on to
 the next workspace, and retries the whole thing tomorrow** — the log line names
 the workspace and the table.
 
-The consequence is bounded and benign: **that workspace over-retains until the
-90-day table TTL takes the rows.** Retention is late, never absent, and never at
-the cost of the sweep for every other workspace.
+The consequence is bounded and benign: **that workspace over-retains — in
+ClickHouse until the 90-day table TTL takes the rows, in Postgres until the next
+sweep succeeds.** Retention is late, never absent, and never at the cost of the
+sweep for every other workspace.
+
+## What is not swept
+
+Incidents you write are kept until you delete them. The sweep never touches
+them: a postmortem a person typed is not telemetry, and unlike an alert rule or
+an SLO it is not a definition the product could re-derive — its title, summary
+and impact are the only copy there is. The evidence an incident's timeline
+stitches — alert events, change events, error traces — still ages out on your
+plan's window, and the incident page says so when it does.
 
 ## Operational notes
 

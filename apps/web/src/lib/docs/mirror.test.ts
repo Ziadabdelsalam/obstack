@@ -3,6 +3,7 @@ import { readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import { OTLP_HTTP_ENDPOINT } from "@/lib/ingest-endpoint";
+import { isLiveWiredRoute } from "@/lib/live-routes";
 
 // run with: npm test --workspace apps/web
 //
@@ -567,6 +568,70 @@ test("the retention constants are retention.go's and migration 0004's", () => {
     flat(pages.absences).includes(`${ttl[1]}-day table TTL`),
     `/docs/what-obstack-does-not-do does not state the ${ttl[1]}-day outer bound`,
   );
+});
+
+// S7.4 (D528(ii)): incidents are the first authored object the product keeps
+// PAST the plan window — the sweep never touches the table, because a
+// postmortem a person typed is not telemetry — so the page that opens "Your
+// plan's `retention_days` is what obstack keeps" gained the sentence that says
+// so, as a flip GATE and not a docs afterthought (the S7.2 lesson, applied to
+// a second artifact). This pin couples the sentence to the sweeper: the docs
+// may say "never touches" only while `pgDeletes` names no incidents statement.
+test("D528(ii): /docs/retention states that incidents outlive the plan window unswept, and retention.go agrees", () => {
+  const flatPage = flat(pages.retention);
+  assert.ok(
+    flatPage.includes("Incidents you write are kept until you delete them"),
+    "/docs/retention no longer says incidents are kept until deleted — the first authored object kept past the plan window",
+  );
+  for (const evidence of ["alert events", "change events", "error traces"]) {
+    assert.ok(flatPage.includes(evidence), `/docs/retention no longer names ${evidence} as evidence that still ages out on the plan's window`);
+  }
+  const go = repo("services/ingest/internal/retention/retention.go");
+  const start = go.indexOf("var pgDeletes");
+  assert.ok(start > 0, "retention.go no longer declares pgDeletes");
+  const block = go.slice(start, go.indexOf("\n}\n", start));
+  for (const table of ["alert_events", "change_events"]) {
+    assert.ok(block.includes(table), `pgDeletes no longer names ${table} — the block this pin reads was not found`);
+  }
+  assert.doesNotMatch(block, /\bincidents\b/, "retention.go's pgDeletes names incidents — /docs/retention's \"never touches\" is now false");
+  // The Postgres leg's two numbers are the sweeper's, not the page's: the
+  // page states the batch and the timeout, and this reads them from the source
+  // the way the constants test above reads the interval and the TTL.
+  const batch = go.match(/pgBatch = (\d+)/);
+  const timeout = go.match(/pgStatementTimeout = (\d+) \* time\.Second/);
+  assert.ok(batch && timeout, "retention.go no longer states the Postgres batch size and statement timeout");
+  assert.ok(
+    flatPage.includes(`batches of ${Number(batch[1]).toLocaleString("en-US")} rows`),
+    `/docs/retention does not state the ${batch[1]}-row Postgres batch`,
+  );
+  assert.ok(flatPage.includes(`${timeout[1]}-second timeout`), `/docs/retention does not state the ${timeout[1]}-second Postgres timeout`);
+});
+
+// S7.4 (§7.7): nothing coupled the absences page to `live-routes.ts`, so a flip
+// that forgot the page left every test green and the docs lying — the S7.2
+// recorded defect, and the reason T7 is its own task. This is the coupling:
+// the expectation is DERIVED from the registry, so an M6 surface the registry
+// says is live-wired may not be listed here as an absence, and the one it says
+// is not must be. When S7.5 wires on-call, the second half of this test goes
+// red and the paragraph narrows again — by design, that is the whole point.
+test("§7.7: the M6 absences follow the live-routes registry — a wired surface is not an absence, the unwired one is", () => {
+  const absences = flat(pages.absences);
+  assert.equal(isLiveWiredRoute("/app/incidents"), true, "premise: /app/incidents is live-wired (S7.4 T6, D522)");
+  assert.ok(
+    !absences.includes("no incident management"),
+    "/docs/what-obstack-does-not-do still lists incident management as an absence on a live-wired surface",
+  );
+  assert.ok(
+    absences.includes("Incidents are per-workspace objects a person opens"),
+    "/docs/what-obstack-does-not-do no longer states what incidents are (S7.4)",
+  );
+  assert.ok(absences.includes("M6, as it stands after S7.4"), "the M6 marker no longer names the sprint the paragraph is true after");
+  assert.equal(isLiveWiredRoute("/app/oncall"), false, "premise: /app/oncall is unwired until S7.5 — when it wires, narrow the paragraph again");
+  assert.ok(absences.includes("There are no on-call rotations"), "the page stopped stating the one M6 absence that remains");
+  // The status page is fed by nothing in the product (D547's reason: its
+  // notices are hand-written MDX), and the clause names both producers a
+  // reader would expect to feed it.
+  assert.ok(absences.includes("not fed by SLOs or by incidents"), "the status-page clause lost a producer it is deliberately not fed by");
 });
 
 test("the settings tabs the docs send a reader to are tabs the suite renders", () => {
