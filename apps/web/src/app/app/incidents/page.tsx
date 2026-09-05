@@ -1,110 +1,66 @@
-import Link from "next/link";
-import { ArrowUpRight, Bot, Boxes, BellRing, ListTree, Activity, Wrench, CheckCircle2, Workflow } from "lucide-react";
-import { incidents, type TimelineKind } from "@/mock/incident";
-import { IncidentRca } from "@/components/incidents/IncidentRca";
+import { redirect } from "next/navigation";
+import { connection } from "next/server";
+import { IncidentsLive } from "@/components/incidents/IncidentsLive";
+import { IncidentsMock } from "@/components/incidents/IncidentsMock";
+import { dataMode, referenceNowMs } from "@/server/data";
+import { listIncidents, listPromotableAlertEvents } from "@/server/incidents";
+import { queryRows } from "@/server/postgres";
+import { getSessionContext } from "@/server/session";
 
-const kindStyle: Record<TimelineKind, { icon: typeof Bot; color: string; label: string }> = {
-  pipeline: { icon: Workflow, color: "var(--color-api)", label: "pipeline" },
-  trace: { icon: ListTree, color: "var(--color-llm)", label: "traces" },
-  alert: { icon: BellRing, color: "var(--color-warn)", label: "alert" },
-  metric: { icon: Activity, color: "var(--color-mid)", label: "metric" },
-  k8s: { icon: Boxes, color: "var(--color-infra)", label: "k8s" },
-  action: { icon: Wrench, color: "var(--color-agent)", label: "operator" },
-  resolved: { icon: CheckCircle2, color: "var(--color-ok)", label: "resolved" },
-};
+/**
+ * Incidents, live-wired (S7.4 T6, D519/D521/D545) in the slos page's D431
+ * shape: the mock branch returns master's page body (`IncidentsMock`,
+ * byte-pinned by `page.test.ts`) with zero props and before any await, so
+ * mock mode pays nothing for a live-only read. D521 names what is different
+ * about this flip: the two modes differ in KIND, not only in content — the
+ * demo's one fixture is a DETAIL at this URL, while live is the LIST, with
+ * each incident's own page under `[id]`. That divergence is ruled and priced,
+ * not derived away.
+ *
+ * The live branch reads the signed-in workspace's own incident rows — every
+ * one it holds, no limit and no cursor, because the per-workspace cap is the
+ * bound (D529) — and the un-promoted alert events the picker offers, in ONE
+ * `Promise.all`, and hands the rows to a server component. The reads are the
+ * page's (D441): `IncidentsLive` queries nothing, and
+ * `components/incidents/actions.ts` is mutations only.
+ *
+ * The workspace comes from the session and from nowhere else (D113).
+ */
 
-export default function IncidentsPage() {
-  const inc = incidents[0];
+/**
+ * How many un-promoted alert events the picker offers, newest first — a
+ * MODULE constant and never a client number: the store's limit guard floors
+ * and lower-bounds but does not upper-bound, and T3 recorded that `Infinity`
+ * reaches Postgres as a raw 22P02. Fifty is the alerts page's own feed depth
+ * (`EVENT_FEED_LIMIT`), so the picker offers the same slice of this
+ * workspace's events that `/app/alerts` shows.
+ */
+const PROMOTABLE_LIMIT = 50;
+
+export default async function IncidentsPage() {
+  if (dataMode !== "live") return <IncidentsMock />;
+  await connection();
+
+  const session = await getSessionContext();
+  if (!session) redirect("/login");
+
+  // The render's one clock (D50/D64) — the house's reference clock, which is
+  // the request's own `Date.now()` on this branch — sampled ONCE and threaded
+  // down, so every ongoing duration on the list is measured against the same
+  // instant (the traces pages' rule).
+  const nowMs = referenceNowMs();
+  const [list, promotable] = await Promise.all([
+    listIncidents(session.workspaceId, queryRows),
+    listPromotableAlertEvents(session.workspaceId, PROMOTABLE_LIMIT, queryRows),
+  ]);
+
   return (
-    <div className="mx-auto max-w-3xl px-5 py-4">
-      <div className="mb-4 flex items-center justify-between">
-        <h1 className="font-display text-[19px] font-semibold text-ink">Incidents</h1>
-        <span className="font-mono text-[11px] text-faint">1 in the last 7 days</span>
-      </div>
-
-      <section className="rounded-lg border border-line bg-surface">
-        {/* header */}
-        <div className="border-b border-line px-4 py-3.5" data-tour="incident">
-          <div className="flex flex-wrap items-center gap-2.5">
-            <span className="font-mono text-[12px] text-faint">{inc.id}</span>
-            <span
-              className="rounded-[3px] px-1.5 py-px font-mono text-[9.5px] tracking-wide"
-              style={{
-                color: "var(--color-ok)",
-                background: "color-mix(in srgb, var(--color-ok) 12%, transparent)",
-              }}
-            >
-              RESOLVED
-            </span>
-            <span className="font-mono text-[11px] text-faint">
-              {inc.started} → {inc.ended} · {inc.duration}
-            </span>
-          </div>
-          <h2 className="mt-1.5 text-[16px] font-semibold text-ink">{inc.title}</h2>
-          <p className="mt-1.5 text-[13px] leading-relaxed text-mid">{inc.summary}</p>
-          <p
-            className="mt-2.5 rounded-md border px-3 py-2 font-mono text-[11.5px] leading-relaxed"
-            style={{
-              color: "var(--color-warn)",
-              borderColor: "color-mix(in srgb, var(--color-warn) 30%, var(--color-line))",
-              background: "color-mix(in srgb, var(--color-warn) 6%, transparent)",
-            }}
-          >
-            impact · {inc.impact}
-          </p>
-          <IncidentRca incident={inc} />
-        </div>
-
-        {/* timeline */}
-        <div className="px-4 py-4">
-          <div className="relative ml-2 border-l border-line-strong pl-6">
-            {inc.timeline.map((e, i) => {
-              const s = kindStyle[e.kind];
-              const Icon = s.icon;
-              return (
-                <div key={i} className="relative pb-5 last:pb-0">
-                  <span
-                    className="absolute -left-[35px] flex h-[18px] w-[18px] items-center justify-center rounded-full border bg-surface"
-                    style={{ borderColor: s.color }}
-                  >
-                    <Icon className="h-2.5 w-2.5" style={{ color: s.color }} />
-                  </span>
-                  <div className="flex flex-wrap items-baseline gap-x-2.5">
-                    <span className="font-mono text-[11px] text-faint">{e.at}</span>
-                    <span className="font-mono text-[9px] uppercase tracking-widest" style={{ color: s.color }}>
-                      {s.label}
-                    </span>
-                  </div>
-                  <p className="mt-0.5 text-[13.5px] font-medium text-ink">{e.title}</p>
-                  {e.detail && (
-                    <p className="mt-0.5 text-[12.5px] leading-relaxed text-mid">{e.detail}</p>
-                  )}
-                  {e.link && (
-                    <Link
-                      href={e.link.href}
-                      className="mt-1 inline-flex items-center gap-1 font-mono text-[11px] hover:underline"
-                      style={{ color: "var(--color-api)" }}
-                    >
-                      {e.link.label} <ArrowUpRight className="h-3 w-3" />
-                    </Link>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      </section>
-
-      {/* A CAPABILITY sentence, not story data: D208 lets the demo invent the
-          timeline's CONTENT (the k8s row above is invented), but this line says
-          what the product reads. Cluster events are set only by
-          `mock/generate.ts` and by no adapter in `server/adapters.ts`, so they
-          are not in the list (S4.4 R3 coordinator ruling). */}
-      <p className="mt-3 font-mono text-[10.5px] leading-relaxed text-faint">
-        reconstructed automatically from pipelines, alerts, metrics and traces sharing the
-        incident window — the timeline is the same data you&apos;ve seen on every other screen,
-        stitched.
-      </p>
-    </div>
+    <IncidentsLive
+      incidents={list.incidents}
+      total={list.total}
+      ongoing={list.ongoing}
+      promotable={promotable}
+      nowMs={nowMs}
+    />
   );
 }

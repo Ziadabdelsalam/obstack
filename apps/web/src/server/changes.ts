@@ -81,6 +81,50 @@ const LIST_SERVICE_DEPLOYS_SQL = `
    ORDER BY at DESC, id DESC
    LIMIT $3`;
 
+/**
+ * S7.4 (D530/D534): the incident timeline's CHANGES leg. This read lives here
+ * because this module owns `change_events`, and it carries the feed's
+ * projection unchanged — one table, one row shape, one mapping point.
+ *
+ * Half-open `[from, until)`: incident windows are ADJACENT, so a closed upper
+ * bound would let two back-to-back incidents both claim the event at the shared
+ * instant. ASC because a timeline reads FORWARD, `id` breaking the tie exactly
+ * as the feed's `id DESC` does. On `at` — the event's OWN time — like every
+ * other statement in this module.
+ *
+ * `$2`/`$3` are ISO-8601 instants carrying their zone (`…Z`), so Postgres
+ * parses them as UTC and no boundary depends on a server or runner zone (D179).
+ * The caller passes `cap + 1` and reads the probe row off the end (D536).
+ */
+const LIST_EVENTS_IN_WINDOW_SQL = `
+  SELECT ${COLUMNS}
+    FROM change_events
+   WHERE workspace_id = $1 AND at >= $2 AND at < $3
+   ORDER BY at, id
+   LIMIT $4`;
+
+/**
+ * S7.4 (D535): the lead-in band's OWN read, and the reason it is a second
+ * statement rather than a wider window on the first. An ASC-ordered leg with
+ * ONE cap lets the lead-in hour eat the entire budget: a workspace whose CI
+ * posts a deploy per service would render 50 PRE-incident changes and ZERO
+ * in-window ones — the inverse of the claim the leg exists to make. Two reads,
+ * two caps, and neither can starve the other.
+ *
+ * DESC is what makes the cap keep the changes NEAREST the incident; the CALLER
+ * reverses the rows in TS so the band still renders forward. `id DESC` mirrors
+ * the in-window read's `id` tie-break — without it, two changes at one instant
+ * on the cap boundary make WHICH of them survives a planner choice, so "the
+ * nearest N" would not be a reproducible set (S7.4 correction to D535's quoted
+ * SQL, which spelled `ORDER BY at DESC` alone).
+ */
+const LIST_EVENTS_IN_LEAD_IN_SQL = `
+  SELECT ${COLUMNS}
+    FROM change_events
+   WHERE workspace_id = $1 AND at >= $2 AND at < $3
+   ORDER BY at DESC, id DESC
+   LIMIT $4`;
+
 /** A limit is a positive integer or it is 1. */
 const clampLimit = (limit: number): number => Math.max(1, Math.floor(limit) || 1);
 
@@ -108,4 +152,51 @@ export async function listServiceDeploys(
 ): Promise<ServiceDeployRow[]> {
   const rows = await query<EventRow>(LIST_SERVICE_DEPLOYS_SQL, [workspaceId, service, clampLimit(limit)]);
   return rows.map(toDeploy);
+}
+
+/**
+ * The change events inside one incident's window, OLDEST first — the timeline's
+ * in-window changes leg (D530). Both bounds come from the caller: the stitcher
+ * samples ONE clock in TS and binds it to all three legs (D534), so this
+ * function reads no clock of its own and the statement holds no `now()`.
+ */
+export async function listChangeEventsInWindow(
+  workspaceId: string,
+  fromIso: string,
+  untilIso: string,
+  limit: number,
+  query: QueryRows,
+): Promise<ChangeEventRow[]> {
+  const rows = await query<EventRow>(LIST_EVENTS_IN_WINDOW_SQL, [
+    workspaceId,
+    fromIso,
+    untilIso,
+    clampLimit(limit),
+  ]);
+  return rows.map(toEvent);
+}
+
+/**
+ * The change events in the lead-in band before an incident started (D535),
+ * NEWEST first — the order the SQL uses to keep the rows nearest the incident
+ * under its own cap. The caller reverses them; this function does not, because
+ * in THIS order the cap+1'th probe row (D536) is the LAST element, which is
+ * where a caller's `slice(0, cap)` drops it. Reversed here it would be the
+ * FIRST element instead, so that same slice would keep the overflow row and
+ * throw away the change nearest the incident — the one row the band exists for.
+ */
+export async function listChangeEventsInLeadIn(
+  workspaceId: string,
+  fromIso: string,
+  untilIso: string,
+  limit: number,
+  query: QueryRows,
+): Promise<ChangeEventRow[]> {
+  const rows = await query<EventRow>(LIST_EVENTS_IN_LEAD_IN_SQL, [
+    workspaceId,
+    fromIso,
+    untilIso,
+    clampLimit(limit),
+  ]);
+  return rows.map(toEvent);
 }

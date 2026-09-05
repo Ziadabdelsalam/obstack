@@ -6,9 +6,16 @@ test("live-wired registry matches wired prefixes minus named exceptions", () => 
   assert.equal(isLiveWiredRoute("/app"), true);
   assert.equal(isLiveWiredRoute("/app/traces"), true);
   assert.equal(isLiveWiredRoute("/app/traces/3a55f0efeeb800e757fd61001b7cff2e"), true);
-  // The unwired control moved from /app/slos (wired, S7.3) to /app/incidents —
-  // the next M6 surface in line (S7.4), still badged today.
-  assert.equal(isLiveWiredRoute("/app/incidents"), false);
+  // The unwired control is this registry's own non-vacuity line: a route that
+  // is genuinely NOT wired, so the predicate is seen refusing something. It has
+  // rotated as M6 wired its surfaces — /app/alerts held it until S7.1 wired
+  // alerts, /app/slos until S7.3 wired slos, /app/incidents until S7.4 wired
+  // incidents (D522) — and it now sits on /app/pipelines, M7's opener, unwired
+  // past S7.5. Deliberately NOT /app/oncall, which S7.5 wires next sprint: a
+  // control that expires in one sprint has to be moved every sprint, and a
+  // move is a chance to forget. (/app/ask, below, is the e2e drive's SAMPLE
+  // positive control — a different job, and it stays where it is.)
+  assert.equal(isLiveWiredRoute("/app/pipelines"), false);
 });
 
 // S7.3 (D21/D514): slos reads the workspace's own objectives, measured by the
@@ -16,6 +23,22 @@ test("live-wired registry matches wired prefixes minus named exceptions", () => 
 test("/app/slos is live-wired, exactly and not as a subtree", () => {
   assert.equal(isLiveWiredRoute("/app/slos"), true);
   assert.equal(isLiveWiredRoute("/app/slos/anything"), false);
+});
+
+// S7.4 (D21/D522): the list reads this workspace's own `incidents` rows from
+// Postgres and an incident's page stitches its timeline over that workspace's
+// own alerts, changes and error traces, so the SAMPLE badge must be gone from
+// BOTH — registration, not the pages (S2.0 L1). Wired twice for the
+// `/app/dashboards` reason: the exact entry is the list, the trailing-slash
+// entry is one incident's own page under it, which is a different page. The
+// pair is not decorative — `startsWith("/app/incidents/")` is false for
+// `/app/incidents`, and an exact-only entry would badge the detail "SAMPLE
+// DATA" over the workspace's own data, the inverse lie D21 exists to prevent.
+// Drop either line and this goes red, which is exactly what `SampleDataBadge`
+// would then do on that URL.
+test("/app/incidents and one incident under it are live-wired", () => {
+  assert.equal(isLiveWiredRoute("/app/incidents"), true);
+  assert.equal(isLiveWiredRoute("/app/incidents/inc_0123456789abcdef"), true);
 });
 
 // S7.1 (D21/D367): alerts reads the workspace's own rules, evaluated events

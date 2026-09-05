@@ -1,6 +1,5 @@
 import { dataForSessionContext, dataMode } from "@/server/data";
-import { explainTrace, getExplain } from "@/server/explain";
-import { EXPLAIN_CONTENT_TYPE, encodeExplainEvent, type ExplainEvent } from "@/server/explain/contract";
+import { explainResponse, explainSubject, getExplain, oneEvent, overQuotaDetail } from "@/server/explain";
 import { spendExplainRun } from "@/server/explain/quota";
 import { queryRows } from "@/server/postgres";
 import { getSessionContext } from "@/server/session";
@@ -39,15 +38,15 @@ import { getSessionContext } from "@/server/session";
  * Nothing here logs the trace, the model's answer, or any credential: the only
  * lines this file writes name the workspace and the refusal, which is what the
  * S3.4 token-hygiene rule extends to Explain.
+ *
+ * S7.4 (D551): the frame writer (`explainResponse` + `oneEvent`) and the
+ * over-quota sentence (`overQuotaDetail`) were LIFTED into `server/explain/`
+ * because the incident RCA route is a second caller of both, and each has one
+ * writer by contract. The six lines that make up the order above — the mock
+ * guard, the 401, the scoped resource read, the `unavailable()` check, the
+ * spend, the over-quota log — are deliberately NOT lifted: that route copies
+ * them, so that the order stays readable in the file it is proven about.
  */
-
-/** Rendered to the user verbatim, and D206-safe: no refusal reads as an error line to the drive. */
-export function overQuotaDetail(quota: number): string {
-  return (
-    `This workspace has used all ${quota} Explain runs its plan includes this month, so no run was made. ` +
-    `The allowance resets at the start of next month; a larger plan raises it.`
-  );
-}
 
 export async function POST(
   _request: Request,
@@ -86,44 +85,5 @@ export async function POST(
     );
   }
 
-  return explainResponse(explainTrace(trace, provider));
-}
-
-async function* oneEvent(event: ExplainEvent): AsyncGenerator<ExplainEvent> {
-  yield event;
-}
-
-/**
- * The frame on the wire. Exported because it is the half of this route that can
- * be proven without a session and a Postgres behind it.
- *
- * A throw from the generator ends the stream WITHOUT a terminal event, which is
- * exactly what the contract says a failed run looks like — the panel reports a
- * truncated stream instead of rendering the deltas it did get as an answer. The
- * status line is long gone by then, so an error status is not available to us;
- * the error is logged here, where the run happened, and the caller learns it
- * from the missing terminal event.
- */
-export function explainResponse(events: AsyncGenerator<ExplainEvent>): Response {
-  const stream = new ReadableStream<Uint8Array>({
-    async pull(controller) {
-      try {
-        const { done, value } = await events.next();
-        if (done) return void controller.close();
-        controller.enqueue(new TextEncoder().encode(encodeExplainEvent(value)));
-      } catch (error) {
-        console.error("[explain] run failed mid-stream:", error);
-        controller.close();
-      }
-    },
-    cancel() {
-      // The reader went away — a closed tab, a cancelled fetch. Stop asking the
-      // provider for chunks nobody will read.
-      void events.return(undefined);
-    },
-  });
-
-  return new Response(stream, {
-    headers: { "content-type": EXPLAIN_CONTENT_TYPE, "cache-control": "no-store" },
-  });
+  return explainResponse(explainSubject({ kind: "trace", trace }, provider));
 }

@@ -133,3 +133,19 @@ export async function spendExplainRun(
   const [row] = await query<{ used: number }>(SPEND_SQL, [workspaceId, quota]);
   return row ? { allowed: true, quota, used: row.used } : { allowed: false, quota, used };
 }
+
+/**
+ * The over-quota refusal's own sentence (D551 lifted it here from the traces
+ * route). It interpolates the quota this module defines, and it must be ONE
+ * string across both routes that can refuse with it — a trace's Explain and an
+ * incident's RCA draw on the same counter (D555), so they owe the reader the
+ * same sentence. Rendered to the user verbatim, and D206-safe: no refusal reads
+ * as an error line to the e2e drive's log check. Quoted into `/docs/explain` by
+ * `lib/docs/mirror.test.ts`, which reads it from THIS file.
+ */
+export function overQuotaDetail(quota: number): string {
+  return (
+    `This workspace has used all ${quota} Explain runs its plan includes this month, so no run was made. ` +
+    `The allowance resets at the start of next month; a larger plan raises it.`
+  );
+}

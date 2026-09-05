@@ -425,3 +425,32 @@ func TestPostgresStatementsCarryTheirRules(t *testing.T) {
 		}
 	}
 }
+
+// S7.4 packet D528(i): `incidents` is NOT swept, and the absence is a DECISION
+// asserted here rather than an omission nobody checks (the D489 defect was a
+// retention half that was ruled, assigned to no task, and never verified). An
+// incident is neither telemetry nor a definition — a person creates it one at a
+// time, and its title, summary and impact are the only copy of something no
+// machine can re-derive — so the plan window must not delete an operator's
+// postmortem seven days later.
+//
+// This is its OWN function on purpose. TestPostgresStatementsCarryTheirRules
+// opens with `if len(pgDeletes) != 2 { t.Fatalf(...) }`, and t.Fatalf ABORTS
+// the function — so an assertion added inside it would stop running the moment
+// a third pgDeletes entry appeared, i.e. exactly in the case it exists to
+// catch. The raw metric_points precedent above works for the same reason.
+func TestIncidentsAreDeliberatelyNotSwept(t *testing.T) {
+	byTable := map[string]string{}
+	for _, d := range pgDeletes {
+		byTable[d.table] = d.sql
+		// Word-boundary guarded, the TestMetricsTablesCarryTheirRules idiom
+		// above: a bare Contains would fire on a future incidents_archive or
+		// an incidents_count column, and the assertion is about the TABLE.
+		if strings.Contains(d.sql, " incidents ") || strings.HasSuffix(strings.TrimSpace(d.sql), " incidents") {
+			t.Errorf("%s: the sweep statement names incidents — D528 rules incidents is NEVER swept, because an incident is authored by a person and its title, summary and impact are the only copy of something no machine can re-derive; sweeping it deletes an operator's postmortem at the plan window. Got: %s", d.table, d.sql)
+		}
+	}
+	if _, swept := byTable["incidents"]; swept {
+		t.Error("incidents is in the swept-table list — D528 rules it is NEVER swept: it is authored by a person, not produced by the workspace's machines, and nothing re-derives it. The fix is to remove the pgDeletes entry, not to relax this test; if the ruling is ever reversed, retention_test.go:415's len(pgDeletes) pin and retention.go's Help string move with it.")
+	}
+}

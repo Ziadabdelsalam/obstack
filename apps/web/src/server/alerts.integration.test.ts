@@ -9,6 +9,7 @@ import {
   deleteAlertRule,
   deleteNotificationChannel,
   listAlertEvents,
+  listAlertEventsInWindow,
   listAlertRules,
   listNotificationChannels,
   sendTestNotification,
@@ -324,4 +325,98 @@ test("dropping a workspace takes its channels, rules and events with it", { skip
   await queryRows(`DELETE FROM workspaces WHERE id = $1`, [doomed]);
   assert.equal(await ruleCount(doomed), 0);
   assert.equal(await channelCount(doomed), 0);
+});
+
+// ---- S7.4 D534: the half-open window, proven at the boundary by Postgres ----
+
+// The hermetic half (`alerts.test.ts`) can only assert that the statement SAYS
+// `>= $2 AND < $3`. Whether Postgres AGREES at the boundary row — whether an
+// event stamped at the exact instant the window ends is excluded and one at the
+// exact instant it starts is included — is a question only a real database can
+// answer, and D534's whole reason (two adjacent incidents must never both claim
+// the event at the shared instant) lives on that one row.
+
+const WINDOW_START = "2026-09-04T13:00:00.000Z";
+const WINDOW_END = "2026-09-04T13:30:00.000Z";
+
+/** An event straight into Postgres at an EXACT instant: `sendTestNotification`
+ *  stamps `created_at` with `now()`, which cannot land on a boundary on
+ *  purpose. `rule_id`/`channel_id` are nullable, so this needs neither. */
+async function seedEvent(workspaceId: string, id: string, title: string, atIso: string): Promise<void> {
+  await queryRows(
+    `INSERT INTO alert_events (id, workspace_id, severity, title, detail, created_at)
+     VALUES ($1, $2, 'warning', $3, '', $4)`,
+    [id, workspaceId, title, atIso],
+  );
+}
+
+const iso = (base: string, deltaMs: number): string => new Date(Date.parse(base) + deltaMs).toISOString();
+
+test("the alerts leg includes the event AT the window's start and excludes the one AT its end", { skip }, async () => {
+  await withWorkspacePair(async (a, b) => {
+    const tag = randomBytes(4).toString("hex");
+    await seedEvent(a, `evt_${tag}0001`, "one ms before the start", iso(WINDOW_START, -1));
+    await seedEvent(a, `evt_${tag}0002`, "exactly at the start", WINDOW_START);
+    await seedEvent(a, `evt_${tag}0003`, "inside", iso(WINDOW_START, 15 * 60 * 1000));
+    await seedEvent(a, `evt_${tag}0004`, "exactly at the end", WINDOW_END);
+    await seedEvent(a, `evt_${tag}0005`, "one ms after the end", iso(WINDOW_END, 1));
+    // The other tenant's event at the identical instant (D7/D11): same window,
+    // different workspace, and the leg must not see it.
+    await seedEvent(b, `evt_${tag}0006`, "the other tenant's", WINDOW_START);
+
+    const inWindow = await listAlertEventsInWindow(a, WINDOW_START, WINDOW_END, 51, queryRows);
+    assert.deepEqual(
+      inWindow.map((e) => e.title),
+      ["exactly at the start", "inside"],
+      "the half-open window must take the row at `start` and leave the row at `end` to the next incident",
+    );
+    assert.deepEqual(inWindow.map((e) => e.at), [WINDOW_START, iso(WINDOW_START, 15 * 60 * 1000)]);
+
+    // Neither exclusion is vacuous: both excluded rows are really there, and it
+    // is the BOUND that leaves them out, not a missing seed.
+    const nudgedEnd = await listAlertEventsInWindow(a, WINDOW_START, iso(WINDOW_END, 1), 51, queryRows);
+    assert.deepEqual(nudgedEnd.map((e) => e.title), ["exactly at the start", "inside", "exactly at the end"]);
+    const nudgedStart = await listAlertEventsInWindow(a, iso(WINDOW_START, -1), WINDOW_END, 51, queryRows);
+    assert.deepEqual(nudgedStart.map((e) => e.title), ["one ms before the start", "exactly at the start", "inside"]);
+    const nudgedForward = await listAlertEventsInWindow(a, iso(WINDOW_START, 1), WINDOW_END, 51, queryRows);
+    assert.deepEqual(nudgedForward.map((e) => e.title), ["inside"], "`>=` must be an inclusive lower bound and nothing wider");
+
+    assert.deepEqual(
+      (await listAlertEventsInWindow(b, WINDOW_START, WINDOW_END, 51, queryRows)).map((e) => e.title),
+      ["the other tenant's"],
+      "the window read leaked across workspaces",
+    );
+  });
+});
+
+test("the alerts leg reads FORWARD, breaks ties on id, and its limit keeps the OLDEST rows", { skip }, async () => {
+  await withWorkspacePair(async (a) => {
+    const tag = randomBytes(4).toString("hex");
+    const tie = iso(WINDOW_START, 10 * 60 * 1000);
+    await seedEvent(a, `evt_${tag}0003`, "third", iso(WINDOW_START, 20 * 60 * 1000));
+    await seedEvent(a, `evt_${tag}0002`, "second", tie);
+    await seedEvent(a, `evt_${tag}0001`, "first", iso(WINDOW_START, 5 * 60 * 1000));
+    // Same instant as "second", a LOWER id: the tie-break, not insertion order.
+    await seedEvent(a, `evt_${tag}0000`, "second's tie", tie);
+
+    const rows = await listAlertEventsInWindow(a, WINDOW_START, WINDOW_END, 51, queryRows);
+    assert.deepEqual(rows.map((e) => e.title), ["first", "second's tie", "second", "third"]);
+
+    // A timeline leg is read `LIMIT cap + 1` and the probe row is the LAST one,
+    // so the cap must keep the EARLIEST rows — the opposite of the feed's.
+    assert.deepEqual(
+      (await listAlertEventsInWindow(a, WINDOW_START, WINDOW_END, 2, queryRows)).map((e) => e.title),
+      ["first", "second's tie"],
+    );
+    // The same four rows through the FEED keep the newest two. Compared by
+    // INSTANT, not by title, and deliberately: the shipped feed statement is
+    // `ORDER BY e.created_at DESC` with NO tie-break, so which of the two rows
+    // at `tie` it returns is the planner's to choose (observed both ways on
+    // this Postgres). That is the defect the timeline leg's `, e.id` closes,
+    // and asserting a title here would have pinned the coin flip.
+    assert.deepEqual(
+      (await listAlertEvents(a, 2, queryRows)).map((e) => e.at),
+      [iso(WINDOW_START, 20 * 60 * 1000), tie],
+    );
+  });
 });

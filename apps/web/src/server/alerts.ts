@@ -283,6 +283,37 @@ const GET_EVENT_SQL = `
     LEFT JOIN slos s ON s.id = e.slo_id
    WHERE e.workspace_id = $1 AND e.id = $2`;
 
+/**
+ * S7.4 (D530/D534): the incident timeline's ALERTS leg. This read lives here
+ * because this module owns `alert_events` — a second module selecting from it
+ * would put two owners on one table's read shapes — and it carries the FEED's
+ * projection unchanged, so one table's rows have exactly one shape (pinned by
+ * `alerts.test.ts`, which compares the two statements' SELECT..JOIN prefixes).
+ *
+ * Half-open `[from, until)`: incident windows are ADJACENT, so a closed upper
+ * bound would let two back-to-back incidents both claim the event at the shared
+ * instant with no way to say which owned it. ASC because a timeline reads
+ * FORWARD; `e.id` breaks the tie so two events at one instant survive the cap
+ * in a stable order. The caller passes `cap + 1` and reads the probe row off
+ * the end (D536) — this read does no capping of its own beyond the limit it is
+ * handed.
+ *
+ * `$2`/`$3` are ISO-8601 instants that CARRY their zone (`…Z`): Postgres infers
+ * `timestamptz` from the comparison and parses them as UTC, so neither the
+ * database server's `TimeZone` nor the runner's local zone can move a boundary
+ * (the D179 trap). `alerts.integration.test.ts` proves the boundary against a
+ * real Postgres rather than against this comment.
+ */
+const LIST_EVENTS_IN_WINDOW_SQL = `
+  SELECT e.id, e.rule_id, r.name AS rule_name, e.slo_id, s.name AS slo_name,
+         e.severity, e.title, e.detail, e.link, e.delivery, e.created_at
+    FROM alert_events e
+    LEFT JOIN alert_rules r ON r.id = e.rule_id
+    LEFT JOIN slos s ON s.id = e.slo_id
+   WHERE e.workspace_id = $1 AND e.created_at >= $2 AND e.created_at < $3
+   ORDER BY e.created_at, e.id
+   LIMIT $4`;
+
 /** D488/D491: a test notification is a rule-less pending event that names its
  *  own channel at emit time — web performs NO egress, the Go deliverer picks
  *  this row up on its own ticker exactly as it would a rule-fired one. */
@@ -393,6 +424,14 @@ async function readBackChannel(workspaceId: string, id: string, query: QueryRows
   return toChannel(await readChannelRow(workspaceId, id, query));
 }
 
+/** A limit is a positive integer or it is 1 — the `changes.ts` rule, ONE
+ *  definition for the two reads in this module that take one. Extracted from
+ *  `listAlertEvents`, whose body spelled it inline: the S7.4 packet (D530) says
+ *  both timeline legs pass their limit "through the existing `clampLimit`", and
+ *  the existing one lived only in `changes.ts` — a second inline copy here
+ *  would have made the packet's sentence true of neither module. */
+const clampLimit = (limit: number): number => Math.max(1, Math.floor(limit) || 1);
+
 // ---- reads (packet §0) --------------------------------------------------------
 
 /** This workspace's rules, oldest first — the name breaks the tie (the
@@ -413,8 +452,33 @@ export async function listAlertEvents(
   limit: number,
   query: QueryRows,
 ): Promise<AlertEventRow[]> {
-  const n = Math.max(1, Math.floor(limit) || 1);
-  const rows = await query<EventRow>(LIST_EVENTS_SQL, [workspaceId, n]);
+  const rows = await query<EventRow>(LIST_EVENTS_SQL, [workspaceId, clampLimit(limit)]);
+  return rows.map(toEvent);
+}
+
+/**
+ * The alert events inside one incident's window, OLDEST first — the timeline's
+ * alerts leg (D530). The window is half-open `[fromIso, untilIso)` and both
+ * bounds come from the caller: the stitcher samples ONE clock in TS and binds
+ * it to all three legs (D534), so this function never reads a clock of its own
+ * and there is no `now()` in the statement it runs.
+ *
+ * The rows come back in the same `AlertEventRow` shape the feed returns, mapped
+ * at the same one point.
+ */
+export async function listAlertEventsInWindow(
+  workspaceId: string,
+  fromIso: string,
+  untilIso: string,
+  limit: number,
+  query: QueryRows,
+): Promise<AlertEventRow[]> {
+  const rows = await query<EventRow>(LIST_EVENTS_IN_WINDOW_SQL, [
+    workspaceId,
+    fromIso,
+    untilIso,
+    clampLimit(limit),
+  ]);
   return rows.map(toEvent);
 }
 

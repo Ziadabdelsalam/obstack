@@ -13,8 +13,11 @@ import "server-only";
  * nothing server-side, which is what keeps the exception narrow.
  */
 export { createExplainProvider, explainMode, getExplain } from "./client";
-export { explainTrace } from "./engine";
+export { explainSubject } from "./engine";
 export { NOT_CONFIGURED_DETAIL } from "./anthropic";
-export { fakeExplainDocument } from "./fake";
+export { NO_EVIDENCE_DETAIL } from "./incident-prompt";
+export { overQuotaDetail } from "./quota";
+export { explainResponse, oneEvent } from "./response";
+export { fakeExplainDocument, fakeIncidentDocument } from "./fake";
 export { ExplainFormatError } from "./types";
-export type { ExplainMode, ExplainPrompt, ExplainProvider } from "./types";
+export type { EvidenceReference, ExplainMode, ExplainPrompt, ExplainProvider, ExplainSubject, ReferenceIndex } from "./types";

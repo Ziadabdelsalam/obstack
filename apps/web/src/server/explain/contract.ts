@@ -25,14 +25,19 @@ import type { Explanation } from "@/lib/types";
 export const EXPLAIN_CONTENT_TYPE = "application/x-ndjson";
 
 /**
- * Why a run produced no explanation. Both are honest product outcomes, not
- * faults: `not-configured` is a deployment with no model behind it (D102 — the
- * surface says so rather than fabricating), `over-quota` is the plan's Explain
- * allowance spent for the month (D225). Their `detail` strings are rendered to
- * the user verbatim, and they are also logged on an authenticated path, so they
- * must not read as an error line to the e2e drive's log check (D206).
+ * Why a run produced no explanation. All three are honest product outcomes,
+ * not faults: `not-configured` is a deployment with no model behind it (D102 —
+ * the surface says so rather than fabricating), `over-quota` is the plan's
+ * Explain allowance spent for the month (D225), and `no-evidence` is an
+ * incident whose window holds no alert, change or trace to read (D558 — the
+ * RCA route refuses before it spends rather than bill for a cause a model would
+ * have to invent). Their `detail` strings are rendered to the user verbatim,
+ * and they are also logged on an authenticated path, so they must not read as
+ * an error line to the e2e drive's log check (D206). The panel never switches
+ * on `reason` — it renders `detail` — which is why a third member needed no
+ * panel change.
  */
-export type ExplainRefusalReason = "not-configured" | "over-quota";
+export type ExplainRefusalReason = "not-configured" | "over-quota" | "no-evidence";
 
 export type ExplainEvent =
   | { type: "delta"; text: string }

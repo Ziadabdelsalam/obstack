@@ -348,3 +348,39 @@ test("D324: the SLO surface no longer links here", () => {
     "the command palette must offer /status exactly once",
   );
 });
+
+// D547: the INCIDENTS surface takes its own guard, for a reason nothing else
+// has. `@/lib/docs/incidents.ts` IS this status page's notice loader (it is
+// what this file imports at the top), so an in-app incidents surface is the
+// single most tempting place in the product to offer "publish this to the
+// status page" — a capability that does not exist: the notices are hand-written
+// MDX under `content/status/incidents`, and nothing in the product writes them.
+// This is NOT the SLO test above grown by five files. That one is titled for
+// the SLO surface, and neither S7.1 (alerts) nor S7.2 (changes) extended it —
+// there is no per-flip ritual, and a guard taken by habit is a guard nobody
+// can explain when it fires. Same two needles as that test, for its reasons:
+// the literal href, and text a reader would SEE offering a status page (a JSX
+// comment is `{/* … */}`, so excluding braces from the text node separates a
+// comment from an offer).
+//
+// Five files: the page pair, the frozen mock body, and the two live bodies.
+// They are read with `readFileSync`, not gated on `existsSync`: a file that is
+// not there is a RED, not a skip. This guard was written before most of the
+// five existed and stayed red until they did — the correct state for a guard
+// on files that are about to be written, and an `existsSync` gate would also
+// let a renamed file walk out from under the sweep and leave it passing over
+// nothing.
+test("D547: the incidents surface never offers to publish to the status page", () => {
+  for (const file of [
+    "app/app/incidents/page.tsx",
+    "app/app/incidents/[id]/page.tsx",
+    "components/incidents/IncidentsMock.tsx",
+    "components/incidents/IncidentsLive.tsx",
+    "components/incidents/IncidentDetailLive.tsx",
+  ]) {
+    const source = read(file);
+    assert.equal(source.includes('"/status"'), false, `${file} links at /status`);
+    const offered = [...source.matchAll(/>([^<>{}]*status page[^<>{}]*)</gi)].map((m) => m[1].trim());
+    assert.deepEqual(offered, [], `${file} renders text offering a status page`);
+  }
+});

@@ -475,7 +475,7 @@ test("no docs page carries the mock billing tab's fiction", () => {
   );
 });
 
-test("the two Explain refusals are the strings the product actually renders", () => {
+test("the three Explain refusals are the strings the product actually renders", () => {
   const notConfigured = repo("apps/web/src/server/explain/anthropic.ts");
   const start = notConfigured.indexOf("export const NOT_CONFIGURED_DETAIL =");
   assert.ok(start > 0, "NOT_CONFIGURED_DETAIL moved");
@@ -491,12 +491,16 @@ test("the two Explain refusals are the strings the product actually renders", ()
     "/docs/explain quotes a not-configured refusal the product does not send",
   );
 
-  const route = repo("apps/web/src/app/app/traces/[id]/explain/route.ts");
-  const quotaStart = route.indexOf("export function overQuotaDetail");
+  // The quota's own sentence lives with the quota since S7.4 (D551 lifted it
+  // out of the traces route because the incident RCA route refuses with the
+  // same words). Moving the function before this path was edited turned this
+  // line red, which is how the path is known to be read rather than believed.
+  const quotaModule = repo("apps/web/src/server/explain/quota.ts");
+  const quotaStart = quotaModule.indexOf("export function overQuotaDetail");
   assert.ok(quotaStart > 0, "overQuotaDetail moved");
   const template = flat(
-    route
-      .slice(quotaStart, route.indexOf("\n}", quotaStart))
+    quotaModule
+      .slice(quotaStart, quotaModule.indexOf("\n}", quotaStart))
       .split("`")
       .filter((_, i) => i % 2 === 1)
       .join(""),
@@ -504,6 +508,40 @@ test("the two Explain refusals are the strings the product actually renders", ()
   assert.ok(
     prose(pages.explain).includes(template),
     "/docs/explain quotes an over-quota refusal the product does not send",
+  );
+
+  // The third refusal (D558): an incident whose window holds nothing to read.
+  // Read from the swept directory's prompt module, where it lives so the D206
+  // wording mirror reads it too.
+  const noEvidence = repo("apps/web/src/server/explain/incident-prompt.ts");
+  const evidenceStart = noEvidence.indexOf("export const NO_EVIDENCE_DETAIL =");
+  assert.ok(evidenceStart > 0, "NO_EVIDENCE_DETAIL moved");
+  const evidenceDetail = flat(
+    noEvidence
+      .slice(evidenceStart, noEvidence.indexOf(";", evidenceStart))
+      .split('"')
+      .filter((_, i) => i % 2 === 1)
+      .join(""),
+  );
+  assert.ok(
+    prose(pages.explain).includes(evidenceDetail),
+    "/docs/explain quotes a no-evidence refusal the product does not send",
+  );
+});
+
+test("the docs state that an incident's RCA spends the same Explain allowance (D555)", () => {
+  // The one customer consequence of "same counter, no migration": a workspace
+  // that runs twenty RCAs has no Explain runs left for traces that month. Said
+  // once in the docs, inside the section about metering — not as a footnote
+  // somewhere a reader of that section would never see.
+  const start = pages.explain.indexOf("## Runs are metered");
+  const end = pages.explain.indexOf("## The three refusals");
+  assert.ok(start > 0 && end > start, "/docs/explain lost its metering or refusals section");
+  assert.ok(
+    flat(pages.explain.slice(start, end)).includes(
+      "An incident's root-cause analysis is an Explain run too, counted against the same monthly allowance.",
+    ),
+    "/docs/explain's metering section no longer says an RCA draws on the same allowance",
   );
 });
 

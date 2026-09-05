@@ -99,7 +99,7 @@ export const UNREACHABLE_DETAIL =
  * the render, not a progress bar around one.
  */
 export async function runExplain(
-  traceId: string,
+  url: string,
   signal: AbortSignal,
   onState: (run: ExplainRun) => void,
 ): Promise<ExplainRun> {
@@ -107,11 +107,12 @@ export async function runExplain(
   let response: Response;
   try {
     // A run is a spend, so it is a POST and it is never retried on our side
-    // (D189/D227).
-    response = await fetch(`/app/traces/${encodeURIComponent(traceId)}/explain`, {
-      method: "POST",
-      signal,
-    });
+    // (D189/D227). The URL is the caller's (S7.4, D552): this panel posts to
+    // `/app/traces/<id>/explain` and the incident panel to
+    // `/app/incidents/<id>/rca`, and the fold from the frame to a phase is the
+    // same for both — which is why this function is exported and takes a url
+    // rather than a trace id.
+    response = await fetch(url, { method: "POST", signal });
   } catch {
     return { phase: "unreachable" };
   }
@@ -171,7 +172,7 @@ export function ExplainPanel({
     // The abort is the "the reader went away" half of the route's `cancel()`: a
     // closed panel stops asking the provider for chunks.
     const abort = new AbortController();
-    void runExplain(traceId, abort.signal, setRun).then((final) => {
+    void runExplain(`/app/traces/${encodeURIComponent(traceId)}/explain`, abort.signal, setRun).then((final) => {
       if (abort.signal.aborted) return;
       setRun(final);
       onFinished(final);

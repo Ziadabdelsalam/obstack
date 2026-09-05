@@ -1,6 +1,6 @@
 import "server-only";
-import type { Explanation, Trace } from "@/lib/types";
-import { ExplainFormatError } from "./types";
+import type { Explanation } from "@/lib/types";
+import { ExplainFormatError, type ReferenceIndex } from "./types";
 
 /**
  * The model's answer, turned into an `Explanation` we are willing to render.
@@ -14,15 +14,23 @@ import { ExplainFormatError } from "./types";
  *     HEADLINE: one sentence
  *     WHERE: the layer/service the failure happened in
  *     CAUSE: what actually went wrong
- *     EVIDENCE: <span or log id, or -> | label | detail
+ *     EVIDENCE: <an id the subject holds, or -> | label | detail
  *     SUGGESTION: what to do next
  *
+ * ONE format for both subjects (D552): an incident's RCA is the same five
+ * labels, the same separator, the same parse and the same error class as a
+ * trace's Explain. There is no second label set and no second validator — a
+ * sweep in `explain.test.ts` asserts this file holds the only `LABELS` table.
+ *
  * TRUST BOUNDARY (D102): every id the model writes is checked against the ids
- * this trace actually contains. A model that invents a span id would otherwise
- * put a link in the product that goes nowhere — worse than no link, because it
- * looks like a fact we hold. An unrecognised id is DROPPED and the drop is
- * stated on the evidence line itself, so the user reads "we could not stand
- * behind this reference" instead of silently getting an unlinked line.
+ * the subject actually contains — the `ReferenceIndex` `subject.ts` built from
+ * the subject's own rows, the ones the page renders (D553). A model that
+ * invents a span id or
+ * an `evt_` id would otherwise put a link in the product that goes nowhere —
+ * worse than no link, because it looks like a fact we hold. An unrecognised id
+ * is DROPPED and the drop is stated on the evidence line itself, so the user
+ * reads "we could not stand behind this reference" instead of silently getting
+ * an unlinked line.
  *
  * THE SERVER LOG IS A TRUST BOUNDARY TOO (D248): model-supplied content never
  * enters the server log at any level. There is no level that is safe to write
@@ -49,9 +57,18 @@ export const EVIDENCE_SEPARATOR = "|";
 /** No reference for this line — the model saying so, rather than reaching for an id. */
 export const NO_REFERENCE = "-";
 
+/**
+ * How the trace subject is named in the dropped-reference note — the DEFAULT
+ * below, and `traceReferences`' own name for itself, one definition. The string
+ * the note emits for a trace is pinned by `deploy/compose/e2e-drive.mjs`
+ * (`"is not in this trace"`), so the default is what keeps the trace path
+ * byte-identical now that the note can name a second subject.
+ */
+export const TRACE_SUBJECT = "this trace";
+
 /** How a dropped reference reads to the person looking at it. */
-export function droppedReferenceNote(reference: string): string {
-  return `(reference ${reference} is not in this trace, so it is not linked)`;
+export function droppedReferenceNote(reference: string, subject: string = TRACE_SUBJECT): string {
+  return `(reference ${reference} is not in ${subject}, so it is not linked)`;
 }
 
 /**
@@ -63,10 +80,7 @@ function safeReference(raw: string): string {
   return JSON.stringify(raw.replace(/[\u0000-\u001f\u007f]+/g, " ").slice(0, 64));
 }
 
-export function parseExplanation(raw: string, trace: Trace): Explanation {
-  const spanIds = new Set(trace.spans.map((span) => span.id));
-  const logIds = new Set(trace.logs.map((log) => log.id));
-
+export function parseExplanation(raw: string, refs: ReferenceIndex): Explanation {
   const fields = new Map<string, string>();
   const evidence: Explanation["evidence"] = [];
   /** The references we refused to link — only how many of them reaches the log. */
@@ -83,7 +97,7 @@ export function parseExplanation(raw: string, trace: Trace): Explanation {
     if (!match) continue;
     const [, label, value] = match;
     if (label === LABELS.evidence) {
-      const item = parseEvidence(value, spanIds, logIds, dropped);
+      const item = parseEvidence(value, refs, dropped);
       if (item) evidence.push(item);
     } else if (value.trim()) {
       // First occurrence wins: a model that restates a label has changed its
@@ -113,7 +127,7 @@ export function parseExplanation(raw: string, trace: Trace): Explanation {
     // Static wording plus a count we computed — the references themselves are
     // the model's words and never reach the log at all (D248); the reader sees
     // each one in the panel, on the evidence line it was dropped from.
-    console.warn("[explain] dropped evidence references this trace does not contain:", dropped.length);
+    console.warn("[explain] dropped evidence references the subject does not contain:", dropped.length);
   }
 
   return { headline, failedWhere, rootCause, evidence, suggestion };
@@ -121,8 +135,7 @@ export function parseExplanation(raw: string, trace: Trace): Explanation {
 
 function parseEvidence(
   value: string,
-  spanIds: Set<string>,
-  logIds: Set<string>,
+  refs: ReferenceIndex,
   dropped: string[],
 ): Explanation["evidence"][number] | null {
   const parts = value.split(EVIDENCE_SEPARATOR);
@@ -135,10 +148,12 @@ function parseEvidence(
   if (!label || !detail) return null;
 
   if (!reference || reference === NO_REFERENCE) return { label, detail };
-  if (spanIds.has(reference)) return { label, detail, spanId: reference };
-  if (logIds.has(reference)) return { label, detail, logRef: reference };
+  // The allowlist decides both WHETHER the id links and WHICH key carries it:
+  // the reference is spread in whole, so exactly one of the four keys is set.
+  const found = refs.refs.get(reference);
+  if (found) return { label, detail, ...found };
 
   const quoted = safeReference(reference);
   dropped.push(quoted);
-  return { label, detail: `${detail} ${droppedReferenceNote(quoted)}` };
+  return { label, detail: `${detail} ${droppedReferenceNote(quoted, refs.subject)}` };
 }
