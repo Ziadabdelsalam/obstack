@@ -90,6 +90,14 @@ on:
   pull_request:
     branches: [master]
   workflow_dispatch:
+    inputs:
+      # S8.1 D662: the MCP arm's RED, proven on the runner — dispatch with this
+      # on and the drive withholds the whole arm, so its failure count must be
+      # exactly the arm's check count. Empty on every pull_request run.
+      red_withhold_mcp:
+        description: "Set to 1 to withhold the MCP arm (RED_WITHHOLD_MCP)"
+        required: false
+        default: ""
 
 concurrency:
   group: e2e-${{ github.head_ref || github.ref }}
@@ -181,6 +189,7 @@ jobs:
         # per step because `runner` is not a context a job-level `env` can see.
         env:
           OUT_DIR: ${{ runner.temp }}/e2e-out
+          RED_WITHHOLD_MCP: ${{ inputs.red_withhold_mcp }}
         run: node deploy/compose/e2e-drive.mjs
 
       - name: Diagnose on failure

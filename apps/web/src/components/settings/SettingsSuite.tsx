@@ -575,18 +575,21 @@ function LiveKeysTab({ live }: { live: LiveSettings }) {
               form, so the demo's bytes do not move. `ingest` is selected by
               default: the drive's key step and every pre-0014 habit keep
               issuing what they always issued. */}
-          <select
-            name="scope"
-            aria-label="Key scope"
-            defaultValue={DEFAULT_API_KEY_SCOPE}
-            className="rounded-md border border-line bg-raised px-2 py-1.5 text-[12.5px] text-mid focus:border-line-strong focus:outline-none"
-          >
-            {API_KEY_SCOPES.map((scope) => (
-              <option key={scope} value={scope}>
-                {API_KEY_SCOPE_LABELS[scope]}
-              </option>
-            ))}
-          </select>
+          <label className="flex items-center gap-1.5 font-mono text-[10.5px] text-faint">
+            scope
+            <select
+              name="scope"
+              aria-label="Key scope"
+              defaultValue={DEFAULT_API_KEY_SCOPE}
+              className="rounded-md border border-line bg-raised px-2 py-1.5 font-sans text-[12.5px] text-mid focus:border-line-strong focus:outline-none"
+            >
+              {API_KEY_SCOPES.map((scope) => (
+                <option key={scope} value={scope}>
+                  {API_KEY_SCOPE_LABELS[scope]}
+                </option>
+              ))}
+            </select>
+          </label>
           <input
             name="name"
             required
