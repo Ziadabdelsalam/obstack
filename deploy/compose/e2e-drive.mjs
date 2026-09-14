@@ -4248,6 +4248,11 @@ try {
   const cannotMintSentence = /MCP_CANNOT_MINT_SENTENCE =\s*"([^"]+)"/.exec(mcpTypesSource)?.[1] ?? null;
   const rateLimitMax = Number(/MCP_RATE_LIMIT = \{ max: (\d+)/.exec(mcpTypesSource)?.[1] ?? 0);
   const mcpText = (r) => r?.content?.[0]?.text ?? "";
+  // OTLP/JSON trace ids are 16 bytes as 32 hex characters: a tag that is not hex
+  // is a decode error at ingest (a 400 and a droppedDecode, measured on the
+  // first green attempt), so every id this arm exports is an md5 of its label.
+  const mcpTraceIdFor = (label) => createHash("md5").update(`${RUN}:mcp:${label}`).digest("hex");
+  const mintedTraceId = mcpTraceIdFor("minted");
   const mcpClientFor = async (token) => {
     const transport = new StreamableHTTPClientTransport(new URL(MCP_ENDPOINT), {
       requestInit: { headers: { authorization: `Bearer ${token}` } },
@@ -4289,7 +4294,8 @@ try {
   let pgSloIds = null;
   let mcpChangeIds = null;
   let pgChangeIds = null;
-  let bobTraceText = null;
+  let bobSeedCopy = { ok: null, hisLabel: null, herLabel: null };
+  let bobMintedText = null;
   let bobIncidentTotal = null;
   let bobOwnIncidents = null;
   let bobSeesAlice = null;
@@ -4303,6 +4309,7 @@ try {
   let mintedAtMcp = null;
   let mintedExportStatus = null;
   let mcpArrival = { minted: null, other: null };
+  let mintedResolves = null;
   if (!process.env.RED_WITHHOLD_MCP) {
     const aliceRead = await issueScopedKey(alice, `${ACTORS.alice.label}-agent-read`, "read");
     const aliceSetup = await issueScopedKey(alice, `${ACTORS.alice.label}-agent-setup`, "setup");
@@ -4352,7 +4359,12 @@ try {
     // bob, the same ids: the not-found sentence, and only his own rows.
     const cb = await mcpClientFor(bobRead);
     try {
-      bobTraceText = mcpText(await cb.callTool({ name: "get_trace", arguments: { id: PROMPT_TRACE } }));
+      // The seeder plants the SAME trace ids in both tenants on purpose (the
+      // same id in two workspaces is two traces): bob's read of the shared id
+      // must be HIS copy — his label, never hers — not a not-found.
+      const seedCopy = await cb.callTool({ name: "get_trace", arguments: { id: PROMPT_TRACE } });
+      const seedRoot = seedCopy.structuredContent?.rootName ?? "";
+      bobSeedCopy = { ok: seedCopy.isError !== true, hisLabel: seedRoot.includes(ACTORS.bob.label), herLabel: seedRoot.includes(ACTORS.alice.label) };
       const his = (await cb.callTool({ name: "list_incidents", arguments: {} })).structuredContent ?? {};
       bobIncidentTotal = his.total ?? null;
       bobSeesAlice = (his.incidents ?? []).some((i) => i.id === historicalId || i.id === promotedId);
@@ -4364,8 +4376,8 @@ try {
     // The two doors (D659): the ingest key at /mcp, the agent keys at ingest.
     const ingestAtMcp = await mcpRaw({ authorization: `Bearer ${token}` });
     ingestKeyAtMcp = { status: ingestAtMcp.status, challenge: ingestAtMcp.headers.get("www-authenticate") };
-    readKeyAtIngest = (await otlp("traces", aliceRead, tracesExport([spanOf(`mcp${RUN}read`, "agent-key-at-ingest")]))).status;
-    setupKeyAtIngest = (await otlp("traces", aliceSetup, tracesExport([spanOf(`mcp${RUN}setup`, "agent-key-at-ingest")]))).status;
+    readKeyAtIngest = (await otlp("traces", aliceRead, tracesExport([spanOf(mcpTraceIdFor("read-at-ingest"), "agent-key-at-ingest")]))).status;
+    setupKeyAtIngest = (await otlp("traces", aliceSetup, tracesExport([spanOf(mcpTraceIdFor("setup-at-ingest"), "agent-key-at-ingest")]))).status;
     const anon = await mcpRaw({});
     unauthAtMcp = { status: anon.status, challenge: anon.headers.get("www-authenticate") };
 
@@ -4387,7 +4399,7 @@ try {
       };
       if (minted.token) {
         mintedAtMcp = (await mcpRaw({ authorization: `Bearer ${minted.token}` })).status;
-        mintedExportStatus = (await otlp("traces", minted.token, tracesExport([spanOf(`mcp${RUN}minted`, "minted-key-export")]))).status;
+        mintedExportStatus = (await otlp("traces", minted.token, tracesExport([spanOf(mintedTraceId, "minted-key-export")]))).status;
         // The arrival flip for THAT key alone (D667): ingest writes the health
         // row on its flush; a bounded settle, then the read the agent would make.
         const readKeyRow = await pgOne(`SELECT id FROM api_keys WHERE workspace_id = $1 AND prefix = $2`, [alice.workspaceId, aliceRead.slice(0, 12)]);
@@ -4395,8 +4407,21 @@ try {
         let mintedArrival = null;
         while (Date.now() < deadline) {
           mintedArrival = (await cs.callTool({ name: "check_arrival", arguments: { keyId: body.key.id } })).structuredContent ?? null;
-          if (mintedArrival?.arrived) break;
+          if (mintedArrival?.arrived) {
+            // Arrived, and readable: the trace the minted key exported resolves
+            // for her (D661's "get_trace resolves the arrived trace").
+            mintedResolves = (await cs.callTool({ name: "get_trace", arguments: { id: mintedTraceId } })).isError !== true;
+            if (mintedResolves) break;
+          }
           await new Promise((r) => setTimeout(r, 1_000));
+        }
+        // The cross-tenant probe on an id only SHE holds: bob's read key gets
+        // the not-found sentence for the trace her minted key just exported.
+        const cbAgain = await mcpClientFor(bobRead);
+        try {
+          bobMintedText = mcpText(await cbAgain.callTool({ name: "get_trace", arguments: { id: mintedTraceId } }));
+        } finally {
+          await cbAgain.close();
         }
         const otherArrival = readKeyRow ? (await cs.callTool({ name: "check_arrival", arguments: { keyId: readKeyRow.id } })).structuredContent ?? null : null;
         mcpArrival = { minted: mintedArrival, other: otherArrival };
@@ -4445,12 +4470,15 @@ try {
     `tool ${mcpChangeIds?.length} · store ${pgChangeIds?.length}`,
   );
   check(
-    "bob's read key: her trace id is the not-found sentence, and list_incidents is his own rows and none of hers",
-    bobTraceText === "no trace with this id in your workspace" &&
+    "bob's read key: the shared seed id is his own copy (his label, never hers), the trace only she holds is the not-found sentence, and list_incidents is his rows and none of hers",
+    bobSeedCopy.ok === true &&
+      bobSeedCopy.hisLabel === true &&
+      bobSeedCopy.herLabel === false &&
+      bobMintedText === "no trace with this id in your workspace" &&
       Number.isFinite(bobOwnIncidents) &&
       bobIncidentTotal === bobOwnIncidents &&
       bobSeesAlice === false,
-    `${JSON.stringify(bobTraceText)} · total ${bobIncidentTotal} vs ${bobOwnIncidents} · sees alice ${bobSeesAlice}`,
+    `seed ${JSON.stringify(bobSeedCopy)} · minted ${JSON.stringify(bobMintedText)} · total ${bobIncidentTotal} vs ${bobOwnIncidents} · sees alice ${bobSeesAlice}`,
   );
   check(
     "the two doors: her INGEST key at /mcp is a 401 with the challenge; her read and setup keys at /v1/traces are 401s",
@@ -4463,7 +4491,7 @@ try {
     JSON.stringify(unauthAtMcp),
   );
   check(
-    `the boundary: the ${rateLimitMax + 1}th call in the window is a 429 with Retry-After`,
+    `the boundary: call ${rateLimitMax + 1} in the window is a 429 with Retry-After`,
     rateLimitMax > 0 && boundary.status === 429 && boundary.retryAfter === "60",
     JSON.stringify(boundary),
   );
@@ -4483,13 +4511,14 @@ try {
     `${JSON.stringify({ ...minted, token: minted.token ? "…" : null })} · minted@mcp ${mintedAtMcp}`,
   );
   check(
-    "the minted key exports (200), check_arrival flips for it alone, and her read key's window is unmoved",
+    "the minted key exports (200), check_arrival flips for it alone, the exported trace resolves for her, and her read key's window is unmoved",
     mintedExportStatus === 200 &&
       mcpArrival.minted?.arrived === true &&
       mcpArrival.minted?.keys?.length === 1 &&
       mcpArrival.minted?.keys?.[0]?.accepted >= 1 &&
+      mintedResolves === true &&
       mcpArrival.other?.arrived === false,
-    `export ${mintedExportStatus} · minted ${JSON.stringify(mcpArrival.minted?.keys?.[0])} · other arrived ${mcpArrival.other?.arrived}`,
+    `export ${mintedExportStatus} · minted ${JSON.stringify(mcpArrival.minted?.keys?.[0])} · resolves ${mintedResolves} · other arrived ${mcpArrival.other?.arrived}`,
   );
   console.log(`   mcp arm: ${Math.round((Date.now() - mcpArmStartedAt) / 1000)}s of wall time`);
 
@@ -4688,25 +4717,38 @@ try {
     JSON.stringify(strangerWorkspaces.map((w) => w.id)),
   );
   const devKey = await pgOne(`SELECT prefix, workspace_id, revoked_at FROM api_keys WHERE id = 'key_dev_local'`);
-  const aliceKeys = await pgRows(`SELECT prefix, revoked_at FROM api_keys WHERE workspace_id = $1`, [
+  const aliceKeys = await pgRows(`SELECT prefix, revoked_at, scope, name FROM api_keys WHERE workspace_id = $1`, [
     alice.workspaceId,
   ]);
-  const bobKeys = await pgRows(`SELECT id FROM api_keys WHERE workspace_id = $1`, [bob.workspaceId]);
+  const bobKeys = await pgRows(`SELECT id, scope FROM api_keys WHERE workspace_id = $1`, [bob.workspaceId]);
   const meteringRow = aliceKeys.find((k) => k.prefix === prefix);
   const quickstartRow = aliceKeys.find((k) => k.prefix === firstPrefix);
+  // S8.1: the MCP arm issued three more of alice's (read, setup, and the mint's
+  // `mcp:` ingest key) and bob's one read key; a run that withheld the arm
+  // reads the hook and expects the pre-S8.1 world, so the RED's failure count
+  // stays the arm's own (D662).
+  const mcpWithheld = Boolean(process.env.RED_WITHHOLD_MCP);
+  const aliceScopes = aliceKeys.map((k) => k.scope).sort().join(",");
+  const mintedRow = aliceKeys.find((k) => k.name.startsWith("mcp:"));
   check(
-    "api_keys holds the seeded dev row live on ws_demo, alice's two issued keys — the quickstart's still live, " +
-      "the settings one revoked — and nothing of bob's",
+    "api_keys holds the seeded dev row live on ws_demo, alice's keys — the quickstart's still live, the settings one revoked, " +
+      "and (S8.1) her read, setup and mcp:-minted ingest keys — and bob's one read key",
     devKey?.workspace_id === "ws_demo" &&
       devKey?.prefix === "ok_dev_local" &&
       devKey?.revoked_at === null &&
-      aliceKeys.length === 2 &&
+      aliceKeys.length === (mcpWithheld ? 2 : 5) &&
       meteringRow !== undefined &&
       meteringRow.revoked_at !== null &&
       quickstartRow !== undefined &&
       quickstartRow.revoked_at === null &&
-      bobKeys.length === 0,
-    `dev=${JSON.stringify(devKey)} alice=${JSON.stringify(aliceKeys)} bob=${bobKeys.length}`,
+      (mcpWithheld
+        ? bobKeys.length === 0
+        : aliceScopes === "ingest,ingest,ingest,read,setup" &&
+          mintedRow?.scope === "ingest" &&
+          mintedRow?.revoked_at === null &&
+          bobKeys.length === 1 &&
+          bobKeys[0].scope === "read"),
+    `dev=${JSON.stringify(devKey)} alice=${JSON.stringify(aliceKeys.map((k) => [k.prefix, k.scope, k.revoked_at ? "revoked" : "live"]))} bob=${JSON.stringify(bobKeys)}`,
   );
 
   // ------------------------------------------------- session, then none
