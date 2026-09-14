@@ -59,3 +59,14 @@ export interface ServiceDeployRow {
   title: string;
   link: ChangeLink | null;
 }
+
+/**
+ * The GitHub Actions deploy step (S7.2 T7's recipe; S8.1 D671): the ONE copy
+ * the MCP setup tool serves, pinned BYTE FOR BYTE to the fenced block on
+ * `content/docs/connectors/github-actions/index.mdx` by `change-types.test.ts`
+ * — the docs page keeps its fence (the e2e drive extracts and runs it), so
+ * this is the machine-coupled second copy the D499 pins already are, never a
+ * hand-typed third. Uses only `curl` and `jq`; the two secrets are the
+ * workflow's own variables, never a literal.
+ */
+export const GITHUB_ACTIONS_DEPLOY_STEP = "- name: Record the deploy in obstack\n  if: success()\n  env:\n    OBSTACK_INGEST_URL: ${{ vars.OBSTACK_INGEST_URL }}\n    OBSTACK_API_KEY: ${{ secrets.OBSTACK_API_KEY }}\n  run: |\n    curl -fsS -X POST \"$OBSTACK_INGEST_URL/v1/changes\" \\\n      -H \"Authorization: Bearer $OBSTACK_API_KEY\" \\\n      -H \"Content-Type: application/json\" \\\n      -d \"$(jq -cn --arg sha \"$(printf '%.7s' \"$GITHUB_SHA\")\" --arg who \"$GITHUB_ACTOR\" \\\n        --arg service \"checkout\" \\\n        --arg ext \"github:$GITHUB_REPOSITORY:run:$GITHUB_RUN_ID:$GITHUB_RUN_ATTEMPT\" \\\n        --arg run \"$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID\" \\\n        '{kind:\"deploy\", service:$service, ref:$sha, title:(\"deploy \" + $sha), who:$who,\n          source:\"github-actions\", external_id:$ext, link:{label:\"workflow run\", href:$run}}')\"";

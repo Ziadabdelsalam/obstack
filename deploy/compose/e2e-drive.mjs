@@ -180,6 +180,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import pg from "pg";
+import { Client as McpClient, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import {
   CARRIER_TOKEN,
   ALERT_DEAD_CHANNEL,
@@ -4226,6 +4227,311 @@ try {
   // over it re-cuts THIS arm, never the line.
   console.log(`   incidents arm: ${Math.round((Date.now() - armStartedAt) / 1000)}s of wall time`);
 
+
+  // ------------------------------------------------------------- S8.1: the MCP arm
+  // The endpoint through the front door (D659–D663): keys issued on the settings
+  // tab's own picker, a STOCK client of the protocol against the served app, the
+  // two doors, the cross-tenant probe, the unauth probe, the boundary, the
+  // setup mint, and the arrival flip for the minted key alone. Every fact the
+  // claims read is a withheld default first (D662): `RED_WITHHOLD_MCP` guards
+  // the WHOLE interaction block, so a red run's failure count is this arm's
+  // check count exactly and never a `must()`.
+  step("S8.1: the MCP endpoint — a stock client, two doors, the cross-tenant probe, the setup mint, the arrival flip (D659–D663)");
+  const mcpArmStartedAt = Date.now();
+  const MCP_ENDPOINT = `${BASE}/mcp`;
+  const mcpTypesSource = readFileSync(join(composeDir, "../../apps/web/src/lib/mcp-types.ts"), "utf8");
+  // The registry, read off the file the server registers from (the D565 idiom):
+  // a tool added there and not served is a red line, not a comment.
+  const registryStartAt = mcpTypesSource.indexOf("export const MCP_TOOLS");
+  const mcpRegistryLiteral = mcpTypesSource.slice(registryStartAt, mcpTypesSource.indexOf("];", registryStartAt));
+  const registryToolNames = [...mcpRegistryLiteral.matchAll(/name: "([a-z_]+)"/g)].map((m) => m[1]);
+  const cannotMintSentence = /MCP_CANNOT_MINT_SENTENCE =\s*"([^"]+)"/.exec(mcpTypesSource)?.[1] ?? null;
+  const rateLimitMax = Number(/MCP_RATE_LIMIT = \{ max: (\d+)/.exec(mcpTypesSource)?.[1] ?? 0);
+  const mcpText = (r) => r?.content?.[0]?.text ?? "";
+  // OTLP/JSON trace ids are 16 bytes as 32 hex characters: a tag that is not hex
+  // is a decode error at ingest (a 400 and a droppedDecode, measured on the
+  // first green attempt), so every id this arm exports is an md5 of its label.
+  const mcpTraceIdFor = (label) => createHash("md5").update(`${RUN}:mcp:${label}`).digest("hex");
+  const mintedTraceId = mcpTraceIdFor("minted");
+  const mcpClientFor = async (token) => {
+    const transport = new StreamableHTTPClientTransport(new URL(MCP_ENDPOINT), {
+      requestInit: { headers: { authorization: `Bearer ${token}` } },
+    });
+    const client = new McpClient({ name: "e2e-drive", version: RUN });
+    await client.connect(transport);
+    return client;
+  };
+  const mcpRaw = async (headers, body) =>
+    fetch(MCP_ENDPOINT, {
+      method: "POST",
+      headers: { "content-type": "application/json", accept: "application/json, text/event-stream", ...headers },
+      body: JSON.stringify(body ?? { jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "e2e-drive", version: RUN } } }),
+    });
+  /** A key of one scope, issued through the settings tab's own picker and captured the way alice's ingest key was (the D98 "shown once" path). */
+  const issueScopedKey = async (browser, name, scope) => {
+    await openTab(browser, "API keys", `document.querySelector("main")?.textContent.includes("api keys · ")`);
+    must((await browser.evaluate(choose("scope", scope))) === scope, `${browser.label}: the scope picker did not take ${scope}`);
+    must((await browser.evaluate(type("Key name", name))) === name, `${browser.label}: the API keys tab has no name field`);
+    must(await browser.evaluate(clickText("Create key")), `${browser.label}: the API keys tab has no create button`);
+    must(
+      await browser.waitFor(`document.querySelector("main")?.textContent.includes("copy it now")`, 20_000),
+      `${browser.label}: the shown-once banner never appeared for the ${scope} key`,
+    );
+    const shown = (await browser.evaluate(SETTINGS)).token ?? "";
+    must(/^ok_live_[0-9a-f]{64}$/.test(shown), `${browser.label}: no ${scope} token in the banner`);
+    must(await browser.evaluate(clickLabel("Dismiss")), `${browser.label}: the banner has no dismiss control`);
+    return shown;
+  };
+  // ---- withheld defaults (D662) ----
+  let mcpPageFacts = { status: null, endpoint: false, readOnly: false, toolsLine: false };
+  let mcpListedTools = [];
+  let mcpTraceSpans = null;
+  let mcpTraceRecount = null;
+  let mcpSearch = { total: null, ids: [] };
+  let mcpIncident = { id: null, retentionDays: null, kinds: null };
+  let planRetentionDays = null;
+  let mcpSloIds = null;
+  let pgSloIds = null;
+  let mcpChangeIds = null;
+  let pgChangeIds = null;
+  let bobSeedCopy = { ok: null, hisLabel: null, herLabel: null };
+  let crossTenantMintedText = null;
+  let bobIncidentTotal = null;
+  let bobOwnIncidents = null;
+  let bobSeesAlice = null;
+  let ingestKeyAtMcp = { status: null, challenge: null };
+  let readKeyAtIngest = null;
+  let setupKeyAtIngest = null;
+  let unauthAtMcp = { status: null, challenge: null };
+  let boundary = { status: null, retryAfter: null };
+  let readMintText = null;
+  let minted = { token: null, scope: null, name: null, row: null };
+  let mintedAtMcp = null;
+  let mintedExportStatus = null;
+  let mcpArrival = { minted: null, other: null };
+  let mintedResolves = null;
+  if (!process.env.RED_WITHHOLD_MCP) {
+    const aliceRead = await issueScopedKey(alice, `${ACTORS.alice.label}-agent-read`, "read");
+    const aliceSetup = await issueScopedKey(alice, `${ACTORS.alice.label}-agent-setup`, "setup");
+    const bobRead = await issueScopedKey(bob, `${ACTORS.bob.label}-agent-read`, "read");
+    // The mint/export/arrival leg is BOB's: by this point in the drive alice is
+    // over her event quota on purpose (the metering arm spent it, D566's
+    // fixture), so a span exported into HER workspace is head-sampled away —
+    // `droppedQuota: 1, accepted: 0`, measured on the third green attempt, the
+    // product's honest answer. His workspace is under quota.
+    const bobSetup = await issueScopedKey(bob, `${ACTORS.bob.label}-agent-setup`, "setup");
+
+    // The page, live: the served address, the tag, the registry's count.
+    const mcpPage = await pageFor(alice, "/app/mcp");
+    mcpPageFacts = {
+      status: mcpPage.status,
+      endpoint: mcpPage.html.includes("/mcp"),
+      readOnly: mcpPage.html.includes("READ-ONLY"),
+      toolsLine: mcpPage.html.includes(`tools · ${registryToolNames.length}`),
+    };
+
+    // alice reads her own rows through a stock client.
+    const ca = await mcpClientFor(aliceRead);
+    try {
+      mcpListedTools = (await ca.listTools()).tools.map((t) => t.name);
+      const trace = await ca.callTool({ name: "get_trace", arguments: { id: PROMPT_TRACE } });
+      mcpTraceSpans = trace.structuredContent?.spanCount ?? null;
+      const found = await ca.callTool({ name: "query_traces", arguments: { q: SPAN_PROMPT_TOKEN } });
+      mcpSearch = { total: found.structuredContent?.total ?? null, ids: (found.structuredContent?.traces ?? []).map((t) => t.id) };
+      // Guarded, not assumed: under RED_WITHHOLD_INCIDENTS there is no historical
+      // incident, and a null id would be the SDK's invalid-params error thrown
+      // out of this block rather than a withheld default read by the claim.
+      if (historicalId) {
+        const inc = await ca.callTool({ name: "get_incident", arguments: { id: historicalId } });
+        const entries = inc.structuredContent?.timeline?.entries ?? [];
+        mcpIncident = {
+          id: inc.structuredContent?.incident?.id ?? null,
+          retentionDays: inc.structuredContent?.timeline?.retentionDays ?? null,
+          kinds: entries.map((e) => e.kind),
+        };
+      }
+      mcpSloIds = ((await ca.callTool({ name: "get_slo_status", arguments: {} })).structuredContent?.slos ?? []).map((s) => s.id).sort();
+      mcpChangeIds = ((await ca.callTool({ name: "list_changes", arguments: { limit: 200 } })).structuredContent?.changes ?? []).map((c) => c.id).sort();
+      readMintText = mcpText(await ca.callTool({ name: "issue_ingest_key", arguments: { name: "e2e-agent" } }));
+    } finally {
+      await ca.close();
+    }
+    // The drive's own readings (D71(b)): the store, not the tool, says what is true.
+    mcpTraceRecount = Number((await chRows(`SELECT count() AS n FROM obstack.spans WHERE workspace_id = '${alice.workspaceId}' AND trace_id = '${PROMPT_TRACE}'`))[0]?.n ?? NaN);
+    planRetentionDays = Number((await pgOne(`SELECT p.retention_days FROM plans p JOIN workspaces w ON p.id = coalesce((SELECT plan_id FROM workspace_plans wp WHERE wp.workspace_id = w.id), 'free') WHERE w.id = $1`, [alice.workspaceId]))?.retention_days ?? NaN);
+    pgSloIds = (await pgRows(`SELECT id FROM slos WHERE workspace_id = $1`, [alice.workspaceId])).map((r) => r.id).sort();
+    pgChangeIds = (await pgRows(`SELECT id FROM change_events WHERE workspace_id = $1`, [alice.workspaceId])).map((r) => r.id).sort();
+
+    // bob, the same ids: the not-found sentence, and only his own rows.
+    const cb = await mcpClientFor(bobRead);
+    try {
+      // The seeder plants the SAME trace ids in both tenants on purpose (the
+      // same id in two workspaces is two traces): bob's read of the shared id
+      // must be HIS copy — his label, never hers — not a not-found.
+      const seedCopy = await cb.callTool({ name: "get_trace", arguments: { id: PROMPT_TRACE } });
+      const seedRoot = seedCopy.structuredContent?.rootName ?? "";
+      bobSeedCopy = { ok: seedCopy.isError !== true, hisLabel: seedRoot.includes(ACTORS.bob.label), herLabel: seedRoot.includes(ACTORS.alice.label) };
+      const his = (await cb.callTool({ name: "list_incidents", arguments: {} })).structuredContent ?? {};
+      bobIncidentTotal = his.total ?? null;
+      bobSeesAlice = (his.incidents ?? []).some((i) => i.id === historicalId || i.id === promotedId);
+    } finally {
+      await cb.close();
+    }
+    bobOwnIncidents = Number((await pgOne(`SELECT count(*)::text AS n FROM incidents WHERE workspace_id = $1`, [bob.workspaceId]))?.n ?? NaN);
+
+    // The two doors (D659): the ingest key at /mcp, the agent keys at ingest.
+    const ingestAtMcp = await mcpRaw({ authorization: `Bearer ${token}` });
+    ingestKeyAtMcp = { status: ingestAtMcp.status, challenge: ingestAtMcp.headers.get("www-authenticate") };
+    readKeyAtIngest = (await otlp("traces", aliceRead, tracesExport([spanOf(mcpTraceIdFor("read-at-ingest"), "agent-key-at-ingest")]))).status;
+    setupKeyAtIngest = (await otlp("traces", aliceSetup, tracesExport([spanOf(mcpTraceIdFor("setup-at-ingest"), "agent-key-at-ingest")]))).status;
+    const anon = await mcpRaw({});
+    unauthAtMcp = { status: anon.status, challenge: anon.headers.get("www-authenticate") };
+
+    // The setup mint (D666) under bob's setup key, and the minted key's one door (D659).
+    const cs = await mcpClientFor(bobSetup);
+    try {
+      const mint = await cs.callTool({ name: "issue_ingest_key", arguments: { name: "e2e-agent" } });
+      const body = mint.structuredContent ?? {};
+      minted = {
+        token: body.token ?? null,
+        scope: body.key?.scope ?? null,
+        name: body.key?.name ?? null,
+        row: body.key?.id ? await pgOne(`SELECT name, scope FROM api_keys WHERE id = $1 AND workspace_id = $2`, [body.key.id, bob.workspaceId]) : null,
+      };
+      if (minted.token) {
+        mintedAtMcp = (await mcpRaw({ authorization: `Bearer ${minted.token}` })).status;
+        mintedExportStatus = (await otlp("traces", minted.token, tracesExport([spanOf(mintedTraceId, "minted-key-export")]))).status;
+        // The arrival flip for THAT key alone (D667): ingest writes the health
+        // row on its flush; a bounded settle, then the read the agent would make.
+        const readKeyRow = await pgOne(`SELECT id FROM api_keys WHERE workspace_id = $1 AND prefix = $2`, [bob.workspaceId, bobRead.slice(0, 12)]);
+        const deadline = Date.now() + 30_000;
+        let mintedArrival = null;
+        while (Date.now() < deadline) {
+          mintedArrival = (await cs.callTool({ name: "check_arrival", arguments: { keyId: body.key.id } })).structuredContent ?? null;
+          if (mintedArrival?.arrived) {
+            // Arrived, and readable: the trace the minted key exported resolves
+            // for him (D661's "get_trace resolves the arrived trace").
+            mintedResolves = (await cs.callTool({ name: "get_trace", arguments: { id: mintedTraceId } })).isError !== true;
+            if (mintedResolves) break;
+          }
+          await new Promise((r) => setTimeout(r, 1_000));
+        }
+        // The cross-tenant probe on an id only HE holds: alice's read key gets
+        // the not-found sentence for the trace his minted key just exported.
+        const caAgain = await mcpClientFor(aliceRead);
+        try {
+          crossTenantMintedText = mcpText(await caAgain.callTool({ name: "get_trace", arguments: { id: mintedTraceId } }));
+        } finally {
+          await caAgain.close();
+        }
+        const otherArrival = readKeyRow ? (await cs.callTool({ name: "check_arrival", arguments: { keyId: readKeyRow.id } })).structuredContent ?? null : null;
+        mcpArrival = { minted: mintedArrival, other: otherArrival };
+      }
+    } finally {
+      await cs.close();
+    }
+  
+
+    // The boundary (D645), LAST: it spends bob's read key's whole window, and
+    // a client that initialises under a spent key gets the 429 as the SDK's
+    // thrown error — measured on the second green attempt, when this loop ran
+    // before bob's cross-tenant read of the minted trace and aborted the drive.
+    let last = null;
+    for (let i = 0; i < rateLimitMax + 1; i += 1) last = await mcpRaw({ authorization: `Bearer ${bobRead}` });
+    boundary = { status: last?.status ?? null, retryAfter: last?.headers.get("retry-after") ?? null };
+  }
+  // ---- the claims (K = these, exactly) ----
+  check(
+    "/app/mcp renders live for alice: 200, the endpoint path, the READ-ONLY tag, and the registry's tool count",
+    mcpPageFacts.status === 200 && mcpPageFacts.endpoint && mcpPageFacts.readOnly && mcpPageFacts.toolsLine,
+    JSON.stringify(mcpPageFacts),
+  );
+  check(
+    `tools/list under a read key is exactly the registry (${registryToolNames.length} names read off lib/mcp-types.ts)`,
+    registryToolNames.length > 0 && [...mcpListedTools].sort().join(",") === [...registryToolNames].sort().join(","),
+    `listed ${mcpListedTools.length}: ${mcpListedTools.join(",")}`,
+  );
+  check(
+    "get_trace returns her seeded trace with the span count the store holds (recounted over obstack.spans)",
+    Number.isFinite(mcpTraceRecount) && mcpTraceRecount > 0 && mcpTraceSpans === mcpTraceRecount,
+    `tool ${mcpTraceSpans} · store ${mcpTraceRecount}`,
+  );
+  check(
+    "query_traces with the prompt token finds exactly the one trace the traces page found for it",
+    mcpSearch.total === 1 && mcpSearch.ids.length === 1 && mcpSearch.ids[0] === PROMPT_TRACE,
+    JSON.stringify(mcpSearch),
+  );
+  check(
+    "get_incident returns her historical incident with its plan's retention floor and only the four timeline kinds",
+    mcpIncident.id === historicalId &&
+      mcpIncident.retentionDays === planRetentionDays &&
+      Array.isArray(mcpIncident.kinds) &&
+      mcpIncident.kinds.every((k) => ["alert", "change", "trace", "resolved"].includes(k)),
+    `${JSON.stringify({ ...mcpIncident, kinds: mcpIncident.kinds?.length })} · plan ${planRetentionDays}`,
+  );
+  check(
+    "get_slo_status lists exactly her slos rows",
+    Array.isArray(pgSloIds) && pgSloIds.length > 0 && JSON.stringify(mcpSloIds) === JSON.stringify(pgSloIds),
+    `tool ${JSON.stringify(mcpSloIds)} · store ${JSON.stringify(pgSloIds)}`,
+  );
+  check(
+    "list_changes lists exactly her change_events rows",
+    Array.isArray(pgChangeIds) && pgChangeIds.length > 0 && JSON.stringify(mcpChangeIds) === JSON.stringify(pgChangeIds),
+    `tool ${mcpChangeIds?.length} · store ${pgChangeIds?.length}`,
+  );
+  check(
+    "cross-tenant: bob's read key gets his own copy of the shared seed id (his label, never hers), her read key gets the not-found sentence for the trace only his minted key exported, and his list_incidents is his rows and none of hers",
+    bobSeedCopy.ok === true &&
+      bobSeedCopy.hisLabel === true &&
+      bobSeedCopy.herLabel === false &&
+      crossTenantMintedText === "no trace with this id in your workspace" &&
+      Number.isFinite(bobOwnIncidents) &&
+      bobIncidentTotal === bobOwnIncidents &&
+      bobSeesAlice === false,
+    `seed ${JSON.stringify(bobSeedCopy)} · her probe of his minted ${JSON.stringify(crossTenantMintedText)} · total ${bobIncidentTotal} vs ${bobOwnIncidents} · sees alice ${bobSeesAlice}`,
+  );
+  check(
+    "the two doors: her INGEST key at /mcp is a 401 with the challenge; her read and setup keys at /v1/traces are 401s",
+    ingestKeyAtMcp.status === 401 && ingestKeyAtMcp.challenge === 'Bearer realm="obstack"' && readKeyAtIngest === 401 && setupKeyAtIngest === 401,
+    `${JSON.stringify(ingestKeyAtMcp)} · read@ingest ${readKeyAtIngest} · setup@ingest ${setupKeyAtIngest}`,
+  );
+  check(
+    "no credential at /mcp is the same 401 with the challenge",
+    unauthAtMcp.status === 401 && unauthAtMcp.challenge === 'Bearer realm="obstack"',
+    JSON.stringify(unauthAtMcp),
+  );
+  check(
+    `the boundary: call ${rateLimitMax + 1} in the window is a 429 with Retry-After`,
+    rateLimitMax > 0 && boundary.status === 429 && boundary.retryAfter === "60",
+    JSON.stringify(boundary),
+  );
+  check(
+    "a read key cannot mint: issue_ingest_key answers the one refusal sentence",
+    cannotMintSentence !== null && readMintText === cannotMintSentence,
+    JSON.stringify(readMintText),
+  );
+  check(
+    "bob's setup key mints an ingest key: ok_live_ shape, scope ingest, the mcp: prefix on his stored row, and the minted key is refused at /mcp",
+    /^ok_live_[0-9a-f]{64}$/.test(minted.token ?? "") &&
+      minted.scope === "ingest" &&
+      minted.name === "mcp:e2e-agent" &&
+      minted.row?.name === "mcp:e2e-agent" &&
+      minted.row?.scope === "ingest" &&
+      mintedAtMcp === 401,
+    `${JSON.stringify({ ...minted, token: minted.token ? "…" : null })} · minted@mcp ${mintedAtMcp}`,
+  );
+  check(
+    "the minted key exports (200) into his under-quota workspace, check_arrival flips for it alone, the exported trace resolves for him, and his read key's window is unmoved",
+    mintedExportStatus === 200 &&
+      mcpArrival.minted?.arrived === true &&
+      mcpArrival.minted?.keys?.length === 1 &&
+      mcpArrival.minted?.keys?.[0]?.accepted >= 1 &&
+      mintedResolves === true &&
+      mcpArrival.other?.arrived === false,
+    `export ${mintedExportStatus} · minted ${JSON.stringify(mcpArrival.minted?.keys?.[0])} · resolves ${mintedResolves} · other arrived ${mcpArrival.other?.arrived}`,
+  );
+  console.log(`   mcp arm: ${Math.round((Date.now() - mcpArmStartedAt) / 1000)}s of wall time`);
+
   step("a plan change round-trips: checkout → return → reconcile → redirect → ONE paint says Pro (D168/D189)");
   await openTab(alice, "Billing & usage", `document.querySelector("main")?.textContent.includes("change plan")`);
   must(await alice.evaluate(clickText("Upgrade to Pro")), "the Billing & usage tab offers no Pro upgrade");
@@ -4421,25 +4727,38 @@ try {
     JSON.stringify(strangerWorkspaces.map((w) => w.id)),
   );
   const devKey = await pgOne(`SELECT prefix, workspace_id, revoked_at FROM api_keys WHERE id = 'key_dev_local'`);
-  const aliceKeys = await pgRows(`SELECT prefix, revoked_at FROM api_keys WHERE workspace_id = $1`, [
+  const aliceKeys = await pgRows(`SELECT prefix, revoked_at, scope, name FROM api_keys WHERE workspace_id = $1`, [
     alice.workspaceId,
   ]);
-  const bobKeys = await pgRows(`SELECT id FROM api_keys WHERE workspace_id = $1`, [bob.workspaceId]);
+  const bobKeys = await pgRows(`SELECT id, scope, name, revoked_at FROM api_keys WHERE workspace_id = $1`, [bob.workspaceId]);
   const meteringRow = aliceKeys.find((k) => k.prefix === prefix);
   const quickstartRow = aliceKeys.find((k) => k.prefix === firstPrefix);
+  // S8.1: the MCP arm issued alice's read and setup keys, and bob's read and
+  // setup keys plus the `mcp:` ingest key his setup key minted; a run that
+  // withheld the arm reads the hook and expects the pre-S8.1 world, so the
+  // RED's failure count stays the arm's own (D662).
+  const mcpWithheld = Boolean(process.env.RED_WITHHOLD_MCP);
+  const aliceScopes = aliceKeys.map((k) => k.scope).sort().join(",");
+  const bobScopes = bobKeys.map((k) => k.scope).sort().join(",");
+  const mintedRow = bobKeys.find((k) => k.name.startsWith("mcp:"));
   check(
-    "api_keys holds the seeded dev row live on ws_demo, alice's two issued keys — the quickstart's still live, " +
-      "the settings one revoked — and nothing of bob's",
+    "api_keys holds the seeded dev row live on ws_demo, alice's keys — the quickstart's still live, the settings one revoked, " +
+      "and (S8.1) her read and setup keys — and bob's read and setup keys plus the mcp:-minted ingest key",
     devKey?.workspace_id === "ws_demo" &&
       devKey?.prefix === "ok_dev_local" &&
       devKey?.revoked_at === null &&
-      aliceKeys.length === 2 &&
+      aliceKeys.length === (mcpWithheld ? 2 : 4) &&
       meteringRow !== undefined &&
       meteringRow.revoked_at !== null &&
       quickstartRow !== undefined &&
       quickstartRow.revoked_at === null &&
-      bobKeys.length === 0,
-    `dev=${JSON.stringify(devKey)} alice=${JSON.stringify(aliceKeys)} bob=${bobKeys.length}`,
+      (mcpWithheld
+        ? bobKeys.length === 0
+        : aliceScopes === "ingest,ingest,read,setup" &&
+          bobScopes === "ingest,read,setup" &&
+          mintedRow?.scope === "ingest" &&
+          mintedRow?.revoked_at === null),
+    `dev=${JSON.stringify(devKey)} alice=${JSON.stringify(aliceKeys.map((k) => [k.prefix, k.scope, k.revoked_at ? "revoked" : "live"]))} bob=${JSON.stringify(bobKeys.map((k) => [k.name, k.scope, k.revoked_at ? "revoked" : "live"]))}`,
   );
 
   // ------------------------------------------------- session, then none
@@ -4512,6 +4831,8 @@ try {
     // S7.4 (D21/D519): the incidents list and one incident's own page — the id
     // is the historical incident alice declared above, a row she holds.
     "/app/incidents",
+    // S8.1 (D21/D663): the MCP page — the registry gained it, so the probe does.
+    "/app/mcp",
     `/app/incidents/${historicalId}`,
   ];
   for (const path of probed) {

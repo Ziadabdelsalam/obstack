@@ -1,0 +1,89 @@
+export const frontmatter = {
+  title: "MCP for coding agents",
+  description: "A read-only MCP endpoint your coding agent connects to with a key, the setup prompt that gets a new app sending, and what it deliberately does not do.",
+};
+
+import { McpClientSetups, McpScopes, McpSetupSteps, McpToolsTable } from "@/components/docs/McpDocs";
+
+# MCP for coding agents
+
+obstack serves a Model Context Protocol endpoint at `/mcp` on the same host as
+the product. A coding agent — Claude Code, Claude Desktop, Cursor, or any
+client that speaks Streamable HTTP — connects to it with a workspace key and
+reads that workspace: traces, logs, the service map, issues, metrics, SLOs,
+incidents, alerts and change events. It never writes, with one exception a
+`setup`-scoped key unlocks: minting an ingest key for an app being set up.
+
+## Connect
+
+Issue a key in **Settings → API keys** with the scope `read` (or `setup`, see
+below), then add the server to your client. The endpoint is
+`<YOUR_OBSTACK_HOST>/mcp`; the product's own MCP page prints the exact
+address for your deployment.
+
+<McpClientSetups />
+
+Self-hosters: the address the product prints is `http://localhost:3000/mcp`
+until the web workload carries `OBSTACK_PUBLIC_MCP_ENDPOINT`, the same rule the
+OTLP endpoints follow — behind a hostname, set it to that hostname.
+
+## Scopes
+
+A key opens one door. Every key issued before scopes existed is an `ingest`
+key, and the endpoint refuses those; an agent's key is one of the other two.
+
+<McpScopes />
+
+A `read` or `setup` key is refused by ingest, so a leaked agent configuration
+cannot write telemetry into the workspace it was allowed to read; an `ingest`
+key is refused at `/mcp`, so a leaked exporter key cannot read it. Unknown,
+revoked and wrong-scope keys get the same `401` — nothing here says which.
+
+## Set a new app up from the agent
+
+With the server connected, Claude Code exposes the prompt as the slash command
+`/mcp__obstack__setup`. Run it inside the repository; the agent follows these
+steps, in this order, with its own file tools — obstack reads none of your
+files and writes none:
+
+<McpSetupSteps />
+
+The recipe the agent receives is the same one the in-app quickstart and the
+Connections hub show a person, with your deployment's real endpoints filled in
+and the key as a placeholder the agent replaces with the key it holds. If the
+agent is connected with a `setup` key it mints that key itself; the minted key
+is always an `ingest` key, its name is prefixed `mcp:` so the settings list
+shows where it came from, and its token is returned once — your agent's
+transcript then holds it the way a clipboard would, and it is revocable from
+the same tab. The deploy step it can serve for `github-actions` is the one on
+[the GitHub Actions page](/docs/connectors/github-actions).
+
+## Tools
+
+Every call is scoped to the workspace the key belongs to; an id from another
+workspace answers with the same not-found sentence a wrong id does. Results
+carry the product's own caps and honest totals — a page of 200 traces with the
+exact filtered total, 200 log lines with the truncation stated, an incident
+timeline with its omissions named.
+
+<McpToolsTable />
+
+Each key may make 120 calls per minute; the 121st is a `429` with a
+`Retry-After`. Reads are not metered against your plan.
+
+## What it does not do
+
+- It does not write — no incidents opened, no alerts acknowledged, no rules,
+  SLOs or channels changed. The one mutation is the mint above.
+- It does not run Explain or an incident's analysis: those spend a monthly
+  allowance a looping agent could drain in seconds.
+- It serves no tool over a surface that still renders sample data; when
+  pipelines are real, a pipelines tool follows.
+- It records no call log. A minted key's row is the only trace of a mint.
+- It cannot sign you up or create a workspace: no key exists before an
+  account does, and the browser is the only door for that.
+- There is no agent skill file and no command-line tool — see
+  [what obstack does not do](/docs/what-obstack-does-not-do).
+
+Start from [the quickstart](/docs/quickstart) if the app is not sending yet;
+the agent's setup prompt does the same steps.

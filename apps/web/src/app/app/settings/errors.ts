@@ -39,6 +39,7 @@ import {
  */
 export const SETTINGS_ERRORS = {
   "key-name-invalid": "Give the key a name — 1 to 100 characters, so you can tell it apart later.",
+  "key-scope-invalid": "Pick a scope for the key — ingest, read or setup.",
   "key-not-found": "That key isn't one of this workspace's keys. Reload the page to see the current list.",
   "invite-email-missing": "Enter the email address of the person you're inviting.",
   "invite-email-invalid":

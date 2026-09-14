@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
-import { CHANGE_KINDS } from "./change-types";
+import { CHANGE_KINDS, GITHUB_ACTIONS_DEPLOY_STEP } from "./change-types";
 
 // run with: cd apps/web && npx tsx --conditions react-server --test src/lib/change-types.test.ts
 //
@@ -113,4 +113,15 @@ test("D366: change-types.ts stays client-safe — no imports at all", () => {
   const source = readFileSync(path.join(HERE, "change-types.ts"), "utf8");
   assert.equal(/^import /m.test(source), false, "change-types.ts must carry no imports");
   assert.ok(!/^import ["']server-only["'];?$/m.test(source), "change-types.ts must never be server-only");
+});
+
+// S8.1 D671: the MCP setup tool serves the deploy step from a constant; the
+// docs page keeps its fence because the e2e drive extracts and runs THAT. Two
+// copies, one pin — the D499 idiom — so an edit to either goes red.
+test("D671: the docs page's fenced deploy step is GITHUB_ACTIONS_DEPLOY_STEP, byte for byte", () => {
+  const start = docsSource.indexOf("```yaml\n", docsSource.indexOf("recipe:start"));
+  assert.ok(start >= 0, "the docs page lost its recipe:start fence");
+  const body = docsSource.slice(start + "```yaml\n".length, docsSource.indexOf("\n```", start));
+  assert.equal(body, GITHUB_ACTIONS_DEPLOY_STEP);
+  assert.ok(GITHUB_ACTIONS_DEPLOY_STEP.includes("/v1/changes"));
 });

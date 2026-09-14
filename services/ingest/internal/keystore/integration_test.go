@@ -207,6 +207,52 @@ func TestIssuedKeyResolvesToItsWorkspace(t *testing.T) {
 	}
 }
 
+// S8.1 D644/D658: the scope column is a door, not a label. A key issued for an
+// agent to READ the workspace through the MCP endpoint (`read`), or to read and
+// mint ingest keys there (`setup`), must not be accepted as an ingest credential
+// — otherwise a leaked agent config writes telemetry into the workspace it was
+// only ever allowed to read. The refusal is the same answer as unknown and
+// revoked (D6): one predicate, one error, no oracle.
+func TestReadAndSetupScopedKeysAreRefusedAtIngest(t *testing.T) {
+	ctx := requirePostgres(t)
+	dsn := migratedSchema(ctx, t)
+
+	if err := exec(ctx, t, dsn, "INSERT INTO workspaces (id, org_id) VALUES ('ws_alice', 'org_alice')"); err != nil {
+		t.Fatalf("insert workspace: %v", err)
+	}
+	const readToken = "ok_live_aaaa1111bbbb2222cccc3333dddd4444eeee5555ffff6666000077778888"
+	const setupToken = "ok_live_9999aaaa8888bbbb7777cccc6666dddd5555eeee4444ffff3333000022221111"
+	issueKey(ctx, t, dsn, "key_ingest", "ws_alice", issuedToken)
+	issueKey(ctx, t, dsn, "key_read", "ws_alice", readToken)
+	issueKey(ctx, t, dsn, "key_setup", "ws_alice", setupToken)
+	// issueKey inserts with the column's DEFAULT ('ingest', the pre-0014 world);
+	// the two agent scopes are set the way the settings tab sets them.
+	if err := exec(ctx, t, dsn, "UPDATE api_keys SET scope = 'read' WHERE id = 'key_read'"); err != nil {
+		t.Fatalf("scope key_read: %v", err)
+	}
+	if err := exec(ctx, t, dsn, "UPDATE api_keys SET scope = 'setup' WHERE id = 'key_setup'"); err != nil {
+		t.Fatalf("scope key_setup: %v", err)
+	}
+
+	s, _ := openStore(ctx, t, dsn)
+	mustResolve(t, s, issuedToken, "ws_alice")
+	mustRefuse(t, s, readToken)
+	mustRefuse(t, s, setupToken)
+
+	// D6 at this door: the refusal is indistinguishable from an unknown token.
+	_, readErr := s.Workspace(readToken)
+	_, unknownErr := s.Workspace("ok_live_" + strings.Repeat("0", 64))
+	if !errors.Is(readErr, auth.ErrUnauthorized) || !errors.Is(unknownErr, auth.ErrUnauthorized) || readErr.Error() != unknownErr.Error() {
+		t.Errorf("read-scoped = %v, unknown = %v; the two must be one answer", readErr, unknownErr)
+	}
+
+	// The vocabulary is the DDL's: a fourth member is refused by the CHECK, not
+	// by convention.
+	if err := exec(ctx, t, dsn, "UPDATE api_keys SET scope = 'admin' WHERE id = 'key_read'"); err == nil {
+		t.Error("api_keys took a scope outside ('ingest','read','setup'); 0014's CHECK is gone")
+	}
+}
+
 // Revocation is honored within keyCacheTTL and no sooner — the cost of not
 // making Postgres a per-request dependency, stated here as a test rather than
 // left for an operator to discover.

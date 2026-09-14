@@ -44,6 +44,7 @@ export const docsManifest: readonly DocsManifestEntry[] = [
   { slug: ["connectors", "vercel-log-drains"], section: "Connectors" },
   { slug: ["connectors", "aws-cloudwatch"], section: "Connectors" },
   { slug: ["connectors", "github-actions"], section: "Connectors" },
+  { slug: ["mcp"], section: "Agents" },
   { slug: ["explain"], section: "Features" },
   { slug: ["retention"], section: "Features" },
   { slug: ["billing-and-plans"], section: "Plans" },

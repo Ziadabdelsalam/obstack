@@ -20,8 +20,11 @@ import {
   keyPrefix,
   listApiKeys,
   parseKeyName,
+  parseKeyScope,
+  resolveApiKey,
   revokeApiKey,
 } from "./api-keys";
+import { API_KEY_SCOPES, DEFAULT_API_KEY_SCOPE, MCP_ADMITTED_SCOPES } from "@/lib/mcp-types";
 import { OverrideLimit, UnknownOverride } from "./ingest-health";
 import type { QueryRows } from "./postgres";
 
@@ -56,6 +59,7 @@ const rowFor = (id = "key_0011223344556677") => ({
   id,
   name: "collector",
   prefix: "ok_live_9f3a",
+  scope: "ingest" as const,
   created_at: new Date("2026-08-19T10:00:00Z"),
   revoked_at: null,
 });
@@ -120,11 +124,26 @@ test("every statement is bound to the workspace it was handed", async () => {
   const { query, seen } = recordingQuery([rowFor()]);
 
   await listApiKeys("ws_a", query);
-  await issueApiKey("ws_a", "collector", query);
+  await issueApiKey("ws_a", "collector", "ingest", query);
   await revokeApiKey("ws_a", "key_0011223344556677", query);
+  // S8.1 (D642): the FOURTH statement is the MCP door, and it is the one
+  // statement in this module whose workspace is the OUTPUT — the hash is the
+  // owner pin, in the direction ingest already runs it. It joins this loop with
+  // its own assertion rather than an exemption, so a fifth statement that binds
+  // neither still has nowhere to hide.
+  const token = generateToken();
+  await resolveApiKey(token, query);
 
-  assert.equal(seen.length, 3, "a statement was added without joining this loop");
+  assert.equal(seen.length, 4, "a statement was added without joining this loop");
   for (const { sql, params } of seen) {
+    if (/token_hash = \$1/.test(sql)) {
+      assert.match(sql, /scope = ANY\(\$2::text\[\]\)/, `the resolve does not bind the admitted scopes: ${sql}`);
+      assert.match(sql, /revoked_at IS NULL/, `the resolve admits revoked keys: ${sql}`);
+      assert.equal(params?.[0], hashToken(token), "the resolve bound something other than the token's hash");
+      assert.deepEqual(params?.[1], [...MCP_ADMITTED_SCOPES], "the resolve's scope list is not MCP_ADMITTED_SCOPES");
+      assert.equal(sql.includes(token), false, "the resolve carries the token itself in its text");
+      continue;
+    }
     // Both halves, because either alone is passable: SQL that names the column
     // but binds someone else's id, or a first binding no predicate reads.
     assert.match(sql, /workspace_id/, `a statement does not scope by workspace: ${sql}`);
@@ -132,9 +151,34 @@ test("every statement is bound to the workspace it was handed", async () => {
   }
 });
 
+test("D642: the resolve answers null for no row, and the row's three fields for one", async () => {
+  const empty = recordingQuery([]);
+  assert.equal(await resolveApiKey(generateToken(), empty.query), null);
+  const hit = recordingQuery([{ id: "key_0011223344556677", workspace_id: "ws_a", scope: "setup" }]);
+  assert.deepEqual(await resolveApiKey(generateToken(), hit.query), {
+    keyId: "key_0011223344556677",
+    workspaceId: "ws_a",
+    scope: "setup",
+  });
+});
+
+test("D644: parseKeyScope is total — absent is ingest, a member is itself, everything else is null", () => {
+  assert.equal(parseKeyScope(undefined), DEFAULT_API_KEY_SCOPE);
+  assert.equal(parseKeyScope(null), DEFAULT_API_KEY_SCOPE);
+  assert.equal(parseKeyScope(""), DEFAULT_API_KEY_SCOPE);
+  for (const scope of API_KEY_SCOPES) assert.equal(parseKeyScope(scope), scope);
+  assert.equal(parseKeyScope(["read", "setup"]), "read", "a repeated field takes its first value, like parseKeyName");
+  for (const bad of ["admin", "READ", " read", "ingest;", 42, true, {}, [] as unknown[], ["admin"]]) {
+    assert.equal(parseKeyScope(bad), null, `${JSON.stringify(bad)} parsed as a scope`);
+  }
+  for (const hostile of HOSTILE_URL_VALUES) {
+    assert.doesNotThrow(() => parseKeyScope(hostile));
+  }
+});
+
 test("shown once: the INSERT carries the hash and the prefix, and never the token", async () => {
   const { query, seen } = recordingQuery([rowFor()]);
-  const { token, key } = await issueApiKey("ws_a", "collector", query);
+  const { token, key } = await issueApiKey("ws_a", "collector", "ingest", query);
 
   const [workspaceId, name, prefix, tokenHash, id] = seen[0].params as string[];
   assert.equal(workspaceId, "ws_a");
@@ -173,6 +217,7 @@ test("the listed key is the row Postgres holds, revoked ones included", async ()
       id: "key_0011223344556677",
       name: "collector",
       prefix: "ok_live_9f3a",
+      scope: "ingest",
       createdAt: rowFor().created_at,
       revokedAt: null,
     },
@@ -180,6 +225,7 @@ test("the listed key is the row Postgres holds, revoked ones included", async ()
       id: "key_ffffffffffffffff",
       name: "collector",
       prefix: "ok_live_9f3a",
+      scope: "ingest",
       createdAt: revoked.created_at,
       revokedAt: revoked.revoked_at,
     },

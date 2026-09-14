@@ -30,6 +30,7 @@ export const liveWiredRoutes: readonly string[] = [
   "/app/slos", // the workspace's own objectives, measured over its traces by the evaluator (S7.3)
   "/app/incidents", // the workspace's own incident objects, from Postgres (S7.4)
   "/app/incidents/", // and one of them, its timeline stitched over that workspace's own alerts, changes and error traces
+  "/app/mcp", // the workspace's real MCP endpoint, its admitted keys and the tool registry (S8.1)
   // Settings is wired per SECTION, not per route (D106): General, Members and
   // API keys read Postgres, and the four tabs that still render demo content
   // carry their own `SampleMark` inside the suite. One route-wide badge over a

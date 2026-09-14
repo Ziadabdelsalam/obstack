@@ -129,8 +129,8 @@ const steps: TourStep[] = [
   {
     path: "/app/mcp",
     target: "mcp",
-    title: "MCP — your agents can read all of this",
-    body: "The plan for reading obstack from an agent: a read-only MCP server your coding agent queries for traces, logs, incidents and SLOs. This screen shows the shape it will take — there is no server behind it yet.",
+    title: "MCP — your agents read this workspace",
+    body: "obstack serves a read-only MCP endpoint your coding agent connects to with a key from Settings → API keys — traces, logs, incidents, SLOs and the rest — plus a setup prompt that gets a new app sending. In the demo this screen is a sketch; in your workspace it shows the real address, your keys and every tool.",
   },
   {
     path: "/app/ask",

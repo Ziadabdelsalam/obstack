@@ -227,6 +227,7 @@ test("every OBSTACK_* variable the docs name is a variable this repo defines", (
     "apps/web/src/server/explain/anthropic.ts",
     "apps/web/src/server/explain/client.ts",
     "apps/web/src/server/ingest-endpoint.ts",
+    "apps/web/src/server/mcp-endpoint.ts",
     "apps/web/src/server/mode-stamp.ts",
     "apps/web/src/lib/status-monitor.ts",
   ]
@@ -634,6 +635,18 @@ test("§7.7: the M6 absences follow the live-routes registry — a wired surface
   assert.ok(absences.includes("not fed by SLOs or by incidents"), "the status-page clause lost a producer it is deliberately not fed by");
 });
 
+// S8.1 (D656): the same coupling for the MCP paragraph — the registry says
+// /app/mcp is live-wired, so "there is no MCP server" may not be an absence,
+// and the two things the sprint deliberately did not ship must still be.
+test("D656: the MCP absence follows the live-routes registry — the endpoint is not an absence, the skill and the CLI are", () => {
+  const absences = flat(pages.absences);
+  assert.equal(isLiveWiredRoute("/app/mcp"), true, "premise: /app/mcp is live-wired (S8.1 T5)");
+  assert.ok(!absences.includes("There is no MCP server"), "/docs/what-obstack-does-not-do still lists the MCP server as an absence on a live-wired surface");
+  assert.ok(absences.includes("There is no agent skill and no CLI"), "the page stopped stating the two absences S8.1 kept");
+  assert.ok(absences.includes("records no call log"), "the page stopped stating that calls are not recorded (D655)");
+  assert.ok(absences.includes("read-only"), "the page stopped stating that the endpoint never writes");
+});
+
 test("the settings tabs the docs send a reader to are tabs the suite renders", () => {
   // "Settings -> X" is a navigation instruction. A renamed tab makes it an
   // instruction to click something that is not there, and nothing else in the
@@ -666,7 +679,7 @@ test("every page is registered, and every registered page is written", () => {
   // `docs.test.ts` owns the manifest↔tree mirror. This is the other half: a
   // page that is still the placeholder T1 left behind is registered, walked,
   // built and served, and says nothing.
-  assert.equal(corpus.length, 15, "the corpus changed size — update this count deliberately");
+  assert.equal(corpus.length, 16, "the corpus changed size — update this count deliberately"); // S8.1 T5: +/docs/mcp
   for (const p of corpus) {
     assert.equal(
       p.source.includes("This page is written in T2"),

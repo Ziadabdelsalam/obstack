@@ -84,6 +84,17 @@ const personaCarriers = {
 
 test("no fabricated host or credential in the docs, the MCP data or the MCP page", () => {
   const sources: Record<string, string> = { "mcp.ts": mcpSource, "McpPage.tsx": pageSource };
+  // S8.1 (condition 12): the recipe sources the MCP setup tool serves verbatim,
+  // and the contract the live page and the docs render — the same bans, since a
+  // fabricated host in a recipe an agent applies is the one that costs an
+  // afternoon.
+  for (const rel of [
+    "../components/onboarding/snippets.ts",
+    "../components/connections/connectors.ts",
+    "../lib/mcp-types.ts",
+  ]) {
+    sources[rel.replace("../", "")] = readFileSync(path.join(import.meta.dirname, rel), "utf8");
+  }
   // Every file of the real corpus, named individually so a failure says which
   // page carries the lie rather than "somewhere in the docs".
   for (const { file, source } of contentCorpus) sources[`content/${file}`] = source;
