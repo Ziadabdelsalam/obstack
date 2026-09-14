@@ -4381,11 +4381,6 @@ try {
     const anon = await mcpRaw({});
     unauthAtMcp = { status: anon.status, challenge: anon.headers.get("www-authenticate") };
 
-    // The boundary (D645): max calls pass, the next is a 429 with Retry-After.
-    let last = null;
-    for (let i = 0; i < rateLimitMax + 1; i += 1) last = await mcpRaw({ authorization: `Bearer ${bobRead}` });
-    boundary = { status: last?.status ?? null, retryAfter: last?.headers.get("retry-after") ?? null };
-
     // The setup mint (D666), and the minted key's one door (D659).
     const cs = await mcpClientFor(aliceSetup);
     try {
@@ -4429,6 +4424,15 @@ try {
     } finally {
       await cs.close();
     }
+  
+
+    // The boundary (D645), LAST: it spends bob's read key's whole window, and
+    // a client that initialises under a spent key gets the 429 as the SDK's
+    // thrown error — measured on the second green attempt, when this loop ran
+    // before bob's cross-tenant read of the minted trace and aborted the drive.
+    let last = null;
+    for (let i = 0; i < rateLimitMax + 1; i += 1) last = await mcpRaw({ authorization: `Bearer ${bobRead}` });
+    boundary = { status: last?.status ?? null, retryAfter: last?.headers.get("retry-after") ?? null };
   }
   // ---- the claims (K = these, exactly) ----
   check(
