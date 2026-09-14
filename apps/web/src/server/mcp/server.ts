@@ -2,6 +2,7 @@ import "server-only";
 import { McpServer } from "@modelcontextprotocol/server";
 import { MCP_SERVER_NAME, MCP_SERVER_VERSION, MCP_TOOLS } from "@/lib/mcp-types";
 import type { McpContext } from "@/server/mcp/context";
+import { registerPrompts } from "@/server/mcp/prompts";
 import { TOOL_DEFINITIONS } from "@/server/mcp/tools";
 
 /**
@@ -34,5 +35,6 @@ export function createMcpServer(ctx: McpContext): McpServer {
       async (args: unknown) => definition.handler(args, ctx),
     );
   }
+  registerPrompts(server);
   return server;
 }

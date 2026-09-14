@@ -3,53 +3,15 @@
 import { useState } from "react";
 import Link from "next/link";
 import { X, Copy, Check, Plus } from "lucide-react";
-import {
-  API_KEY_PLACEHOLDER,
-  OTLP_GRPC_PLACEHOLDER,
-  OTLP_HTTP_PLACEHOLDER,
-  type Connector,
-} from "./connectors";
+import { API_KEY_PLACEHOLDER, type Connector } from "./connectors";
 
-export type ModalEndpoints = { http: string | null; grpc: string | null };
+// S8.1 (D665): `ModalEndpoints` and `resolveStepSnippet` now live in
+// `./connectors` — a pure module the MCP setup tool can import on the server,
+// which a `"use client"` file cannot be. Re-exported here so the hub and
+// `ConnectModal.test.tsx` keep their import path.
+export { resolveStepSnippet, type ModalEndpoints } from "./connectors";
+import { resolveStepSnippet, type ModalEndpoints } from "./connectors";
 
-/**
- * D281/D282: substitute the endpoint placeholders with the server-resolved
- * pair, or name the honest absence when a step's snippet needs a protocol the
- * deployment does not publish — never a rendered placeholder, never a
- * loopback default beside a configured public endpoint, never an empty value.
- */
-export function resolveStepSnippet(
-  snippet: string,
-  endpoints: ModalEndpoints,
-): { code: string } | { absence: string } {
-  if (snippet.includes(OTLP_HTTP_PLACEHOLDER) && !endpoints.http) {
-    return {
-      absence:
-        "This deployment does not publish an HTTP OTLP endpoint — set OBSTACK_PUBLIC_OTLP_HTTP_ENDPOINT on the web workload to render this step.",
-    };
-  }
-  if (snippet.includes(OTLP_GRPC_PLACEHOLDER) && !endpoints.grpc) {
-    return {
-      absence:
-        "This deployment does not publish a gRPC OTLP endpoint — set OBSTACK_PUBLIC_OTLP_GRPC_ENDPOINT on the web workload to render this step.",
-    };
-  }
-  return {
-    code: snippet
-      .replaceAll(OTLP_HTTP_PLACEHOLDER, endpoints.http ?? "")
-      .replaceAll(OTLP_GRPC_PLACEHOLDER, endpoints.grpc ?? ""),
-  };
-}
-
-/**
- * Does this connector's flow target THIS deployment's ingest, i.e. does any of
- * its snippets carry the token slot? Only those cards get the issue-a-key line.
- *
- * The Kubernetes card deliberately carries no placeholder (D214): the chart
- * brings up its own self-contained obstack and authenticates against its own
- * Postgres, so a key issued in this product would be 401'd there — offering one
- * beside those steps would be the fiction the card exists to avoid.
- */
 export function needsApiKey(connector: Connector): boolean {
   return (connector.connectSteps ?? []).some((step) =>
     step.snippet?.includes(API_KEY_PLACEHOLDER),

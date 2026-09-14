@@ -10,7 +10,6 @@ import type { QueryRows } from "@/server/postgres";
 import { resetRateLimitsForTests } from "@/server/rate-limit";
 import type { McpContext } from "./context";
 import { bearerToken, mcpRequestHandler } from "./handler";
-import { NOT_SERVED_YET } from "./tools";
 
 /**
  * The endpoint driven by a STOCK client of the protocol (S8.1 D641/D661's
@@ -154,9 +153,20 @@ test("D641: a stock client initialises, lists exactly the registry, and calls ge
     assert.equal(miss.isError, true);
     assert.equal((miss.content as { text: string }[])[0].text, "no trace with this id in your workspace");
 
-    const notYet = await client.callTool({ name: "list_issues", arguments: {} });
-    assert.equal(notYet.isError, true);
-    assert.equal((notYet.content as { text: string }[])[0].text, NOT_SERVED_YET);
+    // D650's other shape: a store this fake context cannot reach is ONE
+    // sentence for the agent and one log line here — never a stack.
+    const seen: unknown[] = [];
+    const original = console.error;
+    console.error = (...args: unknown[]) => void seen.push(args);
+    let down;
+    try {
+      down = await client.callTool({ name: "list_issues", arguments: {} });
+    } finally {
+      console.error = original;
+    }
+    assert.equal(down.isError, true);
+    assert.equal((down.content as { text: string }[])[0].text, "obstack could not read the trace store for this request");
+    assert.equal(seen.length, 1, "the cause was logged more or less than once");
   } finally {
     await client.close();
   }
