@@ -331,20 +331,24 @@ harness events "$trace_3" "$demo_pod"
 # changes is the flag under test; the release is left with it on, and a
 # re-run's own `--reset-values` upgrade puts it back. The BACKUP runs as the
 # product's write user (GRANT ALL ON obstack.* — files/obstack-users.xml),
-# and `BACKUP_CREATED` is ClickHouse's own word for a finished archive, read
-# back from `system.backups` rather than inferred from the statement's exit.
+# and `BACKUP_CREATED` is ClickHouse's own word for a finished archive. A
+# synchronous BACKUP answers with its id and that status as its own result
+# row, which is where this reads it: `system.backups` would say the same, but
+# reading it needs `SELECT ON system.backups`, a grant the product's write
+# user does not hold and should not gain for a rider (measured on the first
+# live run — the archive was already on the volume when the status read was
+# refused).
 step "0.7.0: the ClickHouse backups disk accepts a BACKUP"
 helm upgrade "$RELEASE" "$chart_dir" --reset-values --set "web.betterAuthSecret=$WEB_AUTH_SECRET" \
   --set clickhouse.backups.enabled=true ${values_args[@]+"${values_args[@]}"} --wait --timeout "$UPGRADE_TIMEOUT"
 kubectl rollout status "statefulset/$RELEASE-clickhouse" --timeout=180s
 backup_name="acceptance-$(date -u +%Y%m%dT%H%M%SZ).zip"
-backup_id="$(kubectl exec "statefulset/$RELEASE-clickhouse" -- clickhouse-client \
+backup_row="$(kubectl exec "statefulset/$RELEASE-clickhouse" -- clickhouse-client \
   --user obstack_ingest --password "$CLICKHOUSE_INGEST_PASSWORD" \
-  --query "BACKUP DATABASE obstack TO Disk('backups', '$backup_name')" | cut -f1)"
-[ -n "$backup_id" ] || fail "BACKUP DATABASE obstack returned no id"
-backup_status="$(kubectl exec "statefulset/$RELEASE-clickhouse" -- clickhouse-client \
-  --user obstack_ingest --password "$CLICKHOUSE_INGEST_PASSWORD" \
-  --query "SELECT status FROM system.backups WHERE id = '$backup_id'")"
+  --query "BACKUP DATABASE obstack TO Disk('backups', '$backup_name')")"
+backup_id="$(printf '%s' "$backup_row" | cut -f1)"
+backup_status="$(printf '%s' "$backup_row" | cut -f2)"
+[ -n "$backup_id" ] || fail "BACKUP DATABASE obstack returned no id: '$backup_row'"
 [ "$backup_status" = "BACKUP_CREATED" ] || fail "backup $backup_id is '$backup_status', not BACKUP_CREATED"
 backup_bytes="$(kubectl exec "statefulset/$RELEASE-clickhouse" -- sh -c "stat -c %s /var/lib/clickhouse/backups/$backup_name")"
 [ "${backup_bytes:-0}" -gt 0 ] || fail "backup archive /var/lib/clickhouse/backups/$backup_name is missing or empty"

@@ -738,17 +738,39 @@ async function clusterEvents(traceId: string, pod: string): Promise<void> {
 
   const deadline = Date.now() + EVENTS_TIMEOUT_MS;
   let trace: Trace | undefined;
+  let onPod: K8sEvent[] = [];
   let event: K8sEvent | undefined;
   for (;;) {
     trace = await data.getTrace(traceId);
-    // First event ON THIS POD, in the query's timestamp order. Deliberately
-    // not "first event whose kind is restart": narrowing the poll to the
-    // answer we want would turn a mis-mapped reason into a timeout instead of
-    // the specific red check below.
-    event = trace?.k8sEvents?.find((e) => e.pod === pod);
+    onPod = trace?.k8sEvents?.filter((e) => e.pod === pod) ?? [];
+    // The Normal `Killing` event whenever it arrives within the deadline — NOT
+    // the first event on this pod. This rider used to assert the first event's
+    // type, and a pod being torn down can emit a Warning first (a readiness
+    // probe failing on a container that is already going): `severity = "warn",
+    // want "info"` on CI's `stack` run at 948071f and again on a laptop kind
+    // cluster on 2026-09-15 — a timing question wearing the mapping's red. The
+    // S8.1 plan pre-registered this fix; the pilot touchpoint took it. Every
+    // event on the pod stays in view (`onPod`), so a mis-mapped reason still
+    // surfaces as the specific red below rather than a bare timeout.
+    event = onPod.find((e) => e.kind === "restart" && e.severity === "info");
     if (event) break;
     if (Date.now() > deadline) break;
     await sleep(1_000);
+  }
+
+  if (!event && onPod.length > 0) {
+    // Events on this pod reached the trace and none is the Normal Killing: the
+    // pipeline is alive, the mapping (receiver severity, EVENT_KINDS' fold of
+    // the reason) is not — the regression this rider exists to catch, named
+    // per event rather than hidden behind "nothing arrived".
+    for (const e of onPod) {
+      console.error(
+        `acceptance:   - event on ${pod}: kind=${JSON.stringify(e.kind)} severity=${JSON.stringify(e.severity)} label=${JSON.stringify(e.label)} at +${e.atMs}ms`,
+      );
+    }
+    fail(
+      `${onPod.length} event(s) on pod ${pod} reached trace ${traceId} within ${EVENTS_TIMEOUT_MS / 1000}s, none mapped as the Normal Killing (kind "restart", severity "info")`,
+    );
   }
 
   if (!event) {
@@ -811,14 +833,9 @@ LIMIT 10`;
   const problems: string[] = [];
   // `Killing` is a Normal-Type event, so the receiver stamps it INFO and
   // EVENT_KINDS (adapters.ts) folds the reason to "restart". Both halves of
-  // that mapping are asserted, because either one silently changing is
-  // exactly the regression this rider exists to catch.
-  if (event.kind !== "restart") {
-    problems.push(`kind = ${JSON.stringify(event.kind)}, want "restart" (reason Killing)`);
-  }
-  if (event.severity !== "info") {
-    problems.push(`severity = ${JSON.stringify(event.severity)}, want "info" (a Normal-Type event)`);
-  }
+  // that mapping are what the poll above selected on — an event that fails
+  // either never matches, and the "none mapped" red above names what arrived
+  // instead — so what is left to assert here is the event's own shape.
   if (event.id === "") problems.push("id is empty — k8s.event.uid did not survive the pipeline");
   if (event.label === "") problems.push("label is empty — neither the event message nor its reason arrived");
   // The window the query itself binds (NEARBY_LOG_WINDOW_NS), restated on the
@@ -834,7 +851,6 @@ LIMIT 10`;
     fail(`the k8s event on ${pod} landed wrong`);
   }
 
-  const onPod = whole.k8sEvents?.filter((e) => e.pod === pod) ?? [];
   console.log(
     `acceptance:   S4.4 cluster events alive: ${JSON.stringify(event.label)} on ${pod} at +${event.atMs}ms → kind=${event.kind} severity=${event.severity} (${onPod.length} event(s) on this pod, ±${NEARBY_LOG_WINDOW_S}s of a ${whole.durationMs}ms trace)`,
   );
