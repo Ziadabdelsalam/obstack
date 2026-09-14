@@ -9,7 +9,12 @@
 # collector-routed event-form GenAI fixture lands with prompt/completion
 # filled, and the S4.4 rider (last, because it deletes the demo pod): a live
 # kubelet event on the pod that served a trace reaches that trace's
-# `k8sEvents` through the facade.
+# `k8sEvents` through the facade. 0.7.0 (the pilot touchpoint) adds four
+# riders: the chart's new values asserted on the rendered documents right after
+# the budget (`acceptance.ts render`), an optional values OVERLAY so the
+# pilot's shape runs through this same script (`ACCEPTANCE_VALUES`), the `/mcp`
+# refusal through the chart's web Service, and — last, because it rolls
+# ClickHouse — a real BACKUP onto the chart's optional backups disk.
 #
 # CI's `stack` job runs THIS script (S2.1 L3) — there is no CI-only sequence
 # and no CI-only timeout arithmetic: the Helm timeouts below are the chart
@@ -48,6 +53,25 @@ UPGRADE_TIMEOUT=300s
 
 step() { printf '\n== %s\n' "$1"; }
 fail() { printf 'acceptance: %s\n' "$1" >&2; exit 1; }
+
+# 0.7.0: an optional values overlay for the whole run — the pilot's SHAPE
+# (registry images, `pullPolicy: IfNotPresent`, a demo toggle) through the SAME
+# script a default run takes, so what CI's `stack` dispatch rehearses is this
+# file and not a CI-only sequence (S2.1 L3). Empty, the default, means chart
+# defaults exactly as before: every helm call below expands to nothing extra.
+# The `${arr[@]+"${arr[@]}"}` form is bash 3.2 (macOS) under `set -u`, where a
+# bare empty-array expansion is an unbound-variable error.
+ACCEPTANCE_VALUES="${ACCEPTANCE_VALUES:-}"
+values_args=()
+if [ -n "$ACCEPTANCE_VALUES" ]; then
+  [ -f "$ACCEPTANCE_VALUES" ] || fail "ACCEPTANCE_VALUES=$ACCEPTANCE_VALUES is not a file"
+  values_args=(-f "$ACCEPTANCE_VALUES")
+  printf 'values overlay: %s\n' "$ACCEPTANCE_VALUES"
+fi
+# The chart's default ingest password (values.yaml) — the backups rider below
+# runs its BACKUP as the product's own write user, which holds GRANT ALL on the
+# database and therefore the BACKUP privilege.
+CLICKHOUSE_INGEST_PASSWORD="${CLICKHOUSE_INGEST_PASSWORD:-obstack_ingest_dev}"
 
 # The kind cluster behind the current kubectl context — never a guessed name,
 # so `kind load` and `kubectl`/`helm` below always talk to the same cluster.
@@ -108,7 +132,16 @@ harness() {
 # 900s. That is a render-time fact wearing a fifteen-minute disguise; this step
 # takes it off. README.md, "The node's CPU-request budget".
 step "chart CPU-request budget"
-harness budget
+harness budget ${values_args[@]+"${values_args[@]}"}
+
+# 0.7.0: the chart's new values — the demo toggle, Explain's mode, the `/mcp`
+# address under the web Ingress, the collector's key through a secretKeyRef,
+# the optional backups disk — asserted on rendered documents for the same
+# reason the budget runs first: fixed at render time, a second to ask, and a
+# wrong shape here would otherwise surface as a pod that never authenticates
+# or an env line the product prints wrong. README.md, "Upgrading to 0.7.0".
+step "chart 0.7.0 render assertions"
+harness render ${values_args[@]+"${values_args[@]}"}
 
 step "building this repo's images"
 docker build -t obstack-ingest:kind "$repo_root/services/ingest"
@@ -137,7 +170,7 @@ fi
 # tags itself during `helm install`, inside the same 900s budget. The K5
 # wall-clock number includes this block.
 step "loading images into kind cluster '$cluster'"
-images="$(helm template "$RELEASE" "$chart_dir" | sed -n 's/^ *image: *//p' | tr -d '"' | sort -u)"
+images="$(helm template "$RELEASE" "$chart_dir" ${values_args[@]+"${values_args[@]}"} | sed -n 's/^ *image: *//p' | tr -d '"' | sort -u)"
 for image in $images; do
   case "$image" in
     *:kind) ;; # built above, never pulled
@@ -166,10 +199,10 @@ if helm status "$RELEASE" >/dev/null 2>&1; then
   # probe silently keeps that value across a bare `helm upgrade`). This script
   # asserts the chart's DEFAULTS, so the upgrade path must start from them —
   # otherwise a re-run after a probe asserts a configuration nobody chose.
-  helm upgrade "$RELEASE" "$chart_dir" --reset-values --set "web.betterAuthSecret=$WEB_AUTH_SECRET" --wait --timeout "$UPGRADE_TIMEOUT"
+  helm upgrade "$RELEASE" "$chart_dir" --reset-values --set "web.betterAuthSecret=$WEB_AUTH_SECRET" ${values_args[@]+"${values_args[@]}"} --wait --timeout "$UPGRADE_TIMEOUT"
 else
   step "installing release '$RELEASE'"
-  helm install "$RELEASE" "$chart_dir" --set "web.betterAuthSecret=$WEB_AUTH_SECRET" --wait --timeout "$INSTALL_TIMEOUT"
+  helm install "$RELEASE" "$chart_dir" --set "web.betterAuthSecret=$WEB_AUTH_SECRET" ${values_args[@]+"${values_args[@]}"} --wait --timeout "$INSTALL_TIMEOUT"
 fi
 
 step "port-forwarding clickhouse + demo + web"
@@ -180,6 +213,20 @@ port_forward "svc/$RELEASE-demo" "$DEMO_PORT:8000" "http://127.0.0.1:$DEMO_PORT/
 # needs no session). A probe answering here means the boot check passed: the
 # stamp matched and the release's BETTER_AUTH_SECRET reached the pod.
 port_forward "svc/$RELEASE-web" "$WEB_PORT:3000" "http://127.0.0.1:$WEB_PORT/login"
+
+# 0.7.0 (S8.1 D642 through the chart): `/mcp` is served by this release's web
+# Service — the one probe a browserless harness can make is the endpoint's
+# uniform refusal: no bearer, one bodiless 401 with the challenge header. A
+# read key needs a signup, which the compose e2e drive owns; the claim here is
+# "the path exists behind the chart and refuses correctly", nothing more.
+step "0.7.0: /mcp answers through the chart's web Service (401 + challenge, no key)"
+mcp_headers="$(curl -s -o /dev/null -D - -X POST "http://127.0.0.1:$WEB_PORT/mcp" \
+  -H 'content-type: application/json' -H 'accept: application/json, text/event-stream' -d '{}')"
+printf '%s' "$mcp_headers" | head -1 | grep -q ' 401' \
+  || fail "POST /mcp without a key did not answer 401: $(printf '%s' "$mcp_headers" | head -1)"
+printf '%s' "$mcp_headers" | tr -d '\r' | grep -qi '^www-authenticate: Bearer realm="obstack"$' \
+  || fail "the 401 carried no WWW-Authenticate: Bearer realm=\"obstack\" challenge"
+printf '   401 with WWW-Authenticate: Bearer realm="obstack"\n'
 
 step "firing the demo agent"
 trace_1="$(chat 'why did checkout start failing')"
@@ -275,5 +322,32 @@ printf '   trace_id=%s pod=%s\n' "$trace_3" "$demo_pod"
 sleep 2
 kubectl delete pod "$demo_pod" --wait=false
 harness events "$trace_3" "$demo_pod"
+
+# 0.7.0 (pilot packet D696): the optional backups disk takes a real BACKUP.
+# Last, after the S4.4 rider, because enabling it rolls the ClickHouse pod
+# (config.d is read at boot) and every claim above must already have run
+# against the stores as installed. `--reset-values` keeps every other value
+# at its default (the upgrade path above says why), so the one thing that
+# changes is the flag under test; the release is left with it on, and a
+# re-run's own `--reset-values` upgrade puts it back. The BACKUP runs as the
+# product's write user (GRANT ALL ON obstack.* — files/obstack-users.xml),
+# and `BACKUP_CREATED` is ClickHouse's own word for a finished archive, read
+# back from `system.backups` rather than inferred from the statement's exit.
+step "0.7.0: the ClickHouse backups disk accepts a BACKUP"
+helm upgrade "$RELEASE" "$chart_dir" --reset-values --set "web.betterAuthSecret=$WEB_AUTH_SECRET" \
+  --set clickhouse.backups.enabled=true ${values_args[@]+"${values_args[@]}"} --wait --timeout "$UPGRADE_TIMEOUT"
+kubectl rollout status "statefulset/$RELEASE-clickhouse" --timeout=180s
+backup_name="acceptance-$(date -u +%Y%m%dT%H%M%SZ).zip"
+backup_id="$(kubectl exec "statefulset/$RELEASE-clickhouse" -- clickhouse-client \
+  --user obstack_ingest --password "$CLICKHOUSE_INGEST_PASSWORD" \
+  --query "BACKUP DATABASE obstack TO Disk('backups', '$backup_name')" | cut -f1)"
+[ -n "$backup_id" ] || fail "BACKUP DATABASE obstack returned no id"
+backup_status="$(kubectl exec "statefulset/$RELEASE-clickhouse" -- clickhouse-client \
+  --user obstack_ingest --password "$CLICKHOUSE_INGEST_PASSWORD" \
+  --query "SELECT status FROM system.backups WHERE id = '$backup_id'")"
+[ "$backup_status" = "BACKUP_CREATED" ] || fail "backup $backup_id is '$backup_status', not BACKUP_CREATED"
+backup_bytes="$(kubectl exec "statefulset/$RELEASE-clickhouse" -- sh -c "stat -c %s /var/lib/clickhouse/backups/$backup_name")"
+[ "${backup_bytes:-0}" -gt 0 ] || fail "backup archive /var/lib/clickhouse/backups/$backup_name is missing or empty"
+printf '   %s: BACKUP_CREATED, %s bytes on the data volume\n' "$backup_name" "$backup_bytes"
 
 printf '\nacceptance: PASS (stack-on-kind, %ss)\n' "$SECONDS"
