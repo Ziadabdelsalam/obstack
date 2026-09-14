@@ -11,14 +11,19 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"fmt"
+	"net/url"
 	"os"
 	"regexp"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/Ziadabdelsalam/observer-stack/services/ingest/internal/auth"
+	"github.com/Ziadabdelsalam/observer-stack/services/ingest/internal/pgmigrate"
+	"github.com/Ziadabdelsalam/observer-stack/services/ingest/pgmigrations"
 )
 
 const defaultPostgresDSN = "postgres://obstack:obstack_postgres_dev@127.0.0.1:5432/obstack"
@@ -30,20 +35,87 @@ func pgTestDSN() string {
 	return defaultPostgresDSN
 }
 
+// connectPostgres pings the server, skips without one, and then hands the test
+// a pool scoped to a schema of its own with the whole embedded migration set
+// applied — the keystore/alerting/retention isolation (their `migratedSchema`).
+//
+// Why a schema of its own and not the shared `public` this file used until the
+// S7.4 close: nothing in `go test ./...` migrates `public` before this package
+// runs. The pg-migrate subcommand tests in cmd/ingest do, but every package is
+// its own process and packages run in the order they finish compiling — PR
+// #38's `go` job ran this one first, twice, and both times the seed hit
+// `relation "workspaces" does not exist` (SQLSTATE 42P01) while the identical
+// code had passed on PR #36 nine days earlier. The three sibling packages that
+// touch Postgres never see that, because each migrates a schema it created;
+// this was the one Postgres-backed package that relied on somebody else having
+// run first. The per-test schema also makes the cleanup exact: one DROP SCHEMA
+// CASCADE, not a DELETE per row the test wrote.
 func connectPostgres(t *testing.T) (context.Context, *pgxpool.Pool) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	t.Cleanup(cancel)
-	pool, err := pgxpool.New(ctx, pgTestDSN())
+
+	pingCtx, cancelPing := context.WithTimeout(ctx, 5*time.Second)
+	defer cancelPing()
+	conn, err := pgx.Connect(pingCtx, pgTestDSN())
+	if err != nil {
+		t.Skipf("no Postgres at %s (%v); start deploy/compose to run the changes store tests", pgTestDSN(), err)
+	}
+	conn.Close(ctx)
+
+	pool, err := pgxpool.New(ctx, migratedSchema(ctx, t))
 	if err != nil {
 		t.Fatalf("open postgres: %v", err)
 	}
-	if err := pool.Ping(ctx); err != nil {
-		pool.Close()
-		t.Skipf("no Postgres at %s (%v); start deploy/compose to run the changes store tests", pgTestDSN(), err)
-	}
 	t.Cleanup(pool.Close)
 	return ctx, pool
+}
+
+// migratedSchema is the keystore integration test's helper with only the
+// schema's name prefix changed: a fresh schema, a DSN whose search_path lands
+// every pooled connection in it, the embedded set applied through the real
+// runner — so the partial UNIQUE index D496 relies on is the migration's own,
+// never a hand-typed copy — and a DROP SCHEMA CASCADE at cleanup.
+func migratedSchema(ctx context.Context, t *testing.T) string {
+	t.Helper()
+
+	name := fmt.Sprintf("changes_test_%d", time.Now().UnixNano())
+	conn, err := pgx.Connect(ctx, pgTestDSN())
+	if err != nil {
+		t.Fatalf("connect postgres: %v", err)
+	}
+	defer conn.Close(ctx)
+
+	if _, err := conn.Exec(ctx, "CREATE SCHEMA "+name); err != nil {
+		t.Fatalf("create schema %s: %v", name, err)
+	}
+	t.Cleanup(func() {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		cleanup, err := pgx.Connect(cleanupCtx, pgTestDSN())
+		if err != nil {
+			t.Errorf("connect to drop schema %s: %v", name, err)
+			return
+		}
+		defer cleanup.Close(cleanupCtx)
+		if _, err := cleanup.Exec(cleanupCtx, "DROP SCHEMA "+name+" CASCADE"); err != nil {
+			t.Errorf("drop schema %s: %v", name, err)
+		}
+	})
+
+	u, err := url.Parse(pgTestDSN())
+	if err != nil {
+		t.Fatalf("test DSN must be a postgres:// URL for schema scoping: %v", err)
+	}
+	q := u.Query()
+	q.Set("search_path", name)
+	u.RawQuery = q.Encode()
+	dsn := u.String()
+
+	if _, err := pgmigrate.Run(ctx, dsn, pgmigrations.FS); err != nil {
+		t.Fatalf("apply the embedded schema: %v", err)
+	}
+	return dsn
 }
 
 func randomHex(t *testing.T) string {
