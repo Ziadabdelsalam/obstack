@@ -1,3 +1,4 @@
+{{- if .Values.demo.enabled }}
 # A Deployment, not a bare Pod, for the reason this chart exists at all: M4
 # extends it in place (D35). A bare Pod rejects every `helm upgrade` that
 # changes anything but a container image — `pod updates may not change fields
@@ -118,3 +119,4 @@ spec:
                 echo "sidecar heartbeat $(date -u +%Y-%m-%dT%H:%M:%SZ)"
                 sleep 5
               done
+{{- end }}

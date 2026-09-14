@@ -108,7 +108,9 @@ spec:
             # `api_keys` rows, read through a cached lookup, so there is no key
             # value in this chart and no env variable here to set. The
             # collector's `ok_dev_local` credential (values.yaml) authenticates
-            # against the continuity row the pg-migrate Job seeds.
+            # against the continuity row the pg-migrate Job seeds — a dev/CI
+            # row a real install revokes once it has issued its own key
+            # (README.md, "The first install on a real cluster, in order").
             #
             # D275: the same always-secretKeyRef rule as CLICKHOUSE_DSN above,
             # not a literal `value:` — postgresDSN (cmd/ingest/main.go) folds

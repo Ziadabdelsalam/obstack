@@ -1,3 +1,4 @@
+{{- if .Values.demo.enabled }}
 # So a caller (T5's stack-on-kind harness, or a human with kubectl
 # port-forward) has a stable name to POST /chat against instead of a bare
 # Pod's own IP.
@@ -17,3 +18,4 @@ spec:
     - name: http
       port: 8000
       targetPort: http
+{{- end }}

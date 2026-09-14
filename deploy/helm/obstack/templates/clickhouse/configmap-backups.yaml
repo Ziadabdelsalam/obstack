@@ -1,0 +1,36 @@
+{{- if .Values.clickhouse.backups.enabled }}
+{{- if not (hasSuffix "/" .Values.clickhouse.backups.path) }}
+{{- fail (printf "clickhouse.backups.path must end with a slash (ClickHouse requires disk paths to), got %q" .Values.clickhouse.backups.path) }}
+{{- end }}
+# 0.7.0, the pilot packet's D696: a `backups` disk ClickHouse's BACKUP/RESTORE
+# statements are allowed to use, declared in config.d the way users.d carries
+# the two users — one file, mounted file-by-file
+# (templates/clickhouse/statefulset.yaml). It is a PLACE to write, on this
+# StatefulSet's own data volume; backup automation stays OUT of this chart by
+# ruling (README.md, "Backups"), and copying the archive off the node is the
+# operator's. Rendered only when enabled, so a default release carries no
+# config.d entry at all.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-clickhouse-backups
+  labels:
+    {{- include "obstack.labels" . | nindent 4 }}
+    app.kubernetes.io/component: clickhouse
+data:
+  obstack-backups.xml: |-
+    <clickhouse>
+      <storage_configuration>
+        <disks>
+          <backups>
+            <type>local</type>
+            <path>{{ .Values.clickhouse.backups.path }}</path>
+          </backups>
+        </disks>
+      </storage_configuration>
+      <backups>
+        <allowed_disk>backups</allowed_disk>
+        <allowed_path>{{ .Values.clickhouse.backups.path }}</allowed_path>
+      </backups>
+    </clickhouse>
+{{- end }}

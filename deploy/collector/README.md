@@ -69,7 +69,11 @@ never an ingest environment variable, and only their SHA-256 is stored;
 `ok_dev_local` keeps working unchanged because that row is seeded for it.
 `config.yaml` has no default: production supplies a key issued in settings
 through a Helm values file or a mounted secret. Neither file ever carries a
-literal key.
+literal key. Since chart 0.7.0 the chart meets the contract below as written:
+both collector workloads read the key through a `secretKeyRef` — the chart's
+own Secret's `collector-api-key` (from `collector.apiKey`) or
+`collector.existingSecret` — and the rendered pod spec carries no literal
+(`deploy/helm/obstack/README.md`, "Credentials and rotation").
 
 ## The filelog exclusion (D37.3) — the recommended customer pattern
 

@@ -4,13 +4,16 @@
  * the chart, so the exit is asserted through the same
  * `apps/web/src/server/data.ts` facade the app renders from).
  *
- * Five commands, all invoked by `acceptance.sh` (CI runs that same script —
+ * Six commands, all invoked by `acceptance.sh` (CI runs that same script —
  * S2.1 L3):
  *
  *   budget              — the only one that touches no cluster at all: render
  *                         the chart and refuse to go further if its total CPU
  *                         requests cannot fit the node CI schedules them on
  *                         (README.md, "The node's CPU-request budget").
+ *   render [args…]      — 0.7.0: the chart's new values asserted on rendered
+ *                         documents, right after `budget` and before any image
+ *                         exists (README.md, "Upgrading to 0.7.0").
  *   assert <trace_id>   — the whole-trace checks shared with compose's
  *                         smoke.ts (`deploy/compose/trace-checks.ts`: four
  *                         layers, cost/token, correlated logs, listed), plus
@@ -150,24 +153,18 @@ interface RenderedWorkload {
  * because the budget is about ONE node: on a bigger cluster the same per-pod
  * number is what each node reserves, which is the same question asked per node.
  */
-function chartCpuBudget(helmArgs: string[]): void {
-  const budgetM = Number(process.env.OBSTACK_CPU_BUDGET_M ?? CHART_CPU_REQUEST_BUDGET_M);
-  if (!Number.isFinite(budgetM) || budgetM <= 0) {
-    fail(`OBSTACK_CPU_BUDGET_M is ${JSON.stringify(process.env.OBSTACK_CPU_BUDGET_M)}, not a positive number of millicores`);
-  }
-
-  // The chart beside this file, rendered exactly as `acceptance.sh` installs
-  // it: chart defaults everywhere, plus the one value that has no default. The
-  // dummy secret reaches only templates/secret.yaml — no resource field of any
-  // workload reads it — so the footprint below is the release's own. Anything
-  // after `budget` on the command line is passed to `helm template` unchanged,
-  // which is how a deployment asks what ITS values cost (`budget --set
-  // collector.cluster.enabled=false`, `budget -f prod.yaml`); acceptance.sh
-  // passes nothing, because it installs the defaults.
+/**
+ * `helm template` of the chart beside this file, rendered exactly as
+ * `acceptance.sh` installs it: chart defaults everywhere, plus the one value
+ * that has no default. The dummy secret reaches only templates/secret.yaml —
+ * no resource field of any workload reads it. Anything in `helmArgs` goes to
+ * `helm template` unchanged, which is how a deployment asks what ITS values
+ * render (`--set collector.cluster.enabled=false`, `-f prod.yaml`).
+ */
+function renderChart(helmArgs: string[]): string {
   const chartDir = __dirname;
-  let rendered: string;
   try {
-    rendered = execFileSync(
+    return execFileSync(
       "helm",
       ["template", "obstack", chartDir, "--set", "web.betterAuthSecret=cpu-budget-render", ...helmArgs],
       { encoding: "utf8", maxBuffer: 64 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"] },
@@ -176,9 +173,40 @@ function chartCpuBudget(helmArgs: string[]): void {
     const stderr = (err as { stderr?: string }).stderr ?? "";
     fail(`helm template ${chartDir} failed${stderr ? `:\n${stderr.trimEnd()}` : ""}`);
   }
+}
 
+/** The same render, EXPECTED to be refused: returns helm's stderr, fails if helm succeeded. */
+function renderChartRefused(helmArgs: string[]): string {
+  try {
+    execFileSync(
+      "helm",
+      ["template", "obstack", __dirname, "--set", "web.betterAuthSecret=cpu-budget-render", ...helmArgs],
+      { encoding: "utf8", maxBuffer: 64 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"] },
+    );
+  } catch (err) {
+    return (err as { stderr?: string }).stderr ?? "";
+  }
+  fail(`helm template ${helmArgs.join(" ")} succeeded, but the chart should have refused it`);
+}
+
+interface CpuRow {
+  label: string;
+  perPodM: number;
+  pods: number;
+  totalM: number;
+}
+
+/**
+ * What the scheduler reserves per workload of a rendered chart: per pod,
+ * `max(sum of containers, max init container)` — init containers run one at a
+ * time and before the app containers, so they never add to them — times the
+ * pods the workload schedules at once. A DaemonSet's multiplier is 1 because
+ * the budget is about ONE node: on a bigger cluster the same per-pod number is
+ * what each node reserves, which is the same question asked per node.
+ */
+function cpuRows(rendered: string): CpuRow[] {
   const SCHEDULED_KINDS = new Set(["Deployment", "StatefulSet", "DaemonSet", "Job"]);
-  const rows: { label: string; perPodM: number; pods: number; totalM: number }[] = [];
+  const rows: CpuRow[] = [];
   for (const doc of parseAllDocuments(rendered)) {
     const obj = doc.toJS() as RenderedWorkload | null;
     if (!obj?.kind || !SCHEDULED_KINDS.has(obj.kind)) continue;
@@ -205,9 +233,24 @@ function chartCpuBudget(helmArgs: string[]): void {
       totalM: perPodM * pods,
     });
   }
+  rows.sort((a, b) => a.label.localeCompare(b.label));
+  return rows;
+}
+
+/**
+ * The chart's CPU-request footprint, checked against the node it has to fit on
+ * — the first thing `acceptance.sh` runs, because it needs no cluster, no
+ * images and no install, and the answer is already fixed at render time.
+ */
+function chartCpuBudget(helmArgs: string[]): void {
+  const budgetM = Number(process.env.OBSTACK_CPU_BUDGET_M ?? CHART_CPU_REQUEST_BUDGET_M);
+  if (!Number.isFinite(budgetM) || budgetM <= 0) {
+    fail(`OBSTACK_CPU_BUDGET_M is ${JSON.stringify(process.env.OBSTACK_CPU_BUDGET_M)}, not a positive number of millicores`);
+  }
+
+  const rows = cpuRows(renderChart(helmArgs));
   if (rows.length === 0) fail("helm template rendered no schedulable workloads — nothing to budget");
 
-  rows.sort((a, b) => a.label.localeCompare(b.label));
   const totalM = rows.reduce((sum, r) => sum + r.totalM, 0);
   const width = Math.max(...rows.map((r) => r.label.length));
   console.log(
@@ -228,6 +271,196 @@ function chartCpuBudget(helmArgs: string[]): void {
     );
   }
   console.log(`acceptance:   ${totalM}m ≤ ${budgetM}m — fits with ${budgetM - totalM}m to spare`);
+  console.log("acceptance: PASS");
+}
+
+/** The rendered shapes the 0.7.0 assertions read; everything else in a manifest is ignored. */
+interface RenderedEnv {
+  name?: string;
+  value?: unknown;
+  valueFrom?: { secretKeyRef?: { name?: string; key?: string } };
+}
+interface RenderedPodContainer {
+  name?: string;
+  env?: RenderedEnv[];
+  volumeMounts?: { name?: string; mountPath?: string; subPath?: string }[];
+}
+interface RenderedObject {
+  kind?: string;
+  metadata?: { name?: string; labels?: Record<string, string> };
+  spec?: {
+    template?: { metadata?: { annotations?: Record<string, string> }; spec?: { containers?: RenderedPodContainer[] } };
+    rules?: { host?: string }[];
+    tls?: unknown[];
+  };
+  data?: Record<string, string>;
+  stringData?: Record<string, string>;
+}
+
+/**
+ * 0.7.0 (the pilot touchpoint — .planning/2026-09-15-pilot-cluster-team-plan.md,
+ * T2): the chart's five new values, asserted on RENDERED documents before any
+ * image is built, for the reason `budget` runs first — the answer is fixed at
+ * render time and costs a second. Every claim reads the parsed manifest, never
+ * the text (template comments name the dev key too), and every flip below is
+ * rendered on top of whatever `helmArgs` the caller passed, so an overlay
+ * (`render -f pilot.yaml`) runs the pilot's own shape through the same checks.
+ * Each assertion was shown red first by a one-line sabotage of the template it
+ * guards; the team plan records which.
+ */
+function chartRenderAssertions(helmArgs: string[]): void {
+  const problems: string[] = [];
+  const ok = (line: string) => console.log(`acceptance:   ok — ${line}`);
+  const docsOf = (rendered: string): RenderedObject[] =>
+    parseAllDocuments(rendered)
+      .map((d) => d.toJS() as RenderedObject | null)
+      .filter((d): d is RenderedObject => d !== null && typeof d?.kind === "string");
+  const find = (docs: RenderedObject[], kind: string, name: string) =>
+    docs.find((d) => d.kind === kind && d.metadata?.name === name);
+  const annotations = (w: RenderedObject) => w.spec?.template?.metadata?.annotations ?? {};
+  const env = (w: RenderedObject | undefined, container: string, name: string) =>
+    w?.spec?.template?.spec?.containers?.find((c) => c.name === container)?.env?.find((e) => e.name === name);
+  const demoDocs = (docs: RenderedObject[]) =>
+    docs.filter((d) => d.metadata?.labels?.["app.kubernetes.io/component"] === "demo");
+  const render = (...extra: string[]) => docsOf(renderChart([...helmArgs, ...extra]));
+  const COLLECTORS: [string, string][] = [
+    ["DaemonSet", "obstack-collector"],
+    ["Deployment", "obstack-collector-cluster"],
+  ];
+  const BACKUPS_MOUNT = "/etc/clickhouse-server/config.d/obstack-backups.xml";
+
+  // --- the render as given (defaults, or the overlay's shape) --------------
+  const docs = render();
+
+  // D687/D703: the collector's key is a secretKeyRef on every collector
+  // workload the render carries, and the literal reaches no pod spec.
+  const secret = find(docs, "Secret", "obstack-credentials");
+  const chartOwnedKey = secret?.stringData?.["collector-api-key"];
+  for (const [kind, name] of COLLECTORS) {
+    const w = find(docs, kind, name);
+    if (!w) continue; // collector.cluster.enabled=false is a legal shape
+    const e = env(w, "collector", "OBSTACK_COLLECTOR_API_KEY");
+    const ref = e?.valueFrom?.secretKeyRef;
+    if (!e) problems.push(`${kind}/${name}: no OBSTACK_COLLECTOR_API_KEY env at all`);
+    else if (e.value !== undefined || !ref) problems.push(`${kind}/${name}: OBSTACK_COLLECTOR_API_KEY is a literal value, not a secretKeyRef`);
+    else if (ref.key !== "collector-api-key" || !ref.name) problems.push(`${kind}/${name}: secretKeyRef is ${JSON.stringify(ref)}, want key collector-api-key on a named Secret`);
+    else if (chartOwnedKey !== undefined && ref.name !== "obstack-credentials") problems.push(`${kind}/${name}: the chart's own Secret carries the key but the ref names ${ref.name}`);
+    const hasChecksum = annotations(w)["checksum/secret"] !== undefined;
+    if (chartOwnedKey !== undefined && !hasChecksum) problems.push(`${kind}/${name}: chart-owned key but no checksum/secret annotation — a rotated value would not roll the pod`);
+    if (chartOwnedKey === undefined && hasChecksum) problems.push(`${kind}/${name}: brought Secret but a checksum/secret annotation is rendered`);
+  }
+  if (chartOwnedKey !== undefined) {
+    for (const w of docs) {
+      for (const c of w.spec?.template?.spec?.containers ?? []) {
+        for (const e of c.env ?? []) {
+          if (e.value === chartOwnedKey) problems.push(`${w.kind}/${w.metadata?.name} container ${c.name}: env ${e.name} carries the collector key as a literal`);
+        }
+      }
+    }
+  }
+  if (problems.length === 0) ok(`the collector's key is a secretKeyRef on every collector workload (${chartOwnedKey !== undefined ? "chart-owned Secret, checksum annotation on" : "brought Secret, no chart-owned key rendered"}), and no pod spec carries it as a literal`);
+
+  // D692: Explain's mode is rendered, and only the app's two values pass.
+  const explainMode = env(find(docs, "Deployment", "obstack-web"), "web", "OBSTACK_EXPLAIN_MODE")?.value;
+  if (explainMode !== "fake" && explainMode !== "anthropic") problems.push(`web: OBSTACK_EXPLAIN_MODE is ${JSON.stringify(explainMode)}, want "fake" or "anthropic"`);
+  else ok(`OBSTACK_EXPLAIN_MODE=${explainMode} on the web Deployment`);
+
+  // D691/D704: the /mcp address is present exactly when the web Ingress is,
+  // scheme by the Ingress's own TLS, host by its own rule.
+  const ingress = find(docs, "Ingress", "obstack-web");
+  const mcp = env(find(docs, "Deployment", "obstack-web"), "web", "OBSTACK_PUBLIC_MCP_ENDPOINT")?.value;
+  if (ingress) {
+    const host = ingress.spec?.rules?.[0]?.host;
+    const want = `${(ingress.spec?.tls?.length ?? 0) > 0 ? "https" : "http"}://${host}/mcp`;
+    if (mcp !== want) problems.push(`web: OBSTACK_PUBLIC_MCP_ENDPOINT is ${JSON.stringify(mcp)}, want ${want} from the rendered Ingress`);
+    else ok(`OBSTACK_PUBLIC_MCP_ENDPOINT=${want} from the web Ingress`);
+  } else if (mcp !== undefined) {
+    problems.push(`web: OBSTACK_PUBLIC_MCP_ENDPOINT=${JSON.stringify(mcp)} rendered with no web Ingress — the loopback default is the true address there`);
+  } else ok("no web Ingress, no OBSTACK_PUBLIC_MCP_ENDPOINT (the app's loopback default stands)");
+
+  // D688: the demo renders whole or not at all.
+  const demo = demoDocs(docs);
+  const demoDeployment = find(docs, "Deployment", "obstack-demo");
+  const demoService = find(docs, "Service", "obstack-demo");
+  if ((demoDeployment === undefined) !== (demoService === undefined) || (demo.length !== 0 && demo.length !== 2)) {
+    problems.push(`demo: ${demo.length} object(s) with the demo component label — want both of Deployment + Service or neither`);
+  } else ok(`demo renders ${demo.length === 2 ? "both objects" : "nothing"} (demo.enabled=${demo.length === 2})`);
+
+  // D696: the backups disk is three things that appear together or not at all.
+  const backupsConfig = find(docs, "ConfigMap", "obstack-clickhouse-backups");
+  const clickhouse = find(docs, "StatefulSet", "obstack-clickhouse");
+  const backupsMount = clickhouse?.spec?.template?.spec?.containers
+    ?.find((c) => c.name === "clickhouse")
+    ?.volumeMounts?.find((m) => m.mountPath === BACKUPS_MOUNT && m.subPath === "obstack-backups.xml");
+  const backupsChecksum = clickhouse ? annotations(clickhouse)["checksum/backups-config"] : undefined;
+  const backupsOn = backupsConfig !== undefined;
+  if ((backupsMount !== undefined) !== backupsOn || (backupsChecksum !== undefined) !== backupsOn) {
+    problems.push(`backups: ConfigMap ${backupsOn ? "present" : "absent"}, mount ${backupsMount ? "present" : "absent"}, checksum ${backupsChecksum ? "present" : "absent"} — the three must agree`);
+  } else ok(`backups disk ${backupsOn ? "declared (ConfigMap, mount and checksum together)" : "absent (no config.d entry, no mount, no checksum)"}`);
+
+  // --- explicit flips on top of the same render -----------------------------
+  const off = render("--set", "demo.enabled=false");
+  const on = render("--set", "demo.enabled=true");
+  if (demoDocs(off).length !== 0) problems.push(`demo.enabled=false still renders ${demoDocs(off).length} demo object(s)`);
+  if (demoDocs(on).length !== 2) problems.push(`demo.enabled=true renders ${demoDocs(on).length} demo object(s), want 2`);
+  const total = (rows: CpuRow[]) => rows.reduce((sum, r) => sum + r.totalM, 0);
+  const onRows = cpuRows(renderChart([...helmArgs, "--set", "demo.enabled=true"]));
+  const offRows = cpuRows(renderChart([...helmArgs, "--set", "demo.enabled=false"]));
+  const demoRow = onRows.find((r) => r.label === "Deployment/obstack-demo");
+  const saved = total(onRows) - total(offRows);
+  if (!demoRow || saved !== demoRow.totalM) problems.push(`demo.enabled=false saves ${saved}m of CPU requests, want exactly the demo Deployment's ${demoRow?.totalM ?? "?"}m`);
+  else ok(`demo.enabled=false renders no demo object and frees exactly the demo pod's ${saved}m of CPU requests`);
+
+  const bogus = renderChartRefused([...helmArgs, "--set", "web.explainMode=bogus"]);
+  if (!bogus.includes("web.explainMode must be")) problems.push(`web.explainMode=bogus was refused without the app's sentence: ${bogus.trim().slice(0, 200)}`);
+  else ok('web.explainMode=bogus is refused at render time with the app\'s own sentence');
+
+  const http = render("--set", "web.ingress.enabled=true", "--set", "web.ingress.host=render.example.test");
+  const https = render(
+    "--set", "web.ingress.enabled=true", "--set", "web.ingress.host=render.example.test",
+    "--set", "web.ingress.tls.enabled=true", "--set", "web.ingress.tls.secretName=render-tls",
+  );
+  const httpMcp = env(find(http, "Deployment", "obstack-web"), "web", "OBSTACK_PUBLIC_MCP_ENDPOINT")?.value;
+  const httpsMcp = env(find(https, "Deployment", "obstack-web"), "web", "OBSTACK_PUBLIC_MCP_ENDPOINT")?.value;
+  if (httpMcp !== "http://render.example.test/mcp") problems.push(`web Ingress without TLS renders OBSTACK_PUBLIC_MCP_ENDPOINT=${JSON.stringify(httpMcp)}, want http://render.example.test/mcp`);
+  if (httpsMcp !== "https://render.example.test/mcp") problems.push(`web Ingress with TLS renders OBSTACK_PUBLIC_MCP_ENDPOINT=${JSON.stringify(httpsMcp)}, want https://render.example.test/mcp`);
+  if (httpMcp === "http://render.example.test/mcp" && httpsMcp === "https://render.example.test/mcp") ok("the /mcp address follows the web Ingress: http without TLS, https with it");
+
+  const brought = render("--set", "collector.existingSecret=render-brought");
+  const broughtSecret = find(brought, "Secret", "obstack-credentials");
+  if (broughtSecret?.stringData?.["collector-api-key"] !== undefined) problems.push("collector.existingSecret set, but the chart's own Secret still carries collector-api-key");
+  for (const [kind, name] of COLLECTORS) {
+    const w = find(brought, kind, name);
+    if (!w) continue;
+    const ref = env(w, "collector", "OBSTACK_COLLECTOR_API_KEY")?.valueFrom?.secretKeyRef;
+    if (ref?.name !== "render-brought" || ref.key !== "collector-api-key") problems.push(`${kind}/${name}: with collector.existingSecret=render-brought the ref is ${JSON.stringify(ref)}`);
+    if (annotations(w)["checksum/secret"] !== undefined) problems.push(`${kind}/${name}: a brought collector Secret still renders checksum/secret`);
+  }
+  if (!problems.some((p) => p.includes("render-brought") || p.includes("collector.existingSecret") || p.includes("brought collector"))) {
+    ok("collector.existingSecret routes both collector workloads to the brought Secret, renders no chart-owned key and no checksum");
+  }
+
+  const withBackups = render("--set", "clickhouse.backups.enabled=true");
+  const cm = find(withBackups, "ConfigMap", "obstack-clickhouse-backups");
+  const xml = cm?.data?.["obstack-backups.xml"] ?? "";
+  const sts = find(withBackups, "StatefulSet", "obstack-clickhouse");
+  const mount = sts?.spec?.template?.spec?.containers
+    ?.find((c) => c.name === "clickhouse")
+    ?.volumeMounts?.find((m) => m.mountPath === BACKUPS_MOUNT);
+  if (!cm) problems.push("clickhouse.backups.enabled=true renders no obstack-clickhouse-backups ConfigMap");
+  else if (!xml.includes("<allowed_disk>backups</allowed_disk>") || !xml.includes("<path>/var/lib/clickhouse/backups/</path>")) problems.push(`the backups config.d file does not declare the backups disk at the default path:\n${xml}`);
+  if (!mount) problems.push(`clickhouse.backups.enabled=true but the StatefulSet does not mount ${BACKUPS_MOUNT}`);
+  if (sts && annotations(sts)["checksum/backups-config"] === undefined) problems.push("clickhouse.backups.enabled=true but no checksum/backups-config annotation — enabling it would not roll the pod");
+  const badPath = renderChartRefused([...helmArgs, "--set", "clickhouse.backups.enabled=true", "--set", "clickhouse.backups.path=/nope"]);
+  if (!badPath.includes("must end with a slash")) problems.push(`clickhouse.backups.path=/nope was not refused for the missing slash: ${badPath.trim().slice(0, 200)}`);
+  if (cm && mount && sts && annotations(sts)["checksum/backups-config"] !== undefined && badPath.includes("must end with a slash")) {
+    ok("clickhouse.backups.enabled=true declares the backups disk, mounts it, stamps the checksum, and a path without a trailing slash is refused");
+  }
+
+  if (problems.length > 0) {
+    for (const p of problems) console.error(`acceptance:   - ${p}`);
+    fail("the chart's 0.7.0 render assertions failed");
+  }
   console.log("acceptance: PASS");
 }
 
@@ -505,17 +738,39 @@ async function clusterEvents(traceId: string, pod: string): Promise<void> {
 
   const deadline = Date.now() + EVENTS_TIMEOUT_MS;
   let trace: Trace | undefined;
+  let onPod: K8sEvent[] = [];
   let event: K8sEvent | undefined;
   for (;;) {
     trace = await data.getTrace(traceId);
-    // First event ON THIS POD, in the query's timestamp order. Deliberately
-    // not "first event whose kind is restart": narrowing the poll to the
-    // answer we want would turn a mis-mapped reason into a timeout instead of
-    // the specific red check below.
-    event = trace?.k8sEvents?.find((e) => e.pod === pod);
+    onPod = trace?.k8sEvents?.filter((e) => e.pod === pod) ?? [];
+    // The Normal `Killing` event whenever it arrives within the deadline — NOT
+    // the first event on this pod. This rider used to assert the first event's
+    // type, and a pod being torn down can emit a Warning first (a readiness
+    // probe failing on a container that is already going): `severity = "warn",
+    // want "info"` on CI's `stack` run at 948071f and again on a laptop kind
+    // cluster on 2026-09-15 — a timing question wearing the mapping's red. The
+    // S8.1 plan pre-registered this fix; the pilot touchpoint took it. Every
+    // event on the pod stays in view (`onPod`), so a mis-mapped reason still
+    // surfaces as the specific red below rather than a bare timeout.
+    event = onPod.find((e) => e.kind === "restart" && e.severity === "info");
     if (event) break;
     if (Date.now() > deadline) break;
     await sleep(1_000);
+  }
+
+  if (!event && onPod.length > 0) {
+    // Events on this pod reached the trace and none is the Normal Killing: the
+    // pipeline is alive, the mapping (receiver severity, EVENT_KINDS' fold of
+    // the reason) is not — the regression this rider exists to catch, named
+    // per event rather than hidden behind "nothing arrived".
+    for (const e of onPod) {
+      console.error(
+        `acceptance:   - event on ${pod}: kind=${JSON.stringify(e.kind)} severity=${JSON.stringify(e.severity)} label=${JSON.stringify(e.label)} at +${e.atMs}ms`,
+      );
+    }
+    fail(
+      `${onPod.length} event(s) on pod ${pod} reached trace ${traceId} within ${EVENTS_TIMEOUT_MS / 1000}s, none mapped as the Normal Killing (kind "restart", severity "info")`,
+    );
   }
 
   if (!event) {
@@ -578,14 +833,9 @@ LIMIT 10`;
   const problems: string[] = [];
   // `Killing` is a Normal-Type event, so the receiver stamps it INFO and
   // EVENT_KINDS (adapters.ts) folds the reason to "restart". Both halves of
-  // that mapping are asserted, because either one silently changing is
-  // exactly the regression this rider exists to catch.
-  if (event.kind !== "restart") {
-    problems.push(`kind = ${JSON.stringify(event.kind)}, want "restart" (reason Killing)`);
-  }
-  if (event.severity !== "info") {
-    problems.push(`severity = ${JSON.stringify(event.severity)}, want "info" (a Normal-Type event)`);
-  }
+  // that mapping are what the poll above selected on — an event that fails
+  // either never matches, and the "none mapped" red above names what arrived
+  // instead — so what is left to assert here is the event's own shape.
   if (event.id === "") problems.push("id is empty — k8s.event.uid did not survive the pipeline");
   if (event.label === "") problems.push("label is empty — neither the event message nor its reason arrived");
   // The window the query itself binds (NEARBY_LOG_WINDOW_NS), restated on the
@@ -601,7 +851,6 @@ LIMIT 10`;
     fail(`the k8s event on ${pod} landed wrong`);
   }
 
-  const onPod = whole.k8sEvents?.filter((e) => e.pod === pod) ?? [];
   console.log(
     `acceptance:   S4.4 cluster events alive: ${JSON.stringify(event.label)} on ${pod} at +${event.atMs}ms → kind=${event.kind} severity=${event.severity} (${onPod.length} event(s) on this pod, ±${NEARBY_LOG_WINDOW_S}s of a ${whole.durationMs}ms trace)`,
   );
@@ -766,12 +1015,16 @@ async function main(): Promise<void> {
     chartCpuBudget(process.argv.slice(3));
     return;
   }
+  if (command === "render") {
+    chartRenderAssertions(process.argv.slice(3));
+    return;
+  }
   if (command === "assert" && arg) return assertTrace(arg);
   if (command === "genai-fixture" && !arg) return genaiFixture();
   if (command === "events" && arg && arg2) return clusterEvents(arg, arg2);
   if (command === "k8s-metrics" && arg && !arg2) return k8sMetrics(arg);
   fail(
-    "usage: acceptance.ts budget [helm template args…] | acceptance.ts assert <trace_id> | acceptance.ts genai-fixture | acceptance.ts events <trace_id> <pod> | acceptance.ts k8s-metrics <demo_pod>",
+    "usage: acceptance.ts budget [helm template args…] | acceptance.ts render [helm template args…] | acceptance.ts assert <trace_id> | acceptance.ts genai-fixture | acceptance.ts events <trace_id> <pod> | acceptance.ts k8s-metrics <demo_pod>",
   );
 }
 

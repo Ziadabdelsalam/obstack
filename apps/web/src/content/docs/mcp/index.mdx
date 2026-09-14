@@ -25,7 +25,10 @@ address for your deployment.
 
 Self-hosters: the address the product prints is `http://localhost:3000/mcp`
 until the web workload carries `OBSTACK_PUBLIC_MCP_ENDPOINT`, the same rule the
-OTLP endpoints follow — behind a hostname, set it to that hostname.
+OTLP endpoints follow — behind a hostname, set it to that hostname. The Helm
+chart sets it for you from `web.ingress.host` once the web Ingress is enabled
+(chart 0.7.0, [the Helm chart page](/docs/self-hosting/helm-chart)); under
+Compose or a port-forward the loopback default is the true address.
 
 ## Scopes
 

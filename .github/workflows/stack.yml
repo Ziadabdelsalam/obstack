@@ -79,6 +79,19 @@
 # exactly as D298 accepted when it chose the branch instead of a re-base
 # (D306(e)). That number is not a regression and re-fires nothing. `stack`
 # is a K3-stable name from its first run; `web`/`go`/`kind` are untouched.
+#
+# THE REGISTRY REHEARSAL (chart 0.7.0, the pilot touchpoint — pilot packet
+# §11 step 2, breakdown D702): `workflow_dispatch` takes an optional
+# `registry_sha`. Set, the job logs into GHCR with its own token, writes a
+# values overlay naming the PUBLISHED images at that sha (web, ingest, and the
+# demo agent when the registry has it), and runs the SAME `acceptance.sh`
+# through `ACCEPTANCE_VALUES` — no CI-only sequence (S2.1 L3). It is a
+# dispatch and not a PR path because the artifacts under test are the ones a
+# master push already published, and because this runner is amd64, which is
+# what those images are — a laptop's arm64 kind node cannot run them, so the
+# rehearsal of "the client pulls these bytes and the chart comes up" lives
+# here and nowhere else. Empty (every PR and push run) is the run above,
+# byte for byte.
 name: stack
 
 on:
@@ -96,6 +109,16 @@ on:
   push:
     branches: [master]
   workflow_dispatch:
+    inputs:
+      registry_sha:
+        description: >-
+          Chart 0.7.0 registry rehearsal (pilot packet §11 step 2, D702): run
+          acceptance.sh with the PUBLISHED images at this full commit sha —
+          obstack-web:live-sha-<sha> and obstack-ingest:sha-<sha> from GHCR
+          with pullPolicy IfNotPresent, plus obstack-demo-agent:sha-<sha> when
+          the registry has it. Empty (the default) is the ordinary run.
+        required: false
+        default: ""
 
 concurrency:
   group: stack-${{ github.head_ref || github.ref }}
@@ -113,6 +136,10 @@ concurrency:
 
 permissions:
   contents: read
+  # 0.7.0: the registry rehearsal pulls this repository's own packages with
+  # the job's token. Read only — `publish` in images.yml is the one job that
+  # writes (D332/D333).
+  packages: read
 
 jobs:
   stack:
@@ -178,6 +205,40 @@ jobs:
         run: |
           docker buildx prune -af >/dev/null
           df -h / | tail -1
+
+      # Chart 0.7.0 (D702): the registry rehearsal's overlay, written HERE and
+      # never committed — the pilot's real values file lives with the client —
+      # and handed to acceptance.sh through ACCEPTANCE_VALUES, so the script
+      # that runs is the one every other run takes. Token and sha arrive as
+      # ENV, never as `${{ }}` spliced into the shell (images.yml says why).
+      # The pre-built obstack-web:kind above is then simply unused by the
+      # chart: the overlay's images are what helm renders, pulls and loads.
+      - name: Registry rehearsal overlay (workflow_dispatch registry_sha)
+        if: github.event_name == 'workflow_dispatch' && inputs.registry_sha != ''
+        env:
+          REGISTRY_SHA: ${{ inputs.registry_sha }}
+          GHCR_ACTOR: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_ACTOR" --password-stdin
+          overlay="$RUNNER_TEMP/pilot-overlay.yaml"
+          {
+            echo "web:"
+            echo "  image: ghcr.io/ziadabdelsalam/obstack-web:live-sha-$REGISTRY_SHA"
+            echo "  pullPolicy: IfNotPresent"
+            echo "ingest:"
+            echo "  image: ghcr.io/ziadabdelsalam/obstack-ingest:sha-$REGISTRY_SHA"
+            echo "  pullPolicy: IfNotPresent"
+            if docker manifest inspect "ghcr.io/ziadabdelsalam/obstack-demo-agent:sha-$REGISTRY_SHA" >/dev/null 2>&1; then
+              echo "demo:"
+              echo "  image: ghcr.io/ziadabdelsalam/obstack-demo-agent:sha-$REGISTRY_SHA"
+              echo "  pullPolicy: IfNotPresent"
+            else
+              echo "# no obstack-demo-agent manifest at this sha: the locally built demo image stays"
+            fi
+          } > "$overlay"
+          echo "== overlay =="; cat "$overlay"
+          echo "ACCEPTANCE_VALUES=$overlay" >> "$GITHUB_ENV"
 
       # The whole exit assertion — identical to a human's local run
       # (README.md, "Running the acceptance"): the script reads the cluster

@@ -1,6 +1,6 @@
 export const frontmatter = {
   title: "Helm chart",
-  description: "obstack on Kubernetes: install, credentials, managed Postgres, and what the chart refuses.",
+  description: "obstack on Kubernetes: install, the published images, the first install on a real cluster, credentials, backups, and what the chart refuses.",
 };
 
 # Self-hosting with the Helm chart
@@ -46,24 +46,53 @@ it is not optional: a live-stamped web image booted without it refuses to serve,
 so `--wait` would sit on a crash-looping pod until the timeout. Set
 `web.betterAuthUrl` to the origin a browser reaches the deployment on.
 
-Real deployments replace the local images: `--set web.image=<registry image>`
-and `--set ingest.image=<registry image>`, with `web.pullPolicy` and
-`ingest.pullPolicy` set to `IfNotPresent`.
+Real deployments replace the local images with the published ones, pinned by
+tag and digest, with `web.pullPolicy` and `ingest.pullPolicy` set to
+`IfNotPresent` — the next section.
+
+## Installing from the published images
+
+Every merge to master publishes the images this repository builds to GHCR,
+tagged by the merge commit and nothing else — no `latest`, no `master`, so a
+values file always names the exact bytes CI built and refusal-tested:
+
+| chart value | published tag |
+|---|---|
+| `web.image` | `ghcr.io/ziadabdelsalam/obstack-web:live-sha-<sha>` — the live-stamped variant; the `mock-sha-` one is the public demo and refuses to serve live |
+| `ingest.image` | `ghcr.io/ziadabdelsalam/obstack-ingest:sha-<sha>` |
+| `demo.image` | `ghcr.io/ziadabdelsalam/obstack-demo-agent:sha-<sha>` — since chart 0.7.0, needed only while `demo.enabled` is true |
+
+`<sha>` is the full 40-character merge commit. Pin the digest as well; it is
+printed in the `publish` job's step summary, or resolved by a pull:
+
+```bash
+docker pull ghcr.io/ziadabdelsalam/obstack-web:live-sha-<sha>
+docker inspect --format '{{index .RepoDigests 0}}' ghcr.io/ziadabdelsalam/obstack-web:live-sha-<sha>
+```
+
+and write `image: ghcr.io/ziadabdelsalam/obstack-web:live-sha-<sha>@sha256:<digest>`.
+Two facts before the first pull: the images are `linux/amd64` (an arm64 node
+cannot run them), and the packages answer `401` to anonymous pulls until their
+visibility is set to public on GitHub — per package, not per repository. The
+chart ships no `imagePullSecrets` support; public packages are the posture.
 
 ## What the chart does and does not cover
 
 In scope, and shipped: ClickHouse and Postgres with durable storage, the ingest
-Deployment and its migration Jobs, the web workload, the collector DaemonSet, a
-chart-owned Secret with an `existingSecret` override on every credential,
-optional Ingress for web and for ingest's OTLP/HTTP surface, and resource
-requests and limits on `ingest.resources` and `web.resources`.
+Deployment and its migration Jobs, the web workload, the collector DaemonSet and
+the single-replica cluster collector, a demo pod behind `demo.enabled`, a
+chart-owned Secret with an `existingSecret` override on every credential
+(five groups since 0.7.0 — the collector's key included), optional Ingress for
+web and for ingest's OTLP/HTTP surface, `web.explainMode`, an optional
+`backups` disk for ClickHouse, and resource requests and limits on ingest, web,
+both collectors and both demo containers, with requests only on the two stores.
 
 Deliberately **not** in scope, and not a gap to fill quietly: HA beyond ingest's
 existing replica story, autoscaling, PodDisruptionBudgets, NetworkPolicies,
-multi-replica ClickHouse, and backup automation. Requests and limits are also
-**not** set on ClickHouse, Postgres, the collector DaemonSet or the demo pod:
-sizing a database's limits is a measurement, not a guess, and a wrong limit
-OOM-kills the store it was meant to protect.
+multi-replica ClickHouse, backup automation, an ingress controller,
+cert-manager, and pull secrets. Limits are deliberately **not** set on
+ClickHouse and Postgres: sizing a database's limits is a measurement, not a
+guess, and a wrong limit OOM-kills the store it was meant to protect.
 
 `ingest.replicaCount` defaults to 2. Enabling ingest's Ingress exposes the
 OTLP/HTTP surface and automatically sets `OBSTACK_PUBLIC_OTLP_HTTP_ENDPOINT` on
@@ -72,6 +101,191 @@ deliberately not exposed**, and a deployment that publishes only HTTP gets an
 honest omission in the quickstart rather than an address nothing serves. No
 ingress controller and no cert-manager ship here — `web.ingress.enabled` and
 `ingest.ingress.enabled` assume one already exists in the cluster.
+
+## The first install on a real cluster, in order
+
+The chart's defaults are a kind cluster's. A cluster people will sign in to
+needs six things the defaults do not do, in this order; each is a value in the
+chart or a row in its Postgres, and none is a new component.
+
+1. **A values file with no credential in it.** One brought Secret per group
+   you own (`clickhouse.existingSecret`, `postgres.existingSecret`,
+   `web.existingSecret`, `ingest.existingSecret`, `collector.existingSecret`,
+   with the fixed key names under "Credentials and rotation" — the auth
+   secret lives in the web Secret's `better-auth-secret`, generated once with
+   `openssl rand -base64 32`); the published images by tag and digest;
+   `web.betterAuthUrl` as the `https://` origin browsers will use (the
+   `https://` is what upgrades the session cookie to its `__Secure-` name — a
+   wrong value here is a login that never sticks); `web.ingress` and
+   `ingest.ingress` enabled with their hosts and TLS Secrets; and the storage
+   sizes from your expected event volume and plan retention rather than the
+   20Gi/10Gi dev defaults. Before the cluster sees the file, run the chart's
+   budget check against it — a request set that does not fit the node's
+   allocatable leaves the install's `--wait` hanging for the whole timeout,
+   and nothing names the cause:
+
+   ```bash
+   npx tsx --tsconfig apps/web/tsconfig.json --conditions react-server \
+     deploy/helm/obstack/acceptance.ts budget -f your-values.yaml
+   ```
+
+2. **Install, and sign up.** `helm install obstack deploy/helm/obstack -f your-values.yaml --timeout 900s --wait`;
+   both migrate Jobs reach `Complete`; `https://<web.ingress.host>/login`
+   answers 200 over TLS; the first signup creates the organization and the
+   workspace. Settings → General shows the workspace id the next step needs.
+
+3. **Move the workspace off `free`.** A fresh workspace is on the `free` plan —
+   50,000 events a month and 7-day retention — with no row needed to be on it
+   and no billing rail on a self-hosted install to change it: the billing mode
+   is `fake`, and the hosted product's checkout is its merchant's, not yours.
+   Real traffic crosses 50,000 events in hours, after which ingest head-samples
+   the rest and a 7-day sweep keeps a week — the install would be evaluated
+   throttled and short of memory with nobody told. One row is the whole
+   authority:
+
+   ```bash
+   kubectl exec statefulset/obstack-postgres -- psql -U obstack -d obstack -v ON_ERROR_STOP=1 \
+     -c "INSERT INTO workspace_plans (workspace_id, plan_id) VALUES ('<workspace id>', 'pro') ON CONFLICT (workspace_id) DO UPDATE SET plan_id = 'pro', updated_at = now();"
+   ```
+
+   `pro` is 1,000,000 events a month and 30-day retention. A self-hosted plan
+   with no quota is a product decision the chart does not take; until it is
+   taken, this row is the documented posture.
+
+4. **Issue the collector's key, then upgrade with it.** The install is
+   two-step by construction: the collector sends a bearer key that must be an
+   `api_keys` row in this release's Postgres, and no key exists before a
+   workspace does. Settings → API keys → issue a key with scope `ingest`, put
+   it in your collector Secret under `collector-api-key` (or in
+   `collector.apiKey` if the chart owns that Secret), and
+   `helm upgrade obstack deploy/helm/obstack -f your-values.yaml --timeout 300s --wait`.
+   Both collectors roll and ship into your workspace from then on; until this
+   step they were shipping into `ws_demo` under the seeded dev key.
+
+5. **Turn the demo off.** `demo.enabled: false`, same upgrade. Keep it on
+   exactly as long as you want the four-layer proof from something that is not
+   yet your own service — a `/chat` against the demo Service through a
+   port-forward, the trace resolving in the product with `api`, `agent`,
+   `tool` and `llm` under one id. The moment your own instrumented service has
+   done the same, the pod is noise, a CPU request and a writer into `ws_demo`.
+
+6. **Revoke the seeded dev key — last, because steps 4 and 5 depend on the
+   row.** The Postgres migrations seed `ok_dev_local` for `ws_demo` in every
+   install: a public credential by design, printed in the repository, and the
+   row the chart's collector and demo pod authenticate with out of the box.
+   Once ingest's Ingress is up, anyone reading the repository can POST
+   telemetry into your cluster's `ws_demo` — not a read of your data, but a
+   write into your ClickHouse and a quota sink nobody asked for.
+
+   ```bash
+   kubectl exec statefulset/obstack-postgres -- psql -U obstack -d obstack -v ON_ERROR_STOP=1 \
+     -c "UPDATE api_keys SET revoked_at = now() WHERE id = 'key_dev_local';"
+   ```
+
+   Ingest caches key lookups for 30 seconds, positive and negative, which is
+   how long the revoked key keeps working.
+
+## TLS
+
+The chart never issues or renders certificate material: `web.ingress.tls.secretName`
+and `ingest.ingress.tls.secretName` name a `kubernetes.io/tls` Secret already in
+the cluster, and `web.ingress.className` / `ingest.ingress.className` pick the
+controller the cluster already runs. On k3s that controller is Traefik, and the
+standard pairing is cert-manager with a Let's Encrypt `ClusterIssuer` issuing
+both hosts — HTTP-01 needs port 80 reachable on the node for the challenge. A
+certificate you already hold, loaded as the Secret and renewed by you, is the
+zero-new-components alternative; nothing in the chart cares which.
+
+## Backups
+
+Backup automation is out of the chart by ruling, and the honest floor on a
+single node is three things:
+
+- **The node's own disk snapshot** on the hypervisor's schedule. Both PVCs are
+  directories on the node under a single-node storage class such as k3s's
+  `local-path`, which has no volume snapshots; a whole-node snapshot is
+  consistent enough for a pilot and costs no new component.
+- **A nightly `pg_dump`, copied off the node.** Postgres holds the rows a person
+  authored and no machine can re-derive — identity, keys, incidents, alerts,
+  dashboards, the plan row. The smallest honest version is a CronJob in your
+  own namespace on the same Postgres image the chart pins:
+
+  ```yaml
+  apiVersion: batch/v1
+  kind: CronJob
+  metadata:
+    name: obstack-pg-dump
+  spec:
+    schedule: "15 2 * * *"
+    concurrencyPolicy: Forbid
+    jobTemplate:
+      spec:
+        template:
+          spec:
+            restartPolicy: Never
+            containers:
+              - name: pg-dump
+                image: postgres:17.11
+                env:
+                  - name: PGPASSWORD
+                    valueFrom:
+                      secretKeyRef:
+                        name: obstack-credentials   # or your postgres existingSecret
+                        key: postgres-password
+                command:
+                  - sh
+                  - -c
+                  - |
+                    set -eu
+                    f="/backup/obstack-$(date -u +%Y%m%dT%H%M%SZ).sql.gz"
+                    pg_dump -h obstack-postgres -U obstack obstack | gzip > "$f"
+                    # copy "$f" off the node here — an object store, another
+                    # machine; a dump on this node's disk is not yet a backup
+                volumeMounts:
+                  - name: backup
+                    mountPath: /backup
+            volumes:
+              - name: backup
+                persistentVolumeClaim:
+                  claimName: obstack-pg-dump   # a PVC you create
+  ```
+
+- **ClickHouse, when you want more than the snapshot.** `clickhouse.backups.enabled: true`
+  declares a `local` disk named `backups` at `clickhouse.backups.path`
+  (default `/var/lib/clickhouse/backups/`, on the data volume) and allows
+  `BACKUP` and `RESTORE` against it, so from `clickhouse-client` as the
+  `obstack_ingest` user
+
+  ```sql
+  BACKUP DATABASE obstack TO Disk('backups', 'obstack-20260915.zip')
+  ```
+
+  answers with the backup's id and `BACKUP_CREATED`, and the archive sits at
+  that path until you copy it off the node. Enabling the flag rolls the
+  ClickHouse pod once.
+
+## Explain on Kubernetes
+
+Explain's default mode is `fake` on every deployment, and the chart now states
+it: `web.explainMode` renders `OBSTACK_EXPLAIN_MODE`, and the panel says, on
+every trace and incident, that this deployment runs the fake provider — never
+a fabricated summary presented as real. `web.explainMode: anthropic` with the
+key in the web Secret's `explain-api-key` makes Explain and incident analysis
+real; runs spend the workspace plan's monthly Explain allowance. Any other value
+is refused when the chart renders. [The Explain page](/docs/explain) has the
+provider variables.
+
+## Coding agents over MCP
+
+With `web.ingress.enabled` on, the web Deployment carries
+`OBSTACK_PUBLIC_MCP_ENDPOINT` — `https://<web.ingress.host>/mcp`, or `http://`
+when the Ingress has no TLS — so the product's MCP page prints the real address
+and the client setups it renders are copy-ready. `/mcp` is a path on the web
+Service the Ingress already routes; nothing new is exposed. A developer issues a
+key at scope `read` in Settings → API keys and adds the server to their client;
+the endpoint refuses `ingest` keys and ingest refuses `read` keys, so the two
+credentials cannot be confused. [MCP for coding agents](/docs/mcp) has the
+rest.
 
 ## Upgrading from 0.2.0 is a reinstall, and it destroys data
 
@@ -126,23 +340,26 @@ exist yet for a hook to run against.
 
 Every credential the chart handles resolves through the same pattern. By default
 the chart renders its own Secret from the values; setting
-`clickhouse.existingSecret`, `postgres.existingSecret`, `web.existingSecret` or
-`ingest.existingSecret` sources that group from a Secret already in the cluster
-instead.
+`clickhouse.existingSecret`, `postgres.existingSecret`, `web.existingSecret`,
+`ingest.existingSecret` or `collector.existingSecret` sources that group from a
+Secret already in the cluster instead.
 
 **Those values are a NAME, never a value.** The credential itself never has to
 pass through `values.yaml`, `--set`, or the release manifest. Key names are
 fixed by the chart rather than values-configurable, so a brought Secret has
 exactly one thing to get right instead of two: `clickhouse-ingest-password`,
 `clickhouse-web-password`, `postgres-password`, `better-auth-secret`,
-`explain-api-key`, `vercel-drain-secret`. The last two are read as optional, so
-a brought Secret may omit either entirely.
+`explain-api-key`, `vercel-drain-secret`, `collector-api-key`. `explain-api-key`
+and `vercel-drain-secret` are read as optional, so a brought Secret may omit
+either entirely.
 
-Four groups, not six: ClickHouse's two users rotate together, the web workload's
-two auth slots are a third group, and `ingest`'s one optional slot is a fourth
-because it rotates with a drain's configuration in somebody else's dashboard.
-**No external-secrets integration ships here** — the name override is the whole
-mechanism.
+Five groups, not seven: ClickHouse's two users rotate together, the web
+workload's two auth slots are a third group, `ingest`'s one optional slot is a
+fourth because it rotates with a drain's configuration in somebody else's
+dashboard, and the collector's key is a fifth because it is a client credential
+issued in the product's own settings and rotated by revoking and reissuing
+there. **No external-secrets integration ships here** — the name override is
+the whole mechanism.
 
 **Rotation is a documented procedure, never automated, and it differs by
 credential:**
@@ -168,6 +385,14 @@ credential:**
 - **The web workload's two slots** (`web.betterAuthSecret`, `web.explainApiKey`).
   Update the Secret and roll `deployment/<release>-web`. Rotating the auth secret
   invalidates every live session; users sign in again.
+- **The collector's key** (`collector.apiKey`, since 0.7.0). Both collector
+  workloads read it through a `secretKeyRef`. Issue the new key in Settings →
+  API keys, update the Secret, roll `daemonset/<release>-collector` **and**
+  `deployment/<release>-collector-cluster` (the collector reads its environment
+  once, at process start), then revoke the old key in the same tab. Changing the
+  value on the chart's own Secret rolls both for you on the next `helm upgrade`
+  through a checksum annotation; a brought `existingSecret` needs the manual
+  roll, like every other group.
 
 ## Managed Postgres
 

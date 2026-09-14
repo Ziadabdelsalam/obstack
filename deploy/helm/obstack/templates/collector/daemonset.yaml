@@ -25,6 +25,17 @@ spec:
         # template makes `helm upgrade` roll the DaemonSet exactly when
         # T1's config.yaml actually changed, and never otherwise.
         checksum/config: {{ .Files.Get "files/collector-config.yaml" | sha256sum }}
+        {{- if not .Values.collector.existingSecret }}
+        # 0.7.0: the key rides a secretKeyRef now (below), so a bare
+        # `helm upgrade --set collector.apiKey=…` would change the Secret
+        # without changing this pod template — the gap
+        # templates/postgres/statefulset.yaml's checksum/secret closes, closed
+        # the same way. Salted, so the annotation is not the very SHA-256 the
+        # `api_keys` row stores for this token. A brought existingSecret's
+        # rotation is invisible at render time: that roll is the manual
+        # `kubectl rollout restart` in README.md, "Credentials and rotation".
+        checksum/secret: {{ printf "collector-api-key:%s" .Values.collector.apiKey | sha256sum }}
+        {{- end }}
       labels:
         app.kubernetes.io/name: obstack
         app.kubernetes.io/instance: {{ .Release.Name }}
@@ -50,8 +61,18 @@ spec:
           env:
             - name: OBSTACK_INGEST_ENDPOINT
               value: http://{{ .Release.Name }}-ingest:4318
+            # 0.7.0 (pilot packet D687, breakdown D703): a secretKeyRef into
+            # the chart's own Secret (`collector-api-key`, from values.yaml's
+            # collector.apiKey) or `collector.existingSecret` — never a
+            # `value:` literal, which is what deploy/collector/README.md's
+            # DaemonSet contract has required all along. Rotation: update the
+            # Secret, then roll THIS DaemonSet and the cluster Deployment
+            # (otelcol reads its env once, at process start).
             - name: OBSTACK_COLLECTOR_API_KEY
-              value: {{ .Values.collector.apiKey | quote }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "obstack.collector.secretName" . }}
+                  key: collector-api-key
             - name: OBSTACK_COLLECTOR_EXCLUDE_CONTAINER
               value: {{ .Values.collector.excludeContainer | quote }}
             - name: OBSTACK_COLLECTOR_STORAGE_DIR

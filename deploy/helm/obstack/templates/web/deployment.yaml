@@ -6,6 +6,14 @@
 # BETTER_AUTH_SECRET, exits 1 loudly rather than serving — this chart's job
 # is only to always SET the runtime half (D251(b)/D267: "compose and the
 # chart always set it").
+#
+# 0.7.0: `web.explainMode` is refused at RENDER time for anything but the two
+# values apps/web/src/server/explain/client.ts accepts — the same sentence the
+# app would throw at boot, taken before a pod exists rather than as a
+# crash-loop `--wait` sits on.
+{{- if not (has .Values.web.explainMode (list "fake" "anthropic")) }}
+{{- fail (printf "web.explainMode must be \"fake\" or \"anthropic\", got %v (apps/web/src/server/explain/client.ts refuses the same)" .Values.web.explainMode) }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -109,6 +117,12 @@ spec:
                   name: {{ include "obstack.web.secretName" . }}
                   key: explain-api-key
                   optional: true
+            # 0.7.0: the mode that decides whether the key above is read at
+            # all — values.yaml at `web.explainMode`. Rendered ALWAYS, like
+            # OBSTACK_DATA_MODE above: an explicit `fake` is the app's own
+            # default stated, never a change in behaviour.
+            - name: OBSTACK_EXPLAIN_MODE
+              value: {{ .Values.web.explainMode | quote }}
             {{- if .Values.ingest.ingress.enabled }}
             # D266/D277: the ingest ingress is the deployment's public OTLP
             # address, so the quickstart and connect flows render it instead
@@ -118,6 +132,19 @@ spec:
             # product, never a loopback beside a public endpoint.
             - name: OBSTACK_PUBLIC_OTLP_HTTP_ENDPOINT
               value: {{ printf "%s://%s" (ternary "https" "http" .Values.ingest.ingress.tls.enabled) .Values.ingest.ingress.host | quote }}
+            {{- end }}
+            {{- if .Values.web.ingress.enabled }}
+            # 0.7.0 (S8.1 D653, pilot packet D691): the address /app/mcp
+            # prints and the agent setup snippets carry. `/mcp` is a path on
+            # this Service, which the web Ingress already routes (`/` Prefix,
+            # templates/ingress/web.yaml) — this line only tells the product
+            # its public name; nothing new is exposed. The scheme follows the
+            # Ingress's TLS exactly as the OTLP line above does (D704): an
+            # Ingress without TLS serves http, and the product prints what is
+            # served. Unset (no Ingress), the app's loopback default is the
+            # true address behind a `kubectl port-forward`.
+            - name: OBSTACK_PUBLIC_MCP_ENDPOINT
+              value: {{ printf "%s://%s/mcp" (ternary "https" "http" .Values.web.ingress.tls.enabled) .Values.web.ingress.host | quote }}
             {{- end }}
           ports:
             - name: http

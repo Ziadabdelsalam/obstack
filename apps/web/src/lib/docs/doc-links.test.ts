@@ -121,7 +121,7 @@ test("every /docs/... link in the corpus names a page the manifest carries", () 
   // 404 identically on both mounts — this is the assertion that says so at test
   // time instead.
   const all = pages.flatMap((p) => p.links);
-  assert.equal(all.length, 24, "the corpus's link count changed — update this deliberately"); // S8.1 T5: /docs/mcp links three pages
+  assert.equal(all.length, 27, "the corpus's link count changed — update this deliberately"); // S8.1 T5: /docs/mcp links three pages; pilot T4: the Helm page links /docs/explain and /docs/mcp, the MCP page links the Helm page
   for (const href of all) {
     const [pathname] = href.split("#");
     const segments = pathname.slice(PUBLIC_DOCS_BASE.length).split("/").filter(Boolean);
@@ -214,7 +214,7 @@ test("the rendered body links stay on the mount the reader is on", (t) => {
       checkedBodyLinks++;
     }
   }
-  assert.equal(checkedBodyLinks, 24, /* S8.1 T5: /docs/mcp's three body links */ "the corpus's link count changed — update this deliberately");
+  assert.equal(checkedBodyLinks, 27, /* S8.1 T5: /docs/mcp's three body links */ "the corpus's link count changed — update this deliberately"); // pilot T4: +3, see the count above
 });
 
 // ───────────────────────────────────────────────── the fragment half (R1 B)
