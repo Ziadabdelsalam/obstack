@@ -275,6 +275,18 @@ jobs:
           docker build -t "$REGISTRY/obstack-clickhouse:sha-${{ github.sha }}" -f deploy/railway/clickhouse/Dockerfile .
           docker push "$REGISTRY/obstack-clickhouse:sha-${{ github.sha }}"
 
+      # Chart 0.7.0 (the pilot touchpoint, D701): the demo agent joins the
+      # published set. A first install on a real cluster keeps the chart's demo
+      # pod for the four-layer proof before turning it off (chart README, "The
+      # first install on a real cluster"), and side-loading has no place on a
+      # client's VM — so the image has to be pullable. Tagged like ingest's:
+      # `sha-<sha>` only. The `stack` job is what proves this Dockerfile builds
+      # on a PR that touches it; here it is built again for the registry.
+      - name: Build and push obstack-demo-agent:sha-${{ github.sha }}
+        run: |
+          docker build -t "$REGISTRY/obstack-demo-agent:sha-${{ github.sha }}" demo/agent-app
+          docker push "$REGISTRY/obstack-demo-agent:sha-${{ github.sha }}"
+
       # Same refusal proven in `images`, re-run against the artifact actually
       # pulled back from GHCR — proves the pushed bytes refuse, not just the
       # local build cache.
@@ -342,7 +354,8 @@ jobs:
               "$REGISTRY/obstack-web:live-sha-${{ github.sha }}" \
               "$REGISTRY/obstack-web:mock-sha-${{ github.sha }}" \
               "$REGISTRY/obstack-ingest:sha-${{ github.sha }}" \
-              "$REGISTRY/obstack-clickhouse:sha-${{ github.sha }}"; do
+              "$REGISTRY/obstack-clickhouse:sha-${{ github.sha }}" \
+              "$REGISTRY/obstack-demo-agent:sha-${{ github.sha }}"; do
               digest="$(docker inspect --format '{{index .RepoDigests 0}}' "$ref")"
               echo "- \`$ref\` -> \`$digest\`"
             done
