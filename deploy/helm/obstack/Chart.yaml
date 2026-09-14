@@ -34,5 +34,18 @@ type: application
 # `-collector-events` → `-collector-cluster` — see README.md, "Upgrading to
 # 0.6.0". The ClusterRole widens (behind the same gate) to what the
 # k8sclusterreceiver's informers need at the pinned v0.158.0.
-version: 0.6.0
+# 0.7.0: the client-pilot deploy touchpoint (.planning/2026-09-14-client-pilot-
+# cluster-packet.md §12). Additive — nothing removed or renamed — and what an
+# operator observes in a DEFAULT render, exactly: both collector workloads read
+# OBSTACK_COLLECTOR_API_KEY through a secretKeyRef (the chart Secret's
+# `collector-api-key`, or `collector.existingSecret`) instead of a values
+# literal, each with a checksum/secret pod-template annotation; the web
+# Deployment carries OBSTACK_EXPLAIN_MODE from `web.explainMode` (default
+# `fake`, the app's own default stated). Behind gates that default to today's
+# render: `demo.enabled` (false renders no demo objects),
+# `clickhouse.backups.enabled` (a `backups` disk declared in config.d), and
+# OBSTACK_PUBLIC_MCP_ENDPOINT on the web Deployment under the existing
+# `web.ingress.enabled` branch, beside the OTLP address the ingest Ingress
+# already renders. See README.md, "Upgrading to 0.7.0".
+version: 0.7.0
 appVersion: "0.1.0"

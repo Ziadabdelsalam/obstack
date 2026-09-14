@@ -69,6 +69,12 @@ spec:
         # and rotation", not an automatic one.
         checksum/secret: {{ printf "%s%s" .Values.clickhouse.ingestPassword .Values.clickhouse.webPassword | sha256sum }}
         {{- end }}
+        {{- if .Values.clickhouse.backups.enabled }}
+        # 0.7.0: only when enabled, so a DEFAULT install's pod template is
+        # byte-identical to 0.6.0's. Enabling the backups disk, or moving its
+        # path, rolls the pod once — config.d is read at boot.
+        checksum/backups-config: {{ .Values.clickhouse.backups.path | sha256sum }}
+        {{- end }}
       labels:
         app.kubernetes.io/name: obstack
         app.kubernetes.io/instance: {{ .Release.Name }}
@@ -104,6 +110,15 @@ spec:
               mountPath: /etc/clickhouse-server/users.d/obstack-users.xml
               subPath: obstack-users.xml
               readOnly: true
+            {{- if .Values.clickhouse.backups.enabled }}
+            # 0.7.0: the backups disk declaration, file-by-file for the same
+            # reason as users.d above (the image writes its own files into
+            # config.d too).
+            - name: backups-xml
+              mountPath: /etc/clickhouse-server/config.d/obstack-backups.xml
+              subPath: obstack-backups.xml
+              readOnly: true
+            {{- end }}
             - name: data
               mountPath: /var/lib/clickhouse
           readinessProbe:
@@ -122,6 +137,11 @@ spec:
         - name: users-xml
           configMap:
             name: {{ .Release.Name }}-clickhouse-users
+        {{- if .Values.clickhouse.backups.enabled }}
+        - name: backups-xml
+          configMap:
+            name: {{ .Release.Name }}-clickhouse-backups
+        {{- end }}
   # The kubelet creates a fresh PVC's mount root:root; the image's own
   # entrypoint runs as root, chowns, and drops privileges — no
   # securityContext needed (unlike the collector, whose upstream image stays

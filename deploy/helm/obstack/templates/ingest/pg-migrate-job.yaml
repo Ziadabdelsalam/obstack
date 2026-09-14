@@ -85,7 +85,9 @@ spec:
             # nothing else, the same rule the ClickHouse migrate Job follows.
             # This Job is also what seeds the `ok_dev_local` continuity key
             # row (pgmigrations/0004), so the collector authenticates the
-            # moment this phase completes.
+            # moment this phase completes — on a real install that row is
+            # revoked once the operator has issued a key of their own
+            # (README.md, "The first install on a real cluster").
             #
             # D275: branches on postgres.existingSecret, the same rule the
             # StatefulSet's own POSTGRES_PASSWORD already follows

@@ -50,6 +50,21 @@ clickhouse:
     requests:
       cpu: 500m
       memory: 1Gi
+  # 0.7.0 — a PLACE for ClickHouse to write a backup, not a backup policy:
+  # backup automation is OUT of this chart by ruling (README.md, "Backups").
+  # Off by default. Enabled, it renders one config.d file
+  # (templates/clickhouse/configmap-backups.yaml) declaring a `local` disk
+  # named `backups` at `path` — a directory on this StatefulSet's own data
+  # volume — and allows BACKUP/RESTORE against it, so from clickhouse-client
+  #   BACKUP DATABASE obstack TO Disk('backups', '<name>.zip')
+  # writes an archive there. It lands on the same volume as the data; copying
+  # it off the node is the operator's job and the only thing that makes it a
+  # backup. Enabling this on a live release rolls the ClickHouse pod once
+  # (config.d is read at boot). `path` must end with a slash — ClickHouse
+  # requires disk paths to, and the template refuses one that does not.
+  backups:
+    enabled: false
+    path: /var/lib/clickhouse/backups/
 
 # The identity + saved-views store (D95/D112), the same class of resource as
 # ClickHouse above and for the same reasons: one replica, a StatefulSet's PVC
@@ -143,6 +158,17 @@ web:
   # leaves this empty gets Explain's own per-request refusal naming the
   # missing variables — never a fabricated summary (D102).
   explainApiKey: ""
+  # 0.7.0 — which Explain provider the web workload talks to
+  # (apps/web/src/server/explain/client.ts): `fake`, the default and the only
+  # mode CI ever runs — an honest placeholder the product labels as such on the
+  # panel (D102) — or `anthropic`, which reads the key above
+  # (OBSTACK_EXPLAIN_API_KEY, from the web Secret's `explain-api-key`) and calls
+  # Anthropic's own endpoint with the provider's default model. Any other value
+  # fails `helm template` with the app's own sentence rather than crash-looping
+  # the pod. A self-hosted Anthropic-compatible endpoint also needs
+  # OBSTACK_EXPLAIN_BASE_URL and OBSTACK_EXPLAIN_MODEL, which this chart does
+  # not render at 0.7.0 — /docs/explain names them.
+  explainMode: fake
   existingSecret: ""
   # D253 item 5 — conservative defaults for a Node process serving requests,
   # not a request-driven autoscaling target (HA beyond ingest's existing
@@ -231,15 +257,24 @@ collector:
   image: otel/opentelemetry-collector-k8s:0.158.0
   # A client credential, not a server setting: the collector sends it as
   # `Authorization: Bearer <key>`, and it is authenticated against THIS
-  # chart's own Postgres `api_keys` — nothing else. The only row that exists
-  # there is the dev continuity key seeded by
+  # chart's own Postgres `api_keys` — nothing else. On a fresh install the
+  # only row there is the dev continuity key seeded by
   # services/ingest/pgmigrations/0004, which the pg-migrate Job applies, so
-  # the default is the only key that works out of the box. This chart ships
-  # no key-issuing surface (the `web` block above is a login/signup surface,
-  # not an API-key one — D98), so a key issued in a hosted product's settings
-  # is not a row here and gets 401'd. Override only with a key row that
-  # exists in this chart's Postgres.
+  # the default is the only key that works out of the box — on kind, in CI,
+  # and for the first minutes of a real install. A real install is two-step
+  # (README.md, "The first install on a real cluster"): install, sign up,
+  # issue an `ingest` key in Settings → API keys of THIS release's product,
+  # then `helm upgrade` with that key and revoke the seed. A key issued in the
+  # hosted product's settings is not a row here and gets 401'd.
+  #
+  # 0.7.0: the value never reaches a pod spec as a literal. Both collector
+  # workloads read it through a secretKeyRef (key `collector-api-key`) —
+  # from this chart's own Secret, populated from `apiKey` below, or from
+  # `existingSecret` (a NAME, the same shape as every other group — README.md,
+  # "Credentials and rotation"), in which case `apiKey` is not rendered at all
+  # and the key never passes through a values file either.
   apiKey: ok_dev_local
+  existingSecret: ""
   # Must name the demo pod's instrumented container below (D37.3) — the
   # collector's filelog exclusion is keyed on the container name.
   excludeContainer: demo-agent
@@ -304,6 +339,13 @@ collector:
         memory: 128Mi
 
 demo:
+  # 0.7.0: the demo pod exists for the acceptance riders (the four-layer proof
+  # and the D37.2 nearby-log source) and so a fresh cluster has something to
+  # look at. On a real install it is noise, a CPU request and a writer into
+  # `ws_demo` under the seeded dev key — set false and no demo object renders
+  # (README.md, "The first install on a real cluster"). Default true so kind
+  # and CI render exactly what they render today.
+  enabled: true
   image: obstack-demo-agent:kind
   pullPolicy: Never
   # D283: requests + limits, same ground as collector.resources — a traffic
