@@ -107,11 +107,17 @@ page's recent-deploys panel reads the workspace's own deploy events since S7.2.
 your workspace's `pricing_overrides` is counted as unpriced on the cost page,
 never as $0.
 
-{/* M6, as it stands after S7.3 */}
+{/* M6, as it stands after S7.4 */}
 
-**There are no on-call rotations and no incident management** — those two
-surfaces render sample data, and the public status page is deliberately not
-fed by SLOs. SLOs are computed over the workspace's own traces (S7.3):
+**There are no on-call rotations** — that surface renders sample data, and the
+public status page is deliberately not fed by SLOs or by incidents. Incidents
+are per-workspace objects a person opens — by hand or by promoting an alert
+event — and closes (S7.4); each one's timeline is stitched at read time from
+the workspace's own alert events, change events and error traces inside its
+window, and its root-cause analysis is an Explain run on the same monthly
+allowance. There is no auto-detected incident, no metrics leg on the timeline,
+and the analysis is not stored — it is re-run, and re-metered, each time it is
+asked for. SLOs are computed over the workspace's own traces (S7.3):
 availability or latency, scoped by service, against a target over a 7- or
 30-day window, with the error budget consumed. There is no custom SLI query,
 no route-level scope and no burn-rate alerting — an SLO says healthy, at risk

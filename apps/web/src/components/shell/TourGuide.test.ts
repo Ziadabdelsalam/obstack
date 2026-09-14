@@ -276,6 +276,38 @@ test("D404 (S7.3, D515): the /app/slos tour step promises capability, not the de
   }
 });
 
+// S7.4 (D523): `/app/incidents` is live-wired since T6 — the list in live, the
+// frozen fixture in mock — so the step's old body ("a design, not a working
+// incident tool: nothing here is generated from your data yet") became FALSE
+// the moment the registry pair landed, and it narrated a source list
+// (pipelines, metrics, cluster events) the product does not read. The step
+// fires on the LIST in live mode and the timeline lives at `[id]`, where no
+// fixed id exists for a tour to open, so the body is written at the index's
+// altitude, names whose incidents they are, and names no source list of its
+// own — the sources are the timeline's vocabulary, single-sourced there.
+test("D404 (S7.4, D523): the /app/incidents tour step promises capability at the index's altitude, not the design it replaced", () => {
+  const step = stripComments(stepSource("/app/incidents"));
+  for (const fact of [
+    "not a working incident tool",
+    "nothing here is generated from your data yet",
+    "pipelines",
+    "metrics",
+    "INC-42",
+    "zendesk",
+    "41 failures",
+  ]) {
+    assert.ok(!step.toLowerCase().includes(fact.toLowerCase()), `the incidents tour step still says "${fact}" — false on a live-wired route, or a fact about the demo fixture`);
+  }
+  assert.ok(step.includes('target: "incident"'), "the step stopped targeting the incident anchor");
+  assert.ok(step.includes("your workspace"), "the step stopped saying whose incidents they are");
+  // The anchor lives on the frozen mock body (protected by T6's sha pin) and on
+  // IncidentsLive's HEADER row — never a list card, since a zero-incident
+  // workspace renders none and the missing-anchor path degrades silently.
+  for (const file of ["incidents/IncidentsMock.tsx", "incidents/IncidentsLive.tsx"]) {
+    assert.ok(surfaceFile(file).includes('data-tour="incident"'), `${file} dropped data-tour="incident", so the step spotlights nothing there`);
+  }
+});
+
 test("D404 (S6.4): the /app/costs tour step promises capability, not the demo's customer economics", () => {
   const step = stripComments(stepSource("/app/costs"));
   for (const fact of ["Meridian", "$84", "$299", "44%", "draft_reply"]) {

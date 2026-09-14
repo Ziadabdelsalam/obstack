@@ -82,10 +82,18 @@ const steps: TourStep[] = [
     path: "/app/incidents",
     target: "incident",
     title: "Incidents — the story, stitched",
-    // The source list is a capability claim even on a screen this step calls a
-    // design: nothing ingests cluster events (`server/adapters.ts` sets none),
-    // so they are not named among the sources (S4.4 R3 coordinator ruling).
-    body: "The sample incident laid out end to end — pipelines, alerts, metrics and traces on one timeline, which is what the stitching is meant to show. This screen is a design, not a working incident tool: nothing here is generated from your data yet.",
+    // S7.4 (D523): `/app/incidents` is live-wired — a LIST in live mode, the
+    // frozen fixture in mock — so this body is written at the index's altitude
+    // and is true in both: it names whose incidents they are and what opening
+    // one shows, and names NO source list of its own. The sources are the
+    // timeline's vocabulary (alert events, change events, error traces),
+    // single-sourced on the incident page, not typed twice here. Cluster
+    // events in particular are not named: `server/adapters.ts` does set
+    // `k8sEvents` now (from the chart's events collector, Kubernetes
+    // deployments only), but the S4.4 R3 copy fence keeps every removed
+    // capability sentence removed until a copy ruling names the qualified
+    // claim (`landing-fence.test.ts`'s RESOLVED box records the sites).
+    body: "The incidents your workspace opened — by hand, or promoted from an alert — with when each started and whether it is still open. Open one for its timeline, stitched from the same rows the other screens show.",
   },
   {
     // D515 (S7.3): this surface is live-wired, so its words are a claim about

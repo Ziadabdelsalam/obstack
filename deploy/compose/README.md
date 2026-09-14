@@ -421,6 +421,48 @@ What it asserts, in order:
   number and none of her words. `RED_WITHHOLD_SLOS=1` seeds the channel and
   withholds every objective and must fail exactly the slos-arm checks, never
   the seeder's status;
+- **incidents, through the front door, on the one Explain counter (S7.4,
+  D559–D566)** — no seeder leg: CRUD and promotion are the sprint's
+  deliverable, so alice's two incidents and the other stranger's one go in
+  through the real forms. A HISTORICAL incident is declared with an explicit
+  start over the seeded fixture's own failing roots and resolved with an
+  explicit end — the window cut from the store's error spans so that both
+  bounds are proven to bite, whole seconds so the instants round-trip exactly
+  — and its trace leg is checked against the drive's OWN SQL over
+  `obstack.spans` (§3's grouping restated, `argMin` included), the instants
+  bound through `extract(epoch …)` and never parsed in JS (D71(b)/D562): every
+  `(service, span)` group drawn at its first_seen with its count, its span and
+  its example trace, zero alert or change rows, one resolved row, the
+  changes-leg-empty sentence with its recipe link, no omission and no clip. An
+  ONGOING incident is PROMOTED from the oldest alert event the evaluator wrote,
+  so its rail carries every alert event and both change events from two
+  Postgres tables, anchored by their ids in the order of their instants, the
+  deploy as an EXTERNAL anchor to the workflow run — and no trace row, with the
+  store asked and agreeing that no error span starts inside that window
+  (D561). The list derives its header from the read; the other stranger's list
+  holds only his incident, her id answers him with the one not-found sentence,
+  and his POST to her RCA route is a 404. Then the Explain collision (D563):
+  alice spent both runs on traces ~1400 lines earlier, so her RCA is refused
+  with the sentence EXTRACTED from the trace panel's own text — one allowance,
+  two subjects — and moves nothing, while the other stranger's RCA on his own
+  incident is answered about its timeline (the fake's headline naming the group
+  the recomputation puts first, the tally over exactly the stored window, every
+  cited example trace one the recomputation named) and moves HIS
+  `explain_runs` row alone. `EVIDENCE_EXPLAIN_QUOTA` stays at 2 and no earlier
+  assertion moves. `RED_WITHHOLD_INCIDENTS=1` withholds the whole interaction
+  block — both create submits, the promote click and both RCA presses — and
+  must fail exactly the arm's checks, never its preconditions and never a
+  `must()`; the arm's wall time is printed so the ~6-minute line is measured,
+  not assumed. The unauthenticated probe below gains the two incident routes
+  and reclaims the four the list had silently missed (`/app/costs`,
+  `/app/infra`, `/app/changes`, `/app/slos`), and now reads
+  `live-routes.ts` as text and asserts every registry entry is probed
+  (D565). And the plans catalog drift is closed: the drive reads
+  `plans.event_quota`/`explain_quota` for `free` before it lowers them and
+  restores both in `finally`, before the pool ends, from the values it
+  captured — never from a number spelled in the file — so
+  `usage.integration.test.ts` and `explain/quota.integration.test.ts` run
+  green on a driven stack (D566);
 - **token hygiene** — both keys the run issued through the UI are searched for,
   as literals, in everything the drive printed and everything it wrote: stdout,
   the transcript, the server log, the build log, every artifact beside them. The
@@ -552,12 +594,15 @@ holds. Each run signs up new strangers, so it seeds workspaces nobody has
 seeded before; `docker compose --profile '*' down -v` is how you start the
 whole thing from nothing.
 
-A driven stack is also not a stack the test suites can run against: the drive
-lowers two columns of the free plan with no undo — the event quota
-(`exit-seed.mjs --lower-free-quota`) and, for the Explain step, `explain_quota` —
-so after a drive the plans-catalog assertions in `apps/web`'s suite fail until
-`down -v` restores the migration-seeded catalog. Run `npm test` before the drive,
-or cycle first.
+A driven stack IS a stack the test suites can run against (S7.4, D566): the
+drive lowers two columns of the free plan for its own proofs — the event quota
+(`exit-seed.mjs --lower-free-quota`) and, for the Explain step, `explain_quota`
+— and puts both back in its `finally` block from the values it read before it
+wrote, so the plans-catalog assertions in `apps/web`'s suite
+(`usage.integration.test.ts`, `explain/quota.integration.test.ts`) pass after a
+drive; the restore is itself a check in the run's transcript. The one residue is
+a run killed before `finally` could reach the pool (or a volume driven before
+S7.4): then the catalog still reads `300`/`2`, and `down -v` is the way back.
 
 ### The captured-DDL drift check
 
