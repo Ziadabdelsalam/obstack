@@ -1,5 +1,6 @@
 import "server-only";
 import { headers } from "next/headers";
+import { MCP_RATE_LIMIT } from "@/lib/mcp-types";
 
 /**
  * obstack's own abuse control for `/signup` and `/login` (D339). It exists
@@ -20,13 +21,22 @@ import { headers } from "next/headers";
  * web is a real plan.
  */
 
-export type RateLimitAction = "signup" | "login";
+/**
+ * `mcp` (S8.1 D645) is keyed by the KEY ID, not an address: the subject a
+ * bearer endpoint can actually attribute a call to. An IP-keyed limit there
+ * would let one key exhaust a NAT's worth of colleagues, and a key is never
+ * absent on that path — the 401 runs first — so its fail-open branch is
+ * unreachable for it. The window is `MCP_RATE_LIMIT`, single-sourced with the
+ * page copy and the docs.
+ */
+export type RateLimitAction = "signup" | "login" | "mcp";
 
 type Policy = { max: number; windowMs: number };
 
 const POLICIES: Record<RateLimitAction, Policy> = {
   signup: { max: 5, windowMs: 60 * 60 * 1000 },
   login: { max: 10, windowMs: 10 * 60 * 1000 },
+  mcp: { max: MCP_RATE_LIMIT.max, windowMs: MCP_RATE_LIMIT.windowMs },
 };
 
 const LONGEST_WINDOW_MS = Math.max(...Object.values(POLICIES).map((p) => p.windowMs));
