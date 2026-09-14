@@ -262,7 +262,7 @@ collector:
   # services/ingest/pgmigrations/0004, which the pg-migrate Job applies, so
   # the default is the only key that works out of the box — on kind, in CI,
   # and for the first minutes of a real install. A real install is two-step
-  # (README.md, "The first install on a real cluster"): install, sign up,
+  # (README.md, "The first install on a real cluster, in order"): install, sign up,
   # issue an `ingest` key in Settings → API keys of THIS release's product,
   # then `helm upgrade` with that key and revoke the seed. A key issued in the
   # hosted product's settings is not a row here and gets 401'd.
@@ -343,7 +343,7 @@ demo:
   # and the D37.2 nearby-log source) and so a fresh cluster has something to
   # look at. On a real install it is noise, a CPU request and a writer into
   # `ws_demo` under the seeded dev key — set false and no demo object renders
-  # (README.md, "The first install on a real cluster"). Default true so kind
+  # (README.md, "The first install on a real cluster, in order"). Default true so kind
   # and CI render exactly what they render today.
   enabled: true
   image: obstack-demo-agent:kind
