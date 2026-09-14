@@ -1,5 +1,12 @@
 import "server-only";
 import { createHash, randomBytes } from "node:crypto";
+import {
+  API_KEY_SCOPES,
+  DEFAULT_API_KEY_SCOPE,
+  MCP_ADMITTED_SCOPES,
+  type ApiKeyScope,
+  type McpKeyScope,
+} from "@/lib/mcp-types";
 import type { QueryRows } from "@/server/postgres";
 
 /**
@@ -24,6 +31,13 @@ import type { QueryRows } from "@/server/postgres";
  * in its text, and the caller fills it from `SessionContext` on the server
  * (`app/app/settings/actions.ts`) — no caller-supplied workspace id exists
  * anywhere on this path (D148: authorization IS the owner pin).
+ *
+ * S8.1 (D642/D644): a key carries a SCOPE — `ingest`, `read` or `setup`, the
+ * vocabulary `0014_api_key_scope.sql` owns and `lib/mcp-types.ts` mirrors — and
+ * this module gains the ONE statement in it that does not bind a workspace:
+ * `resolveApiKey`, the MCP endpoint's door. There the workspace is the OUTPUT
+ * and the hash is the owner pin, in the direction ingest's keystore already runs
+ * it (`internal/keystore/store.go`'s lookupSQL, with the other two scopes).
  */
 
 /** The one issued shape (D139). Ingest never validates it — it hashes and looks up. */
@@ -43,8 +57,16 @@ export interface ApiKey {
   id: string;
   name: string;
   prefix: string;
+  scope: ApiKeyScope;
   createdAt: Date;
   revokedAt: Date | null;
+}
+
+/** What the MCP door resolves a bearer token to (D642): never an `ingest` key. */
+export interface ResolvedApiKey {
+  keyId: string;
+  workspaceId: string;
+  scope: McpKeyScope;
 }
 
 /** What issuing answers with: the token, once, beside the row that will outlive it. */
@@ -105,6 +127,23 @@ export function parseKeyName(raw: unknown): string | null {
   return trimmed;
 }
 
+/**
+ * The scope, as a total parse (D68 by rule), beside `parseKeyName` for the same
+ * form: absent or empty means the DEFAULT (`ingest`, what every key was before
+ * 0014), a member of the vocabulary means itself, and anything else is `null` —
+ * the caller's error code, never a value the CHECK gets to refuse as a 500.
+ */
+export function parseKeyScope(raw: unknown): ApiKeyScope | null {
+  // Absent (FormData.get's null, an unset field) or blank means the default.
+  if (raw === undefined || raw === null || raw === "") return DEFAULT_API_KEY_SCOPE;
+  // A repeated field takes its first value (parseKeyName's rule); an EMPTY
+  // array is not absence, it is a shape no form produces — not a scope.
+  const value = Array.isArray(raw) ? raw[0] : raw;
+  if (typeof value !== "string") return null;
+  if (value === "") return DEFAULT_API_KEY_SCOPE;
+  return (API_KEY_SCOPES as readonly string[]).includes(value) ? (value as ApiKeyScope) : null;
+}
+
 const newId = (): string => `key_${randomBytes(8).toString("hex")}`;
 
 /**
@@ -117,7 +156,7 @@ const newId = (): string => `key_${randomBytes(8).toString("hex")}`;
  * (D146's `revoked_at IS NULL`).
  */
 const LIST_SQL = `
-  SELECT id, name, prefix, created_at, revoked_at
+  SELECT id, name, prefix, scope, created_at, revoked_at
     FROM api_keys
    WHERE workspace_id = $1
    ORDER BY created_at, id`;
@@ -129,9 +168,9 @@ const LIST_SQL = `
  * this process's.
  */
 const INSERT_SQL = `
-  INSERT INTO api_keys (workspace_id, name, prefix, token_hash, id)
-       VALUES ($1, $2, $3, $4, $5)
-    RETURNING id, name, prefix, created_at, revoked_at`;
+  INSERT INTO api_keys (workspace_id, name, prefix, token_hash, id, scope)
+       VALUES ($1, $2, $3, $4, $5, $6)
+    RETURNING id, name, prefix, scope, created_at, revoked_at`;
 
 /**
  * Revocation is idempotent and scoped: `coalesce` keeps the FIRST revocation's
@@ -143,12 +182,25 @@ const REVOKE_SQL = `
   UPDATE api_keys
      SET revoked_at = coalesce(revoked_at, now())
    WHERE workspace_id = $1 AND id = $2
-  RETURNING id, name, prefix, created_at, revoked_at`;
+  RETURNING id, name, prefix, scope, created_at, revoked_at`;
+
+/**
+ * THE MCP DOOR (D642): ingest's `lookupSQL` restated with the scopes the
+ * endpoint admits — bound as a parameter from `MCP_ADMITTED_SCOPES`, so the
+ * constant is the authority and this text never lists a scope. Unknown,
+ * revoked and `ingest`-scoped tokens all match zero rows: one predicate, one
+ * absent answer, no key-probing oracle (D6). The workspace is what comes OUT.
+ */
+const RESOLVE_SQL = `
+  SELECT id, workspace_id, scope
+    FROM api_keys
+   WHERE token_hash = $1 AND revoked_at IS NULL AND scope = ANY($2::text[])`;
 
 type KeyRow = {
   id: string;
   name: string;
   prefix: string;
+  scope: ApiKeyScope;
   created_at: Date;
   revoked_at: Date | null;
 };
@@ -157,6 +209,7 @@ const toApiKey = (row: KeyRow): ApiKey => ({
   id: row.id,
   name: row.name,
   prefix: row.prefix,
+  scope: row.scope,
   createdAt: row.created_at,
   revokedAt: row.revoked_at,
 });
@@ -176,11 +229,14 @@ export async function listApiKeys(workspaceId: string, query: QueryRows): Promis
  *
  * The name is already parsed by the caller (`parseKeyName`), because a blank or
  * over-long name is an error code the surface shows and not a value this
- * function may quietly trim into shape.
+ * function may quietly trim into shape. The scope likewise (`parseKeyScope`):
+ * the quickstart passes `ingest` by definition, the settings picker whatever
+ * the operator chose, and the MCP mint (D666) always `ingest`.
  */
 export async function issueApiKey(
   workspaceId: string,
   name: string,
+  scope: ApiKeyScope,
   query: QueryRows,
 ): Promise<IssuedApiKey> {
   const token = generateToken();
@@ -190,8 +246,25 @@ export async function issueApiKey(
     keyPrefix(token),
     hashToken(token),
     newId(),
+    scope,
   ]);
   return { token, key: toApiKey(row) };
+}
+
+/**
+ * Resolve a bearer token at the MCP door (D642): the hash, looked up once, with
+ * only the admitted scopes — `null` for unknown, revoked and `ingest`-scoped
+ * alike, and the caller answers every `null` with the same 401. No cache
+ * (D642's reason: the reads that follow cost more than this lookup, and a cache
+ * is a second copy of ingest's fail-static policy that this path has no outage
+ * story for).
+ */
+export async function resolveApiKey(token: string, query: QueryRows): Promise<ResolvedApiKey | null> {
+  const [row] = await query<{ id: string; workspace_id: string; scope: McpKeyScope }>(RESOLVE_SQL, [
+    hashToken(token),
+    [...MCP_ADMITTED_SCOPES],
+  ]);
+  return row ? { keyId: row.id, workspaceId: row.workspace_id, scope: row.scope } : null;
 }
 
 /**

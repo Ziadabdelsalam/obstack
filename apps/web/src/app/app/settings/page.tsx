@@ -233,6 +233,7 @@ export default async function SettingsPage({
       id: key.id,
       name: key.name,
       prefix: key.prefix,
+      scope: key.scope,
       created: asDay(key.createdAt),
       revoked: key.revokedAt ? asDay(key.revokedAt) : null,
     })),

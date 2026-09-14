@@ -4,7 +4,7 @@ import { revalidatePath } from "next/cache";
 import { headers } from "next/headers";
 import { redirect } from "next/navigation";
 import type { OverrideResult } from "@/components/settings/SettingsSuite";
-import { issueApiKey, parseKeyName, revokeApiKey } from "@/server/api-keys";
+import { issueApiKey, parseKeyName, parseKeyScope, revokeApiKey } from "@/server/api-keys";
 import { dataMode } from "@/server/data";
 import {
   deletePricingOverride,
@@ -109,13 +109,18 @@ export async function issueKey(formData: FormData): Promise<{ token: string }> {
 
   const name = parseKeyName(formData.get("name"));
   if (!name) back("key-name-invalid");
+  // S8.1 (D644): the picker's scope, parsed by the same total rule as the name —
+  // absent means `ingest`, which is what the drive's existing key step and every
+  // pre-0014 caller mean; anything outside the vocabulary is the code below.
+  const scope = parseKeyScope(formData.get("scope"));
+  if (!scope) back("key-scope-invalid");
 
   // The write is the only thing inside the try: `redirect` signals through a
   // thrown error, so a `back()` reached from inside a catch is fine and one
   // reached from inside a try would be swallowed by it.
   let issued: string;
   try {
-    issued = (await issueApiKey(session.workspaceId, name, queryRows)).token;
+    issued = (await issueApiKey(session.workspaceId, name, scope, queryRows)).token;
   } catch (error) {
     return back(codeFor("issue key", error));
   }

@@ -1,6 +1,12 @@
 "use client";
 
 import { useState, useTransition } from "react";
+import {
+  API_KEY_SCOPES,
+  API_KEY_SCOPE_LABELS,
+  DEFAULT_API_KEY_SCOPE,
+  type ApiKeyScope,
+} from "@/lib/mcp-types";
 import { Check, Copy, Plus, X } from "lucide-react";
 import { apiKeys, ingest, members, modelPrices, usage } from "@/mock/workspace";
 import type { Member } from "@/mock/workspace";
@@ -84,6 +90,8 @@ export interface LiveKey {
   id: string;
   name: string;
   prefix: string;
+  /** S8.1 D644: which door the key opens — the DDL's vocabulary via `lib/mcp-types.ts`. */
+  scope: ApiKeyScope;
   created: string;
   revoked: string | null;
 }
@@ -540,7 +548,9 @@ function LiveKeysTab({ live }: { live: LiveSettings }) {
           >
             <span className="min-w-0 flex-1">
               <span className="block truncate text-[13px] text-ink">{k.name}</span>
-              <span className="block font-mono text-[11px] text-faint">{k.prefix}…</span>
+              <span className="block font-mono text-[11px] text-faint">
+                {k.prefix}… · {k.scope}
+              </span>
             </span>
             <span className="w-24 text-right font-mono text-[10.5px] text-faint">{k.created}</span>
             {k.revoked ? (
@@ -560,6 +570,23 @@ function LiveKeysTab({ live }: { live: LiveSettings }) {
           </div>
         ))}
         <form action={issue} className="mt-3 flex flex-wrap gap-2">
+          {/* S8.1 (D644): the scope picker, live-only like the whole form — the
+              mock suite renders with `live={null}` and never mounts this tab's
+              form, so the demo's bytes do not move. `ingest` is selected by
+              default: the drive's key step and every pre-0014 habit keep
+              issuing what they always issued. */}
+          <select
+            name="scope"
+            aria-label="Key scope"
+            defaultValue={DEFAULT_API_KEY_SCOPE}
+            className="rounded-md border border-line bg-raised px-2 py-1.5 text-[12.5px] text-mid focus:border-line-strong focus:outline-none"
+          >
+            {API_KEY_SCOPES.map((scope) => (
+              <option key={scope} value={scope}>
+                {API_KEY_SCOPE_LABELS[scope]}
+              </option>
+            ))}
+          </select>
           <input
             name="name"
             required

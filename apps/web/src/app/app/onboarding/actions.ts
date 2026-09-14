@@ -1,6 +1,7 @@
 "use server";
 
 import { redirect } from "next/navigation";
+import { DEFAULT_API_KEY_SCOPE } from "@/lib/mcp-types";
 import { issueApiKey, parseKeyName } from "@/server/api-keys";
 import { dataMode } from "@/server/data";
 import { queryRows } from "@/server/postgres";
@@ -63,7 +64,9 @@ export async function issueQuickstartKey(formData: FormData): Promise<{ token: s
   // so one reached from inside a try would be swallowed by it.
   let issued: string;
   try {
-    issued = (await issueApiKey(session.workspaceId, name, queryRows)).token;
+    // The quickstart issues the credential an exporter sends with — an `ingest`
+    // key by definition (S8.1 D644); the agent scopes are the settings picker's.
+    issued = (await issueApiKey(session.workspaceId, name, DEFAULT_API_KEY_SCOPE, queryRows)).token;
   } catch (error) {
     console.error("[onboarding] issue key", error);
     redirect(ONBOARDING_PATH);

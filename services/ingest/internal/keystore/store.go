@@ -100,7 +100,13 @@ const (
 // an unknown one come back identically. The D6 posture at the SQL level. The key
 // id rides along because the health rows are per key (D100) and the receive path
 // has nothing else to attribute an accepted record to.
-const lookupSQL = `SELECT id, workspace_id FROM api_keys WHERE token_hash = $1 AND revoked_at IS NULL`
+//
+// `scope = 'ingest'` (S8.1, D644/D658): a `read` or `setup` key — the two the MCP
+// endpoint admits — is not a credential this door accepts, and it is refused in
+// the SAME predicate as revoked and unknown, so the three come back as one
+// answer (D6). The web's resolve is this statement's mirror with the other two
+// scopes; `0014_api_key_scope.sql` is the vocabulary's authority.
+const lookupSQL = `SELECT id, workspace_id FROM api_keys WHERE token_hash = $1 AND revoked_at IS NULL AND scope = 'ingest'`
 
 // Over quota, in the one definition D163 fixes: the calendar month's spans plus
 // logs in UTC, against the quota of the workspace's plan — absent workspace_plans

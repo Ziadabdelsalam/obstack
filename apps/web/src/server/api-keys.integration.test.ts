@@ -9,6 +9,7 @@ import {
   keyPrefix,
   listApiKeys,
   revokeApiKey,
+  resolveApiKey,
 } from "./api-keys";
 import { getPool, queryRows } from "./postgres";
 
@@ -102,7 +103,7 @@ async function rowCount(workspaceId: string): Promise<number> {
  * this file, so "the web half issues what the Go half resolves" is a fact about
  * the same query rather than about two descriptions of one.
  */
-const KEYSTORE_LOOKUP_SQL = `SELECT workspace_id FROM api_keys WHERE token_hash = $1 AND revoked_at IS NULL`;
+const KEYSTORE_LOOKUP_SQL = `SELECT workspace_id FROM api_keys WHERE token_hash = $1 AND revoked_at IS NULL AND scope = 'ingest'`;
 
 const resolveToken = (token: string) =>
   queryRows<{ workspace_id: string }>(KEYSTORE_LOOKUP_SQL, [hashToken(token)]);
@@ -160,7 +161,7 @@ test("D139: the seeded continuity row IS this module's hash of the published pre
 
 test("shown once: the stored row cannot reproduce the token", { skip }, async () => {
   await withWorkspacePair(async (a) => {
-    const { token, key } = await issueApiKey(a, "collector", queryRows);
+    const { token, key } = await issueApiKey(a, "collector", "ingest", queryRows);
     assert.match(token, /^ok_live_[0-9a-f]{64}$/);
 
     // Every byte the row holds, as text. The token is not in it — not whole, not
@@ -192,8 +193,8 @@ test("an issued key resolves to ITS workspace through ingest's lookup, and to no
     assert.notEqual(a, b);
     assert.ok(a.length > 0 && b.length > 0);
 
-    const mine = await issueApiKey(a, "collector", queryRows);
-    const theirs = await issueApiKey(b, "collector", queryRows);
+    const mine = await issueApiKey(a, "collector", "ingest", queryRows);
+    const theirs = await issueApiKey(b, "collector", "ingest", queryRows);
     assert.notEqual(mine.token, theirs.token);
 
     assert.deepEqual(await resolveToken(mine.token), [{ workspace_id: a }]);
@@ -212,7 +213,7 @@ test("an issued key resolves to ITS workspace through ingest's lookup, and to no
 
 test("a revoke issued for one workspace cannot reach the other's key", { skip }, async () => {
   await withWorkspacePair(async (a, b) => {
-    const mine = await issueApiKey(a, "collector", queryRows);
+    const mine = await issueApiKey(a, "collector", "ingest", queryRows);
 
     await assert.rejects(
       revokeApiKey(b, mine.key.id, queryRows),
@@ -252,7 +253,7 @@ test("a revoke issued for one workspace cannot reach the other's key", { skip },
 
 test("one token can never name two workspaces (the UNIQUE that IS the lookup index)", { skip }, async () => {
   await withWorkspacePair(async (a, b) => {
-    const { token } = await issueApiKey(a, "collector", queryRows);
+    const { token } = await issueApiKey(a, "collector", "ingest", queryRows);
     // The hash column's UNIQUE is what makes ingest's single-row lookup a
     // tenancy guarantee rather than a convention: the same credential cannot be
     // planted in a second workspace, by us or by anyone with an INSERT.
@@ -268,11 +269,42 @@ test("one token can never name two workspaces (the UNIQUE that IS the lookup ind
   });
 });
 
+test("S8.1 D642/D644: ingest's door refuses read and setup keys; the MCP door admits exactly those two", { skip }, async () => {
+  await withWorkspacePair(async (a) => {
+    const ingest = await issueApiKey(a, "exporter", "ingest", queryRows);
+    const read = await issueApiKey(a, "agent", "read", queryRows);
+    const setup = await issueApiKey(a, "agent-setup", "setup", queryRows);
+    assert.deepEqual([ingest.key.scope, read.key.scope, setup.key.scope], ["ingest", "read", "setup"]);
+
+    // Ingest's lookup, verbatim: only the ingest key resolves there.
+    assert.deepEqual(await resolveToken(ingest.token), [{ workspace_id: a }]);
+    assert.deepEqual(await resolveToken(read.token), [], "a read key opened the ingest door");
+    assert.deepEqual(await resolveToken(setup.token), [], "a setup key opened the ingest door");
+
+    // The MCP door: the two agent scopes, with the scope reported; never ingest.
+    assert.deepEqual(await resolveApiKey(read.token, queryRows), { keyId: read.key.id, workspaceId: a, scope: "read" });
+    assert.deepEqual(await resolveApiKey(setup.token, queryRows), { keyId: setup.key.id, workspaceId: a, scope: "setup" });
+    assert.equal(await resolveApiKey(ingest.token, queryRows), null, "an ingest key opened the MCP door");
+    assert.equal(await resolveApiKey(generateToken(), queryRows), null);
+
+    // Revocation closes the MCP door too, through the same predicate.
+    await revokeApiKey(a, read.key.id, queryRows);
+    assert.equal(await resolveApiKey(read.token, queryRows), null, "a revoked read key still opens the MCP door");
+
+    // The list shows the scope beside every key, revoked ones included.
+    const listed = await listApiKeys(a, queryRows);
+    assert.deepEqual(
+      listed.map((k) => [k.name, k.scope]).sort(),
+      [["agent", "read"], ["agent-setup", "setup"], ["exporter", "ingest"]],
+    );
+  });
+});
+
 test("dropping a workspace takes its keys with it (D138's in-set foreign key)", { skip }, async () => {
   const tag = randomBytes(6).toString("hex");
   const doomed = `ws_t3c_${tag}`;
   await queryRows(`INSERT INTO workspaces (id, org_id) VALUES ($1, $2)`, [doomed, `org_t3c_${tag}`]);
-  const { token } = await issueApiKey(doomed, "collector", queryRows);
+  const { token } = await issueApiKey(doomed, "collector", "ingest", queryRows);
   assert.equal(await rowCount(doomed), 1);
 
   await queryRows(`DELETE FROM workspaces WHERE id = $1`, [doomed]);
