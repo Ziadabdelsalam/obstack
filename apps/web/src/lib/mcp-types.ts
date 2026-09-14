@@ -185,7 +185,7 @@ export const MCP_TOOLS: readonly McpToolSpec[] = [
     name: "get_setup_recipe",
     kind: "setup",
     description:
-      "The exact install and configuration steps for a target — python, typescript, otel, otlp, kubernetes or docker — with this deployment's real endpoints",
+      "The exact install and configuration steps for a target — python, typescript, otel, otlp, kubernetes, docker or github-actions — with this deployment's real endpoints",
     example: 'get_setup_recipe({ target: "typescript" })',
   },
   {
@@ -206,8 +206,12 @@ export const MCP_TOOLS: readonly McpToolSpec[] = [
 
 export const MCP_TOOL_NAMES: readonly McpToolName[] = MCP_TOOLS.map((t) => t.name);
 
-/** The setup targets (D665): the quickstart's three tabs, then the connectors that ship steps. */
-export type McpSetupTarget = "python" | "typescript" | "otel" | "otlp" | "kubernetes" | "docker";
+/**
+ * The setup targets (D665): the quickstart's three tabs, the connectors that
+ * ship steps, and — since T5 lifted its YAML into `lib/change-types.ts` (D671)
+ * — the GitHub Actions deploy step.
+ */
+export type McpSetupTarget = "python" | "typescript" | "otel" | "otlp" | "kubernetes" | "docker" | "github-actions";
 export const MCP_SETUP_TARGETS: readonly McpSetupTarget[] = [
   "python",
   "typescript",
@@ -215,7 +219,44 @@ export const MCP_SETUP_TARGETS: readonly McpSetupTarget[] = [
   "otlp",
   "kubernetes",
   "docker",
+  "github-actions",
 ];
+
+// ------------------------------------------------- the client setups (T5)
+
+/** The same two placeholders the mock and the hub print — pinned equal to theirs by test. */
+export const MCP_HOST_PLACEHOLDER_ENDPOINT = "<YOUR_OBSTACK_HOST>/mcp";
+export const MCP_API_KEY_PLACEHOLDER = "<OBSTACK_API_KEY>";
+
+/** How Claude Code exposes the prompt (D664/D668): dynamic discovery, `/mcp__<server>__<prompt>`. */
+export const MCP_SETUP_COMMAND = "/mcp__obstack__setup";
+
+export interface McpClientSetup {
+  id: "claude-code" | "claude-desktop" | "cursor";
+  label: string;
+  snippet: string;
+}
+
+/**
+ * The three client setups (D654), rendered from a REAL endpoint on the live
+ * page and from the host placeholder in the docs — the same three ids, in the
+ * same order, as the mock's frozen `mcpSetup`; the token is always the
+ * placeholder, because no page prints a token (D98).
+ */
+export function mcpClientSetups(endpoint: string): McpClientSetup[] {
+  const header = `Authorization: Bearer ${MCP_API_KEY_PLACEHOLDER}`;
+  const json = (indent: string) =>
+    `{\n${indent}"mcpServers": {\n${indent}  "obstack": {\n${indent}    "url": "${endpoint}",\n${indent}    "headers": { "${header.split(": ")[0]}": "${header.split(": ")[1]}" }\n${indent}  }\n${indent}}\n}`;
+  return [
+    {
+      id: "claude-code",
+      label: "Claude Code",
+      snippet: `claude mcp add --transport http obstack ${endpoint} \\\n  --header "${header}"`,
+    },
+    { id: "claude-desktop", label: "Claude Desktop", snippet: json("") },
+    { id: "cursor", label: "Cursor", snippet: json("") },
+  ];
+}
 
 // ----------------------------------------------------------- the prompt (T2)
 
@@ -255,10 +296,10 @@ export const MCP_PROMPTS: readonly McpPromptSpec[] = [
       },
     ],
     steps: [
-      "Inspect this repository yourself and pick the setup target: `python` or `typescript` when the app can take the obstack SDK, `otel` when it already exports OpenTelemetry, `otlp` for a plain exporter, `kubernetes` or `docker` for the collector. obstack reads none of your files.",
+      "Inspect this repository yourself and pick the setup target: `python` or `typescript` when the app can take the obstack SDK, `otel` when it already exports OpenTelemetry, `otlp` for a plain exporter, `kubernetes` or `docker` for the collector, `github-actions` to record deploys. obstack reads none of your files.",
       "Call `get_setup_recipe` with that target. The recipe carries this deployment's real endpoints; the key in it is a placeholder until the next step.",
       "Obtain an ingest key: if you are connected with a setup-scoped key, call `issue_ingest_key` with a name that says what the key is for; otherwise ask the user to issue an ingest key in Settings → API keys and paste it. Never commit the key — put it in the environment or the secret store.",
-      "Apply the recipe: the SDK's init lines first, above every other import; the OTEL variables and the service name exactly as the recipe spells them.",
+      "Apply the recipe: the SDK's init lines first, above every other import; the OTEL variables and the service name exactly as the recipe spells them; the key where the recipe shows its placeholder.",
       "Run the app, exercise one request, then call `check_arrival` for that key up to twelve times, five seconds apart. When its last event time moves, call `get_trace` on the first trace's id and show the layers that landed.",
       "If nothing arrives, report the drop counters from `check_arrival` and check two things: the endpoint is reachable from where the app runs, and the Authorization header carries the key.",
     ],

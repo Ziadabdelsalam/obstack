@@ -54,17 +54,22 @@ test("D642: the endpoint admits read and setup, never ingest, and every scope ha
 // ------------------------------------------------------------ T2: the registry
 
 import { readFileSync as readSource } from "node:fs";
-import { mcpTools as mockTools } from "@/mock/mcp";
+import { MCP_ENDPOINT_PLACEHOLDER, MCP_TOKEN_PLACEHOLDER, mcpSetup as mockSetup, mcpTools as mockTools } from "@/mock/mcp";
+import { API_KEY_PLACEHOLDER } from "@/components/connections/connectors";
 import { isLiveWiredRoute } from "@/lib/live-routes";
 import { snippetsFor } from "@/components/onboarding/snippets";
 import { connectors } from "@/components/connections/connectors";
 import {
+  MCP_API_KEY_PLACEHOLDER,
+  MCP_HOST_PLACEHOLDER_ENDPOINT,
   MCP_PROMPTS,
   MCP_RATE_LIMIT,
   MCP_SERVER_VERSION,
+  MCP_SETUP_COMMAND,
   MCP_SETUP_TARGETS,
   MCP_TOOLS,
   MCP_TOOL_NAMES,
+  mcpClientSetups,
 } from "./mcp-types";
 
 const mockNames = mockTools.map((t) => t.name);
@@ -119,7 +124,26 @@ test("D665: every setup target is a quickstart tab or an available connector wit
   const withSteps = connectors
     .filter((c) => c.status === "available" && (c.connectSteps?.length ?? 0) > 0)
     .map((c) => c.slug);
-  assert.deepEqual([...MCP_SETUP_TARGETS], [...tabs, ...withSteps], "MCP_SETUP_TARGETS is not the tabs followed by the connectors that ship steps");
+  assert.deepEqual(
+    [...MCP_SETUP_TARGETS],
+    [...tabs, ...withSteps, "github-actions"],
+    "MCP_SETUP_TARGETS is not the tabs, then the connectors that ship steps, then the lifted deploy step (D671)",
+  );
+});
+
+test("D654: the placeholders are the mock's and the hub's, and the client setups are the mock's three ids in order", () => {
+  assert.equal(MCP_HOST_PLACEHOLDER_ENDPOINT, MCP_ENDPOINT_PLACEHOLDER, "the docs' host placeholder drifted from the mock's");
+  assert.equal(MCP_API_KEY_PLACEHOLDER, MCP_TOKEN_PLACEHOLDER, "the key placeholder drifted from the mock's");
+  assert.equal(MCP_API_KEY_PLACEHOLDER, API_KEY_PLACEHOLDER, "the key placeholder drifted from the hub's");
+  const live = mcpClientSetups("https://obstack.example.test/mcp");
+  assert.deepEqual(live.map((s) => s.id), mockSetup.map((s) => s.id), "the live setups are not the mock's three, in order");
+  for (const s of live) {
+    assert.ok(s.snippet.includes("https://obstack.example.test/mcp"), `${s.id}: the endpoint is not in the snippet`);
+    assert.ok(s.snippet.includes(MCP_API_KEY_PLACEHOLDER), `${s.id}: the key placeholder is not in the snippet`);
+    assert.equal(/ok_live_[0-9a-f]{64}/.test(s.snippet), false, `${s.id}: a token shape in a snippet`);
+  }
+  assert.match(live[0].snippet, /^claude mcp add --transport http obstack https:\/\/obstack\.example\.test\/mcp \\\n  --header "Authorization: Bearer <OBSTACK_API_KEY>"$/, "the Claude Code line is not the CLI's documented form");
+  assert.match(MCP_SETUP_COMMAND, /^\/mcp__obstack__setup$/);
 });
 
 test("D668: the one prompt names every tool it tells the agent to call, and no tool it does not", () => {

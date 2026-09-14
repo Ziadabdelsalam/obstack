@@ -6,6 +6,7 @@ import {
   resolveStepSnippet,
 } from "@/components/connections/connectors";
 import { snippetsFor } from "@/components/onboarding/snippets";
+import { GITHUB_ACTIONS_DEPLOY_STEP } from "@/lib/change-types";
 import { SEVERITY_ORDER } from "@/lib/logs-filter";
 import {
   MCP_CANNOT_MINT_SENTENCE,
@@ -229,23 +230,31 @@ const listChanges: ToolDefinition<{ limit: number }> = {
 
 // ----------------------------------------------------------------- the setup
 
-/** D671: the change-events recipe is a docs page until T5 lifts its YAML into a constant. */
-const GITHUB_ACTIONS_ABSENCE =
-  "the change-events recipe is not served here yet — read it at /docs/connectors/github-actions";
-
 const getSetupRecipe: ToolDefinition<{ target: string }> = {
   name: "get_setup_recipe",
   inputSchema: z.object({
     target: z.string().min(1).max(40).describe(`one of: ${MCP_SETUP_TARGETS.join(", ")}`),
   }),
   async handler({ target }) {
-    if (target === "github-actions") return refusal(GITHUB_ACTIONS_ABSENCE);
     if (!(MCP_SETUP_TARGETS as readonly string[]).includes(target)) {
       return refusal(`no recipe for "${target}" — the targets are ${MCP_SETUP_TARGETS.join(", ")}`);
     }
     // The deployment's REAL endpoints (D277) and the key placeholder — D673:
     // the placeholder stays and the agent substitutes the key it holds; a
     // token never travels in a tool argument or a recipe body.
+    if (target === "github-actions") {
+      // D671 (T5): the deploy step from the constant the docs page's fence is
+      // pinned to — it names the workflow's own variables, never an endpoint
+      // of ours, so nothing here is substituted.
+      return ok({
+        target: "github-actions" as McpSetupTarget,
+        kind: "recipe",
+        label: "GitHub Actions deploys",
+        code: GITHUB_ACTIONS_DEPLOY_STEP,
+        docs: "/docs/connectors/github-actions",
+        keyPlaceholder: API_KEY_PLACEHOLDER,
+      });
+    }
     const endpoints = resolveIngestEndpoints();
     const tab = snippetsFor(API_KEY_PLACEHOLDER, endpoints).find((t) => t.id === target);
     if (tab) {
@@ -345,4 +354,3 @@ export const TOOL_DEFINITIONS: Readonly<Record<McpToolName, AnyDefinition>> = {
 
 /** T3's `notYet()` set — empty since T4, and `tools.test.ts` pins it empty. */
 export const NOT_YET_SERVED: readonly McpToolName[] = MCP_TOOL_NAMES.filter((name) => !(name in TOOL_DEFINITIONS));
-export { GITHUB_ACTIONS_ABSENCE };

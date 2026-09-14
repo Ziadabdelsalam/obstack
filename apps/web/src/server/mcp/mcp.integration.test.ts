@@ -191,8 +191,8 @@ test("S8.1: the real route against real stores — tenancy per tool, the setup m
       const k8s = await ca.callTool({ name: "get_setup_recipe", arguments: { target: "kubernetes" } });
       assert.ok(structured<{ steps: unknown[] }>(k8s).steps.length > 0);
       const gha = await ca.callTool({ name: "get_setup_recipe", arguments: { target: "github-actions" } });
-      assert.equal(gha.isError, true);
-      assert.match(text(gha), /\/docs\/connectors\/github-actions/, "D671: the docs page is named, not a recipe faked");
+      assert.equal(gha.isError, undefined, text(gha));
+      assert.ok(structured<{ code: string }>(gha).code.includes("/v1/changes"), "D671 (T5): the deploy step is served from the pinned constant");
       const nope = await ca.callTool({ name: "get_setup_recipe", arguments: { target: "nope" } });
       assert.equal(nope.isError, true);
       const refused = await ca.callTool({ name: "issue_ingest_key", arguments: { name: "checkout-api" } });

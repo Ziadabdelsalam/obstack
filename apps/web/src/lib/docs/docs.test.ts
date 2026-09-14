@@ -217,6 +217,7 @@ const RENDERER_SOURCES: Record<string, string> = {
   "components/docs/DocLink.tsx": read("components/docs/DocLink.tsx"),
   "components/docs/Prose.tsx": read("components/docs/Prose.tsx"),
   "components/docs/QuickstartSnippets.tsx": read("components/docs/QuickstartSnippets.tsx"),
+  "components/docs/McpDocs.tsx": read("components/docs/McpDocs.tsx"),
   "mdx-components.tsx": read("mdx-components.tsx"),
   "app/docs/[[...slug]]/page.tsx": read("app/docs/[[...slug]]/page.tsx"),
   "app/app/docs/[[...slug]]/page.tsx": read("app/app/docs/[[...slug]]/page.tsx"),
@@ -237,6 +238,7 @@ const RENDERER_SOURCES: Record<string, string> = {
 const SHARED_RENDER_PATH: Record<string, string> = {
   "components/connections/connectors.ts": "the connector catalog (D204) — `mock/connectors.test.ts` guards it",
   "components/onboarding/snippets.ts": "the ONE definition of the quickstart snippets (D322)",
+  "lib/mcp-types.ts": "the MCP contract the docs, the server and the live page share (S8.1 D647) — `lib/mcp-types.test.ts` guards it",
   "components/shell/Wordmark.tsx": "the wordmark, on the public mount's own header",
   "lib/ingest-endpoint.ts": "the compose default OTLP addresses (D215) the snippets interpolate",
   "lib/layers.ts": "the layer palette the wordmark draws",

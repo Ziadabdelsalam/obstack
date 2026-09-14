@@ -18,6 +18,15 @@ test("live-wired registry matches wired prefixes minus named exceptions", () => 
   assert.equal(isLiveWiredRoute("/app/pipelines"), false);
 });
 
+// S8.1 (D21/D656): the MCP page reads this workspace's admitted keys and the
+// operator's published address in live mode — wired exactly, not as a subtree
+// (the page has no children; the endpoint itself lives at /mcp, outside /app).
+test("/app/mcp is live-wired, exactly and not as a subtree", () => {
+  assert.equal(isLiveWiredRoute("/app/mcp"), true);
+  assert.equal(isLiveWiredRoute("/app/mcp/anything"), false);
+  assert.equal(isLiveWiredRoute("/mcp"), false, "the endpoint is not a page and carries no badge");
+});
+
 // S7.3 (D21/D514): slos reads the workspace's own objectives, measured by the
 // ingest binary's evaluator, in live mode — wired exactly, not as a subtree.
 test("/app/slos is live-wired, exactly and not as a subtree", () => {
