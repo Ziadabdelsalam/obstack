@@ -4295,7 +4295,7 @@ try {
   let mcpChangeIds = null;
   let pgChangeIds = null;
   let bobSeedCopy = { ok: null, hisLabel: null, herLabel: null };
-  let bobMintedText = null;
+  let crossTenantMintedText = null;
   let bobIncidentTotal = null;
   let bobOwnIncidents = null;
   let bobSeesAlice = null;
@@ -4314,6 +4314,12 @@ try {
     const aliceRead = await issueScopedKey(alice, `${ACTORS.alice.label}-agent-read`, "read");
     const aliceSetup = await issueScopedKey(alice, `${ACTORS.alice.label}-agent-setup`, "setup");
     const bobRead = await issueScopedKey(bob, `${ACTORS.bob.label}-agent-read`, "read");
+    // The mint/export/arrival leg is BOB's: by this point in the drive alice is
+    // over her event quota on purpose (the metering arm spent it, D566's
+    // fixture), so a span exported into HER workspace is head-sampled away —
+    // `droppedQuota: 1, accepted: 0`, measured on the third green attempt, the
+    // product's honest answer. His workspace is under quota.
+    const bobSetup = await issueScopedKey(bob, `${ACTORS.bob.label}-agent-setup`, "setup");
 
     // The page, live: the served address, the tag, the registry's count.
     const mcpPage = await pageFor(alice, "/app/mcp");
@@ -4381,8 +4387,8 @@ try {
     const anon = await mcpRaw({});
     unauthAtMcp = { status: anon.status, challenge: anon.headers.get("www-authenticate") };
 
-    // The setup mint (D666), and the minted key's one door (D659).
-    const cs = await mcpClientFor(aliceSetup);
+    // The setup mint (D666) under bob's setup key, and the minted key's one door (D659).
+    const cs = await mcpClientFor(bobSetup);
     try {
       const mint = await cs.callTool({ name: "issue_ingest_key", arguments: { name: "e2e-agent" } });
       const body = mint.structuredContent ?? {};
@@ -4390,33 +4396,33 @@ try {
         token: body.token ?? null,
         scope: body.key?.scope ?? null,
         name: body.key?.name ?? null,
-        row: body.key?.id ? await pgOne(`SELECT name, scope FROM api_keys WHERE id = $1 AND workspace_id = $2`, [body.key.id, alice.workspaceId]) : null,
+        row: body.key?.id ? await pgOne(`SELECT name, scope FROM api_keys WHERE id = $1 AND workspace_id = $2`, [body.key.id, bob.workspaceId]) : null,
       };
       if (minted.token) {
         mintedAtMcp = (await mcpRaw({ authorization: `Bearer ${minted.token}` })).status;
         mintedExportStatus = (await otlp("traces", minted.token, tracesExport([spanOf(mintedTraceId, "minted-key-export")]))).status;
         // The arrival flip for THAT key alone (D667): ingest writes the health
         // row on its flush; a bounded settle, then the read the agent would make.
-        const readKeyRow = await pgOne(`SELECT id FROM api_keys WHERE workspace_id = $1 AND prefix = $2`, [alice.workspaceId, aliceRead.slice(0, 12)]);
+        const readKeyRow = await pgOne(`SELECT id FROM api_keys WHERE workspace_id = $1 AND prefix = $2`, [bob.workspaceId, bobRead.slice(0, 12)]);
         const deadline = Date.now() + 30_000;
         let mintedArrival = null;
         while (Date.now() < deadline) {
           mintedArrival = (await cs.callTool({ name: "check_arrival", arguments: { keyId: body.key.id } })).structuredContent ?? null;
           if (mintedArrival?.arrived) {
             // Arrived, and readable: the trace the minted key exported resolves
-            // for her (D661's "get_trace resolves the arrived trace").
+            // for him (D661's "get_trace resolves the arrived trace").
             mintedResolves = (await cs.callTool({ name: "get_trace", arguments: { id: mintedTraceId } })).isError !== true;
             if (mintedResolves) break;
           }
           await new Promise((r) => setTimeout(r, 1_000));
         }
-        // The cross-tenant probe on an id only SHE holds: bob's read key gets
-        // the not-found sentence for the trace her minted key just exported.
-        const cbAgain = await mcpClientFor(bobRead);
+        // The cross-tenant probe on an id only HE holds: alice's read key gets
+        // the not-found sentence for the trace his minted key just exported.
+        const caAgain = await mcpClientFor(aliceRead);
         try {
-          bobMintedText = mcpText(await cbAgain.callTool({ name: "get_trace", arguments: { id: mintedTraceId } }));
+          crossTenantMintedText = mcpText(await caAgain.callTool({ name: "get_trace", arguments: { id: mintedTraceId } }));
         } finally {
-          await cbAgain.close();
+          await caAgain.close();
         }
         const otherArrival = readKeyRow ? (await cs.callTool({ name: "check_arrival", arguments: { keyId: readKeyRow.id } })).structuredContent ?? null : null;
         mcpArrival = { minted: mintedArrival, other: otherArrival };
@@ -4474,15 +4480,15 @@ try {
     `tool ${mcpChangeIds?.length} · store ${pgChangeIds?.length}`,
   );
   check(
-    "bob's read key: the shared seed id is his own copy (his label, never hers), the trace only she holds is the not-found sentence, and list_incidents is his rows and none of hers",
+    "cross-tenant: bob's read key gets his own copy of the shared seed id (his label, never hers), her read key gets the not-found sentence for the trace only his minted key exported, and his list_incidents is his rows and none of hers",
     bobSeedCopy.ok === true &&
       bobSeedCopy.hisLabel === true &&
       bobSeedCopy.herLabel === false &&
-      bobMintedText === "no trace with this id in your workspace" &&
+      crossTenantMintedText === "no trace with this id in your workspace" &&
       Number.isFinite(bobOwnIncidents) &&
       bobIncidentTotal === bobOwnIncidents &&
       bobSeesAlice === false,
-    `seed ${JSON.stringify(bobSeedCopy)} · minted ${JSON.stringify(bobMintedText)} · total ${bobIncidentTotal} vs ${bobOwnIncidents} · sees alice ${bobSeesAlice}`,
+    `seed ${JSON.stringify(bobSeedCopy)} · her probe of his minted ${JSON.stringify(crossTenantMintedText)} · total ${bobIncidentTotal} vs ${bobOwnIncidents} · sees alice ${bobSeesAlice}`,
   );
   check(
     "the two doors: her INGEST key at /mcp is a 401 with the challenge; her read and setup keys at /v1/traces are 401s",
@@ -4505,7 +4511,7 @@ try {
     JSON.stringify(readMintText),
   );
   check(
-    "a setup key mints an ingest key: ok_live_ shape, scope ingest, the mcp: prefix on the stored row, and the minted key is refused at /mcp",
+    "bob's setup key mints an ingest key: ok_live_ shape, scope ingest, the mcp: prefix on his stored row, and the minted key is refused at /mcp",
     /^ok_live_[0-9a-f]{64}$/.test(minted.token ?? "") &&
       minted.scope === "ingest" &&
       minted.name === "mcp:e2e-agent" &&
@@ -4515,7 +4521,7 @@ try {
     `${JSON.stringify({ ...minted, token: minted.token ? "…" : null })} · minted@mcp ${mintedAtMcp}`,
   );
   check(
-    "the minted key exports (200), check_arrival flips for it alone, the exported trace resolves for her, and her read key's window is unmoved",
+    "the minted key exports (200) into his under-quota workspace, check_arrival flips for it alone, the exported trace resolves for him, and his read key's window is unmoved",
     mintedExportStatus === 200 &&
       mcpArrival.minted?.arrived === true &&
       mcpArrival.minted?.keys?.length === 1 &&
@@ -4724,35 +4730,35 @@ try {
   const aliceKeys = await pgRows(`SELECT prefix, revoked_at, scope, name FROM api_keys WHERE workspace_id = $1`, [
     alice.workspaceId,
   ]);
-  const bobKeys = await pgRows(`SELECT id, scope FROM api_keys WHERE workspace_id = $1`, [bob.workspaceId]);
+  const bobKeys = await pgRows(`SELECT id, scope, name, revoked_at FROM api_keys WHERE workspace_id = $1`, [bob.workspaceId]);
   const meteringRow = aliceKeys.find((k) => k.prefix === prefix);
   const quickstartRow = aliceKeys.find((k) => k.prefix === firstPrefix);
-  // S8.1: the MCP arm issued three more of alice's (read, setup, and the mint's
-  // `mcp:` ingest key) and bob's one read key; a run that withheld the arm
-  // reads the hook and expects the pre-S8.1 world, so the RED's failure count
-  // stays the arm's own (D662).
+  // S8.1: the MCP arm issued alice's read and setup keys, and bob's read and
+  // setup keys plus the `mcp:` ingest key his setup key minted; a run that
+  // withheld the arm reads the hook and expects the pre-S8.1 world, so the
+  // RED's failure count stays the arm's own (D662).
   const mcpWithheld = Boolean(process.env.RED_WITHHOLD_MCP);
   const aliceScopes = aliceKeys.map((k) => k.scope).sort().join(",");
-  const mintedRow = aliceKeys.find((k) => k.name.startsWith("mcp:"));
+  const bobScopes = bobKeys.map((k) => k.scope).sort().join(",");
+  const mintedRow = bobKeys.find((k) => k.name.startsWith("mcp:"));
   check(
     "api_keys holds the seeded dev row live on ws_demo, alice's keys — the quickstart's still live, the settings one revoked, " +
-      "and (S8.1) her read, setup and mcp:-minted ingest keys — and bob's one read key",
+      "and (S8.1) her read and setup keys — and bob's read and setup keys plus the mcp:-minted ingest key",
     devKey?.workspace_id === "ws_demo" &&
       devKey?.prefix === "ok_dev_local" &&
       devKey?.revoked_at === null &&
-      aliceKeys.length === (mcpWithheld ? 2 : 5) &&
+      aliceKeys.length === (mcpWithheld ? 2 : 4) &&
       meteringRow !== undefined &&
       meteringRow.revoked_at !== null &&
       quickstartRow !== undefined &&
       quickstartRow.revoked_at === null &&
       (mcpWithheld
         ? bobKeys.length === 0
-        : aliceScopes === "ingest,ingest,ingest,read,setup" &&
+        : aliceScopes === "ingest,ingest,read,setup" &&
+          bobScopes === "ingest,read,setup" &&
           mintedRow?.scope === "ingest" &&
-          mintedRow?.revoked_at === null &&
-          bobKeys.length === 1 &&
-          bobKeys[0].scope === "read"),
-    `dev=${JSON.stringify(devKey)} alice=${JSON.stringify(aliceKeys.map((k) => [k.prefix, k.scope, k.revoked_at ? "revoked" : "live"]))} bob=${JSON.stringify(bobKeys)}`,
+          mintedRow?.revoked_at === null),
+    `dev=${JSON.stringify(devKey)} alice=${JSON.stringify(aliceKeys.map((k) => [k.prefix, k.scope, k.revoked_at ? "revoked" : "live"]))} bob=${JSON.stringify(bobKeys.map((k) => [k.name, k.scope, k.revoked_at ? "revoked" : "live"]))}`,
   );
 
   // ------------------------------------------------- session, then none
