@@ -29,7 +29,9 @@ storage/secrets):**
   assumes of its DaemonSet").
 - A demo app pod: the instrumented `demo-agent` container (OTLP routed
   through the collector, D37.1) plus a second, uninstrumented `sidecar`
-  container whose stdout is the genuine NEARBY log source (D37.2).
+  container whose stdout is the genuine NEARBY log source (D37.2). Since
+  0.7.0 it is a fixture with a switch — `demo.enabled`, default `true`; a
+  release carrying real traffic turns it off.
 - Every image pinned to an exact tag (D14); the three images built from this
   repo (`ingest`, `web`, `demo-agent`) are built locally and loaded into kind
   (`imagePullPolicy: Never`, S2.0's precedent) — no registry in the path.
@@ -40,21 +42,27 @@ storage/secrets):**
   "Credentials and rotation" for what moved alongside it.
 - **A chart-owned Secret with an `existingSecret` override on every
   credential** (D253 item 3): both ClickHouse passwords, the Postgres
-  password, and the two slots T5's `web` workload fills (`BETTER_AUTH_SECRET`,
-  `OBSTACK_EXPLAIN_API_KEY`) — see "Credentials and rotation". No
-  external-secrets integration ships here; D253 refuses it as a speculative
-  component.
+  password, the two slots T5's `web` workload fills (`BETTER_AUTH_SECRET`,
+  `OBSTACK_EXPLAIN_API_KEY`), `ingest`'s optional drain secret and — since
+  0.7.0 — the collector's ingest key (`collector-api-key`, the pilot packet's
+  D687) — see "Credentials and rotation". No external-secrets integration
+  ships here; D253 refuses it as a speculative component.
 - **The `web` workload** (D253 item 1): a Deployment + ClusterIP Service
   running the live-stamped image `apps/web/Dockerfile` produces, with
   `OBSTACK_DATA_MODE=live` and its store credentials wired from the Secret
   above. `web.betterAuthUrl` is the origin a browser reaches it on — the
-  D119 posture is stated at that value.
+  D119 posture is stated at that value. Since 0.7.0 `web.explainMode` states
+  which provider Explain runs with (`fake` by default; `anthropic` with the
+  key in the Secret's `explain-api-key`).
 - **Optional Ingress for web and for ingest's OTLP/HTTP surface** (D253
   item 4, the D214 network-reachable endpoint): host, TLS-Secret name and
   annotation pass-through, both disabled by default. No ingress controller
   and no cert-manager ship here. Enabling ingest's also sets
   `OBSTACK_PUBLIC_OTLP_HTTP_ENDPOINT` on the web workload so the product's
-  quickstart renders that address; gRPC is deliberately not exposed.
+  quickstart renders that address; gRPC is deliberately not exposed. Since
+  0.7.0 enabling web's also sets `OBSTACK_PUBLIC_MCP_ENDPOINT` — the `/mcp`
+  endpoint is a path on the web Service and rides the same Ingress, so
+  `/app/mcp` prints the deployment's real address.
 - **Resource requests/limits** (D253 item 5, widened by D283): requests AND
   limits on `ingest`, `web`, the collector DaemonSet, the events collector
   and both demo containers, conservative defaults stated at each; **requests
@@ -70,10 +78,49 @@ not a gap to silently fill:**
 
 - HA beyond ingest's existing replica story, autoscaling, PDBs,
   NetworkPolicies, multi-replica ClickHouse, backup automation — named OUT
-  by D253 as S5-informed follow-up.
+  by D253 as S5-informed follow-up. (0.7.0's `backups` disk is a place for a
+  `BACKUP` statement to write, not automation — "Backups" below draws the
+  line.)
+- An ingress controller, certificates, a registry pull secret and an
+  external-secrets integration — the pilot packet (D683/D690) keeps every one
+  of them the cluster's, not the chart's.
 - TTL tiers and docs content — unrelated surfaces, no chart involvement
   either way.
 - A second chart. M4 extends this one in place; a parallel chart is drift.
+
+## Upgrading to 0.7.0
+
+0.7.0 is the client-pilot bump (the pilot packet's §12) — the first release
+meant for a cluster that is not a throwaway kind — and it is **additive**:
+nothing removes or renames a 0.6.0 object, every new value is default-off or
+default-as-before, and a 0.6.0 values file renders a valid 0.7.0 release.
+What an operator can observe, and what rolls once on the upgrade:
+
+- **The web pod rolls once.** Its template gains `OBSTACK_EXPLAIN_MODE`,
+  rendered always from `web.explainMode` (default `fake` — the mode the image
+  already defaulted to on its own, now stated in the manifest). Set
+  `anthropic` and put the key in the web Secret's `explain-api-key` to make
+  Explain and incident RCA real. A value outside those two fails
+  `helm template`.
+- **Both collector workloads roll once.** `OBSTACK_COLLECTOR_API_KEY` is a
+  `secretKeyRef` into the chart's Secret (`collector-api-key`) or a brought
+  `collector.existingSecret`, no longer a `value:` literal in the pod spec;
+  a `checksum/secret` annotation keeps `--set collector.apiKey=…` rolling
+  them. The default key still flows on kind — see "Credentials and rotation"
+  for the rotation procedure and why a real install brings its own Secret.
+- **The web Ingress branch gains one env line**, `OBSTACK_PUBLIC_MCP_ENDPOINT`
+  (`https://<web.ingress.host>/mcp` when TLS is on), so `/app/mcp` prints the
+  deployment's address. Only rendered while `web.ingress.enabled` is true, so
+  a release without the Ingress sees no change.
+- **Two switches, both default-off or default-as-before:** `demo.enabled`
+  (default `true`; `false` removes the demo Deployment and Service and
+  nothing else) and `clickhouse.backups.enabled` (default `false`; `true`
+  rolls ClickHouse once with the `backups` disk — "Backups" below).
+
+ClickHouse, Postgres, ingest, the migrate Jobs, the ClusterRole and the demo
+pod render byte-for-byte what 0.6.0 rendered at the defaults; the CPU-request
+budget is unchanged at 990m (960m with the demo off). The D276 guard is
+untouched and still armed.
 
 ## Upgrading to 0.6.0
 
@@ -494,12 +541,15 @@ thing both paths leave behind.
 D253 item 3's floor: **the standard pattern and nothing more.** Every
 credential this chart handles — both ClickHouse users' passwords, the
 Postgres password, the `web` workload's two auth slots
-(`BETTER_AUTH_SECRET`, `OBSTACK_EXPLAIN_API_KEY`) and the `ingest` workload's
-one optional slot (the Vercel drain signature secret, D287) — resolves
-through the same four-group pattern. By default this chart renders its own
+(`BETTER_AUTH_SECRET`, `OBSTACK_EXPLAIN_API_KEY`), the `ingest` workload's
+one optional slot (the Vercel drain signature secret, D287) and, since 0.7.0,
+the collector's ingest key (`OBSTACK_COLLECTOR_API_KEY`, the pilot packet's
+D687) — resolves
+through the same five-group pattern. By default this chart renders its own
 Secret (`{{ .Release.Name }}-credentials`, `templates/secret.yaml`) from the
 values above; setting `clickhouse.existingSecret` / `postgres.existingSecret` /
-`web.existingSecret` / `ingest.existingSecret` to the name of a Secret already
+`web.existingSecret` / `ingest.existingSecret` / `collector.existingSecret` to
+the name of a Secret already
 in the cluster sources that group's credentials from it instead — a NAME,
 never a value, so the
 credential itself never has to pass through `values.yaml`, `--set`, or this
@@ -507,11 +557,14 @@ chart's own release manifest. Key names are **fixed by the chart, not
 values-configurable**, so a brought Secret has exactly one thing to get right
 instead of two: `clickhouse-ingest-password`, `clickhouse-web-password`,
 `postgres-password`, `better-auth-secret`, `explain-api-key`,
-`vercel-drain-secret`. Four groups,
-not six, because ClickHouse's two users rotate together (both live in
+`vercel-drain-secret`, `collector-api-key`. Five groups,
+not seven, because ClickHouse's two users rotate together (both live in
 `files/obstack-users.xml`) and the web workload's two auth slots are a third
 independent group; `ingest` is a fourth because its one key rotates with a
-drain's configuration in someone else's dashboard, on nobody else's schedule.
+drain's configuration in someone else's dashboard, on nobody else's schedule;
+the collector's key is a fifth because it is a credential the PRODUCT issues
+(an `ingest`-scoped `api_keys` row minted in Settings) and rotates from that
+page, on the product's schedule rather than any store's.
 Both optional keys (`explain-api-key`, `vercel-drain-secret`) are read with
 `optional: true`, so a brought Secret may omit either entirely rather than
 carrying an empty one — measured live: setting the `existingSecret` values
@@ -559,6 +612,21 @@ credential:**
   a brought Secret may omit that key entirely) — update the Secret and roll
   `deployment/<release>-web`. Rotating `BETTER_AUTH_SECRET` invalidates every
   live session; users sign in again.
+- **The collector's key** (`collector.apiKey` / `collector.existingSecret`,
+  0.7.0): both collector workloads read `OBSTACK_COLLECTOR_API_KEY` through a
+  `secretKeyRef` into the `collector-api-key` slot — until 0.7.0 it was a
+  `value:` literal in both pod specs, the one credential D275's line had not
+  reached. Rotation is the product's: issue a new `ingest` key in Settings →
+  API keys, update the Secret, roll `daemonset/<release>-collector` **and**
+  `deployment/<release>-collector-cluster`, then revoke the old key on the
+  same page (ingest's 30s lookup cache is how long the old key keeps working).
+  On this chart's own Secret a `helm upgrade --set collector.apiKey=…` rolls
+  both for you — a `checksum/secret` annotation on each pod template, the
+  ClickHouse mechanism — but a brought `existingSecret`'s rotation is invisible
+  to Helm at render time, so there the roll is always the two manual
+  commands. The reference is deliberately NOT `optional`: a collector with no
+  key would send `Bearer ` and be 401'd on every batch, quietly; a missing key
+  holds the pod in `CreateContainerConfigError` instead, naming the key.
 
 **Closed (D275): every DSN this chart renders resolves `existingSecret`, and
 none of them ever carries a password literal on that path.** The migrate Job,
@@ -581,6 +649,75 @@ can still race the store's own pod roll for ClickHouse ("Why ClickHouse is a
 normal resource" above) — `existingSecret` doesn't have this race at all,
 since Helm never renders that Secret's value in the first place.
 
+## Backups (0.7.0: the `backups` disk; automation stays out)
+
+Backup automation is OUT of this chart by ruling (D253, the scope boundary
+above), and 0.7.0 does not change that. What it adds is the one thing a
+store-level ClickHouse backup cannot be taken without and that `files/` did
+not carry: a `backups` disk, declared in a `config.d` file
+(`files/clickhouse-backups.xml`, mounted by the StatefulSet beside the image's
+own config — the pilot packet's D696), so that
+
+```sql
+BACKUP  DATABASE obstack TO   Disk('backups', '2026-09-15.zip')
+RESTORE DATABASE obstack FROM Disk('backups', '2026-09-15.zip')
+```
+
+have somewhere to write and read. `clickhouse.backups.enabled` (default
+`false`) renders the ConfigMap, the mount and a `checksum/backups` annotation
+on the pod template; off, the ClickHouse pod template is byte-for-byte what
+0.6.0 rendered.
+
+**Where the files land is the operator's decision, and the default is honest
+about what it is.** By default the disk is a `backups/` subPath of the data
+PVC, mounted at `/var/lib/clickhouse-backups` — the same volume as the data it
+copies, which makes it a STAGING area for a copy that leaves the node, not a
+backup. `clickhouse.backups.existingClaim` names a PersistentVolumeClaim of
+the operator's for the disk's own volume; it is referenced from the pod
+template rather than claimed by a second `volumeClaimTemplate`, because a
+StatefulSet's claim templates are immutable once it exists and turning backups
+on for a live release has to be a `helm upgrade`, never a reinstall. The
+image's entrypoint creates and chowns every `storage_configuration.disks.*.path`
+it finds in the merged config at boot (`docker/server/entrypoint.sh` at the
+pinned tag, read before this section was written), so the directory needs no
+init container and no `fsGroup`.
+
+**Measured on the pinned server (26.3.17.110, the static build, this chart's
+`users.xml` and this `config.d` file):** `system.disks` lists `backups` at
+`/var/lib/clickhouse-backups/`; `BACKUP DATABASE obstack` → `BACKUP_CREATED`;
+`RESTORE DATABASE obstack AS obstack_restored` → `RESTORED` with equal row
+counts; `obstack_ingest` (`GRANT ALL ON obstack.*`) can `BACKUP TABLE` and
+`RESTORE TABLE … AS` inside `obstack`; `obstack_web` is refused with `Not
+enough privileges … BACKUP ON obstack.<table>` (code 497) — the D11 read-only
+split holds for backups too. The acceptance's last rider takes the same round
+trip on kind (`acceptance.sh`, "backups").
+
+**The floor a real install brings, stated so it is chosen rather than
+discovered.** Two stores, two kinds of loss. Postgres holds what people
+authored and no machine can re-derive — identity, keys, incidents, alerts,
+dashboards, saved views — so it gets the first backup, a nightly
+
+```bash
+kubectl exec statefulset/<release>-postgres -- pg_dump -U obstack -Fc obstack > obstack-$(date -u +%F).dump
+```
+
+copied off the node. ClickHouse holds telemetry a retention sweep already
+treats as expiring; the disk above is for the install that wants it anyway,
+driven by
+
+```bash
+kubectl exec statefulset/<release>-clickhouse -- clickhouse-client \
+  --query "BACKUP DATABASE obstack TO Disk('backups', '$(date -u +%F).zip')"
+kubectl cp <release>-clickhouse-0:/var/lib/clickhouse-backups/$(date -u +%F).zip ./
+```
+
+(`kubectl exec` reaches the server over loopback as `default`, the D350
+positive half). A whole-VM disk snapshot on the hypervisor's schedule sits
+under both and costs no new component. What this chart still does not ship,
+by the same ruling: a CronJob for either loop, an off-cluster target, or a
+restore drill — those are the operator's, and the self-hosting docs page
+states the pilot's cut.
+
 ## The collector DaemonSet's contract
 
 `templates/collector/` packages `deploy/collector/config.yaml`
@@ -593,7 +730,9 @@ config.yaml assumes of its DaemonSet" section states:
   and `get` on `nodes/stats` and `nodes/proxy` (`kubelet_stats`' scrape of the
   node's own kubelet — "The cluster collector" below has the whole rule);
 - `/var/log/pods` and `/var/lib/docker/containers` mounted read-only;
-- `OBSTACK_COLLECTOR_API_KEY`, `OBSTACK_INGEST_ENDPOINT`,
+- `OBSTACK_COLLECTOR_API_KEY` (since 0.7.0 a `secretKeyRef` into the chart's
+  Secret or `collector.existingSecret` — `collector.apiKey` is never a
+  pod-spec literal; "Credentials and rotation" above), `OBSTACK_INGEST_ENDPOINT`,
   `OBSTACK_COLLECTOR_EXCLUDE_CONTAINER` (the demo pod's instrumented
   container name — `values.yaml`'s `collector.excludeContainer`) and
   `OBSTACK_COLLECTOR_STORAGE_DIR`;
@@ -765,7 +904,10 @@ config has no such source: there is no cluster API under Compose, so
 `config.compose.yaml` grows neither of its receivers, and nothing outside
 `deploy/helm/obstack/` reads the file. Pinning a copy against a source that
 does not exist would be ceremony, not the K1 mechanism, so the pair list
-stays at two rows.
+stays at two rows. 0.7.0 adds a fourth file of the same kind,
+`files/clickhouse-backups.xml` — the `backups` disk's `config.d` entry
+("Backups" above) — with no source outside the chart either, so it is not a
+row either.
 
 ## Local repro on kind
 
@@ -870,12 +1012,23 @@ with a per-run `web.betterAuthSecret` (`WEB_AUTH_SECRET`, generated with
 `openssl rand -base64 32` — exactly what a real operator supplies; every
 other value stays a chart default), fires `POST /chat`, and asserts:
 
-Two of the checks are not telemetry. The first step of the run is the
+Three of the checks are not telemetry. The first step of the run is the
 CPU-request budget — `acceptance.ts budget`, which renders the chart, prints
 the per-workload table and refuses the run if the total no longer fits the
 node (990m against a 1000m budget today); it touches no cluster, so it costs
 a second and it is why a footprint regression is now a named failure instead
-of a 900s `--wait` timeout. The `web` workload's own check is a `/login`
+of a 900s `--wait` timeout. The second is `acceptance.ts render` (chart
+0.7.0): the bump's render-time contract — `demo.enabled=false` removes
+exactly the demo pair, the collector's key is in no pod spec and rolls both
+collectors when it changes, `OBSTACK_EXPLAIN_MODE` is always stated and a
+bad value refuses the render, the `/mcp` address follows the web Ingress,
+and the backups objects render only behind their flag — asserted against
+`helm template`, again before any image is built (`OBSTACK_CHART_DIR` points
+it at another chart directory, which is how each arm was proven red). The
+run's LAST step is the backups rider: `helm upgrade` with
+`clickhouse.backups.enabled=true`, then `BACKUP TABLE obstack.spans` →
+`RESTORE … AS` → equal row counts through `kubectl exec` ("Backups" above).
+The `web` workload's own check is a `/login`
 probe over a port-forward, and it is the boot check passing: the image's
 stamp matched `OBSTACK_DATA_MODE` and the release's `BETTER_AUTH_SECRET`
 reached the pod. The telemetry

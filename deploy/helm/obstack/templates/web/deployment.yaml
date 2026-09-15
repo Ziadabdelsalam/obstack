@@ -109,6 +109,35 @@ spec:
                   name: {{ include "obstack.web.secretName" . }}
                   key: explain-api-key
                   optional: true
+            # 0.7.0 (the pilot packet's D692): the mode itself, always stated.
+            # The image defaults to `fake` on its own, but a manifest that says
+            # which provider a trace's explanation came from is the difference
+            # between a fake panel by decision and one by omission. The
+            # admitted values are the web image's own
+            # (apps/web/src/server/explain/client.ts), and a value outside them
+            # fails the RENDER with that module's sentence — the typo is
+            # `helm template`'s to report, not a crash-looping pod's.
+            {{- if not (has .Values.web.explainMode (list "fake" "anthropic")) }}
+            {{- fail (printf "web.explainMode must be \"fake\" or \"anthropic\", got %q" (toString .Values.web.explainMode)) }}
+            {{- end }}
+            - name: OBSTACK_EXPLAIN_MODE
+              value: {{ .Values.web.explainMode | quote }}
+            {{- if .Values.web.ingress.enabled }}
+            # 0.7.0 (the pilot packet's D691, S8.1 D653): the address the
+            # product prints for its MCP endpoint — `/app/mcp` and the docs'
+            # client setups render it through apps/web/src/server/mcp-endpoint.ts,
+            # the D277 shape (an operator override read at request time, never
+            # NEXT_PUBLIC_-prefixed, never baked in at build). `/mcp` is a path
+            # on this same Service and the web Ingress's `pathType: Prefix` on
+            # `/` already carries it, so nothing is exposed here that the
+            # Service does not already serve; this line only tells the product
+            # its own public name. Scheme from the Ingress's TLS flag, the
+            # OTLP line's rule below. The path suffix is a second copy of
+            # `MCP_PATH` (apps/web/src/lib/mcp-types.ts), pinned against this
+            # template by apps/web/src/server/mcp-endpoint.test.ts.
+            - name: OBSTACK_PUBLIC_MCP_ENDPOINT
+              value: {{ printf "%s://%s/mcp" (ternary "https" "http" .Values.web.ingress.tls.enabled) .Values.web.ingress.host | quote }}
+            {{- end }}
             {{- if .Values.ingest.ingress.enabled }}
             # D266/D277: the ingest ingress is the deployment's public OTLP
             # address, so the quickstart and connect flows render it instead

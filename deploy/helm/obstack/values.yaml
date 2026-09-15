@@ -7,7 +7,10 @@
 # OTLP/HTTP surface, resource requests/limits, and managed-Postgres values
 # (D253 items 1/4/5/6). See README.md's scope boundary for exactly what's
 # here today, and its "Managed Postgres" section for that item's stated
-# ceiling.
+# ceiling. 0.7.0 (the client-pilot bump, README.md "Upgrading to 0.7.0") adds
+# `demo.enabled`, `web.explainMode`, `collector.existingSecret` and
+# `clickhouse.backups`, and renders the `/mcp` address from the web Ingress —
+# each explained where it sits below.
 #
 # Every image below is pinned to an exact tag (D14 precedent) — bumping one
 # is a deliberate edit here, never a floating tag.
@@ -50,6 +53,27 @@ clickhouse:
     requests:
       cpu: 500m
       memory: 1Gi
+  # 0.7.0 (the pilot packet's D696): an opt-in `backups` disk, so
+  # `BACKUP DATABASE obstack TO Disk('backups', '<name>')` has somewhere to
+  # write and `RESTORE … FROM Disk('backups', '<name>')` somewhere to read
+  # (files/clickhouse-backups.xml, mounted as a config.d file). Backup
+  # AUTOMATION stays OUT (D253, README.md's scope boundary): what runs those
+  # statements, when, and what carries the result off the node is the
+  # operator's — README.md, "Backups", states the floor a real install brings.
+  # Off by default: nothing renders and the ClickHouse pod template is what
+  # 0.6.0 rendered.
+  backups:
+    enabled: false
+    # Where the disk's files live. Empty (default): a `backups/` directory on
+    # the data PVC itself, mounted at /var/lib/clickhouse-backups — a backup
+    # that shares the volume of the data it copies is a STAGING area for a
+    # copy that leaves the node, not a backup, and the README says so. Set to
+    # the name of a PersistentVolumeClaim that already exists in the release's
+    # namespace to give the disk its own volume. It is a pod-template
+    # `volumes:` entry either way, never a second volumeClaimTemplate: a
+    # StatefulSet's claim templates are immutable once it exists, and turning
+    # backups on for a live release must be a `helm upgrade`, not a reinstall.
+    existingClaim: ""
 
 # The identity + saved-views store (D95/D112), the same class of resource as
 # ClickHouse above and for the same reasons: one replica, a StatefulSet's PVC
@@ -137,11 +161,23 @@ web:
   # the `__Secure-` name it issues over TLS; left at `http://`, the cookie
   # stays downgraded.
   betterAuthUrl: "http://localhost:3000"
-  # Optional, and never a boot refusal: Explain's default mode is `fake`
-  # (`OBSTACK_EXPLAIN_MODE`, apps/web/src/server/explain/client.ts), which
-  # reads no key at all. A deployment that sets the mode to `anthropic` and
-  # leaves this empty gets Explain's own per-request refusal naming the
-  # missing variables — never a fabricated summary (D102).
+  # 0.7.0 (the pilot packet's D692): the mode Explain and incident RCA run
+  # in. The chart now SETS `OBSTACK_EXPLAIN_MODE` on the web Deployment,
+  # always — the D267 posture, state the runtime half rather than leave the
+  # image's default implicit — so a manifest says which provider a trace's
+  # explanation came from. `fake` (the default) reads no key and answers with
+  # the fake provider, and the panel says so (D102); `anthropic` calls a model
+  # with the key in the web Secret's `explain-api-key` (explainApiKey below or
+  # a brought web.existingSecret), and a missing key is Explain's own
+  # per-request refusal, never a boot failure. Anything else is refused at
+  # render (templates/web/deployment.yaml) with the web image's own sentence,
+  # so a typo fails `helm template` instead of a pod.
+  explainMode: fake
+  # Optional, and never a boot refusal: with `explainMode: fake` above nothing
+  # reads this at all (apps/web/src/server/explain/client.ts). A deployment
+  # that sets the mode to `anthropic` and leaves this empty gets Explain's own
+  # per-request refusal naming the missing variables — never a fabricated
+  # summary (D102).
   explainApiKey: ""
   existingSecret: ""
   # D253 item 5 — conservative defaults for a Node process serving requests,
@@ -160,6 +196,14 @@ web:
   # controller and no cert-manager (D253 refuses both as speculative
   # components) — host and tls.secretName below assume one already exists
   # in the cluster.
+  #
+  # 0.7.0 (the pilot packet's D691, S8.1 D653): enabling this also sets
+  # `OBSTACK_PUBLIC_MCP_ENDPOINT` on this workload — `https://<host>/mcp` when
+  # tls.enabled, `http://` otherwise (templates/web/deployment.yaml) — so
+  # `/app/mcp` and the docs' client setups print the deployment's real
+  # address instead of the loopback default. `/mcp` is a path on this same
+  # Service and the Ingress's `/` prefix rule already carries it; nothing is
+  # exposed that the Service does not already serve.
   ingress:
     enabled: false
     # Empty (default): the cluster's default IngressClass. Set only to pick
@@ -239,7 +283,23 @@ collector:
   # not an API-key one — D98), so a key issued in a hosted product's settings
   # is not a row here and gets 401'd. Override only with a key row that
   # exists in this chart's Postgres.
+  #
+  # 0.7.0 (the pilot packet's D687): this value lands in the chart's own
+  # Secret under `collector-api-key` and BOTH collector workloads read it
+  # through a secretKeyRef — it is no longer rendered as a `value:` literal
+  # into either pod spec (README.md, "Credentials and rotation"). A real
+  # install has no key before it has a workspace, so the honest sequence is
+  # install → sign up → Settings → API keys → issue an `ingest` key → put it
+  # in a Secret → `helm upgrade` with existingSecret below; the seeded default
+  # only exists so kind and CI come up with nothing to configure.
   apiKey: ok_dev_local
+  # Empty (default): `apiKey` above populates this chart's own Secret. Set to
+  # the name of a Secret already in the cluster carrying the issued key under
+  # the fixed key name `collector-api-key`, and the values file never carries
+  # the key at all — the same NAME-never-a-VALUE shape every other
+  # existingSecret here follows. Changing the key in a brought Secret does not
+  # roll the collectors by itself: README.md, "Credentials and rotation".
+  existingSecret: ""
   # Must name the demo pod's instrumented container below (D37.3) — the
   # collector's filelog exclusion is keyed on the container name.
   excludeContainer: demo-agent
@@ -304,6 +364,16 @@ collector:
         memory: 128Mi
 
 demo:
+  # 0.7.0 (the pilot packet's D688). The demo pod is a fixture: the acceptance
+  # rider's four-layer trace source and, through its second container, the
+  # genuine NEARBY log source (D37.2) — and it sends under the seeded dev key.
+  # kind and CI render it exactly as before (`true`). On a cluster carrying
+  # real traffic it is noise, a CPU request and a writer into `ws_demo`: set
+  # `false` and the Deployment and its Service leave the release; nothing else
+  # moves. `collector.excludeContainer` keeps naming its instrumented container
+  # either way — that value is a filelog rule keyed on a container NAME, so
+  # excluding one that does not exist is a no-op, not a dangling reference.
+  enabled: true
   image: obstack-demo-agent:kind
   pullPolicy: Never
   # D283: requests + limits, same ground as collector.resources — a traffic

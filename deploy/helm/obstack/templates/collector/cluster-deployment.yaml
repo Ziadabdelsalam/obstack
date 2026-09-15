@@ -44,6 +44,13 @@ spec:
         # it, so a ConfigMap change alone would leave this pod on the old
         # pipeline until someone restarted it by hand.
         checksum/config: {{ .Files.Get "files/collector-cluster-config.yaml" | sha256sum }}
+        {{- if not .Values.collector.existingSecret }}
+        # Same mechanism, same reason as the DaemonSet's (0.7.0): the key is a
+        # secretKeyRef now, so a `--set collector.apiKey=…` needs this hash to
+        # roll the pod. Chart-owned Secret only; a brought Secret's rotation
+        # is the manual roll in README.md, "Credentials and rotation".
+        checksum/secret: {{ .Values.collector.apiKey | sha256sum }}
+        {{- end }}
       labels:
         app.kubernetes.io/name: obstack
         app.kubernetes.io/instance: {{ .Release.Name }}
@@ -68,8 +75,14 @@ spec:
           env:
             - name: OBSTACK_INGEST_ENDPOINT
               value: http://{{ .Release.Name }}-ingest:4318
+            # 0.7.0: through the Secret, the DaemonSet's rule and reason
+            # (templates/collector/daemonset.yaml) — one key, one slot, two
+            # readers.
             - name: OBSTACK_COLLECTOR_API_KEY
-              value: {{ .Values.collector.apiKey | quote }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "obstack.collector.secretName" . }}
+                  key: collector-api-key
             # No OBSTACK_COLLECTOR_EXCLUDE_CONTAINER and no
             # OBSTACK_COLLECTOR_STORAGE_DIR: both belong to `file_log`, which
             # this config does not run.

@@ -53,6 +53,14 @@ spec:
         # file's content in makes `helm upgrade` roll ClickHouse exactly when
         # the users config actually changed.
         checksum/config: {{ .Files.Get "files/obstack-users.xml" | sha256sum }}
+        {{- if .Values.clickhouse.backups.enabled }}
+        # 0.7.0: the config.d file is a ConfigMap volume too, looked up by
+        # name — same mechanism, same reason as checksum/config above. The
+        # flag and `existingClaim` change this pod template on their own (a
+        # mount and a volume appear or move), so only the XML's content needs
+        # the hash.
+        checksum/backups: {{ .Files.Get "files/clickhouse-backups.xml" | sha256sum }}
+        {{- end }}
         {{- if not .Values.clickhouse.existingSecret }}
         # The passwords now ride a secretKeyRef (below), not a literal env
         # `value:` — a reference is itself a pod-template field, but its
@@ -106,6 +114,31 @@ spec:
               readOnly: true
             - name: data
               mountPath: /var/lib/clickhouse
+            {{- if .Values.clickhouse.backups.enabled }}
+            # 0.7.0 (D696): the `backups` disk's declaration, file-by-file
+            # into config.d exactly as users.d is mounted above (the image
+            # writes its own docker_related_config.xml into that directory,
+            # so the directory itself must stay writable), and the disk's
+            # path. Default: a `backups/` subPath of the data PVC — the same
+            # volume as the data it copies, honest only as a staging area for
+            # a copy that leaves the node (README.md, "Backups"). With
+            # `clickhouse.backups.existingClaim` the disk gets its own volume
+            # (below). Never a second volumeClaimTemplate: those are immutable
+            # on a live StatefulSet, and turning backups on must be a
+            # `helm upgrade`, not a reinstall.
+            - name: backups-xml
+              mountPath: /etc/clickhouse-server/config.d/obstack-backups.xml
+              subPath: obstack-backups.xml
+              readOnly: true
+            {{- if .Values.clickhouse.backups.existingClaim }}
+            - name: backups
+              mountPath: /var/lib/clickhouse-backups
+            {{- else }}
+            - name: data
+              mountPath: /var/lib/clickhouse-backups
+              subPath: backups
+            {{- end }}
+            {{- end }}
           readinessProbe:
             httpGet:
               path: /ping
@@ -122,6 +155,19 @@ spec:
         - name: users-xml
           configMap:
             name: {{ .Release.Name }}-clickhouse-users
+        {{- if .Values.clickhouse.backups.enabled }}
+        - name: backups-xml
+          configMap:
+            name: {{ .Release.Name }}-clickhouse-backups
+        {{- if .Values.clickhouse.backups.existingClaim }}
+        # The operator's own PVC, referenced from the pod template (mutable)
+        # rather than claimed by a template (immutable) — values.yaml says
+        # why.
+        - name: backups
+          persistentVolumeClaim:
+            claimName: {{ .Values.clickhouse.backups.existingClaim }}
+        {{- end }}
+        {{- end }}
   # The kubelet creates a fresh PVC's mount root:root; the image's own
   # entrypoint runs as root, chowns, and drops privileges — no
   # securityContext needed (unlike the collector, whose upstream image stays

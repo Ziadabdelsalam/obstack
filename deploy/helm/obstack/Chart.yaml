@@ -34,5 +34,16 @@ type: application
 # `-collector-events` → `-collector-cluster` — see README.md, "Upgrading to
 # 0.6.0". The ClusterRole widens (behind the same gate) to what the
 # k8sclusterreceiver's informers need at the pinned v0.158.0.
-version: 0.6.0
+# 0.7.0: the client-pilot bump (the pilot packet's §12) — the first release
+# meant for a cluster that is not a throwaway kind. Five additive items, all
+# default-off or default-as-before: `demo.enabled` (D688), `web.explainMode`
+# rendered as OBSTACK_EXPLAIN_MODE (D692), OBSTACK_PUBLIC_MCP_ENDPOINT from
+# the web Ingress (D691/D653), the collector's key through the chart's Secret
+# with `collector.existingSecret` (D687), and an opt-in ClickHouse `backups`
+# disk (D696). Its own number for the usual reason: an operator can observe
+# the web pod's new env line and both collector pod templates' secretKeyRef
+# in the rendered manifests, and those three roll once on the upgrade — see
+# README.md, "Upgrading to 0.7.0". Nothing removes or renames a 0.6.0 object;
+# the demo pod, the stores and the ClusterRole render exactly as before.
+version: 0.7.0
 appVersion: "0.1.0"
