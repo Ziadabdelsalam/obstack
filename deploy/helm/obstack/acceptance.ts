@@ -4,13 +4,18 @@
  * the chart, so the exit is asserted through the same
  * `apps/web/src/server/data.ts` facade the app renders from).
  *
- * Five commands, all invoked by `acceptance.sh` (CI runs that same script —
+ * Six commands, all invoked by `acceptance.sh` (CI runs that same script —
  * S2.1 L3):
  *
- *   budget              — the only one that touches no cluster at all: render
- *                         the chart and refuse to go further if its total CPU
- *                         requests cannot fit the node CI schedules them on
+ *   budget              — touches no cluster at all: render the chart and
+ *                         refuse to go further if its total CPU requests
+ *                         cannot fit the node CI schedules them on
  *                         (README.md, "The node's CPU-request budget").
+ *   render              — touches no cluster either (chart 0.7.0, the pilot
+ *                         packet's §12): the bump's render-time contract —
+ *                         the demo switch, the collector key's hygiene, the
+ *                         Explain mode, the /mcp address and the backups
+ *                         objects — asserted against `helm template`.
  *   assert <trace_id>   — the whole-trace checks shared with compose's
  *                         smoke.ts (`deploy/compose/trace-checks.ts`: four
  *                         layers, cost/token, correlated logs, listed), plus
@@ -107,6 +112,264 @@ const CHART_CPU_REQUEST_BUDGET_M = 1_000;
 function fail(message: string): never {
   console.error(`acceptance: ${message}`);
   process.exit(1);
+}
+
+/**
+ * `helm template` of the chart beside this file (or `OBSTACK_CHART_DIR`), with
+ * the one value that has no default supplied — the same render `budget`
+ * takes. Throws with helm's stderr on a refused render, so a caller can assert
+ * the refusal as well as the shape.
+ */
+function renderChart(helmArgs: string[]): string {
+  const chartDir = process.env.OBSTACK_CHART_DIR || __dirname;
+  try {
+    return execFileSync(
+      "helm",
+      ["template", "obstack", chartDir, "--set", "web.betterAuthSecret=render-check", ...helmArgs],
+      { encoding: "utf8", maxBuffer: 64 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"] },
+    );
+  } catch (err) {
+    const stderr = (err as { stderr?: string }).stderr ?? "";
+    throw new Error(`helm template ${chartDir} ${helmArgs.join(" ")} failed${stderr ? `:\n${stderr.trimEnd()}` : ""}`);
+  }
+}
+
+/** The rendered fields the 0.7.0 checks walk — everything else is ignored. */
+interface RenderedEnv {
+  name: string;
+  value?: string;
+  valueFrom?: { secretKeyRef?: { name?: string; key?: string; optional?: boolean } };
+}
+interface RenderedMount {
+  name: string;
+  mountPath: string;
+  subPath?: string;
+}
+interface RenderedPodContainer {
+  name?: string;
+  env?: RenderedEnv[];
+  volumeMounts?: RenderedMount[];
+}
+interface RenderedDoc {
+  kind?: string;
+  metadata?: { name?: string };
+  data?: Record<string, string>;
+  stringData?: Record<string, string>;
+  spec?: {
+    template?: {
+      metadata?: { annotations?: Record<string, string> };
+      spec?: {
+        containers?: RenderedPodContainer[];
+        volumes?: { name: string; persistentVolumeClaim?: { claimName?: string }; configMap?: { name?: string } }[];
+      };
+    };
+    volumeClaimTemplates?: unknown[];
+  };
+}
+
+function renderedDocs(yaml: string): RenderedDoc[] {
+  return parseAllDocuments(yaml)
+    .map((d) => d.toJS() as RenderedDoc | null)
+    .filter((d): d is RenderedDoc => d !== null && typeof d.kind === "string");
+}
+
+const docKey = (d: RenderedDoc) => `${d.kind}/${d.metadata?.name ?? "<unnamed>"}`;
+
+function findDoc(docs: RenderedDoc[], kind: string, name: string): RenderedDoc | undefined {
+  return docs.find((d) => d.kind === kind && d.metadata?.name === name);
+}
+
+function containerOf(doc: RenderedDoc | undefined, container: string): RenderedPodContainer | undefined {
+  return doc?.spec?.template?.spec?.containers?.find((c) => c.name === container);
+}
+
+function envOf(doc: RenderedDoc | undefined, container: string, name: string): RenderedEnv | undefined {
+  return containerOf(doc, container)?.env?.find((e) => e.name === name);
+}
+
+/**
+ * Chart 0.7.0 (the pilot packet's §12): the bump's render-time contract,
+ * asserted against `helm template` in about a second and touching no cluster
+ * — the second thing `acceptance.sh` runs, right after `budget`. Five arms,
+ * one per item of the bump:
+ *
+ *   1. `demo.enabled=false` removes exactly the demo Deployment and Service
+ *      and changes nothing else (D688);
+ *   2. the collector's key is never a pod-spec literal — it lives in the
+ *      chart's Secret or a brought one, both collector workloads read it
+ *      through the same secretKeyRef, and a `--set collector.apiKey` change
+ *      rolls both through their checksum (D687, D275's line extended);
+ *   3. `OBSTACK_EXPLAIN_MODE` is always rendered, `fake` by default, and a
+ *      value outside the two admitted ones refuses the render (D692);
+ *   4. `OBSTACK_PUBLIC_MCP_ENDPOINT` renders only behind the web Ingress, at
+ *      `/mcp`, with the scheme following the Ingress's TLS flag (D691/D653);
+ *   5. `clickhouse.backups.enabled` renders the config.d ConfigMap, the
+ *      checksum and the disk's mount — a subPath of the data PVC, or the
+ *      operator's claim — and never a second volumeClaimTemplate (D696).
+ *
+ * `OBSTACK_CHART_DIR` points every arm at another chart directory: that is
+ * how each was proven RED against a deliberately broken copy before it was
+ * trusted (the 0.7.0 plan's T8 result), the way `OBSTACK_CPU_BUDGET_M`
+ * proves `budget` red.
+ */
+function chartRenderChecks(): void {
+  const problems: string[] = [];
+  const arm = (label: string, ok: boolean, detail: string) => {
+    if (ok) console.log(`acceptance:   ${label}: ${detail}`);
+    else problems.push(`${label}: ${detail}`);
+  };
+
+  const base = renderedDocs(renderChart([]));
+
+  // 1. the demo switch
+  const off = renderedDocs(renderChart(["--set", "demo.enabled=false"]));
+  const offKeys = new Set(off.map(docKey));
+  const removed = base.map(docKey).filter((k) => !offKeys.has(k)).sort();
+  arm(
+    "D688 demo.enabled=false removes exactly the demo pair",
+    JSON.stringify(removed) === JSON.stringify(["Deployment/obstack-demo", "Service/obstack-demo"]) &&
+      off.length === base.length - 2,
+    `removed ${removed.join(", ") || "nothing"} (${base.length} → ${off.length} objects)`,
+  );
+  const moved = off.filter((d) => {
+    const twin = base.find((b) => docKey(b) === docKey(d));
+    return twin === undefined || JSON.stringify(twin) !== JSON.stringify(d);
+  });
+  arm(
+    "D688 nothing else moves with the demo off",
+    moved.length === 0,
+    moved.length === 0 ? "every other object identical" : `changed: ${moved.map(docKey).join(", ")}`,
+  );
+
+  // 2. the collector's key
+  const key = `render-check-${randomBytes(6).toString("hex")}`;
+  const keyed = renderedDocs(renderChart(["--set", `collector.apiKey=${key}`]));
+  const carriers = keyed
+    .filter((d) => d.spec?.template !== undefined && JSON.stringify(d).includes(key))
+    .map(docKey);
+  arm(
+    "D687/D275 no pod spec carries the collector key",
+    carriers.length === 0,
+    carriers.length === 0 ? "zero pod templates contain the key string" : `literal in ${carriers.join(", ")}`,
+  );
+  const secret = findDoc(keyed, "Secret", "obstack-credentials");
+  arm(
+    "D687 the chart's Secret carries it under collector-api-key",
+    secret?.stringData?.["collector-api-key"] === key,
+    `Secret/obstack-credentials collector-api-key ${secret?.stringData?.["collector-api-key"] === key ? "= the set value" : `= ${JSON.stringify(secret?.stringData?.["collector-api-key"])}`}`,
+  );
+  const readers: [string, RenderedDoc | undefined][] = [
+    ["DaemonSet/obstack-collector", findDoc(keyed, "DaemonSet", "obstack-collector")],
+    ["Deployment/obstack-collector-cluster", findDoc(keyed, "Deployment", "obstack-collector-cluster")],
+  ];
+  for (const [label, doc] of readers) {
+    const ref = envOf(doc, "collector", "OBSTACK_COLLECTOR_API_KEY")?.valueFrom?.secretKeyRef;
+    arm(
+      `D687 ${label} reads the key through the Secret`,
+      ref?.name === "obstack-credentials" && ref?.key === "collector-api-key" && ref?.optional !== true,
+      `secretKeyRef ${JSON.stringify(ref ?? null)}`,
+    );
+  }
+  const hash = (docs: RenderedDoc[], kind: string, name: string) =>
+    findDoc(docs, kind, name)?.spec?.template?.metadata?.annotations?.["checksum/secret"];
+  const baseHashes = [hash(base, "DaemonSet", "obstack-collector"), hash(base, "Deployment", "obstack-collector-cluster")];
+  const keyedHashes = [hash(keyed, "DaemonSet", "obstack-collector"), hash(keyed, "Deployment", "obstack-collector-cluster")];
+  arm(
+    "D687 a key change rolls both collector workloads",
+    baseHashes.every((h) => typeof h === "string") &&
+      keyedHashes.every((h) => typeof h === "string") &&
+      baseHashes[0] === baseHashes[1] &&
+      keyedHashes[0] === keyedHashes[1] &&
+      baseHashes[0] !== keyedHashes[0],
+    `checksum/secret ${String(baseHashes[0]).slice(0, 12)}… → ${String(keyedHashes[0]).slice(0, 12)}… on both`,
+  );
+  const brought = renderedDocs(renderChart(["--set", "collector.existingSecret=brought"]));
+  const broughtSecret = findDoc(brought, "Secret", "obstack-credentials");
+  const broughtRefs = [
+    envOf(findDoc(brought, "DaemonSet", "obstack-collector"), "collector", "OBSTACK_COLLECTOR_API_KEY")?.valueFrom?.secretKeyRef?.name,
+    envOf(findDoc(brought, "Deployment", "obstack-collector-cluster"), "collector", "OBSTACK_COLLECTOR_API_KEY")?.valueFrom?.secretKeyRef?.name,
+  ];
+  arm(
+    "D687 a brought Secret is the only carrier",
+    broughtSecret?.stringData?.["collector-api-key"] === undefined &&
+      broughtRefs.every((n) => n === "brought") &&
+      hash(brought, "DaemonSet", "obstack-collector") === undefined &&
+      hash(brought, "Deployment", "obstack-collector-cluster") === undefined,
+    `chart Secret entry ${broughtSecret?.stringData?.["collector-api-key"] === undefined ? "absent" : "PRESENT"}, readers → ${broughtRefs.join(", ")}, no checksum/secret on either`,
+  );
+
+  // 3. the Explain mode
+  const web = (docs: RenderedDoc[]) => findDoc(docs, "Deployment", "obstack-web");
+  const mode = envOf(web(base), "web", "OBSTACK_EXPLAIN_MODE")?.value;
+  arm("D692 OBSTACK_EXPLAIN_MODE is rendered by default", mode === "fake", `value ${JSON.stringify(mode ?? null)}`);
+  const anthropic = envOf(web(renderedDocs(renderChart(["--set", "web.explainMode=anthropic"]))), "web", "OBSTACK_EXPLAIN_MODE")?.value;
+  arm("D692 web.explainMode=anthropic renders", anthropic === "anthropic", `value ${JSON.stringify(anthropic ?? null)}`);
+  let refusal = "";
+  try {
+    renderChart(["--set", "web.explainMode=gpt"]);
+  } catch (err) {
+    refusal = err instanceof Error ? err.message : String(err);
+  }
+  arm(
+    "D692 a value outside fake/anthropic refuses the render",
+    refusal.includes('web.explainMode must be "fake" or "anthropic", got "gpt"'),
+    refusal ? "helm template refused with the web image's own sentence" : "helm template ACCEPTED web.explainMode=gpt",
+  );
+
+  // 4. the /mcp address
+  const mcpDefault = envOf(web(base), "web", "OBSTACK_PUBLIC_MCP_ENDPOINT");
+  arm("D691 no /mcp address without the web Ingress", mcpDefault === undefined, mcpDefault === undefined ? "absent by default" : `present: ${JSON.stringify(mcpDefault)}`);
+  const ingressOn = ["--set", "web.ingress.enabled=true,web.ingress.host=obstack.pilot.test,web.ingress.tls.secretName=tls"];
+  const https = envOf(web(renderedDocs(renderChart([...ingressOn, "--set", "web.ingress.tls.enabled=true"]))), "web", "OBSTACK_PUBLIC_MCP_ENDPOINT")?.value;
+  const http = envOf(web(renderedDocs(renderChart(ingressOn))), "web", "OBSTACK_PUBLIC_MCP_ENDPOINT")?.value;
+  arm(
+    "D691/D653 the address follows the Ingress host and its TLS flag",
+    https === "https://obstack.pilot.test/mcp" && http === "http://obstack.pilot.test/mcp",
+    `tls on → ${JSON.stringify(https ?? null)}, tls off → ${JSON.stringify(http ?? null)}`,
+  );
+
+  // 5. the backups disk
+  const ch = (docs: RenderedDoc[]) => findDoc(docs, "StatefulSet", "obstack-clickhouse");
+  const mountsOf = (docs: RenderedDoc[]) => containerOf(ch(docs), "clickhouse")?.volumeMounts ?? [];
+  const diskMount = (docs: RenderedDoc[]) => mountsOf(docs).find((m) => m.mountPath === "/var/lib/clickhouse-backups");
+  const claims = (docs: RenderedDoc[]) => ch(docs)?.spec?.volumeClaimTemplates?.length;
+  arm(
+    "D696 backups off renders nothing",
+    findDoc(base, "ConfigMap", "obstack-clickhouse-backups") === undefined &&
+      diskMount(base) === undefined &&
+      ch(base)?.spec?.template?.metadata?.annotations?.["checksum/backups"] === undefined,
+    "no ConfigMap, no mount, no checksum/backups",
+  );
+  const on = renderedDocs(renderChart(["--set", "clickhouse.backups.enabled=true"]));
+  const xml = findDoc(on, "ConfigMap", "obstack-clickhouse-backups")?.data?.["obstack-backups.xml"] ?? "";
+  const configMount = mountsOf(on).find((m) => m.mountPath === "/etc/clickhouse-server/config.d/obstack-backups.xml");
+  arm(
+    "D696 backups on renders the disk on the data PVC",
+    xml.includes("<allowed_disk>backups</allowed_disk>") &&
+      xml.includes("<path>/var/lib/clickhouse-backups/</path>") &&
+      configMount?.subPath === "obstack-backups.xml" &&
+      diskMount(on)?.name === "data" &&
+      diskMount(on)?.subPath === "backups" &&
+      typeof ch(on)?.spec?.template?.metadata?.annotations?.["checksum/backups"] === "string" &&
+      claims(on) === 1,
+    `config.d mount ${configMount ? "present" : "MISSING"}, disk mount ${JSON.stringify(diskMount(on) ?? null)}, ${claims(on)} volumeClaimTemplate(s)`,
+  );
+  const own = renderedDocs(renderChart(["--set", "clickhouse.backups.enabled=true,clickhouse.backups.existingClaim=pvc-x"]));
+  const ownVolume = ch(own)?.spec?.template?.spec?.volumes?.find((v) => v.name === "backups");
+  arm(
+    "D696 existingClaim gives the disk its own volume, never a second claim template",
+    diskMount(own)?.name === "backups" &&
+      diskMount(own)?.subPath === undefined &&
+      ownVolume?.persistentVolumeClaim?.claimName === "pvc-x" &&
+      claims(own) === 1,
+    `disk mount ${JSON.stringify(diskMount(own) ?? null)}, volume ${JSON.stringify(ownVolume ?? null)}, ${claims(own)} volumeClaimTemplate(s)`,
+  );
+
+  if (problems.length > 0) {
+    for (const p of problems) console.error(`acceptance:   - ${p}`);
+    fail(`${problems.length} of the chart's 0.7.0 render checks failed`);
+  }
+  console.log("acceptance: PASS");
 }
 
 function sleep(ms: number): Promise<void> {
@@ -766,12 +1029,16 @@ async function main(): Promise<void> {
     chartCpuBudget(process.argv.slice(3));
     return;
   }
+  if (command === "render" && !arg) {
+    chartRenderChecks();
+    return;
+  }
   if (command === "assert" && arg) return assertTrace(arg);
   if (command === "genai-fixture" && !arg) return genaiFixture();
   if (command === "events" && arg && arg2) return clusterEvents(arg, arg2);
   if (command === "k8s-metrics" && arg && !arg2) return k8sMetrics(arg);
   fail(
-    "usage: acceptance.ts budget [helm template args…] | acceptance.ts assert <trace_id> | acceptance.ts genai-fixture | acceptance.ts events <trace_id> <pod> | acceptance.ts k8s-metrics <demo_pod>",
+    "usage: acceptance.ts budget [helm template args…] | acceptance.ts render | acceptance.ts assert <trace_id> | acceptance.ts genai-fixture | acceptance.ts events <trace_id> <pod> | acceptance.ts k8s-metrics <demo_pod>",
   );
 }
 

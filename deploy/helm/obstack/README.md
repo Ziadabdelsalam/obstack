@@ -1012,12 +1012,23 @@ with a per-run `web.betterAuthSecret` (`WEB_AUTH_SECRET`, generated with
 `openssl rand -base64 32` — exactly what a real operator supplies; every
 other value stays a chart default), fires `POST /chat`, and asserts:
 
-Two of the checks are not telemetry. The first step of the run is the
+Three of the checks are not telemetry. The first step of the run is the
 CPU-request budget — `acceptance.ts budget`, which renders the chart, prints
 the per-workload table and refuses the run if the total no longer fits the
 node (990m against a 1000m budget today); it touches no cluster, so it costs
 a second and it is why a footprint regression is now a named failure instead
-of a 900s `--wait` timeout. The `web` workload's own check is a `/login`
+of a 900s `--wait` timeout. The second is `acceptance.ts render` (chart
+0.7.0): the bump's render-time contract — `demo.enabled=false` removes
+exactly the demo pair, the collector's key is in no pod spec and rolls both
+collectors when it changes, `OBSTACK_EXPLAIN_MODE` is always stated and a
+bad value refuses the render, the `/mcp` address follows the web Ingress,
+and the backups objects render only behind their flag — asserted against
+`helm template`, again before any image is built (`OBSTACK_CHART_DIR` points
+it at another chart directory, which is how each arm was proven red). The
+run's LAST step is the backups rider: `helm upgrade` with
+`clickhouse.backups.enabled=true`, then `BACKUP TABLE obstack.spans` →
+`RESTORE … AS` → equal row counts through `kubectl exec` ("Backups" above).
+The `web` workload's own check is a `/login`
 probe over a port-forward, and it is the boot check passing: the image's
 stamp matched `OBSTACK_DATA_MODE` and the release's `BETTER_AUTH_SECRET`
 reached the pod. The telemetry

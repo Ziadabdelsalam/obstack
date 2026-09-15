@@ -110,6 +110,14 @@ harness() {
 step "chart CPU-request budget"
 harness budget
 
+# SECOND, for the same reason: chart 0.7.0's render-time contract (the pilot
+# packet's §12) — the demo switch, the collector key's hygiene, the Explain
+# mode, the /mcp address and the backups objects — is a fact fixed at render
+# time, asked of `helm template` in about a second before any image is built.
+# README.md, "Running the acceptance".
+step "chart 0.7.0 render checks"
+harness render
+
 step "building this repo's images"
 docker build -t obstack-ingest:kind "$repo_root/services/ingest"
 docker build -t obstack-demo-agent:kind "$repo_root/demo/agent-app"
@@ -275,5 +283,35 @@ printf '   trace_id=%s pod=%s\n' "$trace_3" "$demo_pod"
 sleep 2
 kubectl delete pod "$demo_pod" --wait=false
 harness events "$trace_3" "$demo_pod"
+
+# Chart 0.7.0's backups rider (the pilot packet's D696) — LAST, after S4.4's,
+# because it rolls ClickHouse: the release is upgraded with
+# `clickhouse.backups.enabled=true` (a StatefulSet roll, terminate-then-replace;
+# the ingest pods crash-loop through the gap and converge on their own —
+# README.md, "--wait and --wait-for-jobs, precisely"), then the product's own
+# spans table is backed up to the disk, restored under another name and
+# counted: the round trip the pinned server took locally (README.md,
+# "Backups"), now on kind's containerd node with the image's real entrypoint
+# creating and owning the directory. `kubectl exec` reaches the server over
+# loopback as `default` — the D350 positive half, and what an operator's own
+# loop uses. A re-run's `--reset-values` upgrade returns the release to the
+# defaults, so the flag never leaks into the next run's assertions.
+step "0.7.0: the backups disk — BACKUP, RESTORE, count (clickhouse.backups.enabled)"
+helm upgrade "$RELEASE" "$chart_dir" --reset-values --set "web.betterAuthSecret=$WEB_AUTH_SECRET" \
+  --set clickhouse.backups.enabled=true --wait --timeout "$UPGRADE_TIMEOUT"
+kubectl rollout status "statefulset/$RELEASE-clickhouse" --timeout=180s
+chq() { kubectl exec "statefulset/$RELEASE-clickhouse" -- clickhouse-client --query "$1"; }
+disk="$(chq "SELECT path FROM system.disks WHERE name = 'backups'")"
+[ "$disk" = "/var/lib/clickhouse-backups/" ] || fail "the backups disk is not declared on the running server (system.disks says '$disk')"
+before="$(chq "SELECT count() FROM obstack.spans")"
+[ "${before:-0}" -gt 0 ] || fail "obstack.spans is empty before the backup — nothing to round-trip"
+chq "BACKUP TABLE obstack.spans TO Disk('backups', 'acceptance.zip')" | grep -q BACKUP_CREATED \
+  || fail "BACKUP TABLE obstack.spans did not report BACKUP_CREATED"
+chq "RESTORE TABLE obstack.spans AS obstack.spans_acceptance_restore FROM Disk('backups', 'acceptance.zip')" | grep -q RESTORED \
+  || fail "RESTORE TABLE … AS obstack.spans_acceptance_restore did not report RESTORED"
+after="$(chq "SELECT count() FROM obstack.spans_acceptance_restore")"
+[ "$after" = "$before" ] || fail "the restored table holds $after row(s), the original $before"
+chq "DROP TABLE obstack.spans_acceptance_restore"
+printf '   D696: backups disk at %s — BACKUP + RESTORE of obstack.spans round-tripped %s row(s)\n' "$disk" "$before"
 
 printf '\nacceptance: PASS (stack-on-kind, %ss)\n' "$SECONDS"
