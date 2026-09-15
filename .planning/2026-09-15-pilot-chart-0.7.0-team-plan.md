@@ -40,7 +40,7 @@ meta:
 - owns: `values.yaml` (`web.explainMode: fake`), `templates/web/deployment.yaml` (`OBSTACK_EXPLAIN_MODE` rendered ALWAYS, the D267 "always set the runtime half" posture; a value outside `fake`/`anthropic` refused at render with the web image's own sentence).
 - goal: the pilot's operator sets `anthropic` and puts the key in the web Secret's `explain-api-key`; until then the manifest SAYS `fake`, so the fake panel is a stated posture, not a discovered one.
 - done-check: default render carries `OBSTACK_EXPLAIN_MODE=fake` (one added env line — the ONE default-render delta of this bump, stated in the README's upgrade note); `--set web.explainMode=anthropic` renders it; `--set web.explainMode=gpt` fails `helm template` naming the two admitted values.
-- result:
+- result: **done.** `web.explainMode: fake` beside `explainApiKey` (the key's comment re-pointed at the mode above it); the Deployment renders `OBSTACK_EXPLAIN_MODE` unconditionally, after a `has`-guard that `fail`s the render with the web image's own sentence. Measured: the default render's non-comment diff against the 0.6.0 baseline is exactly the two lines `- name: OBSTACK_EXPLAIN_MODE` / `value: "fake"` (T1 and T3 add none by default); `--set web.explainMode=anthropic` → `"anthropic"`; `--set web.explainMode=gpt` → `Error: … web.explainMode must be "fake" or "anthropic", got "gpt"`. `helm lint` clean.
 
 ### T3: `OBSTACK_PUBLIC_MCP_ENDPOINT` from the web Ingress (D691 / S8.1 D653) and the `MCP_PATH` pin
 - status: pending
@@ -48,7 +48,7 @@ meta:
 - owns: `templates/web/deployment.yaml` (under the existing `web.ingress.enabled` branch: `<scheme>://<web.ingress.host>/mcp`, scheme from `web.ingress.tls.enabled` — the OTLP line's exact ternary), `values.yaml` (the `web.ingress` comment names it), `apps/web/src/server/mcp-endpoint.test.ts` (the chart's literal path suffix asserted equal to `MCP_PATH`).
 - goal: a self-hosted install behind a hostname prints that hostname on `/app/mcp` and in the docs' client setups; nothing is exposed the web Service does not already serve (`pathType: Prefix` on `/` carries `/mcp`).
 - done-check: `--set web.ingress.enabled=true,web.ingress.host=obstack.pilot.test,web.ingress.tls.enabled=true` renders `https://obstack.pilot.test/mcp`; tls off renders `http://…/mcp`; ingress off renders no such line; the web unit test reads the template as text and fails if the suffix and `MCP_PATH` disagree.
-- result:
+- result: **done.** The env line sits in a new `web.ingress.enabled` branch of the web Deployment, directly above the ingest-Ingress branch it mirrors (`printf "%s://%s/mcp" (ternary "https" "http" .Values.web.ingress.tls.enabled) .Values.web.ingress.host`); the `web.ingress` values comment names it. Measured: tls on → `"https://obstack.pilot.test/mcp"`, tls off → `"http://obstack.pilot.test/mcp"`, ingress off → zero occurrences in the render. The pin: `mcp-endpoint.test.ts` gains a third test that reads the template as text and asserts the printf's path suffix equals `MCP_PATH` — proven RED first by editing the template's suffix to `/mcpx` (the test fails with "the chart's MCP address suffix and MCP_PATH disagree"), then restored; 3/3 green.
 
 ### T4: the collector's key through the chart's Secret — `collector.existingSecret` (D687)
 - status: pending
