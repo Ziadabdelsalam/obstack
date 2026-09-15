@@ -26,6 +26,17 @@ singleton's objects renamed `<release>-collector-events` →
 `<release>-collector-cluster`; the chart README's "Upgrading to 0.6.0" section
 has both rules.
 
+{/* 0.7.0 — the client-pilot bump, the pilot packet's §12 */}
+
+Since chart 0.7.0 the chart is meant for a cluster that is not a throwaway:
+the demo pod has a switch (`demo.enabled`), Explain's provider is stated in
+the manifest (`web.explainMode`), the collector's key lives in a Secret
+(`collector.existingSecret`), the web Ingress tells the product its `/mcp`
+address, and an opt-in `backups` disk gives `BACKUP DATABASE` somewhere to
+write. 0.7.0 is additive — a 0.6.0 values file renders a valid release, and
+the web pod and both collector pods roll once on the upgrade. "A real install,
+in order" below is the runbook that uses all of it.
+
 ## Install
 
 The chart lives in this repository — there is no chart repository to add — and
@@ -46,24 +57,26 @@ it is not optional: a live-stamped web image booted without it refuses to serve,
 so `--wait` would sit on a crash-looping pod until the timeout. Set
 `web.betterAuthUrl` to the origin a browser reaches the deployment on.
 
-Real deployments replace the local images: `--set web.image=<registry image>`
-and `--set ingest.image=<registry image>`, with `web.pullPolicy` and
-`ingest.pullPolicy` set to `IfNotPresent`.
+Real deployments replace the local images with the published ones, pinned by
+digest, and bring their own Secrets, origins and certificates — "A real
+install, in order" below walks through it.
 
 ## What the chart does and does not cover
 
 In scope, and shipped: ClickHouse and Postgres with durable storage, the ingest
-Deployment and its migration Jobs, the web workload, the collector DaemonSet, a
-chart-owned Secret with an `existingSecret` override on every credential,
-optional Ingress for web and for ingest's OTLP/HTTP surface, and resource
-requests and limits on `ingest.resources` and `web.resources`.
+Deployment and its migration Jobs, the web workload, the collector DaemonSet
+and the cluster collector, a chart-owned Secret with an `existingSecret`
+override on every credential (the collector's key included since 0.7.0),
+optional Ingress for web and for ingest's OTLP/HTTP surface, CPU and memory
+requests on every workload with limits everywhere but the two stores, a demo
+pod with a switch, and an opt-in `backups` disk for ClickHouse.
 
 Deliberately **not** in scope, and not a gap to fill quietly: HA beyond ingest's
 existing replica story, autoscaling, PodDisruptionBudgets, NetworkPolicies,
-multi-replica ClickHouse, and backup automation. Requests and limits are also
-**not** set on ClickHouse, Postgres, the collector DaemonSet or the demo pod:
-sizing a database's limits is a measurement, not a guess, and a wrong limit
-OOM-kills the store it was meant to protect.
+multi-replica ClickHouse, backup automation, an ingress controller,
+certificates, and a registry pull secret. Limits are **not** set on ClickHouse
+or Postgres: sizing a database's limits is a measurement, not a guess, and a
+wrong limit OOM-kills the store it was meant to protect.
 
 `ingest.replicaCount` defaults to 2. Enabling ingest's Ingress exposes the
 OTLP/HTTP surface and automatically sets `OBSTACK_PUBLIC_OTLP_HTTP_ENDPOINT` on
@@ -72,6 +85,256 @@ deliberately not exposed**, and a deployment that publishes only HTTP gets an
 honest omission in the quickstart rather than an address nothing serves. No
 ingress controller and no cert-manager ship here — `web.ingress.enabled` and
 `ingest.ingress.enabled` assume one already exists in the cluster.
+
+## A real install, in order
+
+The chart's own proof runs on a kind cluster with locally built images, a
+seeded dev key and a demo pod. A cluster that carries real traffic differs in
+every one of those, and this is the order that gets from an empty cluster to a
+developer's coding agent reading a trace.
+
+### 0. The cluster
+
+One node is enough to start, and the chart assumes two things of it: a default
+StorageClass that provisions dynamically, and an ingress controller already
+installed — the chart ships neither, nor certificates, nor a registry pull
+secret. k3s gives all of that in one binary (`local-path` as the default class,
+Traefik as the controller); verify rather than assume:
+
+```bash
+kubectl get storageclass            # one marked (default)
+kubectl get ingressclass            # traefik, or whatever you run
+kubectl describe node | grep -A2 Allocatable
+```
+
+Size from the chart's requests plus headroom, then measure: the defaults
+request just under one CPU and about 1.8 GiB of memory before ClickHouse's
+working set grows with retained data (it has no limit, by design). Four vCPUs,
+8 GiB and 60 GiB of disk is the floor for a pilot, and the disk is the ceiling
+for `local-path` volumes, which are directories on it. Run the chart's own
+budget check against your values file before the cluster ever sees it — an
+unschedulable pod never fails, it holds the install's `--wait` until the
+timeout:
+
+```bash
+npx tsx --tsconfig apps/web/tsconfig.json --conditions react-server \
+  deploy/helm/obstack/acceptance.ts budget -f pilot-values.yaml
+```
+
+### 1. Images from the registry
+
+Every merge to `master` publishes three images to GitHub's container registry,
+tagged by commit and never floated: `ghcr.io/ziadabdelsalam/obstack-web:live-sha-<sha>`
+(the live-stamped build; a `mock-sha-` twin serves the public demo and refuses
+to serve real stores), `ghcr.io/ziadabdelsalam/obstack-ingest:sha-<sha>` and
+`ghcr.io/ziadabdelsalam/obstack-clickhouse:sha-<sha>` (the hosted product's
+ClickHouse image — the chart pins the upstream `clickhouse.image` and does not
+use it). The publish run's summary records each image's digest; pin both:
+
+```yaml
+web:
+  image: ghcr.io/ziadabdelsalam/obstack-web:live-sha-<sha>@sha256:<digest>
+  pullPolicy: IfNotPresent
+ingest:
+  image: ghcr.io/ziadabdelsalam/obstack-ingest:sha-<sha>@sha256:<digest>
+  pullPolicy: IfNotPresent
+```
+
+They are `linux/amd64`, built on GitHub's runners; a laptop build on Apple
+silicon will not start on an amd64 node, and side-loading has no place outside
+kind. The packages are private today — an anonymous pull is refused — so a
+cluster outside this repository's owner pulls them only once they are made
+public in the package settings, or with a registry pull secret of its own (the
+chart renders no `imagePullSecrets`; that is deliberately the cluster's).
+
+### 2. What you bring: Secrets, origins, storage
+
+Credentials never pass through the values file. Create the Secrets first, with
+the chart's fixed key names, and name them:
+
+```bash
+kubectl create secret generic obstack-stores \
+  --from-literal=clickhouse-ingest-password="$(openssl rand -base64 24)" \
+  --from-literal=clickhouse-web-password="$(openssl rand -base64 24)" \
+  --from-literal=postgres-password="$(openssl rand -base64 24)"
+kubectl create secret generic obstack-web \
+  --from-literal=better-auth-secret="$(openssl rand -base64 32)" \
+  --from-literal=explain-api-key="<your Anthropic key, or omit the line>"
+```
+
+```yaml
+clickhouse:
+  existingSecret: obstack-stores
+  storage:
+    size: 100Gi           # events per day × retention, with headroom
+postgres:
+  existingSecret: obstack-stores
+  storage:
+    size: 20Gi
+web:
+  existingSecret: obstack-web
+  betterAuthUrl: https://obstack.<your-domain>
+  explainMode: anthropic  # or fake, the default
+  ingress:
+    enabled: true
+    className: traefik
+    host: obstack.<your-domain>
+    tls:
+      enabled: true
+      secretName: obstack-web-tls
+ingest:
+  ingress:
+    enabled: true         # OTLP/HTTP for senders OUTSIDE the cluster only
+    className: traefik
+    host: otlp.<your-domain>
+    tls:
+      enabled: true
+      secretName: obstack-otlp-tls
+```
+
+Your application's pods send to the ingest Service inside the cluster —
+`http://<release>-ingest.<namespace>.svc:4318` — and never need the Ingress;
+ingest's Ingress is for senders outside it (a laptop, a CI job posting a
+change event), HTTP only, since gRPC is deliberately not exposed. The web origin
+must be the `https://` one a browser reaches: it is what upgrades the session
+cookie to its `__Secure-` name, and a wrong value here is a login that never
+sticks.
+
+### 3. TLS
+
+`web.ingress.tls.secretName` and `ingest.ingress.tls.secretName` name
+`kubernetes.io/tls` Secrets the chart never renders. The standard pairing on
+k3s is cert-manager with a Let's Encrypt `ClusterIssuer` (HTTP-01 needs port 80
+reachable on the node) issuing both hosts; a certificate you already hold,
+loaded as the Secret and renewed by you, works the same with zero new
+components.
+
+### 4. Install, sign up, and the plan
+
+```bash
+helm install obstack deploy/helm/obstack -f pilot-values.yaml --timeout 900s --wait
+kubectl get jobs                                          # both migrate Jobs Complete
+curl -sI https://obstack.<your-domain>/login | head -1    # 200, over TLS
+```
+
+Sign up at `/signup`; the first account creates the workspace, and the General
+tab of Settings prints its workspace id.
+
+A fresh workspace is on the `free` plan — the hosted product's quota and
+retention (the numbers are on [Billing and plans](/docs/billing-and-plans)) —
+and the billing rail that would move it is the hosted product's, not yours:
+`OBSTACK_BILLING_MODE` stays `fake` here, so there is no checkout to run. Real
+traffic crosses the free quota in hours, and what follows is head sampling and
+a short retention sweep — an install evaluating obstack on that plan is
+evaluating a throttled one. Move the workspace to `pro` by one row; the row is
+the one authority everything reads:
+
+```bash
+kubectl exec statefulset/obstack-postgres -- psql -U obstack -d obstack -c \
+  "INSERT INTO workspace_plans (workspace_id, plan_id) VALUES ('<workspace id>', 'pro')
+   ON CONFLICT (workspace_id) DO UPDATE SET plan_id = 'pro', updated_at = now();"
+```
+
+A self-hosted install has no reason to carry the hosted product's plan table at
+all; a `self-hosted` plan, or retention as a chart value, is the open question
+this row stands in for, and until it is answered the row is the stated posture.
+
+### 5. The two keys: the seeded one and the one you issue
+
+The Postgres migrations seed `ok_dev_local` — a public credential, printed in
+this repository — so that a clean boot has a key for the collector, the demo
+pod and every harness. Once ingest's Ingress is up, that is a write door anyone
+can open into `ws_demo`: not your workspace, but your ClickHouse, your quota
+and a log stream nobody asked for. Right after signing up, in this order:
+
+1. Issue an `ingest` key in Settings → API keys (the default scope; the key is
+   shown once).
+2. Put it in a Secret and point the collector at it — since 0.7.0 the chart
+   reads the key from a Secret and never carries it in a values file:
+
+   ```bash
+   kubectl create secret generic obstack-collector --from-literal=collector-api-key='<the issued key>'
+   ```
+
+   ```yaml
+   collector:
+     existingSecret: obstack-collector
+   demo:
+     enabled: false        # the seeded key's other user
+   ```
+
+   `helm upgrade obstack deploy/helm/obstack -f pilot-values.yaml --timeout 300s --wait`
+   rolls both collector pods onto your key and removes the demo pod.
+3. Revoke the seed:
+
+   ```bash
+   kubectl exec statefulset/obstack-postgres -- psql -U obstack -d obstack -c \
+     "UPDATE api_keys SET revoked_at = now() WHERE id = 'key_dev_local';"
+   ```
+
+   Ingest caches lookups for 30 seconds, which is how long the old key keeps
+   working.
+
+That a real install has to revoke a migration's seed by hand is a known gap; a
+chart-driven revocation, or a seed that only exists under a dev flag, are the
+alternatives, and this recipe is the stated posture until one is ruled.
+
+### 6. Your application
+
+Two instrumentation paths, both already documented and both landing the same
+four layers: an obstack SDK from source ([Quickstart](/docs/quickstart)), or
+plain OpenTelemetry pointed at the in-cluster ingest Service with the issued
+key as a bearer header ([Bring your own OTel](/docs/sdks/bring-your-own-otel)).
+The collector needs nothing from your manifests: the DaemonSet tails every
+pod's stdout on its node and scrapes the kubelet, the cluster collector ships
+events and cluster state, and `/app/infra` and each trace's timeline render
+your namespaces as they are.
+
+The exit: one request through your service, and its trace resolves at
+`/app/traces/<id>` with its layers, the prompt and completion on the `llm`
+span, a cost priced at ingest, and the collector's correlated logs beside it.
+
+### 7. Explain on the cluster
+
+`web.explainMode` is `fake` unless you set it: the panel explains a trace with
+the fake provider and says so. `anthropic`, with the key in the web Secret's
+`explain-api-key`, makes Explain and incident RCA real; runs are metered per
+plan, and a missing key is a per-request refusal, never a boot failure. A value
+outside those two fails `helm template`.
+
+### 8. A developer's coding agent over MCP
+
+`/mcp` is a path on the web Service and rides the web Ingress — nothing else to
+expose. With `web.ingress.enabled` the chart sets `OBSTACK_PUBLIC_MCP_ENDPOINT`
+to `https://<host>/mcp`, so `/app/mcp` prints the real address in every
+client's setup line. Issue a key with the scope `read` and follow
+[MCP for coding agents](/docs/mcp); the key can be revoked from the same tab,
+and nothing over that door writes.
+
+### 9. Backups
+
+Backup automation is not in the chart, so bring the smallest honest one, in
+this order: the VM's own disk snapshot on the hypervisor's schedule (k3s's
+`local-path` volumes are directories under `/var/lib/rancher/k3s/storage`),
+then a nightly `pg_dump` of Postgres copied off the node — it holds what people
+authored and nothing can re-derive: identity, keys, incidents, alerts,
+dashboards. ClickHouse holds telemetry that retention already treats as
+expiring; an install that wants store-level backups anyway turns on
+`clickhouse.backups.enabled`, which declares a `backups` disk (its own volume
+with `clickhouse.backups.existingClaim`, or a staging directory on the data
+volume by default) for `BACKUP DATABASE obstack TO Disk('backups', …)`. The
+chart README's "Backups" section has the loop and what it measured.
+
+### 10. Upgrades, and the first numbers
+
+An upgrade is a reviewed values file with a new sha and digest, then
+`helm upgrade obstack deploy/helm/obstack -f pilot-values.yaml --timeout 300s --wait`.
+The migrate Jobs run as `pre-upgrade` hooks and the serving pods refuse to
+start on an unapplied schema, so a forgotten migration is loud; never run
+`ingest migrate` by hand beside the Job — exactly one runner per upgrade.
+After a day of real traffic, record what the node actually uses (CPU and
+memory per pod, ClickHouse disk growth per day): the chart's requests are
+stated defaults, and these are the first measurements a real install produces.
 
 ## Upgrading from 0.2.0 is a reinstall, and it destroys data
 
@@ -126,21 +389,25 @@ exist yet for a hook to run against.
 
 Every credential the chart handles resolves through the same pattern. By default
 the chart renders its own Secret from the values; setting
-`clickhouse.existingSecret`, `postgres.existingSecret`, `web.existingSecret` or
-`ingest.existingSecret` sources that group from a Secret already in the cluster
-instead.
+`clickhouse.existingSecret`, `postgres.existingSecret`, `web.existingSecret`,
+`ingest.existingSecret` or `collector.existingSecret` sources that group from a
+Secret already in the cluster instead.
 
 **Those values are a NAME, never a value.** The credential itself never has to
 pass through `values.yaml`, `--set`, or the release manifest. Key names are
 fixed by the chart rather than values-configurable, so a brought Secret has
 exactly one thing to get right instead of two: `clickhouse-ingest-password`,
 `clickhouse-web-password`, `postgres-password`, `better-auth-secret`,
-`explain-api-key`, `vercel-drain-secret`. The last two are read as optional, so
-a brought Secret may omit either entirely.
+`explain-api-key`, `vercel-drain-secret`, `collector-api-key`. The Explain key
+and the drain secret are read as optional, so a brought Secret may omit either
+entirely; the collector's key is not — a collector with no key holds in
+`CreateContainerConfigError` rather than sending an empty bearer.
 
-Four groups, not six: ClickHouse's two users rotate together, the web workload's
-two auth slots are a third group, and `ingest`'s one optional slot is a fourth
-because it rotates with a drain's configuration in somebody else's dashboard.
+Five groups, not seven: ClickHouse's two users rotate together, the web
+workload's two auth slots are a third group, `ingest`'s one optional slot is a
+fourth because it rotates with a drain's configuration in somebody else's
+dashboard, and the collector's key is a fifth because the product issues it and
+it rotates from Settings, on the product's schedule rather than any store's.
 **No external-secrets integration ships here** — the name override is the whole
 mechanism.
 
@@ -168,6 +435,12 @@ credential:**
 - **The web workload's two slots** (`web.betterAuthSecret`, `web.explainApiKey`).
   Update the Secret and roll `deployment/<release>-web`. Rotating the auth secret
   invalidates every live session; users sign in again.
+- **The collector's key** (`collector.apiKey`, `collector.existingSecret`). Issue
+  a new `ingest` key in Settings → API keys, update the Secret, roll
+  `daemonset/<release>-collector` **and** `deployment/<release>-collector-cluster`,
+  then revoke the old key on the same page. On the chart's own Secret a
+  `helm upgrade` with the new `collector.apiKey` rolls both for you; a brought
+  Secret's rotation is invisible to Helm, so there the roll is the two commands.
 
 ## Managed Postgres
 

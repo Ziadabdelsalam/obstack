@@ -121,7 +121,7 @@ test("every /docs/... link in the corpus names a page the manifest carries", () 
   // 404 identically on both mounts — this is the assertion that says so at test
   // time instead.
   const all = pages.flatMap((p) => p.links);
-  assert.equal(all.length, 24, "the corpus's link count changed — update this deliberately"); // S8.1 T5: /docs/mcp links three pages
+  assert.equal(all.length, 28, "the corpus's link count changed — update this deliberately"); // S8.1 T5: /docs/mcp links three pages; chart 0.7.0: the helm page links four (billing, quickstart, BYO OTel, mcp)
   for (const href of all) {
     const [pathname] = href.split("#");
     const segments = pathname.slice(PUBLIC_DOCS_BASE.length).split("/").filter(Boolean);
