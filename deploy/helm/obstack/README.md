@@ -603,6 +603,75 @@ can still race the store's own pod roll for ClickHouse ("Why ClickHouse is a
 normal resource" above) — `existingSecret` doesn't have this race at all,
 since Helm never renders that Secret's value in the first place.
 
+## Backups (0.7.0: the `backups` disk; automation stays out)
+
+Backup automation is OUT of this chart by ruling (D253, the scope boundary
+above), and 0.7.0 does not change that. What it adds is the one thing a
+store-level ClickHouse backup cannot be taken without and that `files/` did
+not carry: a `backups` disk, declared in a `config.d` file
+(`files/clickhouse-backups.xml`, mounted by the StatefulSet beside the image's
+own config — the pilot packet's D696), so that
+
+```sql
+BACKUP  DATABASE obstack TO   Disk('backups', '2026-09-15.zip')
+RESTORE DATABASE obstack FROM Disk('backups', '2026-09-15.zip')
+```
+
+have somewhere to write and read. `clickhouse.backups.enabled` (default
+`false`) renders the ConfigMap, the mount and a `checksum/backups` annotation
+on the pod template; off, the ClickHouse pod template is byte-for-byte what
+0.6.0 rendered.
+
+**Where the files land is the operator's decision, and the default is honest
+about what it is.** By default the disk is a `backups/` subPath of the data
+PVC, mounted at `/var/lib/clickhouse-backups` — the same volume as the data it
+copies, which makes it a STAGING area for a copy that leaves the node, not a
+backup. `clickhouse.backups.existingClaim` names a PersistentVolumeClaim of
+the operator's for the disk's own volume; it is referenced from the pod
+template rather than claimed by a second `volumeClaimTemplate`, because a
+StatefulSet's claim templates are immutable once it exists and turning backups
+on for a live release has to be a `helm upgrade`, never a reinstall. The
+image's entrypoint creates and chowns every `storage_configuration.disks.*.path`
+it finds in the merged config at boot (`docker/server/entrypoint.sh` at the
+pinned tag, read before this section was written), so the directory needs no
+init container and no `fsGroup`.
+
+**Measured on the pinned server (26.3.17.110, the static build, this chart's
+`users.xml` and this `config.d` file):** `system.disks` lists `backups` at
+`/var/lib/clickhouse-backups/`; `BACKUP DATABASE obstack` → `BACKUP_CREATED`;
+`RESTORE DATABASE obstack AS obstack_restored` → `RESTORED` with equal row
+counts; `obstack_ingest` (`GRANT ALL ON obstack.*`) can `BACKUP TABLE` and
+`RESTORE TABLE … AS` inside `obstack`; `obstack_web` is refused with `Not
+enough privileges … BACKUP ON obstack.<table>` (code 497) — the D11 read-only
+split holds for backups too. The acceptance's last rider takes the same round
+trip on kind (`acceptance.sh`, "backups").
+
+**The floor a real install brings, stated so it is chosen rather than
+discovered.** Two stores, two kinds of loss. Postgres holds what people
+authored and no machine can re-derive — identity, keys, incidents, alerts,
+dashboards, saved views — so it gets the first backup, a nightly
+
+```bash
+kubectl exec statefulset/<release>-postgres -- pg_dump -U obstack -Fc obstack > obstack-$(date -u +%F).dump
+```
+
+copied off the node. ClickHouse holds telemetry a retention sweep already
+treats as expiring; the disk above is for the install that wants it anyway,
+driven by
+
+```bash
+kubectl exec statefulset/<release>-clickhouse -- clickhouse-client \
+  --query "BACKUP DATABASE obstack TO Disk('backups', '$(date -u +%F).zip')"
+kubectl cp <release>-clickhouse-0:/var/lib/clickhouse-backups/$(date -u +%F).zip ./
+```
+
+(`kubectl exec` reaches the server over loopback as `default`, the D350
+positive half). A whole-VM disk snapshot on the hypervisor's schedule sits
+under both and costs no new component. What this chart still does not ship,
+by the same ruling: a CronJob for either loop, an off-cluster target, or a
+restore drill — those are the operator's, and the self-hosting docs page
+states the pilot's cut.
+
 ## The collector DaemonSet's contract
 
 `templates/collector/` packages `deploy/collector/config.yaml`
@@ -789,7 +858,10 @@ config has no such source: there is no cluster API under Compose, so
 `config.compose.yaml` grows neither of its receivers, and nothing outside
 `deploy/helm/obstack/` reads the file. Pinning a copy against a source that
 does not exist would be ceremony, not the K1 mechanism, so the pair list
-stays at two rows.
+stays at two rows. 0.7.0 adds a fourth file of the same kind,
+`files/clickhouse-backups.xml` — the `backups` disk's `config.d` entry
+("Backups" above) — with no source outside the chart either, so it is not a
+row either.
 
 ## Local repro on kind
 

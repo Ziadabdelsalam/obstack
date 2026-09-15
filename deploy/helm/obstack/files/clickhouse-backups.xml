@@ -1,0 +1,35 @@
+<!--
+  The `backups` disk (chart 0.7.0, the pilot packet's D696) — rendered into a
+  config.d file by templates/clickhouse/configmap-backups.yaml and mounted by
+  the StatefulSet only while `clickhouse.backups.enabled` is true.
+
+  The shape is ClickHouse's own documented one: a `local` disk under
+  storage_configuration, and a <backups> block naming it as an allowed
+  target, so that
+
+      BACKUP  DATABASE obstack TO   Disk('backups', '<name>')
+      RESTORE DATABASE obstack FROM Disk('backups', '<name>')
+
+  have somewhere to write and read. The path is its own mount
+  (/var/lib/clickhouse-backups, NOT a directory under the data dir), so the
+  disk is a separate volume whenever the operator gives it one
+  (values.yaml, clickhouse.backups.existingClaim). The image's entrypoint
+  creates and chowns every storage_configuration.disks.*.path it finds in the
+  merged config at boot, which is why no init container prepares this
+  directory. No source outside the chart (like collector-cluster-config.yaml),
+  so not a row in the files/ contract test.
+-->
+<clickhouse>
+  <storage_configuration>
+    <disks>
+      <backups>
+        <type>local</type>
+        <path>/var/lib/clickhouse-backups/</path>
+      </backups>
+    </disks>
+  </storage_configuration>
+  <backups>
+    <allowed_disk>backups</allowed_disk>
+    <allowed_path>/var/lib/clickhouse-backups/</allowed_path>
+  </backups>
+</clickhouse>
