@@ -40,10 +40,11 @@ storage/secrets):**
   "Credentials and rotation" for what moved alongside it.
 - **A chart-owned Secret with an `existingSecret` override on every
   credential** (D253 item 3): both ClickHouse passwords, the Postgres
-  password, and the two slots T5's `web` workload fills (`BETTER_AUTH_SECRET`,
-  `OBSTACK_EXPLAIN_API_KEY`) — see "Credentials and rotation". No
-  external-secrets integration ships here; D253 refuses it as a speculative
-  component.
+  password, the two slots T5's `web` workload fills (`BETTER_AUTH_SECRET`,
+  `OBSTACK_EXPLAIN_API_KEY`), `ingest`'s optional drain secret and — since
+  0.7.0 — the collector's ingest key (`collector-api-key`, the pilot packet's
+  D687) — see "Credentials and rotation". No external-secrets integration
+  ships here; D253 refuses it as a speculative component.
 - **The `web` workload** (D253 item 1): a Deployment + ClusterIP Service
   running the live-stamped image `apps/web/Dockerfile` produces, with
   `OBSTACK_DATA_MODE=live` and its store credentials wired from the Secret
@@ -494,12 +495,15 @@ thing both paths leave behind.
 D253 item 3's floor: **the standard pattern and nothing more.** Every
 credential this chart handles — both ClickHouse users' passwords, the
 Postgres password, the `web` workload's two auth slots
-(`BETTER_AUTH_SECRET`, `OBSTACK_EXPLAIN_API_KEY`) and the `ingest` workload's
-one optional slot (the Vercel drain signature secret, D287) — resolves
-through the same four-group pattern. By default this chart renders its own
+(`BETTER_AUTH_SECRET`, `OBSTACK_EXPLAIN_API_KEY`), the `ingest` workload's
+one optional slot (the Vercel drain signature secret, D287) and, since 0.7.0,
+the collector's ingest key (`OBSTACK_COLLECTOR_API_KEY`, the pilot packet's
+D687) — resolves
+through the same five-group pattern. By default this chart renders its own
 Secret (`{{ .Release.Name }}-credentials`, `templates/secret.yaml`) from the
 values above; setting `clickhouse.existingSecret` / `postgres.existingSecret` /
-`web.existingSecret` / `ingest.existingSecret` to the name of a Secret already
+`web.existingSecret` / `ingest.existingSecret` / `collector.existingSecret` to
+the name of a Secret already
 in the cluster sources that group's credentials from it instead — a NAME,
 never a value, so the
 credential itself never has to pass through `values.yaml`, `--set`, or this
@@ -507,11 +511,14 @@ chart's own release manifest. Key names are **fixed by the chart, not
 values-configurable**, so a brought Secret has exactly one thing to get right
 instead of two: `clickhouse-ingest-password`, `clickhouse-web-password`,
 `postgres-password`, `better-auth-secret`, `explain-api-key`,
-`vercel-drain-secret`. Four groups,
-not six, because ClickHouse's two users rotate together (both live in
+`vercel-drain-secret`, `collector-api-key`. Five groups,
+not seven, because ClickHouse's two users rotate together (both live in
 `files/obstack-users.xml`) and the web workload's two auth slots are a third
 independent group; `ingest` is a fourth because its one key rotates with a
-drain's configuration in someone else's dashboard, on nobody else's schedule.
+drain's configuration in someone else's dashboard, on nobody else's schedule;
+the collector's key is a fifth because it is a credential the PRODUCT issues
+(an `ingest`-scoped `api_keys` row minted in Settings) and rotates from that
+page, on the product's schedule rather than any store's.
 Both optional keys (`explain-api-key`, `vercel-drain-secret`) are read with
 `optional: true`, so a brought Secret may omit either entirely rather than
 carrying an empty one — measured live: setting the `existingSecret` values
@@ -559,6 +566,21 @@ credential:**
   a brought Secret may omit that key entirely) — update the Secret and roll
   `deployment/<release>-web`. Rotating `BETTER_AUTH_SECRET` invalidates every
   live session; users sign in again.
+- **The collector's key** (`collector.apiKey` / `collector.existingSecret`,
+  0.7.0): both collector workloads read `OBSTACK_COLLECTOR_API_KEY` through a
+  `secretKeyRef` into the `collector-api-key` slot — until 0.7.0 it was a
+  `value:` literal in both pod specs, the one credential D275's line had not
+  reached. Rotation is the product's: issue a new `ingest` key in Settings →
+  API keys, update the Secret, roll `daemonset/<release>-collector` **and**
+  `deployment/<release>-collector-cluster`, then revoke the old key on the
+  same page (ingest's 30s lookup cache is how long the old key keeps working).
+  On this chart's own Secret a `helm upgrade --set collector.apiKey=…` rolls
+  both for you — a `checksum/secret` annotation on each pod template, the
+  ClickHouse mechanism — but a brought `existingSecret`'s rotation is invisible
+  to Helm at render time, so there the roll is always the two manual
+  commands. The reference is deliberately NOT `optional`: a collector with no
+  key would send `Bearer ` and be 401'd on every batch, quietly; a missing key
+  holds the pod in `CreateContainerConfigError` instead, naming the key.
 
 **Closed (D275): every DSN this chart renders resolves `existingSecret`, and
 none of them ever carries a password literal on that path.** The migrate Job,
@@ -593,7 +615,9 @@ config.yaml assumes of its DaemonSet" section states:
   and `get` on `nodes/stats` and `nodes/proxy` (`kubelet_stats`' scrape of the
   node's own kubelet — "The cluster collector" below has the whole rule);
 - `/var/log/pods` and `/var/lib/docker/containers` mounted read-only;
-- `OBSTACK_COLLECTOR_API_KEY`, `OBSTACK_INGEST_ENDPOINT`,
+- `OBSTACK_COLLECTOR_API_KEY` (since 0.7.0 a `secretKeyRef` into the chart's
+  Secret or `collector.existingSecret` — `collector.apiKey` is never a
+  pod-spec literal; "Credentials and rotation" above), `OBSTACK_INGEST_ENDPOINT`,
   `OBSTACK_COLLECTOR_EXCLUDE_CONTAINER` (the demo pod's instrumented
   container name — `values.yaml`'s `collector.excludeContainer`) and
   `OBSTACK_COLLECTOR_STORAGE_DIR`;

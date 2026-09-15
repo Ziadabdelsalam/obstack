@@ -67,8 +67,11 @@ as a real key row (`services/ingest/pgmigrations/0004_api_keys.sql`) — so the
 profile works out of the box for local dev. Keys are Postgres rows now (D98),
 never an ingest environment variable, and only their SHA-256 is stored;
 `ok_dev_local` keeps working unchanged because that row is seeded for it.
-`config.yaml` has no default: production supplies a key issued in settings
-through a Helm values file or a mounted secret. Neither file ever carries a
+`config.yaml` has no default: production supplies a key issued in settings,
+and since chart 0.7.0 the chart reads it from a Kubernetes Secret
+(`collector.existingSecret` with the fixed key name `collector-api-key`, or
+`collector.apiKey` through the chart's own Secret — never a pod-spec literal;
+the chart README's "Credentials and rotation"). Neither file ever carries a
 literal key.
 
 ## The filelog exclusion (D37.3) — the recommended customer pattern

@@ -259,7 +259,23 @@ collector:
   # not an API-key one — D98), so a key issued in a hosted product's settings
   # is not a row here and gets 401'd. Override only with a key row that
   # exists in this chart's Postgres.
+  #
+  # 0.7.0 (the pilot packet's D687): this value lands in the chart's own
+  # Secret under `collector-api-key` and BOTH collector workloads read it
+  # through a secretKeyRef — it is no longer rendered as a `value:` literal
+  # into either pod spec (README.md, "Credentials and rotation"). A real
+  # install has no key before it has a workspace, so the honest sequence is
+  # install → sign up → Settings → API keys → issue an `ingest` key → put it
+  # in a Secret → `helm upgrade` with existingSecret below; the seeded default
+  # only exists so kind and CI come up with nothing to configure.
   apiKey: ok_dev_local
+  # Empty (default): `apiKey` above populates this chart's own Secret. Set to
+  # the name of a Secret already in the cluster carrying the issued key under
+  # the fixed key name `collector-api-key`, and the values file never carries
+  # the key at all — the same NAME-never-a-VALUE shape every other
+  # existingSecret here follows. Changing the key in a brought Secret does not
+  # roll the collectors by itself: README.md, "Credentials and rotation".
+  existingSecret: ""
   # Must name the demo pod's instrumented container below (D37.3) — the
   # collector's filelog exclusion is keyed on the container name.
   excludeContainer: demo-agent
