@@ -7,7 +7,10 @@
 # OTLP/HTTP surface, resource requests/limits, and managed-Postgres values
 # (D253 items 1/4/5/6). See README.md's scope boundary for exactly what's
 # here today, and its "Managed Postgres" section for that item's stated
-# ceiling.
+# ceiling. 0.7.0 (the client-pilot bump, README.md "Upgrading to 0.7.0") adds
+# `demo.enabled`, `web.explainMode`, `collector.existingSecret` and
+# `clickhouse.backups`, and renders the `/mcp` address from the web Ingress —
+# each explained where it sits below.
 #
 # Every image below is pinned to an exact tag (D14 precedent) — bumping one
 # is a deliberate edit here, never a floating tag.

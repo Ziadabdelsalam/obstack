@@ -29,7 +29,9 @@ storage/secrets):**
   assumes of its DaemonSet").
 - A demo app pod: the instrumented `demo-agent` container (OTLP routed
   through the collector, D37.1) plus a second, uninstrumented `sidecar`
-  container whose stdout is the genuine NEARBY log source (D37.2).
+  container whose stdout is the genuine NEARBY log source (D37.2). Since
+  0.7.0 it is a fixture with a switch — `demo.enabled`, default `true`; a
+  release carrying real traffic turns it off.
 - Every image pinned to an exact tag (D14); the three images built from this
   repo (`ingest`, `web`, `demo-agent`) are built locally and loaded into kind
   (`imagePullPolicy: Never`, S2.0's precedent) — no registry in the path.
@@ -49,13 +51,18 @@ storage/secrets):**
   running the live-stamped image `apps/web/Dockerfile` produces, with
   `OBSTACK_DATA_MODE=live` and its store credentials wired from the Secret
   above. `web.betterAuthUrl` is the origin a browser reaches it on — the
-  D119 posture is stated at that value.
+  D119 posture is stated at that value. Since 0.7.0 `web.explainMode` states
+  which provider Explain runs with (`fake` by default; `anthropic` with the
+  key in the Secret's `explain-api-key`).
 - **Optional Ingress for web and for ingest's OTLP/HTTP surface** (D253
   item 4, the D214 network-reachable endpoint): host, TLS-Secret name and
   annotation pass-through, both disabled by default. No ingress controller
   and no cert-manager ship here. Enabling ingest's also sets
   `OBSTACK_PUBLIC_OTLP_HTTP_ENDPOINT` on the web workload so the product's
-  quickstart renders that address; gRPC is deliberately not exposed.
+  quickstart renders that address; gRPC is deliberately not exposed. Since
+  0.7.0 enabling web's also sets `OBSTACK_PUBLIC_MCP_ENDPOINT` — the `/mcp`
+  endpoint is a path on the web Service and rides the same Ingress, so
+  `/app/mcp` prints the deployment's real address.
 - **Resource requests/limits** (D253 item 5, widened by D283): requests AND
   limits on `ingest`, `web`, the collector DaemonSet, the events collector
   and both demo containers, conservative defaults stated at each; **requests
@@ -71,10 +78,49 @@ not a gap to silently fill:**
 
 - HA beyond ingest's existing replica story, autoscaling, PDBs,
   NetworkPolicies, multi-replica ClickHouse, backup automation — named OUT
-  by D253 as S5-informed follow-up.
+  by D253 as S5-informed follow-up. (0.7.0's `backups` disk is a place for a
+  `BACKUP` statement to write, not automation — "Backups" below draws the
+  line.)
+- An ingress controller, certificates, a registry pull secret and an
+  external-secrets integration — the pilot packet (D683/D690) keeps every one
+  of them the cluster's, not the chart's.
 - TTL tiers and docs content — unrelated surfaces, no chart involvement
   either way.
 - A second chart. M4 extends this one in place; a parallel chart is drift.
+
+## Upgrading to 0.7.0
+
+0.7.0 is the client-pilot bump (the pilot packet's §12) — the first release
+meant for a cluster that is not a throwaway kind — and it is **additive**:
+nothing removes or renames a 0.6.0 object, every new value is default-off or
+default-as-before, and a 0.6.0 values file renders a valid 0.7.0 release.
+What an operator can observe, and what rolls once on the upgrade:
+
+- **The web pod rolls once.** Its template gains `OBSTACK_EXPLAIN_MODE`,
+  rendered always from `web.explainMode` (default `fake` — the mode the image
+  already defaulted to on its own, now stated in the manifest). Set
+  `anthropic` and put the key in the web Secret's `explain-api-key` to make
+  Explain and incident RCA real. A value outside those two fails
+  `helm template`.
+- **Both collector workloads roll once.** `OBSTACK_COLLECTOR_API_KEY` is a
+  `secretKeyRef` into the chart's Secret (`collector-api-key`) or a brought
+  `collector.existingSecret`, no longer a `value:` literal in the pod spec;
+  a `checksum/secret` annotation keeps `--set collector.apiKey=…` rolling
+  them. The default key still flows on kind — see "Credentials and rotation"
+  for the rotation procedure and why a real install brings its own Secret.
+- **The web Ingress branch gains one env line**, `OBSTACK_PUBLIC_MCP_ENDPOINT`
+  (`https://<web.ingress.host>/mcp` when TLS is on), so `/app/mcp` prints the
+  deployment's address. Only rendered while `web.ingress.enabled` is true, so
+  a release without the Ingress sees no change.
+- **Two switches, both default-off or default-as-before:** `demo.enabled`
+  (default `true`; `false` removes the demo Deployment and Service and
+  nothing else) and `clickhouse.backups.enabled` (default `false`; `true`
+  rolls ClickHouse once with the `backups` disk — "Backups" below).
+
+ClickHouse, Postgres, ingest, the migrate Jobs, the ClusterRole and the demo
+pod render byte-for-byte what 0.6.0 rendered at the defaults; the CPU-request
+budget is unchanged at 990m (960m with the demo off). The D276 guard is
+untouched and still armed.
 
 ## Upgrading to 0.6.0
 
