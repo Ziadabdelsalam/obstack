@@ -1,0 +1,107 @@
+# Deploy-team Plan — the client-pilot chart bump (0.7.0): the pilot packet's §12 as one additive bump (`demo.enabled`, `web.explainMode`, the `/mcp` address from the web Ingress, the collector's key through a Secret, an opt-in ClickHouse `backups` disk), the self-hosting docs page's pilot sections, and the riders that prove them; calls (a)–(g) proceeding as drafted
+
+meta:
+- date: 2026-09-15
+- repo/branch: `claude/continuing-work-6qef96` (cut from master @ `bfb31c1`, the S8.1 close merge — PR #39)
+- mode: **Fable-direct, session-wide** — every task executed in the main session, sequentially in wave order. A deploy-team run, not a dev sprint (M6 phase plan §7: deploy-shaped work goes to deploy touchpoints); no product surface moves.
+- iteration-limit: 3
+- iteration: 0/3
+- governing docs (binding, read before executing): `.planning/2026-09-14-client-pilot-cluster-packet.md` (PROCEEDING AS DRAFTED on the user's "continue", D680–D700 — §12 implemented VERBATIM; deviations escalate, never smoothed); the chart README's scope boundary (D35/D253 — what stays OUT stays out); D268 (one bump per run, additive); D275 (no credential literal in a rendered pod spec); D283 (requests only on the stores); D14 (exact pins); D119 (the browser origin); D276 (the upgrade guard, untouched); the S8.1 packet's condition 10 and D653 (the `/mcp` address is an env line on the web Deployment, rendered from `web.ingress.host`).
+
+## Kickoff notes
+
+- **Ruling posture, stated so nobody mistakes it for a signature:** the packet's calls (a)–(g) were not put individually. The user answered the packet as a whole with "continue", with S8.1 merged and this packet the only next gate on the table — the S8.1 convention ("as drafted ratifies all", the reading stated in the session) applies, and this plan proceeds AS DRAFTED. Consequences, per call: **(a)** public packages is a GitHub package-visibility setting, not a repository change, so it is OWED TO THE USER and the chart gains no `global.imagePullSecrets` (the packet's own "only if (a) rules for pull secrets"); **(b)** and **(c)** are the two product calls the packet declined to take — "as drafted" for both is the DOCUMENTED manual recipe (the operator's `workspace_plans` row, the seeded key's revocation), so nothing built here forecloses either alternative and a later ruling re-opens exactly the docs section it names; **(d)**–**(g)** are the pilot's runbook choices (cert-manager + Let's Encrypt, VM snapshot + nightly `pg_dump`, the demo pod kept for the four-layer proof then disabled, the 4 vCPU / 8 GiB / 60 GiB floor) and land as docs, with the alternatives named beside them. Any call the user flips re-opens exactly its task; nothing else moves.
+- **Tree-lens review of the packet before executing (the S8.1 precedent), citations checked against `bfb31c1`:** `values.yaml:141` (the Explain-mode comment), `templates/web/deployment.yaml:112` (the ingest-Ingress branch), `daemonset.yaml:53-54` / `cluster-deployment.yaml:71-72` (the key literal), `0005_metering.sql:128-129` (the plan seed), `0004_api_keys.sql:53-56` (the continuity row), `billing/client.ts:29` (`fake` default), chart `README.md:430` and `docs/self-hosting/docker-compose:89-94` (the seed statements), "no `imagePullSecrets` in the nine pod templates" (grep: 0 hits, 9 templates) — all as cited. **Corrections, folded in:** (1) the web image is tagged `live-sha-<sha>` / `mock-sha-<sha>`, not `sha-<sha>` (`images.yml:247-266`); ingest and clickhouse carry `sha-<sha>` — the docs print the right form; (2) `images.yml` publishes on EVERY master push (`:216-219`), so the newest images are at the S8.1 merge, not PR #37's — the pilot pins the digest of whatever sha it deploys, read off that run's step summary; (3) the demo pod is two files (`templates/demo/deployment.yaml` + `service.yaml`), so the gate goes on both. **Measured today:** anonymous GHCR token requests for `obstack-web`, `obstack-ingest`, `obstack-clickhouse` answer 401 and the manifest GETs at `bfb31c1` 403 — (a) stands exactly as the packet measured it; `obstack-demo-agent` has no package at all (token 403).
+- **The box:** no Docker daemon, no kind, no kubectl. helm v3.19.0 installed to the scratchpad (the chart README's measurements are under helm v4.0.1; `lookup` is a no-op in `helm template` either way). Consequence, stated once: every render-time gate runs here (`helm lint`, `helm template`, the render riders, the web unit suite's docs pins, `tsc`, lint); the live rider (T8's backups round-trip) runs on the runner's `stack` job, dispatched on this branch by `workflow_dispatch` (`stack.yml:98`). The one store-level claim this run makes — the `backups` disk XML at the pinned ClickHouse version — is run here against the pinned server's own static build (`clickhouse-common-static-26.3.17.110`, 222 MB, fetched), not believed from the docs.
+- **The image's entrypoint, read at the pinned tag before T5 exists:** `docker/server/entrypoint.sh` at `v26.3.17.110-lts` extracts every `storage_configuration.disks.*.path` from the merged config (`:42`) and `mkdir -p` + `chown`s each one alongside the data dir (`:88-91`), so a disk declared in `config.d` gets its directory created and owned by `clickhouse` (uid/gid 101, `Dockerfile.ubuntu:19-20`) at boot — no init container, no `fsGroup`.
+- Seams surfaced by the breakdown are numbered from **D701**. D680–D700 belong to the packet.
+- **No product surface changes** (§12's last sentence): `apps/web` moves only in the docs corpus, plus ONE test pin — the chart's `/mcp` literal asserted equal to `MCP_PATH`, the `mirror.test.ts` rule for a literal with a shared definition.
+- Lessons carried in: a default render that changes is stated as such, never discovered (S6.4's 0.6.0 note); a rider on the `stack` job carries its wall-clock cost in the plan (S4.4/S6.4 precedent); a pin that must move moves deliberately and says so.
+
+## Critical items (advisor-return before merge)
+- T1 — the demo gate: the default render is 0.6.0's plus exactly the lines this bump adds; `demo.enabled=false` removes exactly the two demo objects and nothing else.
+- T4 — the collector's key: NO key literal in any rendered pod spec on either path (the D275 line, extended); the default path still authenticates on the runner (every SOLID/NEARBY row in the stack run is proof); a `--set collector.apiKey` change rolls both collector workloads through a checksum annotation.
+- T5 — the backups disk: `BACKUP` → `RESTORE` → row count on the pinned server locally AND on the runner's kind (upgrade with the flag on, last in the run).
+- T7 — the docs page: every chart value it names resolves in `values.yaml`, every `OBSTACK_*` name it prints is defined in the repo, the install line stays verbatim, no fabricated host or credential (the corpus tests are the pins).
+
+## Tasks
+
+### T1: `demo.enabled` (D688)
+- status: pending
+- wave: 1 · depends: —
+- owns: `deploy/helm/obstack/values.yaml` (`demo.enabled: true` with its reason), `templates/demo/deployment.yaml` + `templates/demo/service.yaml` (gated whole), the README's demo bullet.
+- goal: the demo pod renders exactly as today by default (kind and CI unchanged); `false` removes the Deployment and the Service and nothing else; the collector's `excludeContainer` stays as it is (excluding a container name that does not exist is a no-op).
+- done-check: `helm template` default vs the 0.6.0 baseline render — identical (this task adds no line); `--set demo.enabled=false` → 21 objects, the two `-demo` objects gone, `budget` 960m.
+- result: **done.** `demo.enabled: true` in `values.yaml` with its reason; both demo templates gated whole (`{{- if .Values.demo.enabled }}` … `{{- end }}`, the cluster-deployment idiom). Measured: the default render is OBJECT-IDENTICAL to the 0.6.0 baseline (the only textual diff is the two gate comments helm carries through — no field moved); `--set demo.enabled=false` renders 21 objects (23 − Deployment/`obstack-demo` − Service/`obstack-demo`), zero `obstack-demo` references anywhere in the render; `acceptance.ts budget` 990m default / 960m with the demo off (25m + 5m, the two containers' requests). `helm lint` clean.
+
+### T2: `web.explainMode` (D692)
+- status: pending
+- wave: 1 · depends: —
+- owns: `values.yaml` (`web.explainMode: fake`), `templates/web/deployment.yaml` (`OBSTACK_EXPLAIN_MODE` rendered ALWAYS, the D267 "always set the runtime half" posture; a value outside `fake`/`anthropic` refused at render with the web image's own sentence).
+- goal: the pilot's operator sets `anthropic` and puts the key in the web Secret's `explain-api-key`; until then the manifest SAYS `fake`, so the fake panel is a stated posture, not a discovered one.
+- done-check: default render carries `OBSTACK_EXPLAIN_MODE=fake` (one added env line — the ONE default-render delta of this bump, stated in the README's upgrade note); `--set web.explainMode=anthropic` renders it; `--set web.explainMode=gpt` fails `helm template` naming the two admitted values.
+- result:
+
+### T3: `OBSTACK_PUBLIC_MCP_ENDPOINT` from the web Ingress (D691 / S8.1 D653) and the `MCP_PATH` pin
+- status: pending
+- wave: 1 · depends: —
+- owns: `templates/web/deployment.yaml` (under the existing `web.ingress.enabled` branch: `<scheme>://<web.ingress.host>/mcp`, scheme from `web.ingress.tls.enabled` — the OTLP line's exact ternary), `values.yaml` (the `web.ingress` comment names it), `apps/web/src/server/mcp-endpoint.test.ts` (the chart's literal path suffix asserted equal to `MCP_PATH`).
+- goal: a self-hosted install behind a hostname prints that hostname on `/app/mcp` and in the docs' client setups; nothing is exposed the web Service does not already serve (`pathType: Prefix` on `/` carries `/mcp`).
+- done-check: `--set web.ingress.enabled=true,web.ingress.host=obstack.pilot.test,web.ingress.tls.enabled=true` renders `https://obstack.pilot.test/mcp`; tls off renders `http://…/mcp`; ingress off renders no such line; the web unit test reads the template as text and fails if the suffix and `MCP_PATH` disagree.
+- result:
+
+### T4: the collector's key through the chart's Secret — `collector.existingSecret` (D687)
+- status: pending
+- wave: 2 · depends: T1
+- owns: `templates/secret.yaml` (`obstack.collector.secretName`; the render condition and a `collector-api-key` entry), `templates/collector/daemonset.yaml` + `cluster-deployment.yaml` (`OBSTACK_COLLECTOR_API_KEY` via `secretKeyRef`, NOT optional — a collector without a key must fail to start, not send `Bearer `; a `checksum/secret` annotation on the default path so `--set collector.apiKey=…` rolls both), `values.yaml` (`collector.apiKey` re-described, `collector.existingSecret: ""`), the README ("Credentials and rotation": five groups, seven fixed key names; the contract section's env bullet), `deploy/collector/README.md` (the "Bearer key" sentence).
+- goal: the pilot's values file never carries the issued key — it lives in a brought Secret under the fixed key name — and the default `ok_dev_local` still flows on kind through the chart's own Secret, so the acceptance run is unchanged.
+- done-check: default render — no rendered pod spec contains the key string; the only carrier is `Secret/<release>-credentials` under `collector-api-key`; `--set collector.existingSecret=x` — the chart's Secret drops the entry, both `secretKeyRef.name` read `x`; `--set collector.apiKey=other` changes the two `checksum/secret` annotations.
+- result:
+
+### T5: the opt-in ClickHouse `backups` disk (D696) — `clickhouse.backups.enabled`
+- status: pending
+- wave: 2 · depends: —
+- owns: `values.yaml` (`clickhouse.backups.{enabled,existingClaim}`), `templates/clickhouse/configmap-backups.yaml` (new, the `config.d` file), `templates/clickhouse/statefulset.yaml` (the config.d mount, the disk's volume — a `subPath` of the data PVC by default or the operator's `existingClaim`; a `checksum/backups` annotation so toggling rolls the pod), the README's new section.
+- goal: with the flag on, `BACKUP DATABASE obstack TO Disk('backups', '<name>')` has somewhere to write and `RESTORE … FROM Disk('backups', …)` reads it back; what runs those statements, when, and what copies the result off the node stays the operator's (backup automation is OUT, D253) — the docs state the smallest honest floor beside it.
+- done-check: default render — no ConfigMap, no extra mount, ClickHouse pod template unchanged; flag on — the ConfigMap, the mount at `/etc/clickhouse-server/config.d/obstack-backups.xml`, the volume; `existingClaim=pvc-x` — a `persistentVolumeClaim` volume instead of the subPath; NEVER a second `volumeClaimTemplate` (immutable on a live StatefulSet). **Local proof on the pinned server:** the static `clickhouse server` with `files/obstack-users.xml` + the rendered `config.d` file: BACKUP a table, RESTORE it under another name, row counts equal.
+- result:
+
+### T6: `Chart.yaml` 0.7.0, the README's "Upgrading to 0.7.0", scope and credentials, the values comments
+- status: pending
+- wave: 3 · depends: T1–T5
+- owns: `Chart.yaml` (`0.7.0` with the comment in the 0.3.0–0.6.0 idiom), `README.md` (a new "Upgrading to 0.7.0" — additive; which pods roll once on the upgrade and why: web (the env line), both collector workloads (the `secretKeyRef` + annotation), ClickHouse only if backups is turned on; the scope boundary's Secret and demo bullets; "Credentials and rotation" for the collector group; the backups section), `values.yaml` header.
+- goal: an operator reading the README at 0.7.0 finds every new value, its default, and what changes on upgrade, in the sections that already exist for that purpose.
+- done-check: every value name the README prints resolves in `values.yaml` (the same walk `mirror.test.ts` does for the docs page, run by hand here); the 0.6.0 section untouched.
+- result:
+
+### T7: the self-hosting docs page's pilot sections (§12's docs item)
+- status: pending
+- wave: 3 · depends: T1–T5
+- owns: `apps/web/src/content/docs/self-hosting/helm-chart/index.mdx` — "Since 0.7.0"; images from the registry (names, the `live-sha-`/`sha-` tags, the digest pin, `pullPolicy: IfNotPresent`, the package-visibility fact (a)); the two-step key install (install → sign up → issue an `ingest` key → `helm upgrade` with the brought Secret); the plan a self-hosted workspace lands on and the operator's row (b, as drafted, the alternative named); the seeded dev key and its revocation (c, as drafted, the alternative named); TLS with Traefik (d); the backup floor and the opt-in ClickHouse disk (e); Explain on Kubernetes (`web.explainMode`); MCP behind the Ingress (the env the chart sets, `/docs/mcp` for the client side).
+- goal: the pilot's operator follows one page from a fresh cluster to a developer's Claude Code reading a trace, with the packet's runbook order (§11) as the page's order.
+- done-check: `npm test` (the corpus pins: every chart value resolves, every `OBSTACK_*` defined, the install line verbatim, no fabricated host/credential, the corpus count unchanged at 16); the page names no host that resolves anywhere (placeholders in `<…>`); `/docs/mcp` linked with an absolute `/docs/…` href.
+- result:
+
+### T8: the riders — render-time in `acceptance.ts`, the live backups round-trip in `acceptance.sh`, and the `stack` dispatch
+- status: pending
+- wave: 4 · depends: T1–T7
+- owns: `acceptance.ts` (a new `render` command, run by `acceptance.sh` right after `budget`: the demo gate, the collector-key hygiene, the `/mcp` line, the Explain mode, the backups objects — every assertion above, as code against `helm template`), `acceptance.sh` (the `render` step; the backups rider LAST: `helm upgrade --set clickhouse.backups.enabled=true`, BACKUP → RESTORE → count through `kubectl exec`, then the re-run's `--reset-values` returns the release to defaults), `stack.yml` untouched (the script is the job).
+- goal: the chart's own signed proof covers every 0.7.0 item — the render half on every run in a second, the live half on kind.
+- done-check: `render` green here against helm v3.19.0 and RED-first (each assertion falsified once by a deliberate `--set` before it is trusted); `stack` dispatched on this branch and green, its wall-clock recorded against the S4.3 band (5m58–7m17 PR prior; the backups rider's cost stated).
+- result:
+
+### T9: integration gate, goal check, retro
+- status: pending
+- wave: 5 · depends: T8
+- owns: this file (Integration, Goal check, Retro), the packet's status line.
+- goal: GO/NO-GO on the packet's §12 clause by clause; what is owed to the user (a's flip, the §11 runbook, the rulings still open on b/c) named once.
+- done-check: `helm lint` clean; the render riders green; web unit suite green (the S8.1 count 1077 + this run's additions, reconciled); `tsc --noEmit` + lint clean; the branch pushed.
+- result:
+
+## Escalations log
+
+## Integration
+
+## Goal check (Step 7, one entry per iteration)
+
+## Retro (filled at end of run)

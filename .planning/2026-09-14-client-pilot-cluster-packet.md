@@ -115,3 +115,7 @@ meta:
 - **(g) D681 — the VM floor:** 4 vCPU / 8 GiB / 60 GiB (drafted) vs the client's offered size, measured against `acceptance.ts budget` and the 24h footprint.
 
 **Next gate:** the user's ruling on (a)–(g), then a deploy-team breakdown for §12 (chart 0.7.0 + docs), then the §11 runbook executed against the client's VM. The MCP leg (§10) waits on S8.1 merging; nothing else here does.
+
+---
+
+**Status update 2026-09-15 — the deploy-team run is on (`.planning/2026-09-15-pilot-chart-0.7.0-team-plan.md`).** Proceeding AS DRAFTED on the user's "continue" — (a)–(g) were not put individually; the S8.1 convention ("as drafted ratifies all", with the reading stated in the session) is applied and stated in that plan's kickoff notes. §12 is broken down there as chart **0.7.0** + the self-hosting docs page + the riders. Three things stay owed outside the run and are listed in its exit: (a)'s package-visibility flip is a GitHub setting, not a repository change; (b) and (c) are documented as drafted (the operator's `workspace_plans` row, the manual revocation) and remain the product calls this touchpoint may not take — nothing built forecloses either alternative, and a ruling re-opens exactly the docs section it names; the §11 runbook against the client's VM is the user's, after the bump ships.
