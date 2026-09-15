@@ -1,3 +1,7 @@
+{{- if .Values.demo.enabled }}
+# Gated with the Deployment beside it (`demo.enabled`, 0.7.0/D688): a Service
+# selecting pods that are not rendered would be an endpoint-less name.
+#
 # So a caller (T5's stack-on-kind harness, or a human with kubectl
 # port-forward) has a stable name to POST /chat against instead of a bare
 # Pod's own IP.
@@ -17,3 +21,4 @@ spec:
     - name: http
       port: 8000
       targetPort: http
+{{- end }}

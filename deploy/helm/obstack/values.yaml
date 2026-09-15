@@ -304,6 +304,16 @@ collector:
         memory: 128Mi
 
 demo:
+  # 0.7.0 (the pilot packet's D688). The demo pod is a fixture: the acceptance
+  # rider's four-layer trace source and, through its second container, the
+  # genuine NEARBY log source (D37.2) — and it sends under the seeded dev key.
+  # kind and CI render it exactly as before (`true`). On a cluster carrying
+  # real traffic it is noise, a CPU request and a writer into `ws_demo`: set
+  # `false` and the Deployment and its Service leave the release; nothing else
+  # moves. `collector.excludeContainer` keeps naming its instrumented container
+  # either way — that value is a filelog rule keyed on a container NAME, so
+  # excluding one that does not exist is a no-op, not a dangling reference.
+  enabled: true
   image: obstack-demo-agent:kind
   pullPolicy: Never
   # D283: requests + limits, same ground as collector.resources — a traffic
