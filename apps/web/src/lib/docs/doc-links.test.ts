@@ -214,7 +214,7 @@ test("the rendered body links stay on the mount the reader is on", (t) => {
       checkedBodyLinks++;
     }
   }
-  assert.equal(checkedBodyLinks, 24, /* S8.1 T5: /docs/mcp's three body links */ "the corpus's link count changed — update this deliberately");
+  assert.equal(checkedBodyLinks, 28, /* S8.1 T5: /docs/mcp's three body links; chart 0.7.0: the helm page's four */ "the corpus's link count changed — update this deliberately");
 });
 
 // ───────────────────────────────────────────────── the fragment half (R1 B)
