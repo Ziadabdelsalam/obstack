@@ -103,7 +103,11 @@ is **additive**; two pods roll once:
   reader (`clickhouse extract-from-config … --key send_crash_reports.enabled`:
   `true` stock, `false` with `files/clickhouse-privacy.xml` beside it). Every
   install now mounts that file into `config.d`; there is deliberately no
-  value to turn it back on.
+  value to turn it back on. `acceptance.sh` feeds this file, the backups
+  file and the users file to the pinned server's own reader before it
+  installs anything: a `config.d` file the server cannot parse crash-loops
+  the pod and surfaces only as `helm install --wait` hitting its deadline
+  (PR #42's first CI run — an XML comment with two hyphens in a row).
 - **The web pod rolls once** for an explicit `NEXT_TELEMETRY_DISABLED=1` — the
   standalone server sends nothing by itself, and the line says so where an
   operator reads it.

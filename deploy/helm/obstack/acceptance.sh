@@ -166,6 +166,36 @@ docker save --platform "$platform" -o "$archive" $images
 kind load image-archive "$archive" --name "$cluster"
 rm -f "$archive"
 
+# The chart's ClickHouse config files, read by the pinned server's OWN config
+# reader before anything is installed. A file config.d cannot parse fails
+# neither at render (helm sees a string) nor fast on the cluster: the server
+# refuses to start, the pod crash-loops, and the only thing this job reports
+# is `helm install --wait` hitting its 900s deadline (PR #42's first run: an
+# XML comment holding two hyphens in a row, which is not well-formed XML).
+# Same binary, same merge (config.d beside the image's config.xml, users.d
+# beside its users.xml); the printed values are the facts 0.7.0 and 0.8.0 put
+# there, so a file that parses but no longer says them fails here too.
+step "the chart's ClickHouse config files parse on the pinned server"
+ch_image="$(printf '%s\n' "$images" | grep -m1 'clickhouse-server')"
+[ -n "$ch_image" ] || fail "no clickhouse-server image in the rendered chart"
+chcfg() { # chcfg <config file inside the image> <key>
+  docker run --rm --entrypoint clickhouse \
+    -v "$chart_dir/files/clickhouse-privacy.xml:/etc/clickhouse-server/config.d/obstack-privacy.xml:ro" \
+    -v "$chart_dir/files/clickhouse-backups.xml:/etc/clickhouse-server/config.d/obstack-backups.xml:ro" \
+    -v "$chart_dir/files/obstack-users.xml:/etc/clickhouse-server/users.d/obstack-users.xml:ro" \
+    "$ch_image" extract-from-config --config-file "$1" --key "$2"
+}
+crash="$(chcfg /etc/clickhouse-server/config.xml send_crash_reports.enabled)" \
+  || fail "the pinned server refuses the chart's config.d files (the parser's message is above)"
+[ "$crash" = "false" ] || fail "send_crash_reports.enabled reads '$crash' with files/clickhouse-privacy.xml mounted; expected false (0.8.0)"
+disk="$(chcfg /etc/clickhouse-server/config.xml storage_configuration.disks.backups.path)" \
+  || fail "the pinned server refuses the chart's config.d files (the parser's message is above)"
+[ "$disk" = "/var/lib/clickhouse-backups/" ] || fail "the backups disk path reads '$disk' with files/clickhouse-backups.xml mounted; expected /var/lib/clickhouse-backups/ (0.7.0)"
+ro="$(chcfg /etc/clickhouse-server/users.xml profiles.obstack_web.readonly)" \
+  || fail "the pinned server refuses the chart's users.d file (the parser's message is above)"
+[ "$ro" = "2" ] || fail "profiles.obstack_web.readonly reads '$ro' with files/obstack-users.xml mounted; expected 2"
+printf '   %s: send_crash_reports.enabled=%s · backups disk %s · obstack_web readonly=%s\n' "$ch_image" "$crash" "$disk" "$ro"
+
 if helm status "$RELEASE" >/dev/null 2>&1; then
   step "upgrading release '$RELEASE' (already installed — pre-upgrade hook path)"
   # --reset-values because Helm v4 reuses the last release's user-supplied
