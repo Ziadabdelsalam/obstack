@@ -5,7 +5,7 @@ meta:
 - chart `deploy/helm/obstack` **0.8.0** at `master` @ **`6a845d2`** (PR #42, merged 2026-09-16) · k3s `v1.36.4+k3s1`, helm `v3.19.0` (the same pins path B carries).
 - images: the two `image:` lines in step 5 pin the **0.8.0 merge's** images (`6a845d2`; `images` run 35142829993, its `publish` job green 19:55 UTC). Digests read anonymously from the registry 2026-09-16 20:01 UTC — the `Docker-Content-Digest` of each sha tag's manifest, single-platform `linux/amd64` as D682 requires — web `4864ee51…`, ingest `4795b105…`. A later merge publishes new ones, and the two lines change as a reviewed edit of this file, never a floating tag.
 - who runs what: **the operator** (the user) runs every command on the VM, plus the DNS records at the registrar and, if preferred, the certificate on a laptop. This session reaches none of it; each step names what to paste back if it does not match.
-- names, fixed: `OBSTACK_HOST` = **`pilot.obstack.dev`**, `OTLP_HOST` = **`otlp-pilot.obstack.dev`**. Still the operator's: `VM_IP` (the VM's **private** IPv4 on the client's network), `ACME_EMAIL` (who Let's Encrypt writes to about expiry). Namespace `default` (the Service names in steps 8–9 assume it). `CHART` = `~/obstack/deploy/helm/obstack` on path A, `/opt/obstack/deploy/helm/obstack` on path B.
+- names, fixed: `OBSTACK_HOST` = **`pilot.obstack.dev`**, `OTLP_HOST` = **`otlp-pilot.obstack.dev`**. `VM_IP` = **`172.27.28.14`** (the VM's private IPv4 on the client's network, given 2026-09-16 — the public A records carry it by design, so writing it here adds nothing to what DNS publishes). Still the operator's: `ACME_EMAIL` (who Let's Encrypt writes to about expiry). Namespace `default` (the Service names in steps 8–9 assume it). `CHART` = `~/obstack/deploy/helm/obstack` on path A, `/opt/obstack/deploy/helm/obstack` on path B.
 - the guarantee, in one sentence (D703, restated for a connected VM): the VM's outbound traffic is an allow-list the client enforces and logs — registries and downloads for the install, the client's NTP, Let's Encrypt for the certificate — and nothing on the VM is configured to send anything else, so no product data, no telemetry and no crash report leaves; the software side is measured (chart 0.8.0, the Traefik config, the OS made quiet), the firewall side is the client's. The one door through which trace content leaves by design is a developer's Claude Code over MCP (step 11), on their machine, and the client decides whether it opens.
 - what is deliberately NOT here: HA, autoscaling, backup automation (out of the chart by ruling), cert-manager (gone: DNS-01 from a laptop or the VM is simpler and needs no inbound port 80), the S7.5 on-call sprint (deferred behind this install by the user's direction).
 
@@ -18,13 +18,13 @@ meta:
 **0.2 — DNS: two A records under `obstack.dev`, answering the VM's PRIVATE address (D705).** At the registrar (Squarespace, the zone's DNS settings):
 
 ```
-pilot.obstack.dev.        A   <VM_IP>       (e.g. 10.x.x.x — the address the client's network reaches the VM at)
-otlp-pilot.obstack.dev.   A   <VM_IP>
+pilot.obstack.dev.        A   172.27.28.14
+otlp-pilot.obstack.dev.   A   172.27.28.14
 ```
 
 Why this works: the client's resolver forwards to public DNS and gets back a private address that is reachable only inside their network; from the internet the same name resolves to an address nobody outside can reach. What it publishes: the two names, and the fact that a private address exists — nothing else, which is why the labels are neutral (public DNS and certificate-transparency logs carry them for good). Measured 2026-09-16 19:50 UTC from outside: neither name resolves yet — the records are owed.
 
-Verify from a machine **inside the client's network**: `dig +short pilot.obstack.dev` → `<VM_IP>`. If it answers nothing while `dig +short pilot.obstack.dev @8.8.8.8` does, the client's resolver drops private addresses in public answers (rebind protection) — the fix is the same two names in their internal zone, and the certificate in step 3 is unchanged (the DNS challenge is proven on the public zone).
+Verify from a machine **inside the client's network**: `dig +short pilot.obstack.dev` → `172.27.28.14`. If it answers nothing while `dig +short pilot.obstack.dev @8.8.8.8` does, the client's resolver drops private addresses in public answers (rebind protection) — the fix is the same two names in their internal zone, and the certificate in step 3 is unchanged (the DNS challenge is proven on the public zone).
 
 **Paste back:** the two `dig` outputs from inside the network — or just say the records are in, and this session checks them from outside.
 
@@ -34,7 +34,7 @@ Floor: 4 vCPU, 8 GiB, 60 GiB disk, amd64 (the images are `linux/amd64`, single-m
 
 - inbound **443** from their network (the product and the OTLP door), **22** from the operator's host, nothing else in;
 - outbound: an **allow-list, logged** — the install's sources (`ghcr.io`, `pkg-containers.githubusercontent.com`; `registry-1.docker.io`, `auth.docker.io`, `production.cloudflare.docker.com`; `get.k3s.io`, `github.com`, `objects.githubusercontent.com`; `get.helm.sh`), Let's Encrypt (`acme-v02.api.letsencrypt.org`) if the certificate is issued from the VM (step 3), the client's NTP server, and DNS through the client's resolver; **everything else denied and logged**. If an allow-list is not possible on their edge, at least log egress: the meter in step 6 then says what the VM did with its access.
-- no proxy configured on the VM (`env | grep -i proxy` prints nothing) unless the client's egress goes through one — then k3s needs it too (`/etc/default/k3s` with `HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY=10.0.0.0/8,127.0.0.0/8,<VM_IP>`), stated here so it is not discovered at the first pull.
+- no proxy configured on the VM (`env | grep -i proxy` prints nothing) unless the client's egress goes through one — then k3s needs it too (`/etc/default/k3s` with `HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY=10.0.0.0/8,127.0.0.0/8,172.27.28.14`), stated here so it is not discovered at the first pull.
 
 Then the OS's own callers — a stock Ubuntu opens connections on its own, and while the allow-list would refuse each one, off is what keeps the firewall's log meaningful:
 
@@ -196,7 +196,7 @@ kubectl get jobs                      # obstack-migrate-1 and obstack-pg-migrate
 kubectl get pods                      # everything Running; ingest held in Init until the stores answered
 kubectl get events --field-selector reason=Pulled -o custom-columns=POD:involvedObject.name,MSG:message
                                       # every line "already present on machine": path A pre-pulled, path B imported
-curl -sI --resolve pilot.obstack.dev:443:<VM_IP> https://pilot.obstack.dev/login | head -1      # HTTP/2 200, from the VM itself, no DNS needed
+curl -sI --resolve pilot.obstack.dev:443:172.27.28.14 https://pilot.obstack.dev/login | head -1      # HTTP/2 200, from the VM itself, no DNS needed
 ```
 
 Then from a browser on the client's network: `https://pilot.obstack.dev/login` — the padlock is Let's Encrypt's, no warning. With the images already on the node the install is the stores' first start and the two migrate Jobs — minutes, not the 7–11-minute ClickHouse pull the chart README measured for an install that pulls as it goes. A pod stuck `Pending` is a scheduling fact, not a timeout — `kubectl describe pod <name>` names the resource. A `crictl pull` that fails on path A is the allow-list missing a host, and its error names the host.
@@ -258,7 +258,7 @@ kubectl exec statefulset/obstack-postgres -- psql -U obstack -d obstack -c \
 Ingest caches key lookups for 30 seconds; after that, a POST with `ok_dev_local` answers 401. Prove it from the VM (or from any machine on the client's network, without `--resolve`):
 
 ```bash
-sleep 35; curl -s -o /dev/null -w "%{http_code}\n" --resolve otlp-pilot.obstack.dev:443:<VM_IP> -X POST "https://otlp-pilot.obstack.dev/v1/traces" \
+sleep 35; curl -s -o /dev/null -w "%{http_code}\n" --resolve otlp-pilot.obstack.dev:443:172.27.28.14 -X POST "https://otlp-pilot.obstack.dev/v1/traces" \
   -H "Authorization: Bearer ok_dev_local" -H "content-type: application/json" -d '{}'     # 401
 ```
 
