@@ -53,6 +53,10 @@ spec:
         # file's content in makes `helm upgrade` roll ClickHouse exactly when
         # the users config actually changed.
         checksum/config: {{ .Files.Get "files/obstack-users.xml" | sha256sum }}
+        # 0.8.0: the privacy config.d file, mounted on every install — same
+        # mechanism as checksum/config above, so an edit to the file rolls the
+        # pod that reads it once at start.
+        checksum/privacy: {{ .Files.Get "files/clickhouse-privacy.xml" | sha256sum }}
         {{- if .Values.clickhouse.backups.enabled }}
         # 0.7.0: the config.d file is a ConfigMap volume too, looked up by
         # name — same mechanism, same reason as checksum/config above. The
@@ -114,6 +118,13 @@ spec:
               readOnly: true
             - name: data
               mountPath: /var/lib/clickhouse
+            # 0.8.0: crash reporting off (files/clickhouse-privacy.xml), file-
+            # by-file into config.d like users.d above — the directory stays
+            # writable for the image's own docker_related_config.xml.
+            - name: privacy-xml
+              mountPath: /etc/clickhouse-server/config.d/obstack-privacy.xml
+              subPath: obstack-privacy.xml
+              readOnly: true
             {{- if .Values.clickhouse.backups.enabled }}
             # 0.7.0 (D696): the `backups` disk's declaration, file-by-file
             # into config.d exactly as users.d is mounted above (the image
@@ -155,6 +166,9 @@ spec:
         - name: users-xml
           configMap:
             name: {{ .Release.Name }}-clickhouse-users
+        - name: privacy-xml
+          configMap:
+            name: {{ .Release.Name }}-clickhouse-privacy
         {{- if .Values.clickhouse.backups.enabled }}
         - name: backups-xml
           configMap:

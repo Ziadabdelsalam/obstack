@@ -83,10 +83,39 @@ not a gap to silently fill:**
   line.)
 - An ingress controller, certificates, a registry pull secret and an
   external-secrets integration — the pilot packet (D683/D690) keeps every one
-  of them the cluster's, not the chart's.
+  of them the cluster's, not the chart's. (An install with no route to a
+  registry carries its images in with `deploy/airgap/bundle.sh` and never
+  needs a pull secret; "Upgrading to 0.8.0" above.)
 - TTL tiers and docs content — unrelated surfaces, no chart involvement
   either way.
 - A second chart. M4 extends this one in place; a parallel chart is drift.
+
+## Upgrading to 0.8.0
+
+0.8.0 is the air-gap posture — what a cluster inside a network with no route
+to the internet needs from this chart (`deploy/airgap/README.md` carries the
+bundle/load flow and the line-by-line table of what leaves the network). It
+is **additive**; two pods roll once:
+
+- **ClickHouse rolls once.** Its stock `config.xml` at the pinned 26.3.17.110
+  ships with `send_crash_reports.enabled = true` — a crashed server posts an
+  anonymised report to the vendor. Measured with the binary's own config
+  reader (`clickhouse extract-from-config … --key send_crash_reports.enabled`:
+  `true` stock, `false` with `files/clickhouse-privacy.xml` beside it). Every
+  install now mounts that file into `config.d`; there is deliberately no
+  value to turn it back on.
+- **The web pod rolls once** for an explicit `NEXT_TELEMETRY_DISABLED=1` — the
+  standalone server sends nothing by itself, and the line says so where an
+  operator reads it.
+- **Two default-off values render nothing until set:** `ingest.notifier.allowPrivate`
+  (D492's escape hatch, exposed for an install whose alert receivers are ALL
+  on the private network — `values.yaml` states the consequence: the SSRF
+  fence is off for the whole ingest process) and `web.explainBaseUrl` /
+  `web.explainModel` (an internal Anthropic-compatible gateway, so `anthropic`
+  mode keeps trace text inside the network).
+
+Postgres, ingest, the collectors, the Jobs and the demo pod render byte-for-byte
+what 0.7.0 rendered at the defaults; the CPU-request budget is unchanged.
 
 ## Upgrading to 0.7.0
 
@@ -906,8 +935,9 @@ config has no such source: there is no cluster API under Compose, so
 does not exist would be ceremony, not the K1 mechanism, so the pair list
 stays at two rows. 0.7.0 adds a fourth file of the same kind,
 `files/clickhouse-backups.xml` — the `backups` disk's `config.d` entry
-("Backups" above) — with no source outside the chart either, so it is not a
-row either.
+("Backups" above) — and 0.8.0 a fifth, `files/clickhouse-privacy.xml` (crash
+reporting off, "Upgrading to 0.8.0"); neither has a source outside the chart,
+so neither is a row.
 
 ## Local repro on kind
 

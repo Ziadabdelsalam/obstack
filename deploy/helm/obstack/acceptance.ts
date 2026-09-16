@@ -206,6 +206,9 @@ function envOf(doc: RenderedDoc | undefined, container: string, name: string): R
  *   5. `clickhouse.backups.enabled` renders the config.d ConfigMap, the
  *      checksum and the disk's mount — a subPath of the data PVC, or the
  *      operator's claim — and never a second volumeClaimTemplate (D696).
+ *   6. (0.8.0, the air-gap posture) ClickHouse's crash reporting is switched
+ *      off on every render; the notifier hatch and the Explain gateway values
+ *      render nothing until set, and exactly their env lines when set.
  *
  * `OBSTACK_CHART_DIR` points every arm at another chart directory: that is
  * how each was proven RED against a deliberately broken copy before it was
@@ -365,9 +368,42 @@ function chartRenderChecks(): void {
     `disk mount ${JSON.stringify(diskMount(own) ?? null)}, volume ${JSON.stringify(ownVolume ?? null)}, ${claims(own)} volumeClaimTemplate(s)`,
   );
 
+  // 6. the air-gap posture (0.8.0)
+  const privacy = findDoc(base, "ConfigMap", "obstack-clickhouse-privacy")?.data?.["obstack-privacy.xml"] ?? "";
+  const privacyMount = mountsOf(base).find((m) => m.mountPath === "/etc/clickhouse-server/config.d/obstack-privacy.xml");
+  arm(
+    "0.8.0 ClickHouse crash reporting is off on every render",
+    privacy.includes("<enabled>false</enabled>") &&
+      privacyMount?.subPath === "obstack-privacy.xml" &&
+      typeof ch(base)?.spec?.template?.metadata?.annotations?.["checksum/privacy"] === "string",
+    `config.d ${privacy ? "carries <enabled>false</enabled>" : "MISSING"}, mount ${privacyMount ? "present" : "MISSING"}`,
+  );
+  const ingestOf = (docs: RenderedDoc[]) => findDoc(docs, "Deployment", "obstack-ingest");
+  const hatchDefault = envOf(ingestOf(base), "ingest", "OBSTACK_NOTIFIER_ALLOW_PRIVATE");
+  const hatchOn = envOf(ingestOf(renderedDocs(renderChart(["--set", "ingest.notifier.allowPrivate=true"]))), "ingest", "OBSTACK_NOTIFIER_ALLOW_PRIVATE")?.value;
+  arm(
+    "0.8.0 the notifier hatch is absent by default and \"true\" only when set",
+    hatchDefault === undefined && hatchOn === "true",
+    `default ${hatchDefault === undefined ? "absent" : "PRESENT"}, set → ${JSON.stringify(hatchOn ?? null)}`,
+  );
+  const gwDefault = [envOf(web(base), "web", "OBSTACK_EXPLAIN_BASE_URL"), envOf(web(base), "web", "OBSTACK_EXPLAIN_MODEL")];
+  const gw = web(renderedDocs(renderChart(["--set", "web.explainBaseUrl=https://llm.internal.test,web.explainModel=claude-x"])));
+  arm(
+    "0.8.0 the Explain gateway renders nothing until set, then both lines",
+    gwDefault.every((e) => e === undefined) &&
+      envOf(gw, "web", "OBSTACK_EXPLAIN_BASE_URL")?.value === "https://llm.internal.test" &&
+      envOf(gw, "web", "OBSTACK_EXPLAIN_MODEL")?.value === "claude-x",
+    `default ${gwDefault.every((e) => e === undefined) ? "absent" : "PRESENT"}, set → ${JSON.stringify(envOf(gw, "web", "OBSTACK_EXPLAIN_BASE_URL")?.value ?? null)} / ${JSON.stringify(envOf(gw, "web", "OBSTACK_EXPLAIN_MODEL")?.value ?? null)}`,
+  );
+  arm(
+    "0.8.0 the web pod states NEXT_TELEMETRY_DISABLED",
+    envOf(web(base), "web", "NEXT_TELEMETRY_DISABLED")?.value === "1",
+    `value ${JSON.stringify(envOf(web(base), "web", "NEXT_TELEMETRY_DISABLED")?.value ?? null)}`,
+  );
+
   if (problems.length > 0) {
     for (const p of problems) console.error(`acceptance:   - ${p}`);
-    fail(`${problems.length} of the chart's 0.7.0 render checks failed`);
+    fail(`${problems.length} of the chart's render checks failed`);
   }
   console.log("acceptance: PASS");
 }

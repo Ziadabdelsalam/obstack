@@ -10,7 +10,10 @@
 # ceiling. 0.7.0 (the client-pilot bump, README.md "Upgrading to 0.7.0") adds
 # `demo.enabled`, `web.explainMode`, `collector.existingSecret` and
 # `clickhouse.backups`, and renders the `/mcp` address from the web Ingress —
-# each explained where it sits below.
+# each explained where it sits below. 0.8.0 (the air-gap posture, README.md
+# "Upgrading to 0.8.0", deploy/airgap/README.md) switches ClickHouse's crash
+# reporting off on every install and adds `ingest.notifier.allowPrivate`,
+# `web.explainBaseUrl` and `web.explainModel`, all default-off.
 #
 # Every image below is pinned to an exact tag (D14 precedent) — bumping one
 # is a deliberate edit here, never a floating tag.
@@ -179,6 +182,14 @@ web:
   # per-request refusal naming the missing variables — never a fabricated
   # summary (D102).
   explainApiKey: ""
+  # 0.8.0 (the air-gap posture, deploy/airgap/README.md): in `anthropic`
+  # mode, the Anthropic-compatible endpoint Explain calls. Empty (default):
+  # Anthropic's own API, over the internet. Set to an internal gateway's
+  # origin to keep every prompt and trace excerpt inside the network — the
+  # web image reads it (apps/web/src/server/explain/anthropic.ts), and then
+  # needs the model name below, since a gateway's catalogue is its own.
+  explainBaseUrl: ""
+  explainModel: ""
   existingSecret: ""
   # D253 item 5 — conservative defaults for a Node process serving requests,
   # not a request-driven autoscaling target (HA beyond ingest's existing
@@ -245,6 +256,20 @@ ingest:
   # bearer key, because the reference is optional.
   vercelDrainSecret: ""
   existingSecret: ""
+  # 0.8.0 (the air-gap posture): the notifier's egress fence (S7.1 D487/D492)
+  # refuses plain-HTTP targets, literal IPs and any address on the private
+  # network — the SSRF posture of a product that POSTs to URLs people type
+  # in. An install whose alert receivers are ALL inside the network (an
+  # internal chat server, an internal pager) can deliver nothing under that
+  # fence. `true` renders OBSTACK_NOTIFIER_ALLOW_PRIVATE=true on ingest and
+  # switches the fence OFF FOR THE WHOLE PROCESS: every channel target a
+  # workspace member saves is then dialled as typed, private ranges and
+  # cloud metadata endpoints included. Set it only on a cluster whose
+  # network has no such endpoint to protect, and say so in the install's
+  # record. Left false (default) nothing is rendered — the variable's
+  # absence is what a production install is checked for.
+  notifier:
+    allowPrivate: false
   # D253 item 5 — see web.resources above for the same reasoning; sized for
   # the OTLP receive + ClickHouse/Postgres write path, not a guess.
   resources:

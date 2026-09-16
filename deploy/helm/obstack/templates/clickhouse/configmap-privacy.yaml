@@ -1,0 +1,15 @@
+# 0.8.0 (the air-gap posture): the one config.d file every install mounts —
+# ClickHouse's crash reporting OFF, which its stock config.xml leaves ON.
+# files/clickhouse-privacy.xml carries the measurement and the reasoning;
+# statefulset.yaml's `checksum/privacy` annotation is what makes an edit to it
+# reach a running server (the users.xml mechanism).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-clickhouse-privacy
+  labels:
+    {{- include "obstack.labels" . | nindent 4 }}
+    app.kubernetes.io/component: clickhouse
+data:
+  obstack-privacy.xml: |-
+{{ .Files.Get "files/clickhouse-privacy.xml" | indent 4 }}

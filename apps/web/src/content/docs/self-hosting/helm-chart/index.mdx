@@ -207,7 +207,9 @@ sticks.
 k3s is cert-manager with a Let's Encrypt `ClusterIssuer` (HTTP-01 needs port 80
 reachable on the node) issuing both hosts; a certificate you already hold,
 loaded as the Secret and renewed by you, works the same with zero new
-components.
+components. A cluster with no route to the internet brings the certificate
+instead — issued off the node by a DNS challenge and loaded as the Secret; the
+air-gapped section below.
 
 ### 4. Install, sign up, and the plan
 
@@ -324,6 +326,29 @@ expiring; an install that wants store-level backups anyway turns on
 with `clickhouse.backups.existingClaim`, or a staging directory on the data
 volume by default) for `BACKUP DATABASE obstack TO Disk('backups', …)`. The
 chart README's "Backups" section has the loop and what it measured.
+
+### Air-gapped: a cluster with no route to the internet
+
+Since chart 0.8.0 the install can be carried in whole. On a machine with
+internet, `deploy/airgap/bundle.sh -f pilot-values.yaml` pulls every image the
+chart renders for your values (for `linux/amd64`, as OCI layouts, so a
+digest-pinned `image:` resolves offline exactly as it does online), plus k3s,
+its own image pack, helm and this repository, and writes checksums; on the VM,
+`sudo ./load.sh` verifies the bundle, installs k3s from it, imports every image
+under the names the kubelet asks for, and leaves you at step 3 above. The
+repository's `deploy/airgap/README.md` states, line by line, what does and does
+not leave the network.
+
+What the chart does for that posture: ClickHouse's crash reporting — on in its
+stock configuration — is switched off on every install; the web pod states
+`NEXT_TELEMETRY_DISABLED`; `web.explainMode: fake` calls no model, and
+`web.explainBaseUrl` with `web.explainModel` points `anthropic` mode at an
+internal gateway instead of the public API; alert delivery to receivers inside
+the network needs `ingest.notifier.allowPrivate: true`, which switches the
+notifier's SSRF fence off for the whole process and is documented as such in
+`values.yaml`. The certificate is issued off the VM by a DNS challenge and
+brought as the TLS Secret the Ingresses name, so no certificate authority is
+contacted from inside.
 
 ### 10. Upgrades, and the first numbers
 

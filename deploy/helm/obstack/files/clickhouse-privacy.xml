@@ -1,0 +1,18 @@
+<!--
+  ClickHouse's own config.xml at the pinned 26.3.17.110 ships with
+  <send_crash_reports><enabled>true</enabled>: a crashed server posts an
+  anonymised report (a stack trace, the version, the build) to the vendor's
+  collector. Measured with the binary's own config reader
+  (`clickhouse extract-from-config --key send_crash_reports.enabled` → true
+  on the stock config, false with this file beside it). A self-hosted store
+  inside a customer's network has no business opening that connection, so
+  this chart mounts this file into config.d on EVERY install (0.8.0, the
+  air-gap posture — deploy/airgap/README.md) and the report never leaves.
+  No source outside the chart, so not a row in the files/ contract test.
+-->
+<clickhouse>
+  <send_crash_reports>
+    <enabled>false</enabled>
+    <send_logical_errors>false</send_logical_errors>
+  </send_crash_reports>
+</clickhouse>
