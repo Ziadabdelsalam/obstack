@@ -19,6 +19,8 @@ curl -s "https://ghcr.io/token?scope=repository:ziadabdelsalam/obstack-web:pull"
 
 The alternative (a pull secret on the cluster) needs a chart value the 0.7.0 bump deliberately left out; say so if you want that path instead.
 
+**DONE 2026-09-16, measured from a machine with no credentials:** anonymous token requests answer 200 for all three packages; the manifests of the exact tags this runbook pins fetch with HTTP 200, and the registry's `Docker-Content-Digest` equals the pinned digest for each — `obstack-web` `003c35d3…`, `obstack-ingest` `bc2fb345…`, `obstack-clickhouse` `d4a75d16…`; a pull by digest answers 200 too. Call (a) of the pilot packet is closed by this action.
+
 **0.2 — DNS.** Two A records to the VM's public IP: `OBSTACK_HOST` and `OTLP_HOST`. Let's Encrypt's HTTP-01 challenge needs port 80 reachable on the VM from the internet, and the product needs 443.
 
 ## 1. The VM and the cluster (D680, D681)

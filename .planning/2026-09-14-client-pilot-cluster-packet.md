@@ -106,7 +106,7 @@ meta:
 
 ## 13. Calls flagged for ruling — OPEN
 
-- **(a) D683 — public packages** (drafted) vs `global.imagePullSecrets` plus a PAT-backed Secret on the client cluster.
+- **(a) D683 — public packages** (drafted) vs `global.imagePullSecrets` plus a PAT-backed Secret on the client cluster. **CLOSED by action 2026-09-16:** the user made the three packages public; measured anonymously the same day, every pinned digest fetches (the runbook's step 0.1 carries the numbers). No chart value follows.
 - **(b) D694 — the plan posture:** the operator's `workspace_plans` row (drafted, documented) vs a `self-hosted` plan seeded behind an operator flag vs retention as a chart value. A product decision.
 - **(c) D695 — the dev-key seed on real installs:** manual revocation (drafted) vs a chart-driven revoke Job vs seeding only under a dev/CI flag. A product decision.
 - **(d) D690 — TLS:** cert-manager + Let's Encrypt (drafted) vs the client's own certificate as the Secret.
