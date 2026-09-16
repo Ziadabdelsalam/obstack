@@ -82,8 +82,8 @@ YAML
 
 ```bash
 curl -sfL https://get.k3s.io | INSTALL_K3S_VERSION="v1.36.4+k3s1" sh -      # the installer verifies the binary's sha256 itself
-sudo install -o "$USER" -m 600 /etc/rancher/k3s/k3s.yaml ~/.kube/config
-export KUBECONFIG=~/.kube/config
+mkdir -p ~/.kube && sudo install -o "$USER" -g "$USER" -m 600 /etc/rancher/k3s/k3s.yaml ~/.kube/config
+export KUBECONFIG=~/.kube/config                                       # put this line in ~/.bashrc too
 
 curl -fsSLO https://get.helm.sh/helm-v3.19.0-linux-amd64.tar.gz && curl -fsSL https://get.helm.sh/helm-v3.19.0-linux-amd64.tar.gz.sha256sum | sha256sum -c -
 tar -xzf helm-v3.19.0-linux-amd64.tar.gz linux-amd64/helm && sudo install -m 755 linux-amd64/helm /usr/local/bin/helm && rm -rf linux-amd64 helm-v3.19.0-linux-amd64.tar.gz
@@ -114,7 +114,7 @@ One certificate for both names, proven by a TXT record on `obstack.dev` — no i
 lego --email "<ACME_EMAIL>" --accept-tos --dns manual -d pilot.obstack.dev -d otlp-pilot.obstack.dev run
 ```
 
-`lego` prints, for each name, a TXT record `_acme-challenge.<name>` and its value, and waits. Create both at the registrar, confirm they have propagated (`dig +short TXT _acme-challenge.pilot.obstack.dev @8.8.8.8` prints the value), press Enter. The result is under `./.lego/certificates/`: `pilot.obstack.dev.crt` (the leaf followed by its chain) and `pilot.obstack.dev.key`. The TXT records can be deleted afterwards; renewal asks for new ones.
+`lego` prints, for each name, a TXT record `_acme-challenge.<name>` and its value, and waits. Create both at the registrar, confirm they have propagated (`dig +short TXT _acme-challenge.pilot.obstack.dev @8.8.8.8` prints the value), press Enter. Before issuing, `lego` checks the records itself by asking the zone's nameservers directly (UDP 53 to the internet); on a VM whose egress is an allow-list that check can hang at "Checking DNS record propagation" — then run `lego` on a laptop with ordinary internet instead, which is the simplest place for it anyway. The result is under `./.lego/certificates/`: `pilot.obstack.dev.crt` (the leaf followed by its chain) and `pilot.obstack.dev.key`. The TXT records can be deleted afterwards; renewal asks for new ones.
 
 Renewal is a calendar item: the certificate is valid 90 days; before day 60, `lego … --dns manual -d pilot.obstack.dev -d otlp-pilot.obstack.dev renew --days 30` (the same two TXT prompts), then re-apply the Secret (`kubectl create secret tls obstack-tls --cert=… --key=… --dry-run=client -o yaml | kubectl apply -f -`) — Traefik picks it up on its own. To rehearse without spending a rate-limit slot, add `--server https://acme-staging-v02.api.letsencrypt.org/directory`; a staging certificate is not browser-trusted.
 
@@ -180,16 +180,26 @@ demo:
 
 ## 6. Install, and what the VM did with its access (D697, D703)
 
+Path A first pulls the six images explicitly, so a slow link or a missing allow-list host shows up here, by name, and never inside `helm install --wait`'s deadline:
+
+```bash
+for image in $(helm template obstack "$CHART" -f ~/pilot-values.yaml | sed -n 's/^ *image: *//p' | tr -d '"' | sort -u); do
+  sudo k3s crictl pull "$image"       # the same six the chart renders; the two ghcr ones by digest
+done
+```
+
+Then, on either path:
+
 ```bash
 helm install obstack "$CHART" -f ~/pilot-values.yaml --timeout 900s --wait
 kubectl get jobs                      # obstack-migrate-1 and obstack-pg-migrate-1: 1/1
 kubectl get pods                      # everything Running; ingest held in Init until the stores answered
 kubectl get events --field-selector reason=Pulled -o custom-columns=POD:involvedObject.name,MSG:message
-                                      # path A, first install: "Successfully pulled image …" once per image; path B, and every later start: "already present on machine"
-curl -sI --resolve pilot.obstack.dev:443:127.0.0.1 https://pilot.obstack.dev/login | head -1     # HTTP/2 200, from the VM itself
+                                      # every line "already present on machine": path A pre-pulled, path B imported
+curl -sI --resolve pilot.obstack.dev:443:<VM_IP> https://pilot.obstack.dev/login | head -1      # HTTP/2 200, from the VM itself, no DNS needed
 ```
 
-Then from a browser on the client's network: `https://pilot.obstack.dev/login` — the padlock is Let's Encrypt's, no warning. On path A the cold install is the ClickHouse image pull (7–11 minutes measured on two machines, the chart README's numbers) plus the stores' first start and the two migrate Jobs; on path B, minutes. A pod stuck `Pending` is a scheduling fact, not a timeout — `kubectl describe pod <name>` names the resource. A pod stuck `ImagePullBackOff` on path A is the allow-list missing a host — `kubectl describe pod <name> | grep -A3 Failed` names it.
+Then from a browser on the client's network: `https://pilot.obstack.dev/login` — the padlock is Let's Encrypt's, no warning. With the images already on the node the install is the stores' first start and the two migrate Jobs — minutes, not the 7–11-minute ClickHouse pull the chart README measured for an install that pulls as it goes. A pod stuck `Pending` is a scheduling fact, not a timeout — `kubectl describe pod <name>` names the resource. A `crictl pull` that fails on path A is the allow-list missing a host, and its error names the host.
 
 **The egress meter** — what the VM sends outside the private ranges, seen from inside. An nftables counter on the host's own output and on what it forwards for pods; it drops nothing, it counts. Add it AFTER the install (the install's pulls are expected and the firewall log has them); from then on the expected reading is `packets 0 bytes 0` on both, and a non-zero one is a fact to explain:
 
@@ -248,7 +258,7 @@ kubectl exec statefulset/obstack-postgres -- psql -U obstack -d obstack -c \
 Ingest caches key lookups for 30 seconds; after that, a POST with `ok_dev_local` answers 401. Prove it from the VM (or from any machine on the client's network, without `--resolve`):
 
 ```bash
-sleep 35; curl -s -o /dev/null -w "%{http_code}\n" --resolve otlp-pilot.obstack.dev:443:127.0.0.1 -X POST "https://otlp-pilot.obstack.dev/v1/traces" \
+sleep 35; curl -s -o /dev/null -w "%{http_code}\n" --resolve otlp-pilot.obstack.dev:443:<VM_IP> -X POST "https://otlp-pilot.obstack.dev/v1/traces" \
   -H "Authorization: Bearer ok_dev_local" -H "content-type: application/json" -d '{}'     # 401
 ```
 
