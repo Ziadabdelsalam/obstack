@@ -22,7 +22,9 @@ pilot.obstack.dev.        A   172.27.28.14
 otlp-pilot.obstack.dev.   A   172.27.28.14
 ```
 
-Why this works: the client's resolver forwards to public DNS and gets back a private address that is reachable only inside their network; from the internet the same name resolves to an address nobody outside can reach. What it publishes: the two names, and the fact that a private address exists — nothing else, which is why the labels are neutral (public DNS and certificate-transparency logs carry them for good). Measured 2026-09-16 19:50 UTC from outside: neither name resolves yet — the records are owed.
+In Squarespace's DNS panel the **Host** field takes the label only — `pilot` and `otlp-pilot` — and the panel appends `obstack.dev` itself; typed in full, the record lands at `pilot.obstack.dev.obstack.dev` (measured 2026-09-16 20:47 UTC: both records answered 172.27.28.14 at the doubled names and NXDOMAIN at the real ones, until re-entered). The NAME column displays the full name either way, so the table does not show the difference; a public resolver does.
+
+Why this works: the client's resolver forwards to public DNS and gets back a private address that is reachable only inside their network; from the internet the same name resolves to an address nobody outside can reach. What it publishes: the two names, and the fact that a private address exists — nothing else, which is why the labels are neutral (public DNS and certificate-transparency logs carry them for good). Measured 2026-09-16 19:50 UTC from outside: neither name resolved yet; 20:47 UTC: the doubled-name mistake above, being corrected.
 
 Verify from a machine **inside the client's network**: `dig +short pilot.obstack.dev` → `172.27.28.14`. If it answers nothing while `dig +short pilot.obstack.dev @8.8.8.8` does, the client's resolver drops private addresses in public answers (rebind protection) — the fix is the same two names in their internal zone, and the certificate in step 3 is unchanged (the DNS challenge is proven on the public zone).
 
