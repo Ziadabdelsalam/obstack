@@ -1,19 +1,19 @@
-# PILOT RUNBOOK v2 — obstack chart 0.8.0 on the client's single-VM k3s cluster, AIR-GAPPED: everything carried in, nothing leaves the network, names under `obstack.dev`
+# PILOT RUNBOOK v2.1 — obstack chart 0.8.0 on the client's single-VM k3s cluster: `pilot.obstack.dev` / `otlp-pilot.obstack.dev`, the install pulls, the operation is silent, nothing of the client's leaves the network
 
 meta:
-- date: 2026-09-16 · **v2 supersedes v1** (the same morning's connected-VM shape: cert-manager, HTTP-01, `git clone` and image pulls on the VM) on the user's direction: *"lets use obstack.dev and i want to be able to pull everything into the vm so that it works inside their network with 0 data leakage to the public internet"*. The rulings behind v2 are the pilot packet's addendum **D703–D706**; `deploy/airgap/README.md` is the line-by-line table of what does and does not leave the network.
-- chart `deploy/helm/obstack` **0.8.0** (the air-gap posture; its PR is open on `claude/continuing-work-6qef96`, and the bundle is built at the commit that merges it) · the tooling `deploy/airgap/bundle.sh` (laptop) and `deploy/airgap/load.sh` (VM) · k3s `v1.36.4+k3s1`, helm `v3.19.0`, crane `v0.22.1` — pinned in `bundle.sh`, stated in the bundle's `bundle.env`.
-- images: the two `image:` lines in step 5 pin the **0.7.0 merge's** images (`d7ea9d0`, run 35006742764, digests measured 2026-09-15/16). Chart 0.8.0 runs them unchanged — every variable it renders is one those images already read — and the 0.8.0 merge publishes new ones (its `publish` job's summary lists the digests), which replace the two lines as a reviewed edit before the bundle is built; `bundle.sh` refuses a pin the registry does not serve, so a mis-typed digest cannot pass.
-- who runs what: **the operator** (the user) runs every command — the laptop side (a machine with internet: the bundle, the certificate, DNS) and the VM side (no internet). This session reaches neither; each step names what to paste back if it does not match.
-- variables, chosen once: `OBSTACK_HOST` = **`pilot.obstack.dev`** and `OTLP_HOST` = **`otlp-pilot.obstack.dev`** (suggested — see step 0.2 for why the labels are neutral; rename both consistently if you prefer others), `VM_IP` (the VM's **private** IPv4 on the client's network), `ACME_EMAIL` (who Let's Encrypt writes to about expiry), namespace `default` (the Service names in steps 8–9 assume it).
-- the guarantee, in one sentence (D703): the VM makes no connection to the internet because nothing on it is configured to make one, AND the client's firewall denies its egress, so an attempt would fail at the edge and be logged — two facts, neither trusted alone. The one door through which trace content leaves by design is a developer's Claude Code over MCP (step 11), on their machine, and the client decides whether it opens.
-- what is deliberately NOT here: HA, autoscaling, backup automation (out of the chart by ruling), cert-manager (gone in this posture), the S7.5 on-call sprint (deferred behind this install by the user's direction).
+- date: 2026-09-16 · **v2.1 supersedes v2** (same day) on two facts from the user: the labels are ratified (`pilot`, `otlp-pilot`), and **the client's VM has an internet connection**. So the install path is the connected one (path A: k3s pulls the pinned images itself), and the carried-in bundle (path B, `deploy/airgap/`) stays as the proven alternative for a VM without egress. Everything that makes the running system silent is the same on both paths. The rulings behind this are the pilot packet's addendum **D703–D706** and its evening status update; `deploy/airgap/README.md` is the line-by-line table of what leaves the network.
+- chart `deploy/helm/obstack` **0.8.0** at `master` @ **`6a845d2`** (PR #42, merged 2026-09-16) · k3s `v1.36.4+k3s1`, helm `v3.19.0` (the same pins path B carries).
+- images: the two `image:` lines in step 5 pin the **0.7.0 merge's** images (`d7ea9d0`, digests measured 2026-09-15/16); chart 0.8.0 runs them unchanged (every variable it renders is one those images already read). The 0.8.0 merge's own images are publishing as this is written (`images` run 35142829993); their digests replace the two lines as a reviewed edit of this file once that job's output is read and each digest is verified against the registry.
+- who runs what: **the operator** (the user) runs every command on the VM, plus the DNS records at the registrar and, if preferred, the certificate on a laptop. This session reaches none of it; each step names what to paste back if it does not match.
+- names, fixed: `OBSTACK_HOST` = **`pilot.obstack.dev`**, `OTLP_HOST` = **`otlp-pilot.obstack.dev`**. Still the operator's: `VM_IP` (the VM's **private** IPv4 on the client's network), `ACME_EMAIL` (who Let's Encrypt writes to about expiry). Namespace `default` (the Service names in steps 8–9 assume it). `CHART` = `~/obstack/deploy/helm/obstack` on path A, `/opt/obstack/deploy/helm/obstack` on path B.
+- the guarantee, in one sentence (D703, restated for a connected VM): the VM's outbound traffic is an allow-list the client enforces and logs — registries and downloads for the install, the client's NTP, Let's Encrypt for the certificate — and nothing on the VM is configured to send anything else, so no product data, no telemetry and no crash report leaves; the software side is measured (chart 0.8.0, the Traefik config, the OS made quiet), the firewall side is the client's. The one door through which trace content leaves by design is a developer's Claude Code over MCP (step 11), on their machine, and the client decides whether it opens.
+- what is deliberately NOT here: HA, autoscaling, backup automation (out of the chart by ruling), cert-manager (gone: DNS-01 from a laptop or the VM is simpler and needs no inbound port 80), the S7.5 on-call sprint (deferred behind this install by the user's direction).
 
 ---
 
 ## 0. Before the VM: two things only the operator can do
 
-**0.1 — The three packages public (call (a)) — DONE 2026-09-16.** Measured anonymously: `obstack-web` `003c35d3…`, `obstack-ingest` `bc2fb345…`, `obstack-clickhouse` `d4a75d16…` fetch with HTTP 200 and their `Docker-Content-Digest` equals the pin. In this posture that is what lets the **laptop** pull them for the bundle; the VM never pulls anything (D703).
+**0.1 — The three packages public (call (a)) — DONE 2026-09-16.** Measured anonymously: `obstack-web`, `obstack-ingest` and `obstack-clickhouse` fetch with HTTP 200 and their `Docker-Content-Digest` equals the pin. On path A that is what lets the VM's k3s pull them with no credentials; on path B, the laptop.
 
 **0.2 — DNS: two A records under `obstack.dev`, answering the VM's PRIVATE address (D705).** At the registrar (Squarespace, the zone's DNS settings):
 
@@ -22,21 +22,21 @@ pilot.obstack.dev.        A   <VM_IP>       (e.g. 10.x.x.x — the address the c
 otlp-pilot.obstack.dev.   A   <VM_IP>
 ```
 
-Why this works: the client's resolver forwards to public DNS and gets back a private address that is reachable only inside their network; from the internet the same name resolves to an address nobody outside can reach. What it publishes: the two names, and the fact that a private address exists — nothing else. That is why the labels are neutral: public DNS and certificate-transparency logs (step 3's certificate is public) carry these names for good, so they say nothing about the client.
+Why this works: the client's resolver forwards to public DNS and gets back a private address that is reachable only inside their network; from the internet the same name resolves to an address nobody outside can reach. What it publishes: the two names, and the fact that a private address exists — nothing else, which is why the labels are neutral (public DNS and certificate-transparency logs carry them for good). Measured 2026-09-16 19:50 UTC from outside: neither name resolves yet — the records are owed.
 
-Verify from a machine **inside the client's network**: `dig +short pilot.obstack.dev` → `<VM_IP>`. If it answers nothing while `dig +short pilot.obstack.dev @8.8.8.8` does, the client's resolver drops private addresses in public answers (rebind protection) — the fix is the same two names in their internal zone, and the certificate in step 3 is unchanged (the DNS challenge is proven on the public zone from the laptop).
+Verify from a machine **inside the client's network**: `dig +short pilot.obstack.dev` → `<VM_IP>`. If it answers nothing while `dig +short pilot.obstack.dev @8.8.8.8` does, the client's resolver drops private addresses in public answers (rebind protection) — the fix is the same two names in their internal zone, and the certificate in step 3 is unchanged (the DNS challenge is proven on the public zone).
 
-**Paste back:** the two `dig` outputs from inside the network.
+**Paste back:** the two `dig` outputs from inside the network — or just say the records are in, and this session checks them from outside.
 
 ## 1. The VM: what the client provides, and the OS made quiet (D680, D681, D703)
 
-Floor: 4 vCPU, 8 GiB, 60 GiB disk, amd64 (the images are `linux/amd64`, single-manifest — D682), Ubuntu 22.04 or 24.04, and a clock that is right (an air-gapped VM with a wrong clock cannot validate a certificate). Network, asked of the client in these words:
+Floor: 4 vCPU, 8 GiB, 60 GiB disk, amd64 (the images are `linux/amd64`, single-manifest — D682), Ubuntu 22.04 or 24.04, and a clock that is right (a wrong clock cannot validate a certificate). Network, asked of the client in these words:
 
 - inbound **443** from their network (the product and the OTLP door), **22** from the operator's host, nothing else in;
-- **outbound: deny all**, logged. If deny-all is not possible on their edge, at least log. This is the posture's second fact, not a nice-to-have.
-- no proxy configured on the VM (`env | grep -i proxy` prints nothing), and a resolver the client provides (see the last line below).
+- outbound: an **allow-list, logged** — the install's sources (`ghcr.io`, `pkg-containers.githubusercontent.com`; `registry-1.docker.io`, `auth.docker.io`, `production.cloudflare.docker.com`; `get.k3s.io`, `github.com`, `objects.githubusercontent.com`; `get.helm.sh`), Let's Encrypt (`acme-v02.api.letsencrypt.org`) if the certificate is issued from the VM (step 3), the client's NTP server, and DNS through the client's resolver; **everything else denied and logged**. If an allow-list is not possible on their edge, at least log egress: the meter in step 6 then says what the VM did with its access.
+- no proxy configured on the VM (`env | grep -i proxy` prints nothing) unless the client's egress goes through one — then k3s needs it too (`/etc/default/k3s` with `HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY=10.0.0.0/8,127.0.0.0/8,<VM_IP>`), stated here so it is not discovered at the first pull.
 
-Then the OS's own callers — a stock Ubuntu opens connections on its own, and while the firewall would refuse each one, off is what keeps the firewall's log meaningful:
+Then the OS's own callers — a stock Ubuntu opens connections on its own, and while the allow-list would refuse each one, off is what keeps the firewall's log meaningful:
 
 ```bash
 # time: the client's NTP server, never the public pool (or, if the hypervisor syncs the guest clock, `sudo timedatectl set-ntp false`)
@@ -56,58 +56,75 @@ resolvectl status | grep -A3 'Current DNS'   # the client's resolver, nothing pu
 
 **Paste back if it differs:** `timedatectl`, `resolvectl status`, and `nproc; free -g; df -h /` from the VM.
 
-## 2. On the laptop: the bundle (D704)
+## 2. The cluster — path A: the connected install (this runbook's default)
 
-Needs: a checkout at the commit to install (after the 0.8.0 PR merges: `git fetch origin && git checkout master && git pull`), `helm`, `git`, `curl`, `tar`; `crane` is fetched into the bundle's own tools directory if absent. Put step 5's `pilot-values.yaml` beside the checkout first — `bundle.sh` reads it for its `image:` lines and never copies it.
+Two paths, one system. **Path A** (below): the VM pulls what it needs, once, through the allow-list. **Path B** (`deploy/airgap/README.md`): `bundle.sh` on a laptop, one directory carried in, `sudo ./load.sh` on the VM — for a VM with no route out, or a client who would rather copy 1 GB than open a firewall; it lands you at step 3 with `CHART=/opt/obstack/deploy/helm/obstack` and Traefik's version check already off. Both are proven: A is 0.7.0's runbook shape, B's tooling ran end to end here (17 files, 855 MB, exit 0) and its images are the same six.
+
+**A.1 — Traefik's version check off BEFORE k3s starts** (D703). k3s's packaged Traefik chart (`40.1.4+up40.1.0`, Traefik 3.7.8) inherits upstream's `global.checkNewVersion: true` — a request to the vendor at start and on a schedule. k3s applies every file in its manifests directory when it starts, and a `HelmChartConfig` merges into the packaged chart's values, so the file goes in first:
 
 ```bash
-cd ~/obstack && git log -1 --format='%h %s'                # the 0.8.0 merge
-deploy/airgap/bundle.sh -f ~/pilot-values.yaml -o ~/obstack-airgap
+sudo install -d -m 755 /var/lib/rancher/k3s/server/manifests
+sudo tee /var/lib/rancher/k3s/server/manifests/traefik-config.yaml >/dev/null <<'YAML'
+apiVersion: helm.cattle.io/v1
+kind: HelmChartConfig
+metadata:
+  name: traefik
+  namespace: kube-system
+spec:
+  valuesContent: |-
+    global:
+      checkNewVersion: false
+      sendAnonymousUsage: false
+YAML
 ```
 
-What it prints, in order: crane; the six images the chart renders for this values file (`busybox:1.37.0`, `clickhouse/clickhouse-server:26.3.17.110`, `otel/opentelemetry-collector-k8s:0.158.0`, `postgres:17.11`, the two ghcr images by digest), each pulled as an OCI layout with its manifest digest verified against the pin; k3s and its image pack, checksums verified; helm, verified; the source tarball; `SHA256SUMS`. Measured here 2026-09-16 at `1c50c9e`: **17 files, 855 MB, exit 0** (a bundle at the 0.8.0 merge differs only in the source tarball and, once the two lines are edited, the two ghcr images).
+**A.2 — k3s, pinned; helm, pinned and checksummed; the repository at the merge:**
 
-Carry the directory to the VM however the client's network allows (`scp -r ~/obstack-airgap <vm>:~/`, a jump host, a USB drive). Carry `pilot-values.yaml` **separately** (it names your Secrets) and, after step 3, the certificate's two files (a credential).
+```bash
+curl -sfL https://get.k3s.io | INSTALL_K3S_VERSION="v1.36.4+k3s1" sh -      # the installer verifies the binary's sha256 itself
+sudo install -o "$USER" -m 600 /etc/rancher/k3s/k3s.yaml ~/.kube/config
+export KUBECONFIG=~/.kube/config
 
-**Paste back if it differs:** the script's output from its last `==` line.
+curl -fsSLO https://get.helm.sh/helm-v3.19.0-linux-amd64.tar.gz && curl -fsSL https://get.helm.sh/helm-v3.19.0-linux-amd64.tar.gz.sha256sum | sha256sum -c -
+tar -xzf helm-v3.19.0-linux-amd64.tar.gz linux-amd64/helm && sudo install -m 755 linux-amd64/helm /usr/local/bin/helm && rm -rf linux-amd64 helm-v3.19.0-linux-amd64.tar.gz
 
-## 3. On the laptop: the certificate, issued off the VM (D705)
+git clone https://github.com/Ziadabdelsalam/obstack.git ~/obstack && cd ~/obstack && git checkout 6a845d2
+export CHART=~/obstack/deploy/helm/obstack
+helm show chart "$CHART" | grep '^version'                             # version: 0.8.0
+```
 
-One certificate for both names, from Let's Encrypt, proven by a DNS record on `obstack.dev` — the VM talks to no certificate authority, and every browser on the client's network already trusts the issuer (no CA to distribute). Install `lego` (a current 4.x: `brew install lego` on macOS, or the release tarball from `github.com/go-acme/lego/releases`), then:
+**A.3 — the cluster, checked:**
+
+```bash
+kubectl get nodes -o wide                                             # Ready, amd64
+kubectl get storageclass                                              # local-path (default)
+kubectl get ingressclass                                              # traefik (appears within a minute of the node)
+kubectl -n kube-system get helmchartconfig traefik -o jsonpath='{.spec.valuesContent}'   # checkNewVersion: false
+kubectl -n kube-system get pods                                       # coredns, local-path, metrics-server, traefik Running
+kubectl describe node | grep -A2 Allocatable                          # cpu ≥ 4, memory ≥ 8Gi minus k3s's own share
+```
+
+**Paste back if it differs:** the `kubectl get` outputs, the Allocatable block; for k3s, `journalctl -u k3s --no-pager | tail -40`.
+
+## 3. The certificate: Let's Encrypt by a DNS challenge, from the VM or a laptop (D705)
+
+One certificate for both names, proven by a TXT record on `obstack.dev` — no inbound port 80, no cert-manager, and every browser on the client's network already trusts the issuer. `lego` runs wherever is convenient: on the VM (it has the allow-list's Let's Encrypt entry, and the files land where the Secret is made) or on a laptop (then carry the two files). Install a current 4.x release (`brew install lego`, or the tarball from `github.com/go-acme/lego/releases`), then:
 
 ```bash
 lego --email "<ACME_EMAIL>" --accept-tos --dns manual -d pilot.obstack.dev -d otlp-pilot.obstack.dev run
 ```
 
-`lego` prints, for each name, a TXT record `_acme-challenge.<name>` and its value, and waits. Create both at the registrar, confirm they have propagated (`dig +short TXT _acme-challenge.pilot.obstack.dev @8.8.8.8` prints the value), press Enter. The result is under `./.lego/certificates/`: `pilot.obstack.dev.crt` (the leaf followed by its chain) and `pilot.obstack.dev.key`. Delete the two TXT records afterwards if you like; they are not needed until renewal.
+`lego` prints, for each name, a TXT record `_acme-challenge.<name>` and its value, and waits. Create both at the registrar, confirm they have propagated (`dig +short TXT _acme-challenge.pilot.obstack.dev @8.8.8.8` prints the value), press Enter. The result is under `./.lego/certificates/`: `pilot.obstack.dev.crt` (the leaf followed by its chain) and `pilot.obstack.dev.key`. The TXT records can be deleted afterwards; renewal asks for new ones.
 
-Renewal is a calendar item (D705): the certificate is valid 90 days; before day 60, `lego … --dns manual -d pilot.obstack.dev -d otlp-pilot.obstack.dev renew --days 30` (the same two TXT prompts), then re-apply the Secret on the VM (step 5's `kubectl create secret tls … --dry-run=client -o yaml | kubectl apply -f -`) — Traefik picks the new Secret up on its own. To rehearse without spending a rate-limit slot, add `--server https://acme-staging-v02.api.letsencrypt.org/directory`; a staging certificate is not browser-trusted.
+Renewal is a calendar item: the certificate is valid 90 days; before day 60, `lego … --dns manual -d pilot.obstack.dev -d otlp-pilot.obstack.dev renew --days 30` (the same two TXT prompts), then re-apply the Secret (`kubectl create secret tls obstack-tls --cert=… --key=… --dry-run=client -o yaml | kubectl apply -f -`) — Traefik picks it up on its own. To rehearse without spending a rate-limit slot, add `--server https://acme-staging-v02.api.letsencrypt.org/directory`; a staging certificate is not browser-trusted.
 
 **Paste back if it differs:** `lego`'s error line; `openssl x509 -in pilot.obstack.dev.crt -noout -subject -dates -ext subjectAltName` should print both names and ~90 days.
 
-## 4. On the VM: load the bundle (D704)
+## 4. Path B only: load the bundle (D704)
 
-```bash
-cd ~/obstack-airgap && sudo ./load.sh
-```
+Skipped on path A. On path B: `cd ~/obstack-airgap && sudo ./load.sh` — verifies `SHA256SUMS`, writes the Traefik `HelmChartConfig` (A.1's file, byte for byte) before k3s's first start, installs k3s from the bundle, imports the six images into containerd with their digests and verifies them, installs helm, unpacks the repository at `/opt/obstack`, and leaves a kubeconfig for your user. Then A.3's checks, plus `kubectl get events --field-selector reason=Pulled` after step 6 printing only "already present on machine". Re-running is safe. **Paste back if it differs:** the failing `==` step's output.
 
-Four steps, and it stops at the first that fails: **1/4** every file against `SHA256SUMS`; **2/4** k3s from the bundle — a `HelmChartConfig` for Traefik is written into k3s's manifests directory FIRST (`global.checkNewVersion: false`, `sendAnonymousUsage: false` — the packaged chart `40.1.4+up40.1.0` inherits upstream's version check ON), then the upstream installer with downloads skipped, then the node Ready and `local-path` the default class; **3/4** the six images imported into containerd with their digests, re-tagged to the names the kubelet asks for, and every name and digest verified as containerd holds them; **4/4** helm, the repository at `/opt/obstack`, a kubeconfig for your user. Then:
-
-```bash
-export KUBECONFIG=~/.kube/config
-kubectl get nodes -o wide                                             # Ready, amd64
-kubectl get storageclass                                              # local-path (default)
-kubectl get ingressclass                                              # traefik (appears within a minute of the node)
-kubectl -n kube-system get helmchartconfig traefik -o jsonpath='{.spec.valuesContent}'   # checkNewVersion: false
-kubectl -n kube-system get pods                                       # coredns, local-path, metrics-server, traefik Running — from k3s's own pack
-helm show chart /opt/obstack/deploy/helm/obstack | grep '^version'   # version: 0.8.0
-```
-
-Re-running `load.sh` is safe: a k3s already at the bundle's version is left alone, images import beside what is there, `/opt/obstack` is replaced whole.
-
-**Paste back if it differs:** `load.sh`'s output from the failing `==` step; for step 2, `journalctl -u k3s --no-pager | tail -40`.
-
-## 5. On the VM: Secrets, the certificate, the values file (D685, D686, D689)
+## 5. Secrets, the certificate, the values file (D685, D686, D689)
 
 Credentials never pass through the values file. The chart's key names are fixed:
 
@@ -121,7 +138,7 @@ kubectl create secret generic obstack-web \
 kubectl create secret tls obstack-tls --cert=pilot.obstack.dev.crt --key=pilot.obstack.dev.key
 ```
 
-`pilot-values.yaml` — the SAME file the bundle was built from in step 2 (every `image:` line must be one of `images.tsv`'s `chart_ref` values; `load.sh` prints that list):
+`~/pilot-values.yaml` (on path B, the same file `bundle.sh` was pointed at — every `image:` line must be one of `images.tsv`'s `chart_ref` values):
 
 ```yaml
 clickhouse:
@@ -156,25 +173,25 @@ ingest:
       enabled: true
       secretName: obstack-tls                  # the same certificate carries both names
 demo:
-  enabled: false                               # from the first install (D706): the demo image is unpublished, the bundle carries only published images
+  enabled: false                               # from the first install (D706): the demo image is unpublished; the proof comes from the client's own service
 ```
 
-**Measured for this exact shape on 2026-09-16** (chart 0.8.0 as it stands; `helm lint --strict` clean; `helm template`; `acceptance.ts budget -f`): **24 objects**, 6 images (all in the bundle), zero credential literals, the two Ingresses naming `obstack-tls`, the privacy config.d file mounted, and ONE Secret rendered — the chart's own `obstack-credentials`, carrying the seeded collector key until step 8 brings `obstack-collector`. CPU requests **960m** with the demo off, which fits the 1000m kind budget with 40m spare and is far under the VM's allocatable.
+**Measured for this exact shape on 2026-09-16** (chart 0.8.0; `helm lint --strict` clean; `helm template`; `acceptance.ts budget -f`): **24 objects**, 6 images, zero credential literals, the two Ingresses naming `obstack-tls`, the privacy config.d file mounted, and ONE Secret rendered — the chart's own `obstack-credentials`, carrying the seeded collector key until step 8 brings `obstack-collector`. CPU requests **960m** with the demo off: fits the 1000m kind budget with 40m spare, far under the VM's allocatable.
 
-## 6. Install, and the proof that nothing was pulled (D697, D703)
+## 6. Install, and what the VM did with its access (D697, D703)
 
 ```bash
-helm install obstack /opt/obstack/deploy/helm/obstack -f pilot-values.yaml --timeout 900s --wait
+helm install obstack "$CHART" -f ~/pilot-values.yaml --timeout 900s --wait
 kubectl get jobs                      # obstack-migrate-1 and obstack-pg-migrate-1: 1/1
 kubectl get pods                      # everything Running; ingest held in Init until the stores answered
 kubectl get events --field-selector reason=Pulled -o custom-columns=POD:involvedObject.name,MSG:message
-                                      # every line: "Container image … already present on machine"
+                                      # path A, first install: "Successfully pulled image …" once per image; path B, and every later start: "already present on machine"
 curl -sI --resolve pilot.obstack.dev:443:127.0.0.1 https://pilot.obstack.dev/login | head -1     # HTTP/2 200, from the VM itself
 ```
 
-Then from a browser on the client's network: `https://pilot.obstack.dev/login` — the padlock is Let's Encrypt's, no warning. The cold-install cost that dominated the connected shape (the ClickHouse pull, 7–11 minutes) is gone: the stores' first start and the two migrate Jobs are the wait, minutes not tens. A pod stuck `Pending` is a scheduling fact, not a timeout — `kubectl describe pod <name>` names the resource.
+Then from a browser on the client's network: `https://pilot.obstack.dev/login` — the padlock is Let's Encrypt's, no warning. On path A the cold install is the ClickHouse image pull (7–11 minutes measured on two machines, the chart README's numbers) plus the stores' first start and the two migrate Jobs; on path B, minutes. A pod stuck `Pending` is a scheduling fact, not a timeout — `kubectl describe pod <name>` names the resource. A pod stuck `ImagePullBackOff` on path A is the allow-list missing a host — `kubectl describe pod <name> | grep -A3 Failed` names it.
 
-**The egress meter** — the posture's fact seen from inside. An nftables counter over packets addressed outside the private ranges, on the host's own output and on what it forwards for pods; it drops nothing, it counts:
+**The egress meter** — what the VM sends outside the private ranges, seen from inside. An nftables counter on the host's own output and on what it forwards for pods; it drops nothing, it counts. Add it AFTER the install (the install's pulls are expected and the firewall log has them); from then on the expected reading is `packets 0 bytes 0` on both, and a non-zero one is a fact to explain:
 
 ```bash
 sudo nft add table inet egresswatch
@@ -184,7 +201,7 @@ for c in out fwd; do sudo nft add rule inet egresswatch $c ip daddr != { 10.0.0.
 sudo nft list table inet egresswatch                                  # read it after a day: packets 0 bytes 0 on both
 ```
 
-If the client uses public address space internally, add those ranges to the set; the meter does not survive a reboot (re-add it). The client's firewall log is the authoritative record; the meter is the same fact from the VM's side.
+Expected non-zero readings, and only these: an upgrade's pulls (the "Upgrades" section), and a renewal or `lego` run from the VM (step 3). If the client uses public address space internally, add those ranges to the set; the meter does not survive a reboot (re-add it). The client's firewall log is the authoritative record; the meter is the same fact from the VM's side.
 
 **Paste back if it differs:** `kubectl get pods,jobs`, the `Pulled` events, and for any pod not Running `kubectl describe pod <name> | tail -20`; after a day, the two counters.
 
@@ -209,7 +226,7 @@ Settings → Billing & usage then reads the pro quota and 30-day retention. (The
 kubectl create secret generic obstack-collector --from-literal=collector-api-key='<the issued key>'
 ```
 
-Append to `pilot-values.yaml`:
+Append to `~/pilot-values.yaml`:
 
 ```yaml
 collector:
@@ -217,8 +234,8 @@ collector:
 ```
 
 ```bash
-helm upgrade obstack /opt/obstack/deploy/helm/obstack -f pilot-values.yaml --timeout 300s --wait
-kubectl get pods            # both collector workloads re-created; no image pulled (the Pulled events again)
+helm upgrade obstack "$CHART" -f ~/pilot-values.yaml --timeout 300s --wait
+kubectl get pods            # both collector workloads re-created; nothing pulled (the Pulled events again)
 ```
 
 3. Revoke the seeded public key (the collector was its only user here; the demo pod never rendered):
@@ -228,7 +245,7 @@ kubectl exec statefulset/obstack-postgres -- psql -U obstack -d obstack -c \
   "UPDATE api_keys SET revoked_at = now() WHERE id = 'key_dev_local';"
 ```
 
-Ingest caches key lookups for 30 seconds; after that, a POST with `ok_dev_local` answers 401. Prove it from the VM (or from any machine on the client's network without `--resolve`):
+Ingest caches key lookups for 30 seconds; after that, a POST with `ok_dev_local` answers 401. Prove it from the VM (or from any machine on the client's network, without `--resolve`):
 
 ```bash
 sleep 35; curl -s -o /dev/null -w "%{http_code}\n" --resolve otlp-pilot.obstack.dev:443:127.0.0.1 -X POST "https://otlp-pilot.obstack.dev/v1/traces" \
@@ -237,7 +254,7 @@ sleep 35; curl -s -o /dev/null -w "%{http_code}\n" --resolve otlp-pilot.obstack.
 
 ## 9. The client's application, and the exit (D698, D699)
 
-From the client's other machines on their network the application sends to `https://otlp-pilot.obstack.dev` (OTLP/HTTP, the Ingress, the Let's Encrypt certificate); a service running INSIDE the cluster sends to `http://obstack-ingest.default.svc:4318`. Both with the issued key as `Authorization: Bearer …`. Two paths, both documented: an obstack SDK from source (`/docs/quickstart` — the sources are in the bundle at `/opt/obstack/packages/`, and the SDK's own dependencies come from the client's package mirror, since their build machines have no internet either), or plain OpenTelemetry (`/docs/sdks/bring-your-own-otel` — needs only what their apps already have). The collector needs nothing from the client's manifests: pod logs, kubelet metrics, cluster events and state arrive on their own for whatever runs on this cluster, and `/app/infra` renders its namespaces.
+From the client's other machines on their network the application sends to `https://otlp-pilot.obstack.dev` (OTLP/HTTP, the Ingress, the Let's Encrypt certificate); a service running INSIDE the cluster sends to `http://obstack-ingest.default.svc:4318`. Both with the issued key as `Authorization: Bearer …`. Two paths, both documented: an obstack SDK from source (`/docs/quickstart` — the sources are in the checkout under `packages/`; the SDK's own dependencies come from wherever the client's build machines get packages), or plain OpenTelemetry (`/docs/sdks/bring-your-own-otel` — needs only what their apps already have). The collector needs nothing from the client's manifests: pod logs, kubelet metrics, cluster events and state arrive on their own for whatever runs on this cluster, and `/app/infra` renders its namespaces.
 
 **The exit (the M1 smoke shape, through the product):** one request through the client's service, then `/app/traces` lists it and `/app/traces/<id>` resolves it with the `api`, `agent`, `tool` and `llm` layers under one trace id, the prompt and completion on the `llm` span, a cost priced at ingest, and the collector's correlated logs beside it. Settings → Data & ingest shows the key's arrival.
 
@@ -245,7 +262,7 @@ From the client's other machines on their network the application sends to `http
 
 ## 10. Explain (D692, D706)
 
-`explainMode: fake`: "Explain this trace" and incident RCA call no model, and the panel says so. The two ways to make it real, each a stated decision to let trace text leave the VM: (1) an internal Anthropic-compatible gateway — `web.explainBaseUrl: https://<gateway>` and `web.explainModel: <its model name>` (chart 0.8.0), plus `explain-api-key` in `obstack-web` and `explainMode: anthropic`; the text goes to the gateway, inside the network; (2) Anthropic's API directly — the same values without a base URL, and a firewall exception for `api.anthropic.com` the client would have to grant, which the posture's second fact then no longer holds for. Runs are metered per plan (200/month on pro). A wrong mode value fails `helm upgrade` at render with the sentence naming the two admitted values.
+`explainMode: fake`: "Explain this trace" and incident RCA call no model, and the panel says so. The two ways to make it real, each a stated decision to let trace text leave the VM: (1) an internal Anthropic-compatible gateway — `web.explainBaseUrl: https://<gateway>` and `web.explainModel: <its model name>` (chart 0.8.0), plus `explain-api-key` in `obstack-web` and `explainMode: anthropic`; the text goes to the gateway, inside the network; (2) Anthropic's API directly — the same values without a base URL, and `api.anthropic.com` added to the client's allow-list, which is trace text leaving the network by their decision. Runs are metered per plan (200/month on pro). A wrong mode value fails `helm upgrade` at render with the sentence naming the two admitted values.
 
 ## 11. A developer's Claude Code over MCP (D691, D700, D706)
 
@@ -288,12 +305,12 @@ Plus, from the product: Settings → Billing & usage's events-per-day, and how f
 
 ## Upgrades, when a new merge publishes new images
 
-On the laptop, at the new commit: edit the two `image:` lines (the new sha and digests from that merge's `publish` summary), `bundle.sh` again, carry the bundle in. On the VM: `sudo ./load.sh` (k3s left alone, the new images imported beside the old, `/opt/obstack` replaced), then `helm upgrade obstack /opt/obstack/deploy/helm/obstack -f pilot-values.yaml --timeout 300s --wait`. The migrate Jobs run as pre-upgrade hooks; never run `ingest migrate` by hand beside them. Old images: `k3s ctr -n k8s.io images rm <name>`.
+Path A: `cd ~/obstack && git fetch && git checkout <the new merge>`, a reviewed edit of the two `image:` lines (the new sha and digests from that merge's `publish` summary), then `helm upgrade obstack "$CHART" -f ~/pilot-values.yaml --timeout 300s --wait` — k3s pulls the two new images through the allow-list (the meter counts them; expected). Path B: `bundle.sh` at the new commit on the laptop, carry, `sudo ./load.sh` (k3s left alone, the new images imported beside the old, `/opt/obstack` replaced), the same edit, the same `helm upgrade`. Either way the migrate Jobs run as pre-upgrade hooks; never run `ingest migrate` by hand beside them.
 
 ## What leaves the network — the short form of `deploy/airgap/README.md`
 
-Nothing, from the VM, by construction: images, k3s, helm and the chart arrive in the bundle; DNS is answered by the client's resolver; the certificate is issued from the laptop; ClickHouse's crash reports are off (chart 0.8.0), Traefik's version check is off (`load.sh`), the web pod states `NEXT_TELEMETRY_DISABLED`, ingest's only outbound client is the notifier and it delivers only to channels the workspace's members configure; Explain is fake; billing is fake; the OS's own callers are off (step 1). What can leave, only by a decision the runbook names: Explain in `anthropic` mode (step 10), an alert channel pointed at a public receiver, and a developer's Claude Code over MCP (step 11).
+During an install or upgrade on path A: image pulls and downloads, to the allow-listed hosts, and nothing else. In operation: nothing, by construction — ClickHouse's crash reports are off (chart 0.8.0), Traefik's version check is off (A.1 / `load.sh`), the web pod states `NEXT_TELEMETRY_DISABLED`, ingest's only outbound client is the notifier and it delivers only to channels the workspace's members configure, Explain is fake, billing is fake, the OS's own callers are off (step 1), time comes from the client's NTP. What can leave, only by a decision the runbook names: Explain in `anthropic` mode (step 10), an alert channel pointed at a public receiver, a developer's Claude Code over MCP (step 11), and a certificate renewal's ACME exchange if `lego` runs on the VM (step 3).
 
 ## What this session can do from here
 
-Diagnose any pasted output against the tree; edit the values file's shape; put the 0.8.0 merge's digests into step 5 when its `publish` summary is read; add a chart value if the client's cluster needs one the packet ruled out (a namespace fence on the collector, say — a small, additive 0.9.0 item); and, once the pilot is up, resume S7.5 from its packet.
+Check the DNS records from outside once they exist; put the 0.8.0 merge's digests into step 5 (owed, the publish job is running); diagnose any pasted output against the tree; edit the values file's shape; add a chart value if the client's cluster needs one the packet ruled out (a namespace fence on the collector, say — a small, additive 0.9.0 item); and, once the pilot is up, resume S7.5 from its packet.
