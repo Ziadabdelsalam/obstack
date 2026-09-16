@@ -3,7 +3,7 @@
 meta:
 - date: 2026-09-16 · **v2.1 supersedes v2** (same day) on two facts from the user: the labels are ratified (`pilot`, `otlp-pilot`), and **the client's VM has an internet connection**. So the install path is the connected one (path A: k3s pulls the pinned images itself), and the carried-in bundle (path B, `deploy/airgap/`) stays as the proven alternative for a VM without egress. Everything that makes the running system silent is the same on both paths. The rulings behind this are the pilot packet's addendum **D703–D706** and its evening status update; `deploy/airgap/README.md` is the line-by-line table of what leaves the network.
 - chart `deploy/helm/obstack` **0.8.0** at `master` @ **`6a845d2`** (PR #42, merged 2026-09-16) · k3s `v1.36.4+k3s1`, helm `v3.19.0` (the same pins path B carries).
-- images: the two `image:` lines in step 5 pin the **0.7.0 merge's** images (`d7ea9d0`, digests measured 2026-09-15/16); chart 0.8.0 runs them unchanged (every variable it renders is one those images already read). The 0.8.0 merge's own images are publishing as this is written (`images` run 35142829993); their digests replace the two lines as a reviewed edit of this file once that job's output is read and each digest is verified against the registry.
+- images: the two `image:` lines in step 5 pin the **0.8.0 merge's** images (`6a845d2`; `images` run 35142829993, its `publish` job green 19:55 UTC). Digests read anonymously from the registry 2026-09-16 20:01 UTC — the `Docker-Content-Digest` of each sha tag's manifest, single-platform `linux/amd64` as D682 requires — web `4864ee51…`, ingest `4795b105…`. A later merge publishes new ones, and the two lines change as a reviewed edit of this file, never a floating tag.
 - who runs what: **the operator** (the user) runs every command on the VM, plus the DNS records at the registrar and, if preferred, the certificate on a laptop. This session reaches none of it; each step names what to paste back if it does not match.
 - names, fixed: `OBSTACK_HOST` = **`pilot.obstack.dev`**, `OTLP_HOST` = **`otlp-pilot.obstack.dev`**. Still the operator's: `VM_IP` (the VM's **private** IPv4 on the client's network), `ACME_EMAIL` (who Let's Encrypt writes to about expiry). Namespace `default` (the Service names in steps 8–9 assume it). `CHART` = `~/obstack/deploy/helm/obstack` on path A, `/opt/obstack/deploy/helm/obstack` on path B.
 - the guarantee, in one sentence (D703, restated for a connected VM): the VM's outbound traffic is an allow-list the client enforces and logs — registries and downloads for the install, the client's NTP, Let's Encrypt for the certificate — and nothing on the VM is configured to send anything else, so no product data, no telemetry and no crash report leaves; the software side is measured (chart 0.8.0, the Traefik config, the OS made quiet), the firewall side is the client's. The one door through which trace content leaves by design is a developer's Claude Code over MCP (step 11), on their machine, and the client decides whether it opens.
@@ -150,7 +150,7 @@ postgres:
   storage:
     size: 20Gi
 web:
-  image: ghcr.io/ziadabdelsalam/obstack-web:live-sha-d7ea9d044d899fac2ad67b0ae83a5e045ed640d7@sha256:003c35d3d6505b9235ac279d57004e8d8ff0725072cdbed2fe8acc2a2ecf08ea
+  image: ghcr.io/ziadabdelsalam/obstack-web:live-sha-6a845d2063410a9961bd8c20292b7909ba2869ce@sha256:4864ee5187d80b314a17f3b741fa16a44c6dbde6032b7986a70f85d970277cf3
   pullPolicy: IfNotPresent
   existingSecret: obstack-web
   betterAuthUrl: https://pilot.obstack.dev     # the https origin is what upgrades the session cookie (D119)
@@ -163,7 +163,7 @@ web:
       enabled: true
       secretName: obstack-tls
 ingest:
-  image: ghcr.io/ziadabdelsalam/obstack-ingest:sha-d7ea9d044d899fac2ad67b0ae83a5e045ed640d7@sha256:bc2fb345c1a60d6005312f33fd1a5858d22287cbc75204e5d62be86ce76eeb58
+  image: ghcr.io/ziadabdelsalam/obstack-ingest:sha-6a845d2063410a9961bd8c20292b7909ba2869ce@sha256:4795b105fc292fcc27006a92ac892b19e24a6dc500ff818fa77e7f478233ac35
   pullPolicy: IfNotPresent
   ingress:
     enabled: true                              # OTLP/HTTP for the client's services OUTSIDE the cluster (step 9)
@@ -323,4 +323,4 @@ During an install or upgrade on path A: image pulls and downloads, to the allow-
 
 ## What this session can do from here
 
-Check the DNS records from outside once they exist; put the 0.8.0 merge's digests into step 5 (owed, the publish job is running); diagnose any pasted output against the tree; edit the values file's shape; add a chart value if the client's cluster needs one the packet ruled out (a namespace fence on the collector, say — a small, additive 0.9.0 item); and, once the pilot is up, resume S7.5 from its packet.
+Check the DNS records from outside once they exist; diagnose any pasted output against the tree; edit the values file's shape; add a chart value if the client's cluster needs one the packet ruled out (a namespace fence on the collector, say — a small, additive 0.9.0 item); and, once the pilot is up, resume S7.5 from its packet.
