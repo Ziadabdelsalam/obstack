@@ -45,5 +45,15 @@ type: application
 # in the rendered manifests, and those three roll once on the upgrade — see
 # README.md, "Upgrading to 0.7.0". Nothing removes or renames a 0.6.0 object;
 # the demo pod, the stores and the ClusterRole render exactly as before.
-version: 0.7.0
+# 0.8.0: the air-gap posture (deploy/airgap/README.md) — what a cluster with
+# no route to the internet needs from the chart. One default-render change:
+# ClickHouse's crash reporting, ON in its stock config.xml at the pinned
+# version, is switched OFF by a config.d file every install mounts
+# (files/clickhouse-privacy.xml), so the ClickHouse pod rolls once on this
+# upgrade; the web pod rolls once for an explicit NEXT_TELEMETRY_DISABLED.
+# Two default-off values: `ingest.notifier.allowPrivate` (D492's hatch, for
+# receivers that are all inside the network) and `web.explainBaseUrl` /
+# `web.explainModel` (an internal Anthropic-compatible gateway). Additive;
+# nothing removes or renames a 0.7.0 object — README.md, "Upgrading to 0.8.0".
+version: 0.8.0
 appVersion: "0.1.0"

@@ -144,6 +144,17 @@ spec:
             # true` covers the other half of that same failure — a BROUGHT
             # `ingest.existingSecret` that carries no `vercel-drain-secret`
             # key — the same way the web workload's optional Explain key does.
+            {{- if .Values.ingest.notifier.allowPrivate }}
+            # 0.8.0 (the air-gap posture): D492's escape hatch, exposed as a
+            # value because an install whose ONLY permitted alert receivers
+            # are on the private network cannot deliver anything under the
+            # default fence. Rendered only when true — the S7.1 packet says a
+            # production install is verified by this variable's ABSENCE, and
+            # an explicit "false" is not an absence. values.yaml states the
+            # consequence: the SSRF fence is off for the whole process.
+            - name: OBSTACK_NOTIFIER_ALLOW_PRIVATE
+              value: "true"
+            {{- end }}
             {{- if or .Values.ingest.vercelDrainSecret .Values.ingest.existingSecret }}
             - name: OBSTACK_VERCEL_DRAIN_SECRET
               valueFrom:
