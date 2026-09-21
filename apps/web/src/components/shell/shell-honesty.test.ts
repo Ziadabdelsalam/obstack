@@ -84,11 +84,12 @@ test("no menu item in the shell is a door to nowhere", () => {
   assert.ok(!/href:\s*"#"/.test(TOP_BAR), "the account menu still has a dead link");
 });
 
-test("D228: the workspace line is a label, not a switcher that does not exist", () => {
+test("D228/D717: the workspace line is a label with the drive's id, and the switcher is a real form under it", () => {
   const start = SIDE_NAV.indexOf("data-workspace-id");
   assert.ok(start > 0, "SideNav no longer renders the workspace id");
-  // The affordance: a chevroned button with no onClick promised a picker the
-  // product has no requirement for and no menu behind.
+  // D228's shape survives the switcher's arrival: no chevron affordance, and
+  // the label itself is inside no button — the control that exists is a form
+  // rendered BELOW it, not a menu the label pretends to open.
   assert.ok(!SIDE_NAV.includes("ChevronsUpDown"), "the switcher chevron is back on the workspace line");
   const beforeId = SIDE_NAV.slice(0, start);
   assert.ok(
@@ -100,6 +101,17 @@ test("D228: the workspace line is a label, not a switcher that does not exist", 
   assert.ok(
     SIDE_NAV.includes("{workspaceId ?? \"loopwork-prod\"}"),
     "the workspace id text moved — the e2e drive reads it (D115)",
+  );
+  // D717: the switcher is a form posting the chosen id to the one switch
+  // action, rendered only when there is somewhere else to go — a select with
+  // one option would be D228's affordance with nothing behind it.
+  const form = SIDE_NAV.indexOf("<form action={switchWorkspace}");
+  assert.ok(form > start, "the switcher is missing, or it sits above the label the drive reads");
+  assert.ok(SIDE_NAV.includes("choices.length > 1 && ("), "the switcher renders without a second workspace to switch to");
+  assert.ok(SIDE_NAV.includes('name="workspaceId"'), "the select no longer posts the field the switch action parses");
+  assert.ok(
+    SIDE_NAV.includes('from "@/app/app/workspace-actions"'),
+    "the switcher posts somewhere other than the switch action",
   );
 });
 

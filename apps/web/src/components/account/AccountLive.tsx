@@ -10,12 +10,15 @@ import {
   type SessionView,
 } from "@/lib/account-types";
 import {
+  removeAvatar,
   revokeOtherSessions,
   revokeSession,
   updateEmail,
   updateName,
   updatePassword,
 } from "@/app/app/account/actions";
+import { Avatar, initialsOf } from "@/components/ui/Avatar";
+import { AvatarPicker } from "./AvatarPicker";
 
 /**
  * The account page's live body (D707): the signed-in PERSON — name, sign-in
@@ -82,6 +85,30 @@ function ProfileSection({
 }) {
   return (
     <Section title="profile">
+      <Note feedback={feedback} section="avatar" />
+      {/* The picture (D718): stored bytes served by the avatar route to people
+          who share an organization, or the initials when there is none. The
+          picker is the one client island on this page — it shrinks the file
+          before the same form posts it. */}
+      <div className="flex flex-wrap items-center gap-4">
+        <Avatar src={account.avatar} alt={account.name} initials={initialsOf(account.name, account.email)} size={64} />
+        <div className="flex min-w-0 flex-1 flex-col gap-2">
+          <AvatarPicker />
+          {account.avatar && (
+            <form action={removeAvatar}>
+              <button type="submit" className={QUIET} style={{ color: "var(--color-faint)" }}>
+                remove picture
+              </button>
+            </form>
+          )}
+        </div>
+      </div>
+      <p className="mt-2 text-[12.5px] leading-relaxed text-mid">
+        Shown beside your name in the top bar, and on the members roster to the people who share an
+        organization with you.
+      </p>
+
+      <div className="mt-5 border-t border-line/60 pt-4">
       <Note feedback={feedback} section="name" />
       <form action={updateName} className="flex flex-wrap items-end gap-2">
         <div className="flex min-w-[220px] flex-1 flex-col gap-1.5">
@@ -105,6 +132,7 @@ function ProfileSection({
       <p className="mt-2 text-[12.5px] leading-relaxed text-mid">
         Shown in the top bar and on the members roster of every organization you belong to.
       </p>
+      </div>
 
       <div className="mt-5 border-t border-line/60 pt-4">
         <Note feedback={feedback} section="email" />
@@ -308,13 +336,13 @@ function MembershipsSection({ memberships }: { memberships: MembershipView[] }) 
           <span className="font-mono text-[11px] text-mid">{membership.role}</span>
         </div>
       ))}
-      {/* D120/D228, said where a second row would otherwise raise the question:
-          the session reads the workspace of the org this account OWNS, a
-          member row records a fact and moves nothing, and no switcher exists. */}
+      {/* D120/D717, said where a second row would otherwise raise the question:
+          the session reads one workspace at a time — the owned org's by
+          default — and every row here is somewhere the sidebar can switch to. */}
       <p className="mt-3 text-[12.5px] leading-relaxed text-mid">
-        obstack shows one workspace per account: the one belonging to the organization you own.
-        A membership in another organization is recorded here and changes nothing about what you
-        see.
+        Your session reads one workspace at a time: by default the one belonging to the
+        organization you own. Every organization listed here is one you can switch to from the
+        sidebar; accepting an invitation adds a row and changes nothing until you do.
       </p>
     </Section>
   );

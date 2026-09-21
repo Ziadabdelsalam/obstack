@@ -16,8 +16,11 @@ import {
   revokeOwnSession,
   updateDisplayName,
 } from "./account";
+import { avatarEtag, deleteAvatar, listAvatarEtags, putAvatar, readAvatarFor, AvatarTooLarge } from "./avatars";
 import { acceptInvite, createInvite } from "./invites";
 import { getPool, queryRows } from "./postgres";
+import { resolveSessionContext } from "./session";
+import { UnknownWorkspace, listWorkspaceChoices, setActiveWorkspace } from "./workspaces";
 
 // run with: the compose Postgres (or any postgres:17.11 with pgmigrations
 //           applied — see auth.integration.test.ts's header for the throwaway
@@ -139,6 +142,9 @@ after(async () => {
     await queryRows(`DELETE FROM "organization" WHERE id = $1`, [orgId]);
   }
   for (const userId of createdUserIds) {
+    // the two soft-referenced tables (D112: no cascade from the library's rows)
+    await queryRows(`DELETE FROM user_avatars WHERE user_id = $1`, [userId]);
+    await queryRows(`DELETE FROM active_workspaces WHERE user_id = $1`, [userId]);
     await queryRows(`DELETE FROM "user" WHERE id = $1`, [userId]);
   }
   await getPool().end();
@@ -409,4 +415,153 @@ test("memberships list the owned org first and an accepted invitation second, ro
     ],
   );
   assert.ok(memberships[0].joinedAt.getTime() <= memberships[1].joinedAt.getTime());
+});
+
+// ---- D717: the switcher, against the resolution that reads it -------------
+
+test("D717: a choice moves the session to a workspace the person belongs to, and stops moving it when the membership goes", async (t) => {
+  if (noPostgres(t)) return;
+  const gina = await signUpStranger("switcher");
+  const hank = await signUpStranger("switcherhost");
+  const ivan = await signUpStranger("switcherstranger");
+
+  // hank invites gina; she accepts (the S3.2 lifecycle) — two memberships
+  await acceptInvite((await createInvite(hank.orgId, gina.email, hank.headers)).id, gina.headers);
+
+  await t.test("the choice list is both organizations, owned first", async () => {
+    assert.deepEqual(
+      (await listWorkspaceChoices(gina.userId, queryRows)).map((c) => [c.workspaceId, c.role]),
+      [
+        [gina.workspaceId, "owner"],
+        [hank.workspaceId, "member"],
+      ],
+    );
+  });
+
+  await t.test("before any choice, acceptance moved nothing (D143 still holds)", async () => {
+    assert.deepEqual(await resolveSessionContext(gina.userId, queryRows), {
+      userId: gina.userId,
+      orgId: gina.orgId,
+      workspaceId: gina.workspaceId,
+    });
+  });
+
+  await t.test("a switch to the member org's workspace is what the session reads next", async () => {
+    await setActiveWorkspace(gina.userId, hank.workspaceId, queryRows);
+    assert.deepEqual(await resolveSessionContext(gina.userId, queryRows), {
+      userId: gina.userId,
+      orgId: hank.orgId,
+      workspaceId: hank.workspaceId,
+    });
+  });
+
+  await t.test("a workspace the person does not belong to is refused, and the choice is unchanged", async () => {
+    await assert.rejects(
+      setActiveWorkspace(gina.userId, ivan.workspaceId, queryRows),
+      (error: unknown) => error instanceof UnknownWorkspace,
+    );
+    assert.deepEqual(
+      await queryRows(`SELECT workspace_id FROM active_workspaces WHERE user_id = $1`, [gina.userId]),
+      [{ workspace_id: hank.workspaceId }],
+    );
+    // ...and an id that is no workspace at all writes nothing either
+    await assert.rejects(setActiveWorkspace(gina.userId, `ws_${RUN}_nowhere`, queryRows), UnknownWorkspace);
+  });
+
+  await t.test("the membership is what admits the choice: gone, the owner default answers again", async () => {
+    // hank removes gina (there is no product control for this — D148 — so the
+    // row is taken out directly; the resolution has to survive it regardless)
+    await queryRows(`DELETE FROM "member" WHERE "userId" = $1 AND "organizationId" = $2`, [gina.userId, hank.orgId]);
+    assert.deepEqual(
+      await queryRows(`SELECT workspace_id FROM active_workspaces WHERE user_id = $1`, [gina.userId]),
+      [{ workspace_id: hank.workspaceId }],
+      "premise: the stale choice row is still there — the read must ignore it, not rely on its absence",
+    );
+    assert.deepEqual(await resolveSessionContext(gina.userId, queryRows), {
+      userId: gina.userId,
+      orgId: gina.orgId,
+      workspaceId: gina.workspaceId,
+    });
+    assert.deepEqual(
+      (await listWorkspaceChoices(gina.userId, queryRows)).map((c) => c.workspaceId),
+      [gina.workspaceId],
+    );
+  });
+
+  await t.test("switching back to the owned workspace is an ordinary switch", async () => {
+    await setActiveWorkspace(gina.userId, gina.workspaceId, queryRows);
+    assert.equal((await resolveSessionContext(gina.userId, queryRows)).workspaceId, gina.workspaceId);
+  });
+});
+
+// ---- D718: a picture, and who may see it -------------------------------
+
+/** A PNG signature followed by random bytes: the sniff reads the signature, the store keeps bytes. */
+const pngOf = (size: number): Uint8Array => {
+  const bytes = new Uint8Array(size);
+  bytes.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  for (let i = 8; i < size; i++) bytes[i] = (i * 31 + 7) & 0xff;
+  return bytes;
+};
+
+test("D718: a picture is served to its person and to a colleague, and to nobody else; the store keeps the cap", async (t) => {
+  if (noPostgres(t)) return;
+  const jack = await signUpStranger("avatar");
+  const kate = await signUpStranger("avatarcolleague");
+  const leo = await signUpStranger("avatarstranger");
+  await acceptInvite((await createInvite(kate.orgId, jack.email, kate.headers)).id, jack.headers);
+
+  const picture = pngOf(2048);
+  const { etag } = await putAvatar(jack.userId, picture, queryRows);
+  assert.equal(etag, avatarEtag(picture));
+
+  await t.test("the person and the colleague read the same bytes; the stranger reads nothing", async () => {
+    const own = await readAvatarFor(jack.userId, jack.userId, queryRows);
+    assert.ok(own);
+    assert.equal(own.contentType, "image/png");
+    assert.equal(own.etag, etag);
+    assert.ok(Buffer.from(picture).equals(own.bytes), "the bytes came back changed");
+    const colleague = await readAvatarFor(jack.userId, kate.userId, queryRows);
+    assert.ok(colleague && colleague.bytes.equals(own.bytes));
+    assert.equal(await readAvatarFor(jack.userId, leo.userId, queryRows), null, "a stranger to jack's organizations read his picture");
+    // and the person who has none is null to everyone, themselves included
+    assert.equal(await readAvatarFor(kate.userId, kate.userId, queryRows), null);
+  });
+
+  await t.test("the etag list names exactly who has a picture", async () => {
+    const etags = await listAvatarEtags([jack.userId, kate.userId, leo.userId], queryRows);
+    assert.deepEqual([...etags.entries()], [[jack.userId, etag]]);
+  });
+
+  await t.test("a replacement is a new etag; a refused upload leaves the old one", async () => {
+    const second = pngOf(4096);
+    const replaced = await putAvatar(jack.userId, second, queryRows);
+    assert.notEqual(replaced.etag, etag);
+    await assert.rejects(putAvatar(jack.userId, pngOf(262145), queryRows), AvatarTooLarge);
+    assert.equal((await readAvatarFor(jack.userId, jack.userId, queryRows))?.etag, replaced.etag);
+  });
+
+  await t.test("the DDL's CHECK refuses what the parse refuses — an oversize row cannot be written around it", async () => {
+    await assert.rejects(
+      queryRows(`INSERT INTO user_avatars (user_id, content_type, bytes, etag) VALUES ($1, 'image/png', $2, 'x')`, [
+        leo.userId,
+        Buffer.from(pngOf(262145)),
+      ]),
+      /user_avatars_bytes_check/,
+    );
+    await assert.rejects(
+      queryRows(`INSERT INTO user_avatars (user_id, content_type, bytes, etag) VALUES ($1, 'image/gif', $2, 'x')`, [
+        leo.userId,
+        Buffer.from(pngOf(16)),
+      ]),
+      /user_avatars_content_type_check/,
+    );
+    assert.equal(await readAvatarFor(leo.userId, leo.userId, queryRows), null);
+  });
+
+  await t.test("removal answers once, and the picture is gone for everyone", async () => {
+    assert.equal(await deleteAvatar(jack.userId, queryRows), true);
+    assert.equal(await deleteAvatar(jack.userId, queryRows), false);
+    assert.equal(await readAvatarFor(jack.userId, kate.userId, queryRows), null);
+  });
 });

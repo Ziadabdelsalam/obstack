@@ -111,3 +111,49 @@ to. This packet closes those and writes down, as absences, what stays out and wh
   and password and signs in with both is the natural next arm, once measured.
 - **No changelog entry.** An entry's date is the master merge date of the PR that
   made it true (D323), which does not exist until this merges.
+
+## Addendum, same day — the switcher and the picture (D717–D718)
+
+The user ruled both of D714's first two absences in: "the workspace switcher
+should exist and also avatar images". D714's other entries (password reset,
+deletion, member removal and role change) stand.
+
+- **D717 — the workspace switcher exists, as a per-user choice the resolution
+  honours only while the membership holds.** `active_workspaces` (0015): one
+  row per user, `workspace_id` an in-set FK, written by an INSERT whose source
+  row IS the membership join (`server/workspaces.ts`) so a workspace the person
+  does not belong to writes nothing. `resolveSessionContext` LEFT JOINs the
+  choice onto the membership row's workspace and sorts it first, then the
+  owner pin, then `created_at, id` — so D120 becomes the DEFAULT rather than a
+  filter, acceptance still moves nobody (D143 holds; the drive's "viewing your
+  own workspace" wait is kept verbatim), and a stale choice is ignored rather
+  than trusted. The `SessionContext` shape is unchanged; the role the top bar
+  shows is the active organization's member row, read with the choice list.
+  The sidebar renders the switcher under the D228 label only with more than one
+  choice; the action revalidates the whole `/app` layout before redirecting so
+  no cached route of the workspace just left is handed to the one arriving. A
+  member who switched can do everything in that workspace except invite: the
+  library's `member` role holds no invitation permission, the Members tab hides
+  the controls from a member, and a direct POST maps to `invite-not-owner`.
+- **D718 — a picture is bytes in Postgres, served to colleagues, never a URL.**
+  `user_avatars` (0016): PNG/JPEG/WebP by CHECK, 1..262144 bytes by CHECK, the
+  etag the SHA-256; the type is read off the bytes, never the declared MIME.
+  `/app/avatar/[userId]` serves them to a signed-in viewer who is the person or
+  shares an organization (the roster's own predicate), as a bare 401/404 with
+  no body otherwise, `private` cached under an etag-bearing URL. The picker
+  shrinks to 128px client-side and posts through the same form the no-JS path
+  uses; the top bar, the roster and the account page render through one
+  `Avatar` component (`next/image` unoptimized — the optimizer would fetch the
+  route with no cookie). `user.image` stays unused.
+- **Tests.** `workspaces.test.ts`, `avatars.test.ts` (no server); the D717 and
+  D718 legs of `account.integration.test.ts` (a choice follows the membership
+  and stops with it; a colleague reads the bytes, a stranger reads nothing, the
+  CHECKs refuse what the parse refuses); the mock-mode shim gains the switch
+  action, the two picture actions and the avatar route; `session.test.ts` and
+  `shell-honesty.test.ts` pin the new shapes; the Go migration pin gains 0015
+  and 0016. The absence "one workspace per account, and no switcher" leaves the
+  docs; the accounts page describes both features.
+- **CI note.** The first `web` run of PR #43 found the D711 sessions leg
+  assuming one session per fresh stranger where signup leaves two (its own
+  session row survives the swallowed cookie write); the test now measures the
+  baseline off the store. Pushed as its own commit.

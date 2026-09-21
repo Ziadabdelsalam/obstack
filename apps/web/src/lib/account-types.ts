@@ -21,11 +21,35 @@ export const PASSWORD_MIN = 8;
 export const PASSWORD_MAX = 128;
 
 /**
+ * The avatar store's own cap (D718): `0016_user_avatars.sql`'s CHECK is
+ * `octet_length(bytes) BETWEEN 1 AND 262144`, and `server/avatars.ts` refuses
+ * the same bound before the write. 256 KiB is many times a 128-pixel picture;
+ * the picker resizes to that before uploading when it can, and this is what a
+ * plain upload without JavaScript is judged against.
+ */
+export const AVATAR_MAX_BYTES = 262144;
+
+/** The three picture types the store admits, read off the bytes by `server/avatars.ts`. */
+export type AvatarType = "image/png" | "image/jpeg" | "image/webp";
+
+/** The edge, in CSS pixels, the picker resizes to: enough for the largest rendering (the account page's 64px) at 2x. */
+export const AVATAR_EDGE_PX = 128;
+
+/**
+ * Where a person's picture is served from — the route that gates on the
+ * session and on a shared organization. The etag is the cache-busting query:
+ * the bytes behind one URL never change, so a renderer may cache them as long
+ * as it likes, and a new picture is a new URL.
+ */
+export const avatarPath = (userId: string, etag: string): string =>
+  `/app/avatar/${encodeURIComponent(userId)}?v=${encodeURIComponent(etag)}`;
+
+/**
  * Where on the page a refusal or a notice lands (D712). A code's section is
  * DERIVED from its prefix by `app/app/account/errors.ts`, never carried in
  * the URL — `account` is the page-level fallback for the generic member.
  */
-export type AccountSection = "name" | "email" | "password" | "sessions" | "account";
+export type AccountSection = "name" | "email" | "password" | "sessions" | "avatar" | "account";
 
 /** One thing the page says back after a redirect, and where it says it. */
 export interface AccountFeedback {
@@ -40,6 +64,8 @@ export interface AccountView {
   email: string;
   /** The user row's `createdAt`, formatted as a day. */
   memberSince: string;
+  /** `avatarPath` for the picture they have, or null when they have none and the initials render. */
+  avatar: string | null;
 }
 
 /**

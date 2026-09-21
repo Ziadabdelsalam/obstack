@@ -3,9 +3,10 @@ import { headers } from "next/headers";
 import { redirect } from "next/navigation";
 import { connection } from "next/server";
 import { AccountLive } from "@/components/account/AccountLive";
-import { describeUserAgent, type MembershipView, type SessionView } from "@/lib/account-types";
+import { avatarPath, describeUserAgent, type MembershipView, type SessionView } from "@/lib/account-types";
 import { appHost } from "@/lib/app-href";
 import { listMemberships, listOwnSessions, readAccount } from "@/server/account";
+import { listAvatarEtags } from "@/server/avatars";
 import { dataMode } from "@/server/data";
 import { queryRows } from "@/server/postgres";
 import { accountFeedback } from "./errors";
@@ -92,10 +93,12 @@ export default async function AccountPage({
   const account = await readAccount(requestHeaders);
   if (!account) redirect("/login");
 
-  const [sessions, memberships] = await Promise.all([
+  const [sessions, memberships, avatars] = await Promise.all([
     listOwnSessions(account.userId, queryRows),
     listMemberships(account.userId, queryRows),
+    listAvatarEtags([account.userId], queryRows),
   ]);
+  const avatarEtag = avatars.get(account.userId);
 
   const sessionViews: SessionView[] = sessions.map((session) => ({
     id: session.id,
@@ -115,7 +118,12 @@ export default async function AccountPage({
 
   return (
     <AccountLive
-      account={{ name: account.name, email: account.email, memberSince: asDay(account.createdAt) }}
+      account={{
+        name: account.name,
+        email: account.email,
+        memberSince: asDay(account.createdAt),
+        avatar: avatarEtag ? avatarPath(account.userId, avatarEtag) : null,
+      }}
       sessions={sessionViews}
       memberships={membershipViews}
       // Both codes off the URL are mapped to fixed copy and never rendered (D121/D712).

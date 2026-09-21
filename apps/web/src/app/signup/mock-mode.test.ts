@@ -183,6 +183,9 @@ test("every account action trips the same way in mock mode (D152/D707)", async (
     ["change password", actions.updatePassword],
     ["sign out a session", actions.revokeSession],
     ["sign out other sessions", actions.revokeOtherSessions],
+    // D718: the picture's two writes carry the same gate.
+    ["upload picture", actions.uploadAvatar],
+    ["remove picture", actions.removeAvatar],
   ];
 
   for (const [where, action] of cases) {
@@ -203,6 +206,57 @@ test("every account action trips the same way in mock mode (D152/D707)", async (
     assert.ok(digest.includes(";/app/account;"), `${where}: to the account page itself, with no code appended`);
     assert.match(logged[0] ?? "", new RegExp(`\\[account\\] ${where} posted in mock mode`));
   }
+});
+
+test("the workspace switch action trips the same way in mock mode (D152/D717)", async () => {
+  // The shell's one write. Mock mode has one fictional workspace and renders no
+  // switcher, so a post here came from somewhere no visitor can be: a bare
+  // redirect to the overview, before `getSessionContext` builds the auth
+  // instance on the missing secret. Empty FormData — the guard runs before the
+  // workspace id is read.
+  const { switchWorkspace } = await import("@/app/app/workspace-actions");
+
+  const logged: string[] = [];
+  const real = console.error;
+  console.error = (...args: unknown[]) => void logged.push(args.map(String).join(" "));
+  let signal: { digest?: unknown } | undefined;
+  try {
+    await switchWorkspace(new FormData());
+  } catch (error) {
+    signal = error as { digest?: unknown };
+  } finally {
+    console.error = real;
+  }
+
+  const digest = String(signal?.digest);
+  assert.equal(digest.split(";")[0], "NEXT_REDIRECT", "refused by sending back");
+  assert.ok(digest.includes(";/app;"), "to the overview, with nothing appended");
+  assert.match(logged[0] ?? "", /\[workspace\] switch posted in mock mode/);
+});
+
+test("the avatar route 404s rather than reading in mock mode (D152/D718)", async () => {
+  // The third route on this list, and an IMAGE request: mock mode renders
+  // initials everywhere and keeps no accounts, so the refusal is a status code
+  // with no body — a login page inside an <img> would be a broken picture.
+  // Take the mode check out and the request reaches `getSessionContext`, which
+  // builds the auth instance on the missing secret and throws.
+  const route = await import("@/app/app/avatar/[userId]/route");
+
+  const logged: string[] = [];
+  const real = console.error;
+  console.error = (...args: unknown[]) => void logged.push(args.map(String).join(" "));
+  let response: Response;
+  try {
+    response = await route.GET(new Request("https://obstack.dev/app/avatar/aB3xQ7zLmN0pR5tV9wY2cD4fG6hJ8kS1"), {
+      params: Promise.resolve({ userId: "aB3xQ7zLmN0pR5tV9wY2cD4fG6hJ8kS1" }),
+    });
+  } finally {
+    console.error = real;
+  }
+
+  assert.equal(response.status, 404, "this route does not exist in this deployment");
+  assert.equal(await response.text(), "", "and nothing to read from the refusal");
+  assert.match(logged[0] ?? "", /\[avatar\] requested in mock mode/);
 });
 
 test("both actions trip rather than reach the auth stack in mock mode", async () => {

@@ -21,6 +21,8 @@ const PAGE = read("page.tsx");
 const ACTIONS = read("actions.ts");
 const LIVE_PATH = resolve("../../../components/account/AccountLive.tsx");
 const LIVE = readFileSync(LIVE_PATH, "utf8");
+/** The one client island on the page (D718): its form is an offered action too. */
+const PICKER = readFileSync(resolve("../../../components/account/AvatarPicker.tsx"), "utf8");
 
 test("the mock branch returns before any live-only read runs (D125/D150)", () => {
   const mockBranch = PAGE.indexOf('if (dataMode !== "live") {');
@@ -44,14 +46,16 @@ test("the live body is a server component with no mock import and the tour ancho
   assert.ok(LIVE.includes('data-tour="account"'));
 });
 
-test("every form on the live body posts to one of the five gated actions, and every action is offered", () => {
-  const offered = [...LIVE.matchAll(/<form action=\{(\w+)\}/g)].map((m) => m[1]).sort();
+test("every form on the live body posts to one of the seven gated actions, and every action is offered", () => {
+  const offered = [...`${LIVE}\n${PICKER}`.matchAll(/<form[^>]*\baction=\{(\w+)\}/g)].map((m) => m[1]).sort();
   assert.deepEqual([...new Set(offered)], [
+    "removeAvatar",
     "revokeOtherSessions",
     "revokeSession",
     "updateEmail",
     "updateName",
     "updatePassword",
+    "uploadAvatar",
   ]);
   const exported = [...ACTIONS.matchAll(/export async function (\w+)\(/g)].map((m) => m[1]).sort();
   assert.deepEqual(exported, [...new Set(offered)], "an action exists that no form posts to, or a form posts to nothing");

@@ -46,6 +46,7 @@ export const SETTINGS_ERRORS = {
     "That email address isn't valid. Use a full address like teammate@example.com.",
   "invite-member-exists": "That person is already a member of this organization.",
   "invite-pending": "That address already has an open invite — copy the link from the list below.",
+  "invite-not-owner": "Only the organization's owner can invite teammates or cancel invitations.",
   "override-match-invalid": `Use the start of a model name — letters, digits, . _ : / - and up to ${OVERRIDE_MATCH_MAX} characters, like gpt-4o or your fine-tune's name.`,
   "override-price-invalid": `Each price is US dollars per million tokens: a number from 0 to ${PRICE_PER_MTOK_MAX.toLocaleString("en-US")}.`,
   "override-limit": `This workspace already has ${OVERRIDE_MAX} price overrides, which is the most it can hold. Remove one to add another.`,
@@ -108,6 +109,14 @@ export function settingsErrorCode(error: unknown): SettingsErrorCode {
         return "invite-member-exists";
       case "USER_IS_ALREADY_INVITED_TO_THIS_ORGANIZATION":
         return "invite-pending";
+      // D717: a member switched into someone else's organization reaches the
+      // invite and cancel actions with a session the library judges by ITS
+      // roles (`plugins/organization/access/statement.mjs`: `member` holds no
+      // `invitation` permission; `owner` and `admin` do). The Members tab
+      // hides the controls from a member; a direct POST gets the sentence.
+      case "YOU_ARE_NOT_ALLOWED_TO_INVITE_USERS_TO_THIS_ORGANIZATION":
+      case "YOU_ARE_NOT_ALLOWED_TO_CANCEL_THIS_INVITATION":
+        return "invite-not-owner";
     }
   }
   return "settings-failed";

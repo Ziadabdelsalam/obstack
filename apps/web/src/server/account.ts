@@ -291,9 +291,10 @@ export interface Membership {
  * over two tables this repo already reads (`listOrgMembers` reads the same
  * join from the org's side), for D143's reason: a roster is not a reason to
  * reach for another `auth.api.*` call. What the list means is stated on the
- * page and pinned by `session.ts`: the session reads the workspace of the org
- * the account OWNS (D120), so a `member` row here records a fact and moves
- * nothing (D228 stands — there is no switcher).
+ * page and decided by `session.ts` (D717): each row is an organization whose
+ * workspaces the person may switch to from the sidebar, and until they do the
+ * session reads the workspace of the org they OWN (D120) — a `member` row
+ * records a fact and moves nothing by itself.
  */
 const MEMBERSHIPS_SQL = `
   SELECT o.id AS org_id, o.name AS org_name, m.role, m."createdAt" AS joined_at

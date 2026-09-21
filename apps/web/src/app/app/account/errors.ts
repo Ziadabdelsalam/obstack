@@ -1,4 +1,5 @@
 import {
+  AVATAR_MAX_BYTES,
   NAME_MAX,
   PASSWORD_MAX,
   PASSWORD_MIN,
@@ -46,6 +47,9 @@ export const ACCOUNT_ERRORS = {
   "password-rate-limited": "Too many password attempts for this account. Try again later.",
   "session-not-found":
     "That session isn't one of this account's, or it has already ended. Reload the page to see the current list.",
+  "avatar-missing": "Choose a picture to upload — a PNG, JPEG or WebP.",
+  "avatar-too-large": `That picture is too large. Use one under ${Math.floor(AVATAR_MAX_BYTES / 1024)} KB.`,
+  "avatar-not-image": "That file isn't a PNG, JPEG or WebP image.",
   "account-failed": "That didn't work. Please try again.",
 } as const;
 
@@ -64,6 +68,8 @@ export const ACCOUNT_NOTICES = {
   "password-sessions": "Your password is changed, and every other session is signed out.",
   session: "That session is signed out.",
   sessions: "Every other session is signed out.",
+  avatar: "Your picture is updated.",
+  "avatar-removed": "Your picture is removed. Your initials show instead.",
 } as const;
 
 export type AccountNoticeCode = keyof typeof ACCOUNT_NOTICES;
@@ -108,7 +114,7 @@ export function accountNotice(raw: string | string[] | undefined): string | null
  */
 export function sectionOf(code: string): AccountSection {
   const word = code.split("-")[0];
-  if (word === "name" || word === "email" || word === "password") return word;
+  if (word === "name" || word === "email" || word === "password" || word === "avatar") return word;
   if (word === "session" || word === "sessions") return "sessions";
   return "account";
 }
@@ -144,8 +150,9 @@ export function accountFeedback(params: {
  * a `"use server"` module may export nothing but async functions and a mapping
  * trapped there cannot be tested at all (D133).
  *
- * Two families reach it. Our own two — `EmailTaken` and `UnknownSession`
- * (`server/account.ts`) — matched by `name`, like the `APIError` check, so no
+ * Two families reach it. Our own four — `EmailTaken` and `UnknownSession`
+ * (`server/account.ts`), `AvatarTooLarge` and `AvatarNotImage`
+ * (`server/avatars.ts`) — matched by `name`, like the `APIError` check, so no
  * error class is imported to be matched against. And better-auth's `APIError`,
  * whose machine-readable `body.code` is what the arms read:
  *
@@ -171,6 +178,9 @@ export function accountErrorCode(error: unknown): AccountErrorCode {
   const named = error as { name?: string; body?: { code?: string; message?: string } } | null;
   if (named?.name === "EmailTaken") return "email-taken";
   if (named?.name === "UnknownSession") return "session-not-found";
+  // `server/avatars.ts`'s two refusals (D718): the store's CHECKs stated as classes.
+  if (named?.name === "AvatarTooLarge") return "avatar-too-large";
+  if (named?.name === "AvatarNotImage") return "avatar-not-image";
   if (named?.name === "APIError") {
     switch (named.body?.code) {
       case "INVALID_PASSWORD":

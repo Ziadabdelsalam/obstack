@@ -569,7 +569,8 @@ test("D121: every code maps to its own fixed copy", () => {
   }
 
   // D140/D13 on the one surface most tempted to promise something: the invite
-  // copy may not say a switcher is coming, because none is (S3.5 owns it).
+  // copy names what exists in the present tense — the switcher is real since
+  // D717, and it is described, never promised.
   for (const copy of Object.values(INVITE_ERRORS)) {
     assert.doesNotMatch(copy, /soon|will be able|coming/i, `invite copy promises a feature: ${copy}`);
   }

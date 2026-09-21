@@ -29,6 +29,7 @@ import {
   revokeOtherOwnSessions,
   revokeOwnSession,
 } from "./account";
+import { AvatarNotImage, AvatarTooLarge } from "./avatars";
 import type { QueryRows } from "./postgres";
 
 // run with: npm test --workspace apps/web
@@ -80,6 +81,9 @@ test("D712: the two vocabularies are closed, and every code maps to its own fixe
     "password-long",
     "password-rate-limited",
     "session-not-found",
+    "avatar-missing",
+    "avatar-too-large",
+    "avatar-not-image",
     "account-failed",
   ]);
   assert.deepEqual(Object.keys(ACCOUNT_NOTICES), [
@@ -89,6 +93,8 @@ test("D712: the two vocabularies are closed, and every code maps to its own fixe
     "password-sessions",
     "session",
     "sessions",
+    "avatar",
+    "avatar-removed",
   ]);
   for (const [code, copy] of Object.entries(ACCOUNT_ERRORS)) {
     assert.equal(accountErrorMessage(code), copy);
@@ -126,6 +132,9 @@ test("D712: a code lands in the section its first word names, and the generic me
     "password-long": "password",
     "password-rate-limited": "password",
     "session-not-found": "sessions",
+    "avatar-missing": "avatar",
+    "avatar-too-large": "avatar",
+    "avatar-not-image": "avatar",
     "account-failed": "account",
   };
   const expectedNoticeSections: Record<AccountNoticeCode, ReturnType<typeof sectionOf>> = {
@@ -135,6 +144,8 @@ test("D712: a code lands in the section its first word names, and the generic me
     "password-sessions": "password",
     session: "sessions",
     sessions: "sessions",
+    avatar: "avatar",
+    "avatar-removed": "avatar",
   };
   for (const [code, section] of Object.entries(expectedErrorSections)) {
     assert.equal(sectionOf(code), section, code);
@@ -236,6 +247,9 @@ test("D133: every arm maps directly, from a real APIError or one of our own two 
   );
   assert.equal(accountErrorCode(new EmailTaken("x@obstack.invalid")), "email-taken");
   assert.equal(accountErrorCode(new UnknownSession("sess")), "session-not-found");
+  // D718: the avatar store's two refusals, stated as classes.
+  assert.equal(accountErrorCode(new AvatarTooLarge(300000)), "avatar-too-large");
+  assert.equal(accountErrorCode(new AvatarNotImage()), "avatar-not-image");
 });
 
 test("D133 totality: any code outside the arms lands on the generic member", () => {

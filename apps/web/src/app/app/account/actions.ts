@@ -2,7 +2,7 @@
 
 import { headers } from "next/headers";
 import { redirect } from "next/navigation";
-import { PASSWORD_MAX, PASSWORD_MIN } from "@/lib/account-types";
+import { AVATAR_MAX_BYTES, PASSWORD_MAX, PASSWORD_MIN } from "@/lib/account-types";
 import {
   changePassword,
   changeSignInEmail,
@@ -14,6 +14,7 @@ import {
   updateDisplayName,
   type AccountSession,
 } from "@/server/account";
+import { deleteAvatar, putAvatar } from "@/server/avatars";
 import { dataMode } from "@/server/data";
 import { queryRows } from "@/server/postgres";
 import { checkRateLimit } from "@/server/rate-limit";
@@ -207,4 +208,41 @@ export async function revokeOtherSessions(): Promise<void> {
     back(codeFor("sign out other sessions", error));
   }
   done("sessions");
+}
+
+/**
+ * Store a picture (D718). The upload arrives as a `File` in the form's
+ * multipart body — the picker shrinks it to `AVATAR_EDGE_PX` first when
+ * JavaScript is on, and posts the original otherwise — and it is judged before
+ * it is read: absent, then over the cap by its declared size (the store's own
+ * CHECK, stated once in `lib/account-types.ts`), so a body past the limit is
+ * never buffered into memory. The bytes decide the type (`server/avatars.ts`),
+ * never the browser's declared MIME.
+ */
+export async function uploadAvatar(formData: FormData): Promise<void> {
+  const { account } = await accountSession("upload picture");
+
+  const file = formData.get("avatar");
+  if (!(file instanceof File) || file.size === 0) back("avatar-missing");
+  if (file.size > AVATAR_MAX_BYTES) back("avatar-too-large");
+
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  try {
+    await putAvatar(account.userId, bytes, queryRows);
+  } catch (error) {
+    back(codeFor("upload picture", error));
+  }
+  done("avatar");
+}
+
+/** Remove the picture; the initials render from then on. No field to read, so no parse. */
+export async function removeAvatar(): Promise<void> {
+  const { account } = await accountSession("remove picture");
+
+  try {
+    await deleteAvatar(account.userId, queryRows);
+  } catch (error) {
+    back(codeFor("remove picture", error));
+  }
+  done("avatar-removed");
 }

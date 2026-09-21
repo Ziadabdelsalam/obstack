@@ -31,6 +31,8 @@ import {
   Command,
 } from "lucide-react";
 import { Wordmark } from "./Wordmark";
+import type { WorkspaceChoiceView } from "@/lib/workspace-types";
+import { switchWorkspace } from "@/app/app/workspace-actions";
 
 const sections: {
   label: string | null;
@@ -78,8 +80,21 @@ const sections: {
   },
 ];
 
-/** `workspaceId` is the facade's live workspace, or null in mock mode where the whole org is demo content. */
-export function SideNav({ workspaceId }: { workspaceId: string | null }) {
+/**
+ * `workspaceId` is the facade's live workspace, or null in mock mode where the
+ * whole org is demo content. `choices` are the workspaces the signed-in person
+ * may read (D717) — one per organization they belong to, empty in mock mode —
+ * and the switcher renders only when there is more than one, because a control
+ * with one option is an affordance with nothing behind it (D228's argument,
+ * which still decides the single-workspace case).
+ */
+export function SideNav({
+  workspaceId,
+  choices,
+}: {
+  workspaceId: string | null;
+  choices: WorkspaceChoiceView[];
+}) {
   const pathname = usePathname();
   return (
     <aside className="flex h-screen w-[216px] shrink-0 flex-col overflow-y-auto border-r border-line bg-surface">
@@ -89,11 +104,10 @@ export function SideNav({ workspaceId }: { workspaceId: string | null }) {
         </Link>
       </div>
 
-      {/* A label, not a switcher (D228). This was a chevroned button with no
-          onClick and no menu behind it — an affordance that promised a
-          workspace picker the product does not have, and nothing in M3 puts an
-          operator in two workspaces. The name and the id stay; the promise
-          goes. */}
+      {/* The label first, exactly as D228 shaped it — the id the drive reads
+          (D115) stays in its own element, inside no button — and the switcher
+          UNDER it (D717): a real form posting a real choice to the store, shown
+          only when the person has somewhere else to go. */}
       <div className="mx-3 mb-3 flex flex-col rounded-md border border-line bg-raised px-2.5 py-1.5 text-left text-[12.5px] leading-tight text-ink">
         {/* Live mode names no organisation: signup gives an org the operator's
             own name as a stand-in (there is no org-name field), so rendering
@@ -110,6 +124,33 @@ export function SideNav({ workspaceId }: { workspaceId: string | null }) {
           {workspaceId ?? "loopwork-prod"}
         </span>
       </div>
+      {choices.length > 1 && (
+        <form action={switchWorkspace} className="mx-3 mb-3 flex items-center gap-1.5">
+          {/* The selected option IS the active organization: its name (the
+              owner's own, at signup) and the person's role there. Changing it
+              submits; the button is the same submit for a browser with no
+              JavaScript. */}
+          <select
+            name="workspaceId"
+            aria-label="Switch workspace"
+            defaultValue={workspaceId ?? undefined}
+            onChange={(e) => e.currentTarget.form?.requestSubmit()}
+            className="min-w-0 flex-1 rounded-md border border-line bg-raised px-2 py-1 text-[12px] text-mid focus:border-line-strong focus:outline-none"
+          >
+            {choices.map((choice) => (
+              <option key={choice.workspaceId} value={choice.workspaceId}>
+                {choice.orgName} · {choice.role}
+              </option>
+            ))}
+          </select>
+          <button
+            type="submit"
+            className="rounded-md border border-line bg-raised px-2 py-1 font-mono text-[10px] text-faint hover:text-ink"
+          >
+            switch
+          </button>
+        </form>
+      )}
 
       {sections.map((sec, si) => (
         <nav key={si} className="flex flex-col gap-px px-2 pb-1.5">

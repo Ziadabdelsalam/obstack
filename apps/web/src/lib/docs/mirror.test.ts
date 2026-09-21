@@ -719,6 +719,15 @@ test("D715: the accounts page restates the password bounds, the four rate limits
   assert.ok(repo("apps/web/src/app/app/settings/page.tsx").includes("invitations last 48 hours"));
   assert.ok(accounts.includes("it expires 48 hours after it was issued"));
 
+  // The picture's two numbers (D718) are the constants the picker and the
+  // store share — the cap is also `0016_user_avatars.sql`'s CHECK.
+  const cap = /export const AVATAR_MAX_BYTES = (\d+);/.exec(types)?.[1];
+  const edge = /export const AVATAR_EDGE_PX = (\d+);/.exec(types)?.[1];
+  assert.ok(cap && edge, "the avatar constants are no longer literals in lib/account-types.ts");
+  assert.ok(repo("services/ingest/pgmigrations/0016_user_avatars.sql").includes(`BETWEEN 1 AND ${cap}`));
+  assert.ok(accounts.includes(`${Number(cap) / 1024} KB`));
+  assert.ok(accounts.includes(`${edge} pixels`));
+
   // The scopes the page names are the DDL's vocabulary, no more and no fewer.
   const ddl = repo("services/ingest/pgmigrations/0014_api_key_scope.sql");
   const scopes = /CHECK \(scope IN \(([^)]+)\)\)/.exec(ddl)?.[1]?.match(/'(\w+)'/g)?.map((s) => s.replace(/'/g, ""));
@@ -747,11 +756,15 @@ test("D715: the account absences follow the code — what the config lacks is wh
   assert.ok(!/deleteUser:\s*\{/.test(auth));
   assert.ok(absences.includes("There is no account deletion and no organization deletion in the product"));
 
-  // One workspace per account (D228): the resolution is owner-pinned and the
-  // page says so in the same words the invite surface uses.
-  assert.ok(repo("apps/web/src/server/session.ts").includes("m.role = 'owner'"));
-  assert.ok(absences.includes("One workspace per account, and no switcher"));
-  assert.ok(accounts.includes("there is no workspace switcher"));
+  // The switcher (D717): the owner pin is the DEFAULT the resolution falls
+  // back to, the choice is read off `active_workspaces`, the absences page no
+  // longer lists a switcher among the absences, and the accounts page says
+  // where the control is.
+  const session = repo("apps/web/src/server/session.ts");
+  assert.ok(session.includes("m.role = 'owner'"));
+  assert.ok(session.includes("LEFT JOIN active_workspaces"));
+  assert.ok(!absences.includes("no switcher"), "the absences page still lists the workspace switcher as absent");
+  assert.ok(accounts.includes("switch to it from the sidebar"));
 
   // And the account page is not an absence: it is live-wired, and the page
   // that lists absences does not list it.

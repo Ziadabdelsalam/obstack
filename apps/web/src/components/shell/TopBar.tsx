@@ -14,13 +14,17 @@ import {
 } from "lucide-react";
 import { NotificationsBell } from "./NotificationsPanel";
 import { StartTourButton } from "./TourGuide";
+import { Avatar } from "@/components/ui/Avatar";
 
 /**
  * The signed-in operator and the workspace their session reads. Present in live
  * mode and null in mock mode, which has no session at all — the layout's guard
- * (D114) means a live shell never renders without one.
+ * (D114) means a live shell never renders without one. `role` is the member
+ * row's role in the organization the ACTIVE workspace belongs to (D717), and
+ * `avatar` is `avatarPath` for a stored picture or null for the initials
+ * (D718).
  */
-export type Account = { name: string; email: string; workspaceId: string };
+export type Account = { name: string; email: string; workspaceId: string; role: string; avatar: string | null };
 
 /** Two letters for the avatar, from the name the operator signed up with. */
 function initials({ name, email }: Account): string {
@@ -96,9 +100,13 @@ function AccountMenu({ account }: { account: Account | null }) {
         aria-label="Account menu"
         className="flex items-center gap-1.5 rounded-md p-1 pl-1.5 transition-colors hover:bg-raised"
       >
-        <span className="flex h-6 w-6 items-center justify-center rounded-full bg-overlay font-mono text-[10px] text-mid">
-          {account ? initials(account) : "DO"}
-        </span>
+        {account ? (
+          <Avatar src={account.avatar} alt={account.name} initials={initials(account)} size={24} />
+        ) : (
+          <span className="flex h-6 w-6 items-center justify-center rounded-full bg-overlay font-mono text-[10px] text-mid">
+            DO
+          </span>
+        )}
         <ChevronDown className="h-3 w-3 text-faint" />
       </button>
 
@@ -108,9 +116,9 @@ function AccountMenu({ account }: { account: Account | null }) {
           <div className="absolute top-full right-0 z-50 mt-1.5 w-[240px] overflow-hidden rounded-xl border border-line-strong bg-surface py-1 shadow-2xl">
             <div className="border-b border-line px-3.5 py-2.5">
               {/* Live mode names the real operator, and the role is not a
-                  guess: the session's workspace is resolved through the org
-                  this account OWNS (D120's `member.role` pin), so anyone who
-                  sees that line is that org's owner.
+                  guess: it is the member row's role in the organization the
+                  session's workspace belongs to (D717) — the org this account
+                  owns by default, or the one it switched to.
 
                   Mock mode has no session and therefore no operator at all —
                   it used to borrow a real person's name and address and call
@@ -120,7 +128,7 @@ function AccountMenu({ account }: { account: Account | null }) {
                 {account ? account.name : "Demo operator"}
               </p>
               <p className="font-mono text-[10.5px] text-faint">
-                {account ? `${account.email} · owner` : "sample data · not signed in"}
+                {account ? `${account.email} · ${account.role}` : "sample data · not signed in"}
               </p>
               {account && (
                 <p className="mt-1.5 font-mono text-[10.5px] text-faint">
