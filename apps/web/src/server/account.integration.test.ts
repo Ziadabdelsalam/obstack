@@ -311,9 +311,20 @@ test("D711: the list is the account's own live rows and never a token; a revoke 
   if (noPostgres(t)) return;
   const dave = await signUpStranger("sessions");
   const other = await signUpStranger("sessionsother");
+  // MEASURED on the first CI run of this file: a stranger who has just signed
+  // up already holds TWO sessions, not one. `signUpEmail` opens a session of
+  // its own and tries to set its cookie; outside a request scope the cookie
+  // write is swallowed (`auth.integration.test.ts`'s `realSessionCookie`
+  // note) but the ROW stays, so `signIn` adds a second one beside it. In the
+  // product the two are one — signup's cookie reaches the browser — but here
+  // the baseline is read off the store rather than assumed, and every claim
+  // below is stated against it.
+  const daveAtSignup = await sessionIds(dave.userId);
+  const otherAtSignup = await sessionIds(other.userId);
+  assert.ok(daveAtSignup.includes(dave.sessionId));
   const second = await signIn(dave.email);
   const third = await signIn(dave.email);
-  const own = [dave.sessionId, second.sessionId, third.sessionId].sort();
+  const own = [...daveAtSignup, second.sessionId, third.sessionId].sort();
 
   await t.test("the list holds exactly the account's rows, token-free, newest first", async () => {
     const sessions = await listOwnSessions(dave.userId, queryRows);
@@ -340,7 +351,7 @@ test("D711: the list is the account's own live rows and never a token; a revoke 
       revokeOwnSession(dave.userId, other.sessionId, dave.sessionId, queryRows),
       (error: unknown) => error instanceof UnknownSession,
     );
-    assert.deepEqual(await sessionIds(other.userId), [other.sessionId]);
+    assert.deepEqual(await sessionIds(other.userId), otherAtSignup);
     assert.ok(await readAccount(other.headers), "the other account's cookie must still resolve");
   });
 
@@ -354,18 +365,21 @@ test("D711: the list is the account's own live rows and never a token; a revoke 
 
   await t.test("a revoked session's cookie is dead on its next read", async () => {
     await revokeOwnSession(dave.userId, second.sessionId, dave.sessionId, queryRows);
-    assert.deepEqual(await sessionIds(dave.userId), [dave.sessionId, third.sessionId].sort());
+    assert.deepEqual(await sessionIds(dave.userId), own.filter((id) => id !== second.sessionId));
     assert.equal(await readAccount(second.headers), null, "the revoked cookie still resolves — the store is not the authority");
     assert.ok(await readAccount(third.headers));
   });
 
   await t.test("revoking the others ends every row but this one, and answers how many", async () => {
-    assert.equal(await revokeOtherOwnSessions(dave.userId, dave.sessionId, queryRows), 1);
+    // everything but the current row: the third sign-in plus whatever signup
+    // left behind (the measured baseline above, minus the current row)
+    const others = own.filter((id) => id !== second.sessionId && id !== dave.sessionId);
+    assert.equal(await revokeOtherOwnSessions(dave.userId, dave.sessionId, queryRows), others.length);
     assert.deepEqual(await sessionIds(dave.userId), [dave.sessionId]);
     assert.equal(await readAccount(third.headers), null);
     assert.equal((await readAccount(dave.headers))?.sessionId, dave.sessionId);
     // nothing else's rows moved
-    assert.deepEqual(await sessionIds(other.userId), [other.sessionId]);
+    assert.deepEqual(await sessionIds(other.userId), otherAtSignup);
   });
 });
 
