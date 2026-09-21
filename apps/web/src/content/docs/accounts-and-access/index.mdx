@@ -1,0 +1,93 @@
+export const frontmatter = {
+  title: "Accounts and access",
+  description: "What an account is and owns, how a teammate joins, and where a name, an address or a password is changed.",
+};
+
+# Accounts and access
+
+An account is a person: a name, an email address to sign in with, and a
+password. It owns one organization, and that organization owns one workspace —
+the tenant every screen in the product reads. Signing up creates all three in
+one transaction, so there is no account without its workspace and no workspace
+without its owner.
+
+## Signing up and signing in
+
+Signup asks for a name, an email address and a password of 8 to 128
+characters, and nothing else. The address you type is the address the account
+has: obstack sends no email of any kind, so nothing is verified and nothing has
+to be clicked. The organization is named after you at signup, and the product
+has no control to rename it.
+
+Sign in with the address and the password. Attempts are limited per address —
+5 signups an hour and 10 sign-ins every 10 minutes — and a refused attempt says
+so rather than pretending the password was wrong.
+
+## Your account
+
+**Account**, in the top-right menu, is you as distinct from the workspace:
+
+- **Name** — shown in the top bar and on the members roster of every
+  organization you belong to.
+- **Picture** — a PNG, JPEG or WebP. With JavaScript on, the picker shrinks it
+  to 128 pixels before it is uploaded; either way it is judged against 256 KB
+  and against its bytes, not its file name. It is shown beside your name in the
+  top bar and on the roster, to the people who share an organization with you,
+  and removing it shows your initials again.
+- **Email** — the address you sign in with. Changing it applies at once, with
+  no confirmation, and it is the address invitations are matched against: an
+  invitation sent to your old address stops working for this account once you
+  change it. An address that already belongs to another account is refused.
+- **Password** — changed with the current one in hand, within the same 8 to
+  128 characters. The same step can sign out every other session.
+- **Sessions** — every browser signed in to your account, with when it signed
+  in, when it expires, and the address the request arrived from as obstack saw
+  it (a proxy's, or none). Any session but the current one is ended from the
+  list; the current one is ended from the top bar's *Sign out*. An ended
+  session is over on its next request.
+- **Organizations** — every organization your account belongs to, with the
+  role your membership holds.
+
+Password attempts and email changes are limited per account, whatever address
+they come from: 5 password attempts every 10 minutes and 5 email changes an
+hour.
+
+## Organizations, workspaces and teammates
+
+A session reads one workspace at a time. By default it is the workspace of the
+organization the account **owns**; every other organization the account belongs
+to is a workspace it can switch to. The **switcher** sits under the workspace
+label in the sidebar, lists each organization with your role in it, and appears
+only when there is more than one; a switch is remembered until the next one.
+Accepting an invitation adds an organization to that list and changes nothing
+until you switch to it from the sidebar.
+
+Teammates arrive by invitation, from **Settings → Members**. An invitation is a
+link, not an email — obstack sends none — so the owner copies it out of the
+pending list and delivers it however they like. It works only for an account
+whose email address matches the invited one, it expires 48 hours after it was
+issued, and it can be cancelled from the same list until it is accepted.
+
+Accepting adds the invitee to the inviter's organization as a `member`: they
+appear on its roster, it appears on their account page and in their switcher,
+and their session keeps reading their own workspace until they switch. A member
+who has switched can do everything in that workspace its owner can — read every
+surface, issue and revoke keys, change the plan — except invite: inviting and
+cancelling invitations stay with the owner, and the Members tab says so rather
+than offering a form that would be refused. There is no member removal and no
+role change in the product.
+
+## Keys are for programs
+
+An account signs in to the product. A **key** is what a program sends with — an
+exporter, a collector, an agent — and it belongs to the workspace, not to a
+person. It is issued in **Settings → API keys** with a scope: `ingest` to send
+telemetry, `read` or `setup` to reach the workspace through the
+[MCP endpoint](/docs/mcp). The token is shown once, and a key is revoked from
+the same list; a revoked key stops being accepted within 30 seconds. The
+[quickstart](/docs/quickstart) issues your first `ingest` key and shows it
+inside the snippet that uses it.
+
+Everything an account cannot do — recover a forgotten password, verify an
+address, delete itself — is written down with the rest of the absences on
+[what obstack does not do](/docs/what-obstack-does-not-do).

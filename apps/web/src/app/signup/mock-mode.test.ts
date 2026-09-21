@@ -141,6 +141,124 @@ test("/login renders the same honest no-form state in mock mode (D150)", async (
   assert.match(copy, /Open the demo/, "the same label, warranted by the same gate");
 });
 
+test("/app/account renders the honest no-account state in mock mode (D150/D707)", async () => {
+  // The eighth surface, and the first INSIDE the shell: the account page has
+  // nothing to show in a deployment that keeps no accounts, so its mock branch
+  // returns before `connection()`, before `searchParams` and before any auth
+  // import's first use — the settings page's D125 ordering.
+  const page = await import("@/app/app/account/page");
+  const tree = await page.default({ searchParams: Promise.resolve({}) });
+
+  const rendered = tags(tree);
+  assert.ok(!rendered.includes("form"), "mock mode offers no form");
+  assert.ok(!rendered.includes("input"), "and nothing to type a password into");
+  assert.ok(!rendered.includes("button"), "and nothing to submit");
+
+  const copy = text(tree);
+  assert.match(copy, /prototype/);
+  assert.match(copy, /keeps no accounts/);
+  assert.match(copy, /an obstack you run yourself/);
+
+  // Two pointers, both real and both in this build (D327): the overview this
+  // demo IS, and the docs page about accounts on the in-app mount.
+  const links = hrefs(tree);
+  assert.ok(links.includes("/app"), "the overview this deployment is");
+  assert.ok(links.includes("/app/docs/accounts-and-access"), "the accounts page of the docs corpus this build serves");
+});
+
+test("every account action trips the same way in mock mode (D152/D707)", async () => {
+  // Five functions sharing ONE gate (`accountSession`), asserted per action
+  // rather than on the helper — the settings list's shape, for its reason: a
+  // future action that forgets the gate leaves this list unchanged and green.
+  //
+  // Same proof: the redirect target is a bare `/app/account`. Take the mode
+  // check out and the post reaches `readAccount`, which builds the auth
+  // instance on the missing secret and throws something that is not a redirect
+  // at all. Empty FormData throughout — the guard runs before any field is
+  // read, so nothing below it can be what answered.
+  const actions = await import("@/app/app/account/actions");
+  const cases: [string, (form: FormData) => Promise<unknown>][] = [
+    ["update name", actions.updateName],
+    ["update email", actions.updateEmail],
+    ["change password", actions.updatePassword],
+    ["sign out a session", actions.revokeSession],
+    ["sign out other sessions", actions.revokeOtherSessions],
+    // D718: the picture's two writes carry the same gate.
+    ["upload picture", actions.uploadAvatar],
+    ["remove picture", actions.removeAvatar],
+  ];
+
+  for (const [where, action] of cases) {
+    const logged: string[] = [];
+    const real = console.error;
+    console.error = (...args: unknown[]) => void logged.push(args.map(String).join(" "));
+    let signal: { digest?: unknown } | undefined;
+    try {
+      await action(new FormData());
+    } catch (error) {
+      signal = error as { digest?: unknown };
+    } finally {
+      console.error = real;
+    }
+
+    const digest = String(signal?.digest);
+    assert.equal(digest.split(";")[0], "NEXT_REDIRECT", `${where}: refused by sending back`);
+    assert.ok(digest.includes(";/app/account;"), `${where}: to the account page itself, with no code appended`);
+    assert.match(logged[0] ?? "", new RegExp(`\\[account\\] ${where} posted in mock mode`));
+  }
+});
+
+test("the workspace switch action trips the same way in mock mode (D152/D717)", async () => {
+  // The shell's one write. Mock mode has one fictional workspace and renders no
+  // switcher, so a post here came from somewhere no visitor can be: a bare
+  // redirect to the overview, before `getSessionContext` builds the auth
+  // instance on the missing secret. Empty FormData — the guard runs before the
+  // workspace id is read.
+  const { switchWorkspace } = await import("@/app/app/workspace-actions");
+
+  const logged: string[] = [];
+  const real = console.error;
+  console.error = (...args: unknown[]) => void logged.push(args.map(String).join(" "));
+  let signal: { digest?: unknown } | undefined;
+  try {
+    await switchWorkspace(new FormData());
+  } catch (error) {
+    signal = error as { digest?: unknown };
+  } finally {
+    console.error = real;
+  }
+
+  const digest = String(signal?.digest);
+  assert.equal(digest.split(";")[0], "NEXT_REDIRECT", "refused by sending back");
+  assert.ok(digest.includes(";/app;"), "to the overview, with nothing appended");
+  assert.match(logged[0] ?? "", /\[workspace\] switch posted in mock mode/);
+});
+
+test("the avatar route 404s rather than reading in mock mode (D152/D718)", async () => {
+  // The third route on this list, and an IMAGE request: mock mode renders
+  // initials everywhere and keeps no accounts, so the refusal is a status code
+  // with no body — a login page inside an <img> would be a broken picture.
+  // Take the mode check out and the request reaches `getSessionContext`, which
+  // builds the auth instance on the missing secret and throws.
+  const route = await import("@/app/app/avatar/[userId]/route");
+
+  const logged: string[] = [];
+  const real = console.error;
+  console.error = (...args: unknown[]) => void logged.push(args.map(String).join(" "));
+  let response: Response;
+  try {
+    response = await route.GET(new Request("https://obstack.dev/app/avatar/aB3xQ7zLmN0pR5tV9wY2cD4fG6hJ8kS1"), {
+      params: Promise.resolve({ userId: "aB3xQ7zLmN0pR5tV9wY2cD4fG6hJ8kS1" }),
+    });
+  } finally {
+    console.error = real;
+  }
+
+  assert.equal(response.status, 404, "this route does not exist in this deployment");
+  assert.equal(await response.text(), "", "and nothing to read from the refusal");
+  assert.match(logged[0] ?? "", /\[avatar\] requested in mock mode/);
+});
+
 test("both actions trip rather than reach the auth stack in mock mode", async () => {
   // No form means no legitimate post, so these branches are tripwires: they
   // announce themselves and return. Without them the actions would build the

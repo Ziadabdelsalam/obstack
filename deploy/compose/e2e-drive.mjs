@@ -4833,6 +4833,9 @@ try {
     "/app/incidents",
     // S8.1 (D21/D663): the MCP page — the registry gained it, so the probe does.
     "/app/mcp",
+    // D707: the account page reads the signed-in person's own row and sessions
+    // — the registry gained it, so the probe does (D565).
+    "/app/account",
     `/app/incidents/${historicalId}`,
   ];
   for (const path of probed) {

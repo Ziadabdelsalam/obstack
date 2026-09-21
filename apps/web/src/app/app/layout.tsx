@@ -10,12 +10,15 @@ import { DemoFooter } from "@/components/shell/DemoFooter";
 import { TourGuide } from "@/components/shell/TourGuide";
 import { FloatingAsk } from "@/components/ask/FloatingAsk";
 import { WorkspaceProvider } from "@/state/workspace-store";
+import { avatarPath } from "@/lib/account-types";
 import { usage as mockUsage } from "@/mock/workspace";
 import { dataMode } from "@/server/data";
 import { getAuth } from "@/server/auth";
+import { listAvatarEtags } from "@/server/avatars";
 import { queryRows } from "@/server/postgres";
 import { getSessionContext } from "@/server/session";
 import { getUsage } from "@/server/usage";
+import { listWorkspaceChoices } from "@/server/workspaces";
 
 /**
  * The demo's banner, which stays mock-fed (D125): mock mode has no ledger to
@@ -100,15 +103,35 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   // A signed-in user whose session disappears between the two reads above is
   // the same verdict from this guard's side: signed out, so /login.
   if (live && !(session && user)) redirect("/login");
+  // Three reads on the one session, together: the banner's numbers, the
+  // workspaces this person may switch to (D717 — the active one's row names
+  // the role the menu shows), and whether they have a picture (D718).
+  const [banner, choices, avatars] = session
+    ? await Promise.all([
+        liveBanner(session.workspaceId),
+        listWorkspaceChoices(session.userId, queryRows),
+        listAvatarEtags([session.userId], queryRows),
+      ])
+    : [MOCK_BANNER, [], new Map<string, string>()];
+  const active = choices.find((choice) => choice.workspaceId === session?.workspaceId);
+  const avatarEtag = session ? avatars.get(session.userId) : undefined;
   const account =
     session && user
-      ? { name: user.name, email: user.email, workspaceId: session.workspaceId }
+      ? {
+          name: user.name,
+          email: user.email,
+          workspaceId: session.workspaceId,
+          role: active?.role ?? "member",
+          avatar: avatarEtag ? avatarPath(session.userId, avatarEtag) : null,
+        }
       : null;
-  const banner = session ? await liveBanner(session.workspaceId) : MOCK_BANNER;
   return (
     <WorkspaceProvider>
       <div className="flex h-screen overflow-hidden">
-        <SideNav workspaceId={session?.workspaceId ?? null} />
+        <SideNav
+          workspaceId={session?.workspaceId ?? null}
+          choices={choices.map(({ workspaceId, orgName, role }) => ({ workspaceId, orgName, role }))}
+        />
         <div className="flex min-w-0 flex-1 flex-col">
           <TopBar live={live} account={account} />
           {/* Real Postgres usage rows in live mode, the demo's numbers in mock —

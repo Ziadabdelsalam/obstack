@@ -458,7 +458,7 @@ const SURFACES: Record<SurfaceId, Surface> = {
     pages: () => ["login.html", "signup.html"],
   },
   docs: {
-    what: "`/docs/**` — the 15 published pages, public since S4.4 T1 (D319/D320); +/docs/mcp in S8.1",
+    what: "`/docs/**` — the 16 published pages, public since S4.4 T1 (D319/D320); +/docs/mcp in S8.1, +/docs/accounts-and-access in D715",
     sources: () => [
       ["app/docs/[[...slug]]/page.tsx", read(path.join(APP, "docs/[[...slug]]/page.tsx"))],
       ...textFilesUnder(path.join(WEB, "src/components/docs"), "components/docs"),
@@ -767,7 +767,7 @@ test("(b'') every prerendered page is accounted for", (t) => {
   assert.equal(new Set(perSurface).size, perSurface.length, "two surfaces claim the same prerendered page");
   assert.deepEqual(perSurface.filter(IN_APP_OUT_OF_SCOPE), [], "a surface claims an in-app page");
   // And the docs surface really is the whole corpus, not one page of it.
-  assert.equal(SURFACES.docs.pages().length, 16, "the docs surface no longer covers all 16 published pages (the index and fifteen)");
+  assert.equal(SURFACES.docs.pages().length, 17, "the docs surface no longer covers all 17 published pages (the index and sixteen)");
 });
 
 // ────────────────────────────────────────────── (c) the sample-label invariant

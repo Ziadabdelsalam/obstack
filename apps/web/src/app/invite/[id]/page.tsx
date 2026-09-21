@@ -87,10 +87,11 @@ function SignInPrompt() {
 /**
  * D140, present tense and nothing else. Membership is what acceptance produced;
  * the invitee's own workspace is what they still see, because resolution is
- * owner-pinned (`session.ts`) and acceptance adds a member row rather than
- * moving anyone. Viewing the org they joined is the S3.5 switcher's job, so this
- * copy does not mention it — a "soon" here would be a promise the product cannot
- * keep (D13/D21).
+ * owner-pinned by default (`session.ts`) and acceptance adds a member row
+ * rather than moving anyone. Viewing the org they joined is the sidebar
+ * switcher's job (D717), which is why the second clause names it — a real
+ * control, not a promise. The e2e drive waits for "viewing your own workspace"
+ * to know acceptance landed here, so that phrase stays whole.
  */
 function Joined({ organizationName }: { organizationName: string }) {
   return (
@@ -99,7 +100,8 @@ function Joined({ organizationName }: { organizationName: string }) {
         You&rsquo;ve joined {organizationName}
       </h1>
       <p className={BODY}>
-        You&rsquo;ve joined {organizationName} as a member. You&rsquo;re viewing your own workspace.
+        You&rsquo;ve joined {organizationName} as a member. You&rsquo;re viewing your own workspace
+        &mdash; switch to {organizationName} from the sidebar whenever you like.
       </p>
       <p className="mt-6 text-[12.5px] text-mid">
         <Link href="/app" className={LINK}>
@@ -124,11 +126,10 @@ function AcceptCard({
         Join {invite.organizationName}
       </h1>
       {/* The same present-tense truth the success surface tells, said before the
-          click: membership is additive, and one account still sees one
-          workspace. */}
+          click: membership is additive, and switching is a separate act. */}
       <p className={BODY}>
-        Accepting adds {invite.email} to {invite.organizationName} as a member. obstack shows one
-        workspace per account, so you&rsquo;ll keep seeing your own.
+        Accepting adds {invite.email} to {invite.organizationName} as a member. You keep seeing
+        your own workspace until you switch to {invite.organizationName} from the sidebar.
       </p>
 
       <form action={acceptInvitation} className="mt-7 flex flex-col gap-4">

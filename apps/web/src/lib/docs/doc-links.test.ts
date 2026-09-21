@@ -121,7 +121,7 @@ test("every /docs/... link in the corpus names a page the manifest carries", () 
   // 404 identically on both mounts — this is the assertion that says so at test
   // time instead.
   const all = pages.flatMap((p) => p.links);
-  assert.equal(all.length, 28, "the corpus's link count changed — update this deliberately"); // S8.1 T5: /docs/mcp links three pages; chart 0.7.0: the helm page links four (billing, quickstart, BYO OTel, mcp)
+  assert.equal(all.length, 32, "the corpus's link count changed — update this deliberately"); // S8.1 T5: /docs/mcp links three pages; chart 0.7.0: the helm page links four (billing, quickstart, BYO OTel, mcp); D715: /docs/accounts-and-access links three (mcp, quickstart, absences) and the index links it
   for (const href of all) {
     const [pathname] = href.split("#");
     const segments = pathname.slice(PUBLIC_DOCS_BASE.length).split("/").filter(Boolean);
@@ -178,7 +178,7 @@ test("the rendered body links stay on the mount the reader is on", (t) => {
     t.skip(`${why} — skipped locally, fails on CI`);
     return;
   }
-  assert.equal(docsManifest.length, 16); // S8.1 T5: +/docs/mcp
+  assert.equal(docsManifest.length, 17); // S8.1 T5: +/docs/mcp; D715: +/docs/accounts-and-access
   let checkedBodyLinks = 0;
   for (const p of pages) {
     const at = `/${p.slug.join("/")}`;
@@ -214,7 +214,7 @@ test("the rendered body links stay on the mount the reader is on", (t) => {
       checkedBodyLinks++;
     }
   }
-  assert.equal(checkedBodyLinks, 28, /* S8.1 T5: /docs/mcp's three body links; chart 0.7.0: the helm page's four */ "the corpus's link count changed — update this deliberately");
+  assert.equal(checkedBodyLinks, 32, /* S8.1 T5: /docs/mcp's three body links; chart 0.7.0: the helm page's four; D715: the accounts page's three and the index's one */ "the corpus's link count changed — update this deliberately");
 });
 
 // ───────────────────────────────────────────────── the fragment half (R1 B)

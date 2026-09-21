@@ -90,21 +90,28 @@ const AUTH_TABLES = [
 ];
 
 /**
- * S3.2's sibling writer. `invites.integration.test.ts` signs strangers up and
- * invites them, so it writes six of the seven tables below — and node runs test
- * files in PARALLEL (measured), with both files taking their DSN from the same
- * variable. Every row that file creates is reachable from a user whose email
- * carries this literal, and it asserts that of its own fixtures, so the two
- * spellings are one agreement rather than two hopes.
+ * The sibling writers, NAMED. `invites.integration.test.ts` (S3.2) signs
+ * strangers up and invites them, and `account.integration.test.ts` (D707)
+ * signs strangers up, renames them, changes their addresses and opens and ends
+ * their sessions — between them they write six of the seven tables below — and
+ * node runs test files in PARALLEL (measured), with every file taking its DSN
+ * from the same variable. Every row either file creates is reachable from a
+ * user whose email carries its literal, and each asserts that of its own
+ * fixtures, so the spellings are one agreement rather than three hopes.
  *
  * The agreement has a second half, and it is the one that keeps tier (i) below
  * from going blind: nothing THIS file writes — not its fixtures and not the rows
- * a leak would create out of `leakBody` — may carry the literal either, or the
+ * a leak would create out of `leakBody` — may carry either literal, or the
  * matrix would stop counting exactly the door that opened. That is asserted at
  * the top of the matrix test rather than reasoned about here.
+ *
+ * `verification` is the one table with no exclusion: neither sibling writes it
+ * (the account file asserts so around its email changes), so it stays counted
+ * whole.
  */
-const SIBLING_LITERAL = "inv-it-";
-const SIBLING_ROWS = `%${SIBLING_LITERAL}%`;
+const SIBLING_LITERALS = ["inv-it-", "acct-it-"] as const;
+/** Bound as `$2` and `$3`, in this order, everywhere the counts run. */
+const SIBLING_ROWS = SIBLING_LITERALS.map((literal) => `%${literal}%`);
 
 /**
  * How each table is counted, as its own predicate. The set is deliberately
@@ -112,12 +119,12 @@ const SIBLING_ROWS = `%${SIBLING_LITERAL}%`;
  *
  * (i) the seven auth tables are counted WHOLE except for the sibling file's
  * rows — narrowing them to this run's rows would let a leak that wrote somebody
- * ELSE'S row read as green, so the exclusion is by the one named file that also
- * writes them and by nothing else. Before S3.2 this file was the suite's only
+ * ELSE'S row read as green, so the exclusion is by the named files that also
+ * write them and by nothing else. Before S3.2 this file was the suite's only
  * writer and the counts were plain; the `NOT LIKE`s are exactly the price of
- * gaining a second one, and they are written as a JOIN-free subquery on `user`
- * so the excluded set is "rows belonging to that file's strangers", not "rows
- * that happen to spell something".
+ * gaining a second one (and a third, D707), and they are written as a
+ * JOIN-free subquery on `user` so the excluded set is "rows belonging to those
+ * files' strangers", not "rows that happen to spell something".
  *
  * (ii) `workspaces` is counted by this RUN's rows — widening it back to whole
  * re-imports a second writer, because `saved-views.integration.test.ts` writes
@@ -133,17 +140,17 @@ const SIBLING_ROWS = `%${SIBLING_LITERAL}%`;
  * file fires the matrix's own body to demonstrate, watching `organization` and
  * `member` move under a bypassed guard.
  */
-const SIBLING_USERS = `(SELECT id FROM "user" WHERE email LIKE $2)`;
+const SIBLING_USERS = `(SELECT id FROM "user" WHERE email LIKE $2 OR email LIKE $3)`;
 
 const AUTH_TABLE_COUNTS: Record<string, string> = {
-  user: `(SELECT count(*)::int FROM "user" WHERE email NOT LIKE $2)`,
+  user: `(SELECT count(*)::int FROM "user" WHERE email NOT LIKE $2 AND email NOT LIKE $3)`,
   session: `(SELECT count(*)::int FROM "session" WHERE "userId" NOT IN ${SIBLING_USERS})`,
   account: `(SELECT count(*)::int FROM "account" WHERE "userId" NOT IN ${SIBLING_USERS})`,
   verification: `(SELECT count(*)::int FROM "verification")`,
-  organization: `(SELECT count(*)::int FROM "organization" WHERE name NOT LIKE $2)`,
+  organization: `(SELECT count(*)::int FROM "organization" WHERE name NOT LIKE $2 AND name NOT LIKE $3)`,
   member: `(SELECT count(*)::int FROM "member" WHERE "userId" NOT IN ${SIBLING_USERS})`,
   invitation: `(SELECT count(*)::int FROM "invitation"
-                 WHERE email NOT LIKE $2 AND "inviterId" NOT IN ${SIBLING_USERS})`,
+                 WHERE email NOT LIKE $2 AND email NOT LIKE $3 AND "inviterId" NOT IN ${SIBLING_USERS})`,
 };
 
 /** All eight counts in ONE statement, so a snapshot is internally consistent. */
@@ -158,7 +165,7 @@ const ROW_COUNTS_SQL = `SELECT
 const RUN_ORGS = `%${RUN}%`;
 
 async function rowCounts(): Promise<Record<string, number>> {
-  const [row] = await queryRows<Record<string, number>>(ROW_COUNTS_SQL, [RUN_ORGS, SIBLING_ROWS]);
+  const [row] = await queryRows<Record<string, number>>(ROW_COUNTS_SQL, [RUN_ORGS, ...SIBLING_ROWS]);
   return row;
 }
 
@@ -491,10 +498,12 @@ test("D128: every refused endpoint answers 404 to a REAL session and moves no ro
     // these two fixture spellings or from `leakBody`, so if none of them can
     // carry the literal, no row a leak writes can hide behind it.
     for (const spelling of [stranger.name, stranger.email]) {
-      assert.ok(
-        !spelling.includes(SIBLING_LITERAL),
-        `a fixture spelling carries the sibling literal and would go uncounted: ${spelling}`,
-      );
+      for (const literal of SIBLING_LITERALS) {
+        assert.ok(
+          !spelling.includes(literal),
+          `a fixture spelling carries the sibling literal ${literal} and would go uncounted: ${spelling}`,
+        );
+      }
     }
   });
 
@@ -524,10 +533,12 @@ test("D128: every refused endpoint answers 404 to a REAL session and moves no ro
 
   for (const path of refused) {
     const leak = leakBody(path, stranger);
-    assert.ok(
-      !leak.includes(SIBLING_LITERAL),
-      `the leak body for ${path} carries the sibling literal — a row it wrote would go uncounted`,
-    );
+    for (const literal of SIBLING_LITERALS) {
+      assert.ok(
+        !leak.includes(literal),
+        `the leak body for ${path} carries the sibling literal ${literal} — a row it wrote would go uncounted`,
+      );
+    }
     const before = await rowCounts();
     const response = await POST(
       new Request(at(path), {

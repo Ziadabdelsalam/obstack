@@ -154,8 +154,9 @@ yet wired to real data carry a `SAMPLE DATA` badge (D21), unwired widgets on a
 wired page carry a `SAMPLE` chip (F6), and in live mode the shell drops the demo
 chrome it cannot back — the throughput ticker, the region tag and the free-tier
 banner are simply absent (F7). What is left unmarked is the fixed app furniture:
-the notification bell's unread count and the account menu are still demo content
-until M3 owns notifications and auth.
+the notification bell's unread count is still demo content; the account menu
+names the signed-in operator and opens `/app/account`, their own name, address,
+password and sessions (D707).
 
 ## The e2e drive — two strangers, two workspaces (the S3.1 criterion)
 

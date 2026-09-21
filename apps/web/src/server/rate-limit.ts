@@ -29,7 +29,18 @@ import { MCP_RATE_LIMIT } from "@/lib/mcp-types";
  * unreachable for it. The window is `MCP_RATE_LIMIT`, single-sourced with the
  * page copy and the docs.
  */
-export type RateLimitAction = "signup" | "login" | "mcp";
+/**
+ * `password` and `email` (D713) are the account page's two writes that take
+ * an attempt at something secret or disclose something about another account
+ * — the current-password verify behind a password change, and the taken-
+ * address answer behind an email change (`server/account.ts`). Both are
+ * keyed by the USER ID, the `mcp` precedent: a signed-in write is attributable
+ * to the account it runs as, and an IP-keyed budget there would let one
+ * stolen cookie spend a NAT's worth of colleagues' attempts. The subject is
+ * never absent on that path — the session gate runs first — so the fail-open
+ * branch is unreachable for them too.
+ */
+export type RateLimitAction = "signup" | "login" | "mcp" | "password" | "email";
 
 type Policy = { max: number; windowMs: number };
 
@@ -37,6 +48,8 @@ const POLICIES: Record<RateLimitAction, Policy> = {
   signup: { max: 5, windowMs: 60 * 60 * 1000 },
   login: { max: 10, windowMs: 10 * 60 * 1000 },
   mcp: { max: MCP_RATE_LIMIT.max, windowMs: MCP_RATE_LIMIT.windowMs },
+  password: { max: 5, windowMs: 10 * 60 * 1000 },
+  email: { max: 5, windowMs: 60 * 60 * 1000 },
 };
 
 const LONGEST_WINDOW_MS = Math.max(...Object.values(POLICIES).map((p) => p.windowMs));

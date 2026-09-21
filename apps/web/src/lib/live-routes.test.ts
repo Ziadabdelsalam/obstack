@@ -27,6 +27,16 @@ test("/app/mcp is live-wired, exactly and not as a subtree", () => {
   assert.equal(isLiveWiredRoute("/mcp"), false, "the endpoint is not a page and carries no badge");
 });
 
+// D707 (D21): the account page reads the signed-in person's own user row,
+// session rows and memberships from Postgres in live mode — wired exactly,
+// not as a subtree (nothing lives under it). Registration, not the page (S2.0
+// L1): drop the entry and this goes red, which is exactly what `SampleDataBadge`
+// would then do over a person's own name and sessions.
+test("/app/account is live-wired, exactly and not as a subtree", () => {
+  assert.equal(isLiveWiredRoute("/app/account"), true);
+  assert.equal(isLiveWiredRoute("/app/account/anything"), false);
+});
+
 // S7.3 (D21/D514): slos reads the workspace's own objectives, measured by the
 // ingest binary's evaluator, in live mode — wired exactly, not as a subtree.
 test("/app/slos is live-wired, exactly and not as a subtree", () => {

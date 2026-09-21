@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useTransition } from "react";
+import Link from "next/link";
 import {
   API_KEY_SCOPES,
   API_KEY_SCOPE_LABELS,
@@ -12,6 +13,7 @@ import { apiKeys, ingest, members, modelPrices, usage } from "@/mock/workspace";
 import type { Member } from "@/mock/workspace";
 import { auditLog } from "@/mock/inbox";
 import { complianceItems } from "@/mock/security";
+import { Avatar, initialsOf } from "@/components/ui/Avatar";
 import { SampleMark } from "@/components/ui/SampleMark";
 import {
   cancelInvitation,
@@ -76,6 +78,8 @@ export interface LiveMember {
   name: string;
   email: string;
   role: string;
+  /** `avatarPath` for a stored picture (D718), or null for the initials. */
+  avatar: string | null;
 }
 
 export interface LiveInvite {
@@ -141,6 +145,8 @@ export interface LiveBilling {
 export interface LiveSettings {
   orgName: string;
   workspaceId: string;
+  /** The viewer's own role in this organization (D717): `owner` renders the invitation controls, `member` reads the roster. */
+  role: string;
   members: LiveMember[];
   invites: LiveInvite[];
   keys: LiveKey[];
@@ -280,7 +286,7 @@ function Initials({ name }: { name: string }) {
  * server (one definition, D143) and the origin comes from the browser, because
  * the app cannot know from the inside which host a reader reached it on.
  */
-function PendingInviteRow({ invite }: { invite: LiveInvite }) {
+function PendingInviteRow({ invite, cancellable }: { invite: LiveInvite; cancellable: boolean }) {
   const [copied, setCopied] = useState(false);
   return (
     <div className="flex flex-wrap items-center gap-3 border-b border-line/60 py-2.5 last:border-0">
@@ -309,16 +315,18 @@ function PendingInviteRow({ invite }: { invite: LiveInvite }) {
         )}
         {copied ? "copied" : "copy link"}
       </button>
-      <form action={cancelInvitation}>
-        <input type="hidden" name="invitationId" value={invite.id} />
-        <button
-          type="submit"
-          className="font-mono text-[10.5px] text-faint hover:text-err"
-          style={{ color: "var(--color-faint)" }}
-        >
-          cancel
-        </button>
-      </form>
+      {cancellable && (
+        <form action={cancelInvitation}>
+          <input type="hidden" name="invitationId" value={invite.id} />
+          <button
+            type="submit"
+            className="font-mono text-[10.5px] text-faint hover:text-err"
+            style={{ color: "var(--color-faint)" }}
+          >
+            cancel
+          </button>
+        </form>
+      )}
     </div>
   );
 }
@@ -330,11 +338,14 @@ function PendingInviteRow({ invite }: { invite: LiveInvite }) {
  *
  * Both sentences under the form are present tense and describe what the product
  * does today (D140). Membership is additive: an invitee gains a member row in
- * this organization and keeps resolving to their OWN workspace, because session
- * resolution is owner-pinned — so the copy says one workspace per account rather
- * than promising a switcher that does not exist.
+ * this organization and keeps resolving to their OWN workspace until they
+ * switch to this one from the sidebar (D717). The invitation controls render
+ * for the owner only: better-auth's `member` role holds no invitation
+ * permission, so a member's post would be refused by the library — the tab
+ * says so instead of offering a form that can only fail.
  */
 function LiveMembersTab({ live }: { live: LiveSettings }) {
+  const owner = live.role === "owner";
   return (
     <>
       <Section title={`members · ${live.members.length}`}>
@@ -343,7 +354,7 @@ function LiveMembersTab({ live }: { live: LiveSettings }) {
             key={m.userId}
             className="flex flex-wrap items-center gap-3 border-b border-line/60 py-2.5 last:border-0"
           >
-            <Initials name={m.name} />
+            <Avatar src={m.avatar} alt={m.name} initials={initialsOf(m.name, m.email)} size={28} />
             <span className="min-w-0 flex-1">
               <span className="block truncate text-[13px] text-ink">{m.name}</span>
               <span className="block font-mono text-[10.5px] text-faint">{m.email}</span>
@@ -351,17 +362,36 @@ function LiveMembersTab({ live }: { live: LiveSettings }) {
             <span className="font-mono text-[11px] text-mid">{m.role}</span>
           </div>
         ))}
+        {/* The roster shows a name and an address it does not own: both are the
+            person's, changed on their own page (D707), so the one place a
+            member would look for the control says where it is. */}
+        <p className="mt-2.5 text-[12.5px] leading-relaxed text-mid">
+          Your own name, email address and password are on your{" "}
+          <Link href="/app/account" className="text-ink underline underline-offset-2">
+            account page
+          </Link>
+          .
+        </p>
       </Section>
 
       <Section title={`pending invites · ${live.invites.length}`}>
         {live.invites.length === 0 ? (
           <p className="py-1 text-[12.5px] text-faint">No open invitations.</p>
         ) : (
-          live.invites.map((invite) => <PendingInviteRow key={invite.id} invite={invite} />)
+          live.invites.map((invite) => (
+            <PendingInviteRow key={invite.id} invite={invite} cancellable={owner} />
+          ))
         )}
       </Section>
 
       <Section title="invite a teammate">
+        {!owner && (
+          <p className="text-[12.5px] leading-relaxed text-mid">
+            Only {live.orgName}&rsquo;s owner invites teammates and cancels invitations. You are a
+            member here: everything else on these tabs is yours to use.
+          </p>
+        )}
+        {owner && (
         <form action={inviteTeammate} className="flex flex-wrap gap-2">
           <input
             name="email"
@@ -379,14 +409,20 @@ function LiveMembersTab({ live }: { live: LiveSettings }) {
             <Plus className="h-3.5 w-3.5" /> Invite
           </button>
         </form>
-        <p className="mt-2.5 text-[12.5px] leading-relaxed text-mid">
-          No email is sent — copy the invite link from the list above and send it yourself. It
-          works only for an account with the address you invited.
-        </p>
-        <p className="mt-1.5 text-[12.5px] leading-relaxed text-mid">
-          Someone who accepts joins {live.orgName} as a member. obstack shows one workspace per
-          account, so they keep seeing their own.
-        </p>
+        )}
+        {owner && (
+          <>
+            <p className="mt-2.5 text-[12.5px] leading-relaxed text-mid">
+              No email is sent — copy the invite link from the list above and send it yourself. It
+              works only for an account with the address you invited.
+            </p>
+            <p className="mt-1.5 text-[12.5px] leading-relaxed text-mid">
+              Someone who accepts joins {live.orgName} as a member and can switch to this workspace
+              from the sidebar. A member can do everything here except invite: inviting and
+              cancelling invitations stay with you, the owner.
+            </p>
+          </>
+        )}
       </Section>
     </>
   );

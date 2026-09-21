@@ -7,7 +7,9 @@ import {
   type LiveIngest,
   type LiveSettings,
 } from "@/components/settings/SettingsSuite";
+import { avatarPath } from "@/lib/account-types";
 import { listApiKeys } from "@/server/api-keys";
+import { listAvatarEtags } from "@/server/avatars";
 import { CHECKOUT_RETURN_PARAM, reconcileCheckoutReturn } from "@/server/billing";
 import { dataMode } from "@/server/data";
 import {
@@ -160,6 +162,20 @@ export default async function SettingsPage({
   // here beats a settings page that names the workspace after nobody.
   if (!orgName) throw new Error(`organization ${session.orgId} has no row`);
 
+  // The viewer's own role in THIS organization (D717): the roster already
+  // holds their member row, and the Members tab decides from it whether the
+  // invitation controls render — the library refuses a member's invite anyway
+  // (`settings/errors.ts`'s `invite-not-owner` arm), so this is the honest
+  // half, not the enforcing half. A viewer with no row here is impossible (the
+  // session resolved through one), and `member` is the safer reading of it.
+  const role = members.find((member) => member.userId === session.userId)?.role ?? "member";
+  // Which members have a picture (D718): ids and etags only, the route serves
+  // the bytes to a viewer who shares the organization — which the roster is.
+  const avatars = await listAvatarEtags(
+    members.map((member) => member.userId),
+    queryRows,
+  );
+
   // Which plans can be BOUGHT is decided here, on the server, and it is decided
   // by price against the catalog rather than by a list of plan names: a plan
   // costing more than the current one is an upgrade, and everything else is not
@@ -222,7 +238,11 @@ export default async function SettingsPage({
   const live: LiveSettings = {
     orgName,
     workspaceId: session.workspaceId,
-    members,
+    role,
+    members: members.map((member) => {
+      const etag = avatars.get(member.userId);
+      return { ...member, avatar: etag ? avatarPath(member.userId, etag) : null };
+    }),
     invites: invites.map((invite) => ({
       id: invite.id,
       email: invite.email,

@@ -42,10 +42,15 @@ test("the active workspace is the org's first by D114's ordering, and only the f
   const { query, seen } = recordingQuery([{ org_id: "org_a", workspace_id: "ws_a" }]);
   await resolveSessionContext("user-1", query);
 
-  // There is no active_workspace column and no switcher (D114), so "active" is
-  // this ORDER BY. A resolution that dropped it would answer differently the
-  // first time an org owns two workspaces — long after the code was written.
-  assert.match(seen[0].sql, /ORDER BY w\.created_at, w\.id/);
+  // "Active" is this ORDER BY, whole (D717 over D114): the chosen row first,
+  // then an owner row before a member row, then the org's first workspace by
+  // `created_at, id`. A resolution that dropped any key would answer
+  // differently the first time the case it decides arises — long after the
+  // code was written.
+  assert.match(
+    seen[0].sql,
+    /ORDER BY \(a\.workspace_id IS NOT NULL\) DESC, \(m\.role = 'owner'\) DESC, w\.created_at, w\.id/,
+  );
   assert.match(seen[0].sql, /LIMIT 1/);
 });
 
@@ -64,9 +69,29 @@ test("the session pins to the org the user OWNS, not merely belongs to (D120)", 
   // Membership is not identity. Without this pin, a user who ends up in a second
   // org — S3.2's invitations, or any org endpoint that stops being refused —
   // could have their whole session resolve to someone else's workspace because
-  // that row happened to sort first. Removing `AND m.role = 'owner'` from
-  // ACTIVE_WORKSPACE_SQL turns this red.
+  // that row happened to sort first. Since D717 the pin is the DEFAULT rather
+  // than a filter: an owner row outranks a member row unless the person chose
+  // otherwise. Removing `(m.role = 'owner') DESC` from ACTIVE_WORKSPACE_SQL
+  // turns this red.
   assert.match(seen[0].sql, /m\.role = 'owner'/);
+});
+
+test("D717: a chosen workspace outranks the default, and only while the membership that admits it holds", async () => {
+  const { query, seen } = recordingQuery([{ org_id: "org_b", workspace_id: "ws_b" }]);
+  await resolveSessionContext("user-1", query);
+
+  // The choice is joined to the MEMBERSHIP row's workspace, on the user and the
+  // workspace both: a row in `active_workspaces` pointing at an organization
+  // the person has left matches no membership row, so it sorts nowhere and the
+  // owner default answers. The write side checks membership too
+  // (`server/workspaces.ts`); this is the read side not trusting it.
+  assert.match(
+    seen[0].sql,
+    /LEFT JOIN active_workspaces a ON a\.user_id = m\."userId" AND a\.workspace_id = w\.id/,
+  );
+  // ...and the choice is the FIRST sort key, ahead of the owner pin.
+  const orderBy = seen[0].sql.slice(seen[0].sql.indexOf("ORDER BY"));
+  assert.ok(orderBy.indexOf("a.workspace_id IS NOT NULL") < orderBy.indexOf("m.role = 'owner'"));
 });
 
 test("a signed-in user with no workspace is a half-state and refuses loudly", async () => {

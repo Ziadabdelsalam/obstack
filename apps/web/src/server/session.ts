@@ -8,16 +8,26 @@ import { queryRows, type QueryRows } from "@/server/postgres";
 export type SessionContext = { userId: string; orgId: string; workspaceId: string };
 
 /**
- * The user's OWN org — the one signup made them owner of — and that org's first
- * workspace. There is no `active_workspace` column and no switcher (D114), so
- * "active" is a query, not a stored choice.
+ * Which workspace a request reads (D717, superseding D114's "no switcher"):
+ * the one the person CHOSE, if they chose one and are still a member of the
+ * organization that owns it; otherwise the org they OWN — the one signup made
+ * them owner of — and that org's first workspace. One statement answers both,
+ * and the ORDER BY is the whole rule: a row the choice matches sorts first, an
+ * owner row sorts before a member row, and `created_at, id` breaks the tie the
+ * way it always has. `LIMIT 1` is what makes "active" one answer.
  *
- * The `role = 'owner'` pin is load-bearing (D120): membership is not identity.
- * A user who ends up in a second org — accepting an invitation is S3.2, and the
- * raw org endpoints stay closed until then — must not have their whole session
- * silently move to someone else's workspace because that row sorted first.
- * Exactly one owner row exists per user this sprint, and the ORDER BY stays as
- * the tie-break that keeps the answer deterministic if that ever stops holding.
+ * The choice is a PREFERENCE, never an authority. `active_workspaces`
+ * (0015) is LEFT JOINed on the user AND the workspace of a membership row, so
+ * a choice pointing at an organization the person has left matches nothing
+ * and the owner default answers — the switcher's write checks membership too
+ * (`server/workspaces.ts`), but the read does not trust the write.
+ *
+ * The `role = 'owner'` pin keeps its D120 job as the DEFAULT: membership is
+ * still not identity, so accepting an invitation (S3.2) moves nobody — a
+ * `member` row sorts below an owner row until the person switches, and
+ * better-auth's `session.activeOrganizationId`, which acceptance writes to the
+ * inviting org, is still read by nothing here (D143). Both are proven against
+ * real rows in `auth.integration.test.ts` and `invites.integration.test.ts`.
  *
  * The join also answers "which org" — a member row is the only place a user's
  * org is recorded, and reading it here means the session cookie is never
@@ -27,8 +37,9 @@ const ACTIVE_WORKSPACE_SQL = `
   SELECT m."organizationId" AS org_id, w.id AS workspace_id
     FROM "member" m
     JOIN workspaces w ON w.org_id = m."organizationId"
-   WHERE m."userId" = $1 AND m.role = 'owner'
-   ORDER BY w.created_at, w.id
+    LEFT JOIN active_workspaces a ON a.user_id = m."userId" AND a.workspace_id = w.id
+   WHERE m."userId" = $1
+   ORDER BY (a.workspace_id IS NOT NULL) DESC, (m.role = 'owner') DESC, w.created_at, w.id
    LIMIT 1`;
 
 /**

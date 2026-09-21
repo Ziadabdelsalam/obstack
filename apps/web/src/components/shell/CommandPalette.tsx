@@ -40,6 +40,7 @@ const pages: Item[] = [
   { label: "Evals", hint: "ai assist", href: "/app/evals" },
   { label: "Quickstart", hint: "page", href: "/app/onboarding" },
   { label: "Settings", hint: "page", href: "/app/settings" },
+  { label: "Account", hint: "page", href: "/app/account" },
   { label: "Errors only", hint: "filter", href: "/app/traces?status=error" },
   { label: "Slow traces (>5s)", hint: "filter", href: "/app/traces?minMs=5000" },
 ];

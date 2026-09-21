@@ -67,6 +67,31 @@ test("signup and login windows are independent per IP", () => {
   assert.equal(checkRateLimit("login", "1.1.1.1", t0 + 5), true, "login is a different bucket");
 });
 
+// D713: the account page's two budgets are keyed by the USER ID, so the
+// subject that spends one is the account, whatever address the request came
+// from — and the two are independent of each other and of the login budget the
+// same person's address may already have spent.
+test("D713: the 6th password attempt for one account inside 10 minutes is refused; another account and the email budget are untouched", () => {
+  const t0 = 7_000_000;
+  for (let i = 0; i < 5; i++) {
+    assert.equal(checkRateLimit("password", "user_a", t0 + i), true, `password attempt ${i + 1} for a`);
+  }
+  assert.equal(checkRateLimit("password", "user_a", t0 + 5), false, "6th password attempt for a");
+  assert.equal(checkRateLimit("password", "user_b", t0 + 5), true, "b's own budget");
+  assert.equal(checkRateLimit("email", "user_a", t0 + 5), true, "a's email budget is a different bucket");
+  const TEN_MINUTES = 10 * 60 * 1000;
+  assert.equal(checkRateLimit("password", "user_a", t0 + TEN_MINUTES + 1), true, "the window elapsed");
+});
+
+test("D713: the 6th email change for one account inside an hour is refused", () => {
+  const t0 = 8_000_000;
+  for (let i = 0; i < 5; i++) assert.equal(checkRateLimit("email", "user_a", t0 + i), true, `email change ${i + 1}`);
+  assert.equal(checkRateLimit("email", "user_a", t0 + 5), false, "6th email change");
+  const HOUR = 60 * 60 * 1000;
+  assert.equal(checkRateLimit("email", "user_a", t0 + 5 + 59 * 60 * 1000), false, "still inside the hour");
+  assert.equal(checkRateLimit("email", "user_a", t0 + HOUR + 1), true, "the hour elapsed");
+});
+
 test("no IP present: fail open, and the warning fires exactly once across two calls", () => {
   const seen: unknown[][] = [];
   const originalWarn = console.warn;

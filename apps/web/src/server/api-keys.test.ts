@@ -378,6 +378,11 @@ const SETTINGS_ARMS: ReadonlyArray<[string, SettingsErrorCode]> = [
   ["INVALID_EMAIL", "invite-email-invalid"],
   ["USER_IS_ALREADY_A_MEMBER_OF_THIS_ORGANIZATION", "invite-member-exists"],
   ["USER_IS_ALREADY_INVITED_TO_THIS_ORGANIZATION", "invite-pending"],
+  // D717: a member switched into someone else's organization is refused by the
+  // library's own roles (`member` holds no invitation permission) — the two
+  // codes name what the reader can act on: it is the owner's control.
+  ["YOU_ARE_NOT_ALLOWED_TO_INVITE_USERS_TO_THIS_ORGANIZATION", "invite-not-owner"],
+  ["YOU_ARE_NOT_ALLOWED_TO_CANCEL_THIS_INVITATION", "invite-not-owner"],
 ];
 
 /** The errors are REAL `APIError`s: the mapping keys off `name`, and only the class proves it. */
@@ -399,7 +404,7 @@ const OWN_ARMS: ReadonlyArray<[Error, SettingsErrorCode]> = [
 ];
 
 test("D133: every settings arm maps directly, from a real instance", () => {
-  assert.equal(SETTINGS_ARMS.length, 3, "an arm was added or removed without a direct assertion");
+  assert.equal(SETTINGS_ARMS.length, 5, "an arm was added or removed without a direct assertion");
   for (const [code, expected] of SETTINGS_ARMS) {
     assert.equal(settingsErrorCode(apiError(code)), expected, `settings arm ${code}`);
   }
@@ -415,10 +420,9 @@ test("D133 totality: any code outside the arms lands on the generic member", () 
   const corpus = [
     // real organization-plugin codes `createInvitation` and `cancelInvitation`
     // can raise that this surface deliberately does not name — an owner inviting
-    // into her own org can do nothing differently about any of them
-    "YOU_ARE_NOT_ALLOWED_TO_INVITE_USERS_TO_THIS_ORGANIZATION",
+    // into her own org can do nothing differently about any of them (the two
+    // "not allowed" codes a MEMBER hits moved to SETTINGS_ARMS with D717)
     "YOU_ARE_NOT_ALLOWED_TO_INVITE_USER_WITH_THIS_ROLE",
-    "YOU_ARE_NOT_ALLOWED_TO_CANCEL_THIS_INVITATION",
     "ORGANIZATION_MEMBERSHIP_LIMIT_REACHED",
     "MEMBER_NOT_FOUND",
     "ORGANIZATION_NOT_FOUND",
@@ -430,8 +434,8 @@ test("D133 totality: any code outside the arms lands on the generic member", () 
     ...SETTINGS_ARMS.map(([code]) => code),
     ...HOSTILE_URL_VALUES.filter((v): v is string => typeof v === "string"),
   ];
-  // S2.0 L1: a loop over a shrunken corpus is green by vacuity. 10 library codes
-  // + 3 arms + 14 hostile strings (the fifteenth D68 entry is the repeated-
+  // S2.0 L1: a loop over a shrunken corpus is green by vacuity. 8 library codes
+  // + 5 arms + 14 hostile strings (the fifteenth D68 entry is the repeated-
   // parameter ARRAY, which a `body.code` never is, so `filter` drops it).
   assert.equal(corpus.length, 27, "the totality corpus changed size — re-check both lists");
 
