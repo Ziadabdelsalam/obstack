@@ -1,6 +1,6 @@
 export const frontmatter = {
   title: "What obstack does not do",
-  description: "The twenty-two absences, written down so you do not have to discover them.",
+  description: "The twenty-seven absences, written down so you do not have to discover them.",
 };
 
 # What obstack does not do
@@ -144,6 +144,30 @@ per-event overage and no seat count in the catalog.
 **Nothing tails or streams.** No data surface updates by itself; refreshing is a
 button you press. The one exception is the quickstart's first-trace panel, which
 polls a status route until your first trace links and then stops.
+
+{/* D714 — no email transport anywhere (U4), so there is no link anyone could deliver */}
+
+**There is no password reset.** obstack sends no email, so a forgotten
+password has no reset link; a password you still know is changed on the
+account page, and nobody — not an organization owner, and not an operator
+through the product — can reset another account's.
+
+{/* D709/D714 */}
+
+**Email addresses are never verified**, at signup or on change: the address
+you type is the address the account has, and an invitation is matched against
+it as typed, ignoring case.
+
+{/* D714 */}
+
+**There is no account deletion and no organization deletion in the product**,
+no way to rename an organization, and no member removal or role change.
+
+{/* D228, restated where a reader plans around it */}
+
+**One workspace per account, and no switcher:** a session reads the workspace
+of the organization the account owns; accepting an invitation adds the account
+to the inviter's roster and changes nothing about what it sees.
 
 {/* D153 */}
 

@@ -27,6 +27,18 @@ export function authConfig() {
     database: getPool(),
     secret,
     emailAndPassword: { enabled: true, requireEmailVerification: false },
+    // D709: the account page changes an address in-process (`server/account.ts`).
+    // Every account here is unverified by construction (U4: obstack sends no
+    // email, so `requireEmailVerification` is false and nothing ever flips
+    // `emailVerified`), and better-auth's `/change-email` handler refuses an
+    // unverified user unless THIS flag says the direct path is allowed
+    // (`node_modules/better-auth/dist/api/routes/update-user.mjs`,
+    // `canUpdateWithoutVerification`). Neither option touches the schema —
+    // they are handler switches, not fields — so the captured DDL in
+    // `0003_auth.sql` is unchanged and needs no re-capture; `auth.test.ts`'s
+    // D709 pin holds the two flags, and the mounted surface stays the same 52
+    // endpoints, `/change-email` among the fifty refused (D120).
+    user: { changeEmail: { enabled: true, updateEmailWithoutVerification: true } },
     // nextCookies stays last: it is the after-hook that writes the session
     // cookie through `next/headers`, and better-auth warns when a cookie
     // plugin is not the final entry.

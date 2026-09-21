@@ -200,6 +200,40 @@ test("D359: authConfig() resolves the client IP from x-forwarded-for", () => {
   }
 });
 
+// ---- D709: the account page's email change needs two handler flags, and no schema ----
+
+test("D709: authConfig() enables the direct email change, and nothing else about the user", () => {
+  const prevSecret = process.env.BETTER_AUTH_SECRET;
+  const prevDsn = process.env.OBSTACK_POSTGRES_DSN;
+  process.env.BETTER_AUTH_SECRET = "d709-test-secret-not-a-real-secret";
+  process.env.OBSTACK_POSTGRES_DSN = "postgres://test:test@127.0.0.1:1/test";
+  try {
+    const config = authConfig() as {
+      user?: Record<string, unknown>;
+      emailAndPassword?: { requireEmailVerification?: boolean; minPasswordLength?: number; maxPasswordLength?: number };
+    };
+    // `/change-email` refuses an unverified account unless BOTH flags are set
+    // (`routes/update-user.mjs`, `canUpdateWithoutVerification`), and every
+    // account here is unverified by construction — the premise is pinned too.
+    assert.deepEqual(config.user, { changeEmail: { enabled: true, updateEmailWithoutVerification: true } });
+    assert.equal(config.emailAndPassword?.requireEmailVerification, false);
+    // No password-length override: `lib/account-types.ts` states the library's
+    // documented defaults, and copy naming a bound the server does not enforce
+    // is the lie D129 exists to prevent.
+    assert.equal(config.emailAndPassword?.minPasswordLength, undefined);
+    assert.equal(config.emailAndPassword?.maxPasswordLength, undefined);
+    // And `user.deleteUser` stays unset (D714): there is no account deletion in
+    // the product, and `/delete-user` answers NOT_FOUND from the library itself
+    // even before the allowlist refuses it.
+    assert.equal("deleteUser" in (config.user ?? {}), false);
+  } finally {
+    if (prevSecret === undefined) delete process.env.BETTER_AUTH_SECRET;
+    else process.env.BETTER_AUTH_SECRET = prevSecret;
+    if (prevDsn === undefined) delete process.env.OBSTACK_POSTGRES_DSN;
+    else process.env.OBSTACK_POSTGRES_DSN = prevDsn;
+  }
+});
+
 // ---- D120: the mounted-endpoint allowlist, over the whole measured surface ----
 
 const ORIGIN = "http://localhost:3000";
@@ -315,6 +349,24 @@ const INVITE_ENDPOINTS = [
   "/organization/list-invitations",
 ];
 
+/**
+ * D708's named STAY-CLOSED entries, D143's shape: the five better-auth
+ * endpoints the account page's writes correspond to. `server/account.ts`
+ * reaches the first three through `auth.api.*` in-process with the request's
+ * headers, and answers the last two with `$1`-bound statements on the captured
+ * `session` table instead — `/list-sessions` sits behind a freshness check no
+ * day-old session passes, and `/revoke-session` is keyed by the bearer token.
+ * All five are already inside the fifty the matrix refuses; naming them is
+ * the point, as it was for the invitation five.
+ */
+const ACCOUNT_ENDPOINTS = [
+  "/update-user",
+  "/change-email",
+  "/change-password",
+  "/list-sessions",
+  "/revoke-session",
+];
+
 /** The version the surface above was measured against (D117's exact pin). */
 const BETTER_AUTH_MEASURED_AT = "1.7.1";
 
@@ -398,6 +450,39 @@ test("D143: the five invitation endpoints are mounted, refused, and refused with
       ),
     );
     await refusal(await GET(new Request(`${at(path)}?id=${"a".repeat(32)}`, { headers: SESSION })));
+  }
+});
+
+test("D708: the five account endpoints are mounted, refused, and refused with an account body", async () => {
+  assert.equal(ACCOUNT_ENDPOINTS.length, 5, "D708 names exactly five account endpoints");
+  for (const path of ACCOUNT_ENDPOINTS) {
+    assert.ok(
+      MOUNTED_ENDPOINTS.includes(path),
+      `${path} is not in the measured surface — re-measure before trusting this list`,
+    );
+    assert.ok(!ALLOWED.includes(path), `${path} became an allowed door — D708 opens ZERO`);
+
+    // The bodies each endpoint would actually take — the ones `server/account.ts`
+    // sends in-process — so a guard removed from `route.ts` would let these
+    // reach a schema that accepts them rather than one that rejects them.
+    const body = JSON.stringify({
+      name: "Somebody Else",
+      newEmail: "somebody@obstack.invalid",
+      currentPassword: "correct horse battery",
+      newPassword: "correct horse battery staple",
+      revokeOtherSessions: true,
+      token: "a".repeat(32),
+    });
+    await refusal(
+      await POST(
+        new Request(at(path), {
+          method: "POST",
+          headers: { ...SESSION, "content-type": "application/json" },
+          body,
+        }),
+      ),
+    );
+    await refusal(await GET(new Request(at(path), { headers: SESSION })));
   }
 });
 

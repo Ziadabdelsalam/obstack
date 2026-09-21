@@ -48,5 +48,6 @@ export const docsManifest: readonly DocsManifestEntry[] = [
   { slug: ["explain"], section: "Features" },
   { slug: ["retention"], section: "Features" },
   { slug: ["billing-and-plans"], section: "Plans" },
+  { slug: ["accounts-and-access"], section: "Account" },
   { slug: ["what-obstack-does-not-do"], section: "Absences" },
 ];

@@ -55,6 +55,7 @@ const pages = {
   retention: page("retention"),
   billing: page("billing-and-plans"),
   absences: page("what-obstack-does-not-do"),
+  accounts: page("accounts-and-access"),
 };
 
 /** Every page in the corpus, for the checks that are about the whole tree. */
@@ -672,6 +673,93 @@ test("the settings tabs the docs send a reader to are tabs the suite renders", (
 });
 
 // ---------------------------------------------------------------------------
+// Accounts and access (D715)
+// ---------------------------------------------------------------------------
+
+/** `{ max: N, windowMs: <expr> }` for one policy in `server/rate-limit.ts`, as numbers. */
+function rateLimitPolicy(source: string, name: string): { max: number; windowMinutes: number } {
+  const m = new RegExp(`\\b${name}: \\{ max: (\\d+), windowMs: ([\\d* ]+) \\}`).exec(source);
+  assert.ok(m, `the ${name} rate-limit policy is no longer in the shape this test reads`);
+  const windowMs = m[2].split("*").map((n) => Number(n.trim())).reduce((a, b) => a * b, 1);
+  return { max: Number(m[1]), windowMinutes: windowMs / 60_000 };
+}
+
+test("D715: the accounts page restates the password bounds, the four rate limits, and the key and invite numbers the code holds", () => {
+  const accounts = flat(pages.accounts);
+
+  // The password bounds: ONE definition in `lib/account-types.ts` (the
+  // library's documented defaults, which `authConfig()` leaves alone), stated
+  // twice on the page — at signup and at change — and once in each vocabulary.
+  const types = repo("apps/web/src/lib/account-types.ts");
+  const min = /export const PASSWORD_MIN = (\d+);/.exec(types)?.[1];
+  const max = /export const PASSWORD_MAX = (\d+);/.exec(types)?.[1];
+  assert.ok(min && max, "the password bounds are no longer literals in lib/account-types.ts");
+  assert.equal((accounts.match(new RegExp(`${min} to ${max} characters`, "g")) ?? []).length, 2);
+
+  // The four rate limits, from the policy table itself (D339/D713).
+  const limits = repo("apps/web/src/server/rate-limit.ts");
+  const signup = rateLimitPolicy(limits, "signup");
+  const login = rateLimitPolicy(limits, "login");
+  const password = rateLimitPolicy(limits, "password");
+  const email = rateLimitPolicy(limits, "email");
+  assert.equal(signup.windowMinutes, 60);
+  assert.equal(email.windowMinutes, 60);
+  assert.ok(accounts.includes(`${signup.max} signups an hour and ${login.max} sign-ins every ${login.windowMinutes} minutes`));
+  assert.ok(
+    accounts.includes(`${password.max} password attempts every ${password.windowMinutes} minutes and ${email.max} email changes an hour`),
+  );
+
+  // The revocation window is the settings surface's own sentence.
+  const suite = flat(repo("apps/web/src/components/settings/SettingsSuite.tsx"));
+  assert.ok(suite.includes("a revoked key stops being accepted within 30 seconds"));
+  assert.ok(accounts.includes("a revoked key stops being accepted within 30 seconds"));
+
+  // The invitation lifetime is the library's measured default, recorded where
+  // the settings page formats the expiry.
+  assert.ok(repo("apps/web/src/app/app/settings/page.tsx").includes("invitations last 48 hours"));
+  assert.ok(accounts.includes("it expires 48 hours after it was issued"));
+
+  // The scopes the page names are the DDL's vocabulary, no more and no fewer.
+  const ddl = repo("services/ingest/pgmigrations/0014_api_key_scope.sql");
+  const scopes = /CHECK \(scope IN \(([^)]+)\)\)/.exec(ddl)?.[1]?.match(/'(\w+)'/g)?.map((s) => s.replace(/'/g, ""));
+  assert.deepEqual(scopes, ["ingest", "read", "setup"]);
+  for (const scope of scopes ?? []) assert.ok(accounts.includes(`\`${scope}\``), `the page stopped naming the ${scope} scope`);
+});
+
+test("D715: the account absences follow the code — what the config lacks is what the page says is absent", () => {
+  const absences = flat(pages.absences);
+  const auth = repo("apps/web/src/server/auth.ts");
+  const accounts = flat(pages.accounts);
+
+  // No reset link can exist without a sender, and the config names none.
+  assert.ok(!auth.includes("sendResetPassword"), "premise: authConfig() configures no reset-password sender");
+  assert.ok(absences.includes("There is no password reset."));
+  assert.ok(accounts.includes("obstack sends no email of any kind"));
+
+  // Never verified: the flag is false and no verification sender exists.
+  assert.ok(auth.includes("requireEmailVerification: false"));
+  assert.ok(!auth.includes("sendVerificationEmail"));
+  assert.ok(absences.includes("Email addresses are never verified"));
+
+  // No deletion: the `user.deleteUser` OPTION is never set (the word itself
+  // names signup's compensating delete, which is a different thing), so the
+  // library answers NOT_FOUND on `/delete-user` before the allowlist refuses it.
+  assert.ok(!/deleteUser:\s*\{/.test(auth));
+  assert.ok(absences.includes("There is no account deletion and no organization deletion in the product"));
+
+  // One workspace per account (D228): the resolution is owner-pinned and the
+  // page says so in the same words the invite surface uses.
+  assert.ok(repo("apps/web/src/server/session.ts").includes("m.role = 'owner'"));
+  assert.ok(absences.includes("One workspace per account, and no switcher"));
+  assert.ok(accounts.includes("there is no workspace switcher"));
+
+  // And the account page is not an absence: it is live-wired, and the page
+  // that lists absences does not list it.
+  assert.equal(isLiveWiredRoute("/app/account"), true);
+  assert.ok(!absences.includes("no account page"));
+});
+
+// ---------------------------------------------------------------------------
 // The corpus as a whole
 // ---------------------------------------------------------------------------
 
@@ -679,7 +767,7 @@ test("every page is registered, and every registered page is written", () => {
   // `docs.test.ts` owns the manifest↔tree mirror. This is the other half: a
   // page that is still the placeholder T1 left behind is registered, walked,
   // built and served, and says nothing.
-  assert.equal(corpus.length, 16, "the corpus changed size — update this count deliberately"); // S8.1 T5: +/docs/mcp
+  assert.equal(corpus.length, 17, "the corpus changed size — update this count deliberately"); // S8.1 T5: +/docs/mcp; D715: +/docs/accounts-and-access
   for (const p of corpus) {
     assert.equal(
       p.source.includes("This page is written in T2"),

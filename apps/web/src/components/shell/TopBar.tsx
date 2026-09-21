@@ -10,6 +10,7 @@ import {
   BookOpen,
   ScrollText,
   LogOut,
+  UserRound,
 } from "lucide-react";
 import { NotificationsBell } from "./NotificationsPanel";
 import { StartTourButton } from "./TourGuide";
@@ -128,6 +129,11 @@ function AccountMenu({ account }: { account: Account | null }) {
               )}
             </div>
             {[
+              // The person, before the workspace (D707): the page behind this
+              // entry changes the name and address the two lines above show,
+              // and it is a real page in both images — the mock one says the
+              // demo keeps no account, the live one holds the person's own row.
+              { label: "Account", icon: UserRound, href: "/app/account" },
               { label: "Settings", icon: Settings, href: "/app/settings" },
               { label: "Quickstart", icon: Rocket, href: "/app/onboarding" },
               // There is no published documentation site to point at, so this

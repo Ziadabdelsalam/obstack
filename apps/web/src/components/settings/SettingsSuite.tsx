@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useTransition } from "react";
+import Link from "next/link";
 import {
   API_KEY_SCOPES,
   API_KEY_SCOPE_LABELS,
@@ -351,6 +352,16 @@ function LiveMembersTab({ live }: { live: LiveSettings }) {
             <span className="font-mono text-[11px] text-mid">{m.role}</span>
           </div>
         ))}
+        {/* The roster shows a name and an address it does not own: both are the
+            person's, changed on their own page (D707), so the one place a
+            member would look for the control says where it is. */}
+        <p className="mt-2.5 text-[12.5px] leading-relaxed text-mid">
+          Your own name, email address and password are on your{" "}
+          <Link href="/app/account" className="text-ink underline underline-offset-2">
+            account page
+          </Link>
+          .
+        </p>
       </Section>
 
       <Section title={`pending invites · ${live.invites.length}`}>
