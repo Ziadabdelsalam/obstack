@@ -126,10 +126,19 @@ async function signUpStranger(label: string): Promise<Stranger> {
 const userRow = async (userId: string) =>
   (await queryRows<{ name: string; email: string }>(`SELECT name, email FROM "user" WHERE id = $1`, [userId]))[0];
 
+/**
+ * The account's session ids, sorted HERE rather than by the statement: every
+ * expected list in this file is built in JavaScript (`[...].sort()`, code-point
+ * order), and Postgres's `ORDER BY id` sorts by the database collation — where
+ * a lower-case initial lands between two upper-case ones. MEASURED on CI: the
+ * same three ids came back `B…, p…, U…` from the store and `B…, U…, p…` from
+ * `.sort()`, and a deepEqual across the two orders is a red run about nothing.
+ * One order on both sides, and it is the one the comparisons are written in.
+ */
 const sessionIds = async (userId: string) =>
-  (await queryRows<{ id: string }>(`SELECT id FROM "session" WHERE "userId" = $1 ORDER BY id`, [userId])).map(
-    (row) => row.id,
-  );
+  (await queryRows<{ id: string }>(`SELECT id FROM "session" WHERE "userId" = $1`, [userId]))
+    .map((row) => row.id)
+    .sort();
 
 after(async () => {
   if (!TEST_DSN) return;

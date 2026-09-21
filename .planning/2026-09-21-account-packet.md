@@ -156,4 +156,7 @@ deletion, member removal and role change) stand.
 - **CI note.** The first `web` run of PR #43 found the D711 sessions leg
   assuming one session per fresh stranger where signup leaves two (its own
   session row survives the swallowed cookie write); the test now measures the
-  baseline off the store. Pushed as its own commit.
+  baseline off the store. Pushed as its own commit. The second `web` run found
+  the same leg comparing a Postgres-collation-ordered id list against a
+  JavaScript-sorted one — same members, different order — so the helper now
+  sorts in JavaScript like every expected list in the file.
