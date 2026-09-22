@@ -160,3 +160,7 @@ deletion, member removal and role change) stand.
   the same leg comparing a Postgres-collation-ordered id list against a
   JavaScript-sorted one — same members, different order — so the helper now
   sorts in JavaScript like every expected list in the file.
+- **Changelog.** The entry the packet could not date now exists:
+  `content/changelog/2026-09-21-account-page-and-workspace-switcher.mdx`, filed
+  under the master merge date of PR #43 (`f313cd0`, D323) and landed in its own
+  PR after the merge, as the rule requires.

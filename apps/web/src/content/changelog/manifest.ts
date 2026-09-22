@@ -37,4 +37,5 @@ export const changelogManifest: readonly ChangelogManifestEntry[] = [
   { slug: "2026-08-17-logs-explorer" },
   { slug: "2026-08-20-connections-hub" },
   { slug: "2026-08-20-explain-this-trace" },
+  { slug: "2026-09-21-account-page-and-workspace-switcher" },
 ];

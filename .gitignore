@@ -59,8 +59,13 @@ pitchdeck-assets/
 .DS_Store
 .ziarmy/
 
-# agent worktrees
-.claude/
+# agent worktrees and other per-machine Claude Code state. The project
+# settings file is the one exception: it declares the i-have-adhd plugin and
+# its marketplace (`claude plugin install i-have-adhd@i-have-adhd --scope
+# project`) so anyone opening the repo in Claude Code is offered the same
+# plugin. Everything else under .claude/ stays local.
+.claude/*
+!.claude/settings.json
 
 # the skip-traps' transcript: web.yml and go.yml `tee test-output.log` at the
 # repo root so the trap can count skips, and reproducing either job locally
