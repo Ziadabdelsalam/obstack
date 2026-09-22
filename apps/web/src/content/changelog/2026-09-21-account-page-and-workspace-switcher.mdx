@@ -1,0 +1,9 @@
+export const frontmatter = {
+  date: "2026-09-21",
+  kind: "new",
+  title: "Account page and workspace switcher",
+};
+
+{/* merged: f313cd0 PR #43, 2026-09-21 */}
+
+Account, in the top-right menu, is the signed-in person as distinct from the workspace: change your name, the address you sign in with and your password, see every browser signed in to your account and end any of them but the current one, set a PNG, JPEG or WebP picture that the people who share an organization with you see beside your name, and read which organizations you belong to and with what role. An address change applies at once — obstack sends no email, so nothing is confirmed — and an address that already belongs to another account is refused; a password change can sign out every other session in the same step. Under the workspace label in the sidebar, a switcher lists every organization you are a member of, appears only when there is more than one, and remembers your choice until the next switch; accepting an invitation adds the organization to that list and moves nothing until you switch. A member who has switched can do everything in that workspace except invite teammates or cancel invitations. There is still no password reset, no address verification and no way to delete an account.

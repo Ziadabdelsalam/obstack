@@ -13,7 +13,7 @@ import {
 // run with: npm test --workspace apps/web
 //
 // The changelog's gate (S4.4 T3, D255/D320/D323). `/changelog` used to be a
-// hardcoded array inside `app/changelog/page.tsx`; it is now four `.mdx` files
+// hardcoded array inside `app/changelog/page.tsx`; it is now dated `.mdx` files
 // in the same content tree the docs live in. Four things are pinned here, and
 // each is one that fails SILENTLY otherwise:
 //
@@ -62,6 +62,7 @@ const BODY_PINS: Record<string, string> = {
 
 /** The render order the page must produce: newest first, ties broken by slug descending (D323). */
 const RENDER_ORDER = [
+  "2026-09-21-account-page-and-workspace-switcher",
   "2026-08-20-explain-this-trace",
   "2026-08-20-connections-hub",
   "2026-08-17-logs-explorer",
@@ -249,7 +250,7 @@ test("D323: the four migrated bodies are byte-equal to the text they had at 3edc
   }
 });
 
-/** Every ordering of a list — 4 entries is 24 of them, which is the point. */
+/** Every ordering of a list — 5 entries is 120 of them, which is the point. */
 function permutations<T>(items: readonly T[]): T[][] {
   if (items.length <= 1) return [[...items]];
   return items.flatMap((item, i) =>
@@ -282,11 +283,11 @@ test("D323: the page renders newest first, and the manifest is not what orders i
   // EVERY input order, not one. Sorting the reversed input was vacuous: the
   // directory listing is slug-ascending, so its reverse IS the render order
   // already, and a comparator that returned 0 for every pair would have passed
-  // it on a stable sort. Twenty-four orderings of four entries have no such
-  // hiding place — the same answer from all of them is what "total order"
-  // means.
+  // it on a stable sort. A hundred and twenty orderings of five entries have
+  // no such hiding place — the same answer from all of them is what "total
+  // order" means.
   const orderings = permutations(dated);
-  assert.equal(orderings.length, 24, "four entries have 24 orderings — the corpus changed size");
+  assert.equal(orderings.length, 120, "five entries have 120 orderings — the corpus changed size");
   for (const ordering of orderings) {
     assert.deepEqual(
       sortNewestFirst(ordering).map((e) => e.slug),
